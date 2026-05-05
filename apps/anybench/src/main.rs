@@ -28,9 +28,11 @@
 mod workloads;
 
 use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::i18n;
 use anyui::Widget;
+use core::fmt::Write as FmtWrite;
 use core::sync::atomic::{AtomicU32, Ordering};
 use libanyui_client as anyui;
 
@@ -46,6 +48,15 @@ const TEXT_ALIGN_CENTER: u32 = 1;
 const TEXT_ALIGN_RIGHT: u32 = 2;
 
 const MAX_CORES: usize = 64;
+
+#[derive(Clone, Copy, PartialEq)]
+enum BenchMode {
+    All,
+    CpuOnly,
+    GpuOnly,
+    Gl3dOnly,
+    DiskOnly,
+}
 
 /// Returns the current theme color palette.
 fn tc() -> &'static anyui::theme::ThemeColors {
@@ -68,6 +79,352 @@ static mut CHILDREN_FORKED: u32 = 0;
 static mut NUM_CHILDREN: u32 = 0;
 // How many have been reaped via waitpid
 static mut CHILDREN_REAPED: u32 = 0;
+
+// ════════════════════════════════════════════════════════════════════════
+//  Results / export
+// ════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone)]
+struct BenchResults {
+    mode: BenchMode,
+    num_cpus: u32,
+    cpu_single_raw: [u64; NUM_CPU_TESTS],
+    cpu_multi_raw: [u64; NUM_CPU_TESTS],
+    gpu_on_raw: [u64; NUM_GPU_TESTS],
+    gpu_off_raw: [u64; NUM_GPU_TESTS],
+    gl3d_raw: [u64; NUM_GL3D_TESTS],
+    disk_raw: [u64; NUM_DISK_TESTS],
+}
+
+impl BenchResults {
+    fn empty(mode: BenchMode, num_cpus: u32) -> Self {
+        Self {
+            mode,
+            num_cpus,
+            cpu_single_raw: [0; NUM_CPU_TESTS],
+            cpu_multi_raw: [0; NUM_CPU_TESTS],
+            gpu_on_raw: [0; NUM_GPU_TESTS],
+            gpu_off_raw: [0; NUM_GPU_TESTS],
+            gl3d_raw: [0; NUM_GL3D_TESTS],
+            disk_raw: [0; NUM_DISK_TESTS],
+        }
+    }
+
+    fn cpu_single_score(&self) -> u32 {
+        let scores: Vec<u32> = (0..NUM_CPU_TESTS)
+            .filter(|&i| self.cpu_single_raw[i] > 0)
+            .map(|i| compute_score(self.cpu_single_raw[i], CPU_BASELINES[i]))
+            .collect();
+        geometric_mean(&scores)
+    }
+
+    fn cpu_multi_score(&self) -> u32 {
+        let scores: Vec<u32> = (0..NUM_CPU_TESTS)
+            .filter(|&i| self.cpu_multi_raw[i] > 0)
+            .map(|i| compute_score(self.cpu_multi_raw[i], CPU_BASELINES[i]))
+            .collect();
+        geometric_mean(&scores)
+    }
+
+    fn gpu_on_score(&self) -> u32 {
+        let scores: Vec<u32> = (0..NUM_GPU_TESTS)
+            .filter(|&i| self.gpu_on_raw[i] > 0)
+            .map(|i| compute_score(self.gpu_on_raw[i], GPU_BASELINES[i]))
+            .collect();
+        geometric_mean(&scores)
+    }
+
+    fn gpu_off_score(&self) -> u32 {
+        let scores: Vec<u32> = (0..NUM_GPU_TESTS)
+            .filter(|&i| self.gpu_off_raw[i] > 0)
+            .map(|i| compute_score(self.gpu_off_raw[i], GPU_BASELINES[i]))
+            .collect();
+        geometric_mean(&scores)
+    }
+
+    fn gl3d_score(&self) -> u32 {
+        let scores: Vec<u32> = (0..NUM_GL3D_TESTS)
+            .filter(|&i| self.gl3d_raw[i] > 0)
+            .map(|i| compute_score(self.gl3d_raw[i], GL3D_BASELINES[i]))
+            .collect();
+        geometric_mean(&scores)
+    }
+
+    fn disk_score(&self) -> u32 {
+        let scores: Vec<u32> = (0..NUM_DISK_TESTS)
+            .filter(|&i| self.disk_raw[i] > 0)
+            .map(|i| compute_score(self.disk_raw[i], DISK_BASELINES[i]))
+            .collect();
+        geometric_mean(&scores)
+    }
+}
+
+fn mode_name(mode: BenchMode) -> &'static str {
+    match mode {
+        BenchMode::All => "all",
+        BenchMode::CpuOnly => "cpu",
+        BenchMode::GpuOnly => "gpu",
+        BenchMode::Gl3dOnly => "3d",
+        BenchMode::DiskOnly => "disk",
+    }
+}
+
+fn disk_rate_text(index: usize, raw: u64) -> String {
+    if raw == 0 {
+        return String::from("-");
+    }
+    let test_ms = workloads::DISK_TEST_MS as u64;
+    if index < 2 {
+        let mb10 = raw * 1000 * 10 / test_ms / (1024 * 1024);
+        format!("{}.{} MB/s", mb10 / 10, mb10 % 10)
+    } else {
+        format!("{} ops/s", raw * 1000 / test_ms)
+    }
+}
+
+fn format_results_text(r: &BenchResults) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "anyBench results");
+    let _ = writeln!(out, "mode: {}", mode_name(r.mode));
+    let _ = writeln!(out, "cpu_cores: {}", r.num_cpus);
+    let _ = writeln!(out);
+    if r.cpu_single_score() > 0 {
+        let _ = writeln!(out, "CPU Single-Core: {}", r.cpu_single_score());
+        for i in 0..NUM_CPU_TESTS {
+            let score = compute_score(r.cpu_single_raw[i], CPU_BASELINES[i]);
+            let _ = writeln!(
+                out,
+                "  {:<18} score={} raw={}",
+                CPU_TEST_NAMES[i], score, r.cpu_single_raw[i]
+            );
+        }
+    }
+    if r.cpu_multi_score() > 0 {
+        let _ = writeln!(out, "CPU Multi-Core: {}", r.cpu_multi_score());
+        for i in 0..NUM_CPU_TESTS {
+            let score = compute_score(r.cpu_multi_raw[i], CPU_BASELINES[i]);
+            let _ = writeln!(
+                out,
+                "  {:<18} score={} raw={}",
+                CPU_TEST_NAMES[i], score, r.cpu_multi_raw[i]
+            );
+        }
+    }
+    if r.gpu_on_score() > 0 {
+        let _ = writeln!(out, "GPU OnScreen: {}", r.gpu_on_score());
+        for i in 0..NUM_GPU_TESTS {
+            let score = compute_score(r.gpu_on_raw[i], GPU_BASELINES[i]);
+            let _ = writeln!(
+                out,
+                "  {:<18} score={} raw={}",
+                GPU_TEST_NAMES[i], score, r.gpu_on_raw[i]
+            );
+        }
+    }
+    if r.gpu_off_score() > 0 {
+        let _ = writeln!(out, "GPU OffScreen: {}", r.gpu_off_score());
+        for i in 0..NUM_GPU_TESTS {
+            let score = compute_score(r.gpu_off_raw[i], GPU_BASELINES[i]);
+            let _ = writeln!(
+                out,
+                "  {:<18} score={} raw={}",
+                GPU_TEST_NAMES[i], score, r.gpu_off_raw[i]
+            );
+        }
+    }
+    if r.gl3d_score() > 0 {
+        let _ = writeln!(out, "3D: {}", r.gl3d_score());
+        for i in 0..NUM_GL3D_TESTS {
+            let score = compute_score(r.gl3d_raw[i], GL3D_BASELINES[i]);
+            let _ = writeln!(
+                out,
+                "  {:<18} score={} raw={}",
+                GL3D_TEST_NAMES[i], score, r.gl3d_raw[i]
+            );
+        }
+    }
+    if r.disk_score() > 0 {
+        let _ = writeln!(out, "Disk I/O: {}", r.disk_score());
+        for i in 0..NUM_DISK_TESTS {
+            let score = compute_score(r.disk_raw[i], DISK_BASELINES[i]);
+            let _ = writeln!(
+                out,
+                "  {:<18} score={} raw={} rate={}",
+                DISK_TEST_NAMES[i],
+                score,
+                r.disk_raw[i],
+                disk_rate_text(i, r.disk_raw[i])
+            );
+        }
+    }
+    out
+}
+
+fn write_markdown_section(
+    out: &mut String,
+    title: &str,
+    overall: u32,
+    names: &[&str],
+    raw: &[u64],
+    baselines: &[u64],
+    disk: bool,
+) {
+    if overall == 0 {
+        return;
+    }
+    let _ = writeln!(out, "## {}: {}", title, overall);
+    if disk {
+        let _ = writeln!(out, "| Test | Score | Raw | Rate |");
+        let _ = writeln!(out, "| --- | ---: | ---: | --- |");
+    } else {
+        let _ = writeln!(out, "| Test | Score | Raw |");
+        let _ = writeln!(out, "| --- | ---: | ---: |");
+    }
+    for i in 0..names.len() {
+        let score = compute_score(raw[i], baselines[i]);
+        if disk {
+            let _ = writeln!(
+                out,
+                "| {} | {} | {} | {} |",
+                names[i],
+                score,
+                raw[i],
+                disk_rate_text(i, raw[i])
+            );
+        } else {
+            let _ = writeln!(out, "| {} | {} | {} |", names[i], score, raw[i]);
+        }
+    }
+    let _ = writeln!(out);
+}
+
+fn format_results_markdown(r: &BenchResults) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "# anyBench Results");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "- Mode: `{}`", mode_name(r.mode));
+    let _ = writeln!(out, "- CPU cores: {}", r.num_cpus);
+    let _ = writeln!(out);
+    write_markdown_section(
+        &mut out,
+        "CPU Single-Core",
+        r.cpu_single_score(),
+        &CPU_TEST_NAMES,
+        &r.cpu_single_raw,
+        &CPU_BASELINES,
+        false,
+    );
+    write_markdown_section(
+        &mut out,
+        "CPU Multi-Core",
+        r.cpu_multi_score(),
+        &CPU_TEST_NAMES,
+        &r.cpu_multi_raw,
+        &CPU_BASELINES,
+        false,
+    );
+    write_markdown_section(
+        &mut out,
+        "GPU OnScreen",
+        r.gpu_on_score(),
+        &GPU_TEST_NAMES,
+        &r.gpu_on_raw,
+        &GPU_BASELINES,
+        false,
+    );
+    write_markdown_section(
+        &mut out,
+        "GPU OffScreen",
+        r.gpu_off_score(),
+        &GPU_TEST_NAMES,
+        &r.gpu_off_raw,
+        &GPU_BASELINES,
+        false,
+    );
+    write_markdown_section(
+        &mut out,
+        "3D",
+        r.gl3d_score(),
+        &GL3D_TEST_NAMES,
+        &r.gl3d_raw,
+        &GL3D_BASELINES,
+        false,
+    );
+    write_markdown_section(
+        &mut out,
+        "Disk I/O",
+        r.disk_score(),
+        &DISK_TEST_NAMES,
+        &r.disk_raw,
+        &DISK_BASELINES,
+        true,
+    );
+    out
+}
+
+fn write_json_array(out: &mut String, names: &[&str], raw: &[u64], baselines: &[u64], disk: bool) {
+    let _ = writeln!(out, "    [");
+    for i in 0..names.len() {
+        let score = compute_score(raw[i], baselines[i]);
+        let comma = if i + 1 == names.len() { "" } else { "," };
+        if disk {
+            let _ = writeln!(
+                out,
+                "      {{\"name\":\"{}\",\"score\":{},\"raw\":{},\"rate\":\"{}\"}}{}",
+                names[i],
+                score,
+                raw[i],
+                disk_rate_text(i, raw[i]),
+                comma
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "      {{\"name\":\"{}\",\"score\":{},\"raw\":{}}}{}",
+                names[i], score, raw[i], comma
+            );
+        }
+    }
+    let _ = write!(out, "    ]");
+}
+
+fn format_results_json(r: &BenchResults) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "{{");
+    let _ = writeln!(out, "  \"app\": \"anyBench\",");
+    let _ = writeln!(out, "  \"mode\": \"{}\",", mode_name(r.mode));
+    let _ = writeln!(out, "  \"cpu_cores\": {},", r.num_cpus);
+    let _ = writeln!(out, "  \"scores\": {{");
+    let _ = writeln!(out, "    \"cpu_single\": {},", r.cpu_single_score());
+    let _ = writeln!(out, "    \"cpu_multi\": {},", r.cpu_multi_score());
+    let _ = writeln!(out, "    \"gpu_onscreen\": {},", r.gpu_on_score());
+    let _ = writeln!(out, "    \"gpu_offscreen\": {},", r.gpu_off_score());
+    let _ = writeln!(out, "    \"gl3d\": {},", r.gl3d_score());
+    let _ = writeln!(out, "    \"disk\": {}", r.disk_score());
+    let _ = writeln!(out, "  }},");
+    let _ = writeln!(out, "  \"tests\": {{");
+    let _ = writeln!(out, "    \"cpu_single\": ");
+    write_json_array(&mut out, &CPU_TEST_NAMES, &r.cpu_single_raw, &CPU_BASELINES, false);
+    let _ = writeln!(out, ",");
+    let _ = writeln!(out, "    \"cpu_multi\": ");
+    write_json_array(&mut out, &CPU_TEST_NAMES, &r.cpu_multi_raw, &CPU_BASELINES, false);
+    let _ = writeln!(out, ",");
+    let _ = writeln!(out, "    \"gpu_onscreen\": ");
+    write_json_array(&mut out, &GPU_TEST_NAMES, &r.gpu_on_raw, &GPU_BASELINES, false);
+    let _ = writeln!(out, ",");
+    let _ = writeln!(out, "    \"gpu_offscreen\": ");
+    write_json_array(&mut out, &GPU_TEST_NAMES, &r.gpu_off_raw, &GPU_BASELINES, false);
+    let _ = writeln!(out, ",");
+    let _ = writeln!(out, "    \"gl3d\": ");
+    write_json_array(&mut out, &GL3D_TEST_NAMES, &r.gl3d_raw, &GL3D_BASELINES, false);
+    let _ = writeln!(out, ",");
+    let _ = writeln!(out, "    \"disk\": ");
+    write_json_array(&mut out, &DISK_TEST_NAMES, &r.disk_raw, &DISK_BASELINES, true);
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  }}");
+    let _ = writeln!(out, "}}");
+    out
+}
 
 // ════════════════════════════════════════════════════════════════════════
 //  Global application state
@@ -180,6 +537,42 @@ fn fork_bench_worker(bench_id: u32) -> u32 {
     } else {
         child
     }
+}
+
+fn run_cpu_group_cli(bench_id: u32, workers: u32) -> u64 {
+    let n = workers.max(1).min(MAX_CORES as u32);
+    let mut tids = [0u32; MAX_CORES];
+    let mut results = [0u64; MAX_CORES];
+    let mut reaped = 0u32;
+    for i in 0..n as usize {
+        let tid = fork_bench_worker(bench_id);
+        tids[i] = tid;
+        if tid == 0 {
+            reaped += 1;
+        }
+    }
+    while reaped < n {
+        for i in 0..n as usize {
+            let tid = tids[i];
+            if tid == 0 {
+                continue;
+            }
+            let status = anyos_std::process::try_waitpid(tid);
+            if status != anyos_std::process::STILL_RUNNING && status != u32::MAX {
+                results[i] = status as u64;
+                tids[i] = 0;
+                reaped += 1;
+            }
+        }
+        if reaped < n {
+            anyos_std::process::sleep(20);
+        }
+    }
+    let mut total = 0u64;
+    for i in 0..n as usize {
+        total += results[i];
+    }
+    total
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -311,6 +704,8 @@ fn build_ui() {
     // ── Menu bar ──
     let mut mb = anyui::MenuBarBuilder::new()
         .menu(i18n::t("File"))
+        .item(2, "Export Markdown", 0)
+        .item(3, "Export JSON", 0)
         .item(1, i18n::t("Quit"), 0)
         .end_menu()
         .menu(i18n::t("Benchmark"))
@@ -320,6 +715,8 @@ fn build_ui() {
     let menubar = anyui::MenuBar::set(win.id(), menu_data);
     menubar.on_item(|e| match e.item_id {
         1 => anyui::quit(),
+        2 => export_gui_results("md"),
+        3 => export_gui_results("json"),
         10 => start_benchmark(BenchMode::All),
         _ => {}
     });
@@ -883,15 +1280,6 @@ fn build_ui() {
 static mut SUMMARY_SCORE_IDS: [u32; 6] = [0; 6];
 static mut BENCH_MODE: BenchMode = BenchMode::All;
 
-#[derive(Clone, Copy, PartialEq)]
-enum BenchMode {
-    All,
-    CpuOnly,
-    GpuOnly,
-    Gl3dOnly,
-    DiskOnly,
-}
-
 // ════════════════════════════════════════════════════════════════════════
 //  Benchmark orchestration
 // ════════════════════════════════════════════════════════════════════════
@@ -913,6 +1301,7 @@ fn start_benchmark(mode: BenchMode) {
     a.gpu_on_raw = [0; NUM_GPU_TESTS];
     a.gpu_off_raw = [0; NUM_GPU_TESTS];
     a.gl3d_raw = [0; NUM_GL3D_TESTS];
+    a.disk_raw = [0; NUM_DISK_TESTS];
 
     for i in 0..NUM_CPU_TESTS {
         a.cpu_single_scores[i].set_text("-");
@@ -1420,11 +1809,146 @@ fn finish_benchmark() {
     }
 }
 
+fn current_gui_results() -> BenchResults {
+    let a = app();
+    BenchResults {
+        mode: unsafe { BENCH_MODE },
+        num_cpus: a.num_cpus,
+        cpu_single_raw: a.cpu_single_raw,
+        cpu_multi_raw: a.cpu_multi_raw,
+        gpu_on_raw: a.gpu_on_raw,
+        gpu_off_raw: a.gpu_off_raw,
+        gl3d_raw: a.gl3d_raw,
+        disk_raw: a.disk_raw,
+    }
+}
+
+fn export_gui_results(format: &str) {
+    let results = current_gui_results();
+    let (path, data) = match format {
+        "json" => ("/tmp/anybench-results.json", format_results_json(&results)),
+        _ => ("/tmp/anybench-results.md", format_results_markdown(&results)),
+    };
+    match anyos_std::fs::write_bytes(path, data.as_bytes()) {
+        Ok(()) => app().lbl_status.set_text(&format!("Results written to {}", path)),
+        Err(_) => app().lbl_status.set_text("Could not write results file."),
+    }
+}
+
+fn print_usage() {
+    anyos_std::println!("anyBench");
+    anyos_std::println!("Usage:");
+    anyos_std::println!("  anybench                       Start GUI");
+    anyos_std::println!("  anybench --cli [--cpu|--disk|--all] [--format text|md|json] [--out PATH]");
+    anyos_std::println!("");
+    anyos_std::println!("Terminal mode runs CPU and Disk I/O tests. GPU and 3D tests need the GUI canvas.");
+}
+
+fn run_cli(args: &[String]) {
+    let mut mode = BenchMode::All;
+    let mut format = "text";
+    let mut out_path: Option<&str> = None;
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--help" | "-h" => {
+                print_usage();
+                return;
+            }
+            "--cpu" => mode = BenchMode::CpuOnly,
+            "--disk" | "--io" => mode = BenchMode::DiskOnly,
+            "--all" => mode = BenchMode::All,
+            "--format" | "-f" => {
+                if i + 1 < args.len() {
+                    format = args[i + 1].as_str();
+                    i += 1;
+                }
+            }
+            "--json" => format = "json",
+            "--md" | "--markdown" => format = "md",
+            "--out" | "-o" => {
+                if i + 1 < args.len() {
+                    out_path = Some(args[i + 1].as_str());
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let num_cpus = anyos_std::sys::sysinfo(2, &mut [0u8; 4]);
+    let num_cpus = if num_cpus == 0 { 1 } else { num_cpus };
+    let mut results = BenchResults::empty(mode, num_cpus);
+
+    if mode == BenchMode::All || mode == BenchMode::CpuOnly {
+        anyos_std::println!("Running CPU single-core tests...");
+        for i in 0..NUM_CPU_TESTS {
+            anyos_std::println!("  {}", CPU_TEST_NAMES[i]);
+            results.cpu_single_raw[i] = run_cpu_group_cli((i + 1) as u32, 1);
+        }
+        anyos_std::println!("Running CPU multi-core tests ({} workers)...", num_cpus);
+        for i in 0..NUM_CPU_TESTS {
+            anyos_std::println!("  {}", CPU_TEST_NAMES[i]);
+            results.cpu_multi_raw[i] = run_cpu_group_cli((i + 1) as u32, num_cpus);
+        }
+    }
+
+    if mode == BenchMode::All || mode == BenchMode::DiskOnly {
+        anyos_std::println!("Running Disk I/O tests...");
+        for i in 0..NUM_DISK_TESTS {
+            anyos_std::println!("  {}", DISK_TEST_NAMES[i]);
+            results.disk_raw[i] = run_disk_bench((i + 1) as u32);
+        }
+    }
+
+    let output = match format {
+        "json" => format_results_json(&results),
+        "md" | "markdown" => format_results_markdown(&results),
+        _ => format_results_text(&results),
+    };
+    anyos_std::print!("{}", output);
+    if let Some(path) = out_path {
+        match anyos_std::fs::write_bytes(path, output.as_bytes()) {
+            Ok(()) => anyos_std::println!("Wrote {}", path),
+            Err(_) => anyos_std::println!("Could not write {}", path),
+        }
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════
 //  Entry point
 // ════════════════════════════════════════════════════════════════════════
 
 fn main() {
+    let mut arg_buf = [0u8; 512];
+    let raw_args = anyos_std::process::args(&mut arg_buf);
+    let args = anyos_std::args::tokenize(raw_args);
+    if args
+        .iter()
+        .any(|arg| {
+            arg == "--cli"
+                || arg == "--cpu"
+                || arg == "--disk"
+                || arg == "--io"
+                || arg == "--all"
+                || arg == "--format"
+                || arg == "-f"
+                || arg == "--out"
+                || arg == "-o"
+                || arg == "--json"
+                || arg == "--md"
+                || arg == "--markdown"
+        })
+    {
+        run_cli(&args);
+        return;
+    }
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        print_usage();
+        return;
+    }
+
     if !anyui::init() {
         anyos_std::println!("anybench: failed to load libanyui.so");
         return;
