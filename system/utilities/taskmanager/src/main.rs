@@ -983,8 +983,8 @@ fn main() {
                 let s = fmt_u32(&mut t, cpu_st.avg_freq_mhz);
                 gbuf[p..p + s.len()].copy_from_slice(s.as_bytes());
                 p += s.len();
-                gbuf[p..p + 7].copy_from_slice(b" MHz avg");
-                p += 7;
+                gbuf[p..p + 8].copy_from_slice(b" MHz avg");
+                p += 8;
             }
             if let Ok(s) = core::str::from_utf8(&gbuf[..p]) {
                 graph_label.set_text(s);
@@ -1142,8 +1142,8 @@ fn main() {
                 buf[p..p + 4].copy_from_slice(b" MHz");
                 p += 4;
                 if hw.total_cpu_freq_mhz > 0 {
-                    buf[p..p + 9].copy_from_slice(b"  total ");
-                    p += 9;
+                    buf[p..p + 8].copy_from_slice(b"  total ");
+                    p += 8;
                     let s = fmt_u32(&mut t, hw.total_cpu_freq_mhz);
                     buf[p..p + s.len()].copy_from_slice(s.as_bytes());
                     p += s.len();
@@ -1174,8 +1174,8 @@ fn main() {
                 };
                 buf[p..p + profile.len()].copy_from_slice(profile.as_bytes());
                 p += profile.len();
-                buf[p..p + 10].copy_from_slice(b"  driver ");
-                p += 10;
+                buf[p..p + 9].copy_from_slice(b"  driver ");
+                p += 9;
                 let driver = match hw.power_driver {
                     1 => "Intel HWP",
                     2 => "Intel P-state",
