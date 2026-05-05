@@ -397,6 +397,70 @@ fn apply_seed_file() {
     }
 }
 
+// Common display modes used as a safe fallback for mirror groups. The
+// kernel still performs exact validation against each output's mode list.
+const DISPLAY_COMMON_MODES: &[(u32, u32)] = &[
+    (640, 480),
+    (800, 600),
+    (1024, 768),
+    (1152, 864),
+    (1280, 720),
+    (1280, 1024),
+    (1440, 900),
+    (1600, 900),
+    (1600, 1200),
+    (1920, 1080),
+];
+
+fn is_portrait_orientation(orientation: i64) -> bool {
+    orientation == 1 || orientation == 3
+}
+
+fn output_cap(info: &display::DisplayInfo) -> (u32, u32) {
+    if info.preferred_w > 0 && info.preferred_h > 0 {
+        (info.preferred_w, info.preferred_h)
+    } else if info.current_w > 0 && info.current_h > 0 {
+        (info.current_w, info.current_h)
+    } else {
+        (u32::MAX, u32::MAX)
+    }
+}
+
+fn mode_fits_output(info: &display::DisplayInfo, w: u32, h: u32) -> bool {
+    let (cap_w, cap_h) = output_cap(info);
+    w <= cap_w && h <= cap_h
+}
+
+fn choose_global_mirror_mode(
+    infos: &[display::DisplayInfo],
+    preferred_w: u32,
+    preferred_h: u32,
+) -> (u32, u32) {
+    if infos
+        .iter()
+        .filter(|info| info.is_connected())
+        .all(|info| mode_fits_output(info, preferred_w, preferred_h))
+    {
+        return (preferred_w, preferred_h);
+    }
+
+    let mut cap_w = u32::MAX;
+    let mut cap_h = u32::MAX;
+    for info in infos.iter().filter(|info| info.is_connected()) {
+        let (w, h) = output_cap(info);
+        cap_w = cap_w.min(w);
+        cap_h = cap_h.min(h);
+    }
+
+    let mut best = None;
+    for &(w, h) in DISPLAY_COMMON_MODES {
+        if w <= cap_w && h <= cap_h {
+            best = Some((w, h));
+        }
+    }
+    best.unwrap_or((cap_w.min(1024), cap_h.min(768)))
+}
+
 /// Apply the layout derived from confd if any, falling back to a sane
 /// default ("primary at 0,0, secondaries stacked to the right at
 /// preferred mode") for outputs we have no saved entry for.
@@ -445,7 +509,7 @@ pub(crate) fn apply_persisted_layout() {
     };
 
     let mut entries: anyos_std::Vec<LayoutEntry> = anyos_std::Vec::with_capacity(infos.len());
-    let mut next_x: i32 = 0;
+    let mut next_x: i32;
 
     // Helper: read per-output config, fall back to kernel-reported values.
     let resolve = |info: &display::DisplayInfo| -> Option<(u32, u32, u32, u16, bool)> {
@@ -457,7 +521,7 @@ pub(crate) fn apply_persisted_layout() {
         if !enabled {
             return None;
         }
-        let w = DISPLAYD_SCHEMA
+        let mut w = DISPLAYD_SCHEMA
             .read_i64(&output_key(&hex, "mode_w"))
             .filter(|&v| v > 0)
             .map(|v| v as u32)
@@ -470,7 +534,7 @@ pub(crate) fn apply_persisted_layout() {
                     None
                 }
             })?;
-        let h = DISPLAYD_SCHEMA
+        let mut h = DISPLAYD_SCHEMA
             .read_i64(&output_key(&hex, "mode_h"))
             .filter(|&v| v > 0)
             .map(|v| v as u32)
@@ -500,6 +564,12 @@ pub(crate) fn apply_persisted_layout() {
         let frac = DISPLAYD_SCHEMA
             .read_bool(&output_key(&hex, "fractional_scale"))
             .unwrap_or(false);
+        let orientation = DISPLAYD_SCHEMA
+            .read_i64(&output_key(&hex, "orientation"))
+            .unwrap_or(0);
+        if is_portrait_orientation(orientation) {
+            core::mem::swap(&mut w, &mut h);
+        }
         let _ = frac;
         Some((w, h, refresh, scale, true))
     };
@@ -509,10 +579,11 @@ pub(crate) fn apply_persisted_layout() {
         // owns its own framebuffer; everyone else points to it via
         // mirror_of.
         let primary = &infos[primary_idx];
-        let (pw, ph, prefresh, pscale, _) = match resolve(primary) {
+        let (mut pw, mut ph, prefresh, pscale, _) = match resolve(primary) {
             Some(v) => v,
             None => return,
         };
+        (pw, ph) = choose_global_mirror_mode(&infos, pw, ph);
         let mut e = LayoutEntry::primary(primary.id, 0, 0, pw, ph);
         e.mode_refresh_mhz = prefresh;
         e.scale = pscale as u32;
@@ -563,20 +634,36 @@ pub(crate) fn apply_persisted_layout() {
                 }
             };
             // mirror_of: an EDID hash that points at another connected
-            // output. Resolve to that output's id.
+            // output. Resolve to that output's id. Mirror entries must
+            // use the source mode; the kernel validator rejects mode
+            // mismatches because a mirror shares one framebuffer resource.
             let mirror_of_hex = DISPLAYD_SCHEMA
                 .read_string(&output_key(&hex, "mirror_of"))
                 .unwrap_or_default();
-            let mut e = LayoutEntry::secondary(info.id, vx, vy, w, h);
-            e.mode_refresh_mhz = refresh;
-            e.scale = scale as u32;
+            let mut mirror_target_id = None;
+            let mut mode_w = w;
+            let mut mode_h = h;
+            let mut mode_refresh = refresh;
+            let mut mode_scale = scale;
             if !mirror_of_hex.is_empty() {
                 if let Some(target) = infos
                     .iter()
                     .find(|o| o.is_connected() && edid_hex(o.edid_hash) == mirror_of_hex)
                 {
-                    e.mirror_of = target.id;
+                    if let Some((tw, th, tr, ts, _)) = resolve(target) {
+                        mirror_target_id = Some(target.id);
+                        mode_w = tw;
+                        mode_h = th;
+                        mode_refresh = tr;
+                        mode_scale = ts;
+                    }
                 }
+            }
+            let mut e = LayoutEntry::secondary(info.id, vx, vy, mode_w, mode_h);
+            e.mode_refresh_mhz = mode_refresh;
+            e.scale = mode_scale as u32;
+            if let Some(target_id) = mirror_target_id {
+                e.mirror_of = target_id;
             }
             entries.push(e);
         }
