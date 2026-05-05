@@ -466,6 +466,11 @@ static NEXT_CONTEXT_AUDIT_TICK: AtomicU32 = AtomicU32::new(0);
 /// runnable thread.
 static NEXT_REBALANCE_TICK: AtomicU32 = AtomicU32::new(0);
 
+/// Fast-path marker for timed sleeps. Timer scheduling checks this before doing
+/// the expensive blocked-thread scan.
+static SLEEPER_WAKE_ARMED: AtomicBool = AtomicBool::new(false);
+static NEXT_SLEEPER_WAKE_TICK: AtomicU32 = AtomicU32::new(0);
+
 /// Enqueue a TID for deferred wake (called from IRQ context, lock-free).
 /// Uses circular overwrite when all slots are occupied for fairer eviction.
 pub fn deferred_wake(tid: u32) {
@@ -515,6 +520,11 @@ fn timer_tick_reached(now: u32, target: u32) -> bool {
     now.wrapping_sub(target) < 0x8000_0000
 }
 
+#[inline]
+fn timer_tick_before(a: u32, b: u32) -> bool {
+    a != b && b.wrapping_sub(a) < 0x8000_0000
+}
+
 fn periodic_maintenance_due(next_tick: &AtomicU32, now: u32, interval_ticks: u32) -> bool {
     let interval_ticks = interval_ticks.max(1);
     let target = next_tick.load(Ordering::Relaxed);
@@ -529,6 +539,43 @@ fn periodic_maintenance_due(next_tick: &AtomicU32, now: u32, interval_ticks: u32
             Ordering::Relaxed,
         )
         .is_ok()
+}
+
+pub(super) fn note_sleeper_deadline(wake_at: u32) {
+    loop {
+        if !SLEEPER_WAKE_ARMED.load(Ordering::Acquire) {
+            NEXT_SLEEPER_WAKE_TICK.store(wake_at, Ordering::Relaxed);
+            SLEEPER_WAKE_ARMED.store(true, Ordering::Release);
+            return;
+        }
+
+        let current = NEXT_SLEEPER_WAKE_TICK.load(Ordering::Relaxed);
+        if !timer_tick_before(wake_at, current) {
+            return;
+        }
+
+        if NEXT_SLEEPER_WAKE_TICK
+            .compare_exchange(current, wake_at, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            return;
+        }
+    }
+}
+
+#[inline]
+fn sleeper_deadline_due(now: u32) -> bool {
+    SLEEPER_WAKE_ARMED.load(Ordering::Acquire)
+        && timer_tick_reached(now, NEXT_SLEEPER_WAKE_TICK.load(Ordering::Relaxed))
+}
+
+fn publish_next_sleeper_deadline(next: Option<u32>) {
+    if let Some(tick) = next {
+        NEXT_SLEEPER_WAKE_TICK.store(tick, Ordering::Relaxed);
+        SLEEPER_WAKE_ARMED.store(true, Ordering::Release);
+    } else {
+        SLEEPER_WAKE_ARMED.store(false, Ordering::Release);
+    }
 }
 
 // --- Tick counters ---
@@ -931,6 +978,49 @@ impl Scheduler {
         }
     }
 
+    /// Wake timed sleepers that have reached their deadline and republish the
+    /// earliest remaining sleep deadline for future timer ticks.
+    fn wake_expired_sleepers(&mut self, current_tick: u32) {
+        let n_cpus = self.num_cpus();
+        let mut next_sleep: Option<u32> = None;
+
+        for idx in 0..self.threads.len() {
+            if self.threads[idx].state != ThreadState::Blocked {
+                continue;
+            }
+
+            let wake_tick = match self.threads[idx].wake_at_tick {
+                Some(tick) => tick,
+                None => continue,
+            };
+
+            if timer_tick_reached(current_tick, wake_tick) {
+                let tid = self.threads[idx].tid;
+                let pri = self.threads[idx].priority;
+                let mut cpu = self.threads[idx].affinity_cpu;
+                #[cfg(target_arch = "aarch64")]
+                {
+                    if self.has_pinned_kernel_continuation(idx) {
+                        cpu = self.threads[idx].last_cpu;
+                    } else if self.needs_inflight_continuation_pin(idx) {
+                        cpu = self.threads[idx].last_cpu;
+                    }
+                }
+                let target_cpu = if cpu < n_cpus { cpu } else { 0 };
+                self.threads[idx].state = ThreadState::Ready;
+                self.threads[idx].wake_at_tick = None;
+                self.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
+            } else if next_sleep
+                .map(|current_next| timer_tick_before(wake_tick, current_next))
+                .unwrap_or(true)
+            {
+                next_sleep = Some(wake_tick);
+            }
+        }
+
+        publish_next_sleeper_deadline(next_sleep);
+    }
+
     /// Pick the CPU with the shortest ready queue for load balancing.
     fn least_loaded_cpu(&self) -> usize {
         let n = self.num_cpus();
@@ -1221,6 +1311,7 @@ impl Scheduler {
         if let Some(idx) = self.find_idx(tid) {
             if self.threads[idx].state == ThreadState::Blocked {
                 self.threads[idx].state = ThreadState::Ready;
+                self.threads[idx].wake_at_tick = None;
                 let mut cpu = self.threads[idx].affinity_cpu;
                 #[cfg(target_arch = "aarch64")]
                 {
@@ -1581,29 +1672,8 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
         }
 
         let current_tick = crate::arch::hal::timer_current_ticks();
-        let n_cpus = sched.num_cpus();
-        for i in 0..sched.threads.len() {
-            if sched.threads[i].state == ThreadState::Blocked {
-                if let Some(wake_tick) = sched.threads[i].wake_at_tick {
-                    if current_tick.wrapping_sub(wake_tick) < 0x8000_0000 {
-                        let tid = sched.threads[i].tid;
-                        let pri = sched.threads[i].priority;
-                        let mut cpu = sched.threads[i].affinity_cpu;
-                        #[cfg(target_arch = "aarch64")]
-                        {
-                            if sched.has_pinned_kernel_continuation(i) {
-                                cpu = sched.threads[i].last_cpu;
-                            } else if sched.needs_inflight_continuation_pin(i) {
-                                cpu = sched.threads[i].last_cpu;
-                            }
-                        }
-                        let target_cpu = if cpu < n_cpus { cpu } else { 0 };
-                        sched.threads[i].state = ThreadState::Ready;
-                        sched.threads[i].wake_at_tick = None;
-                        sched.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
-                    }
-                }
-            }
+        if sleeper_deadline_due(current_tick) {
+            sched.wake_expired_sleepers(current_tick);
         }
 
         let idle_tid = sched.idle_tid[cpu_id];
@@ -1983,32 +2053,10 @@ fn schedule_inner(from_timer: bool) {
             }
         }
 
-        // Wake expired sleepers
-        let n_cpus = sched.num_cpus();
         if from_timer {
             let current_tick = crate::arch::hal::timer_current_ticks();
-            for i in 0..sched.threads.len() {
-                if sched.threads[i].state == ThreadState::Blocked {
-                    if let Some(wake_tick) = sched.threads[i].wake_at_tick {
-                        if current_tick.wrapping_sub(wake_tick) < 0x8000_0000 {
-                            let tid = sched.threads[i].tid;
-                            let pri = sched.threads[i].priority;
-                            let mut cpu = sched.threads[i].affinity_cpu;
-                            #[cfg(target_arch = "aarch64")]
-                            {
-                                if sched.has_pinned_kernel_continuation(i) {
-                                    cpu = sched.threads[i].last_cpu;
-                                } else if sched.needs_inflight_continuation_pin(i) {
-                                    cpu = sched.threads[i].last_cpu;
-                                }
-                            }
-                            let target_cpu = if cpu < n_cpus { cpu } else { 0 };
-                            sched.threads[i].state = ThreadState::Ready;
-                            sched.threads[i].wake_at_tick = None;
-                            sched.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
-                        }
-                    }
-                }
+            if sleeper_deadline_due(current_tick) {
+                sched.wake_expired_sleepers(current_tick);
             }
         }
 
