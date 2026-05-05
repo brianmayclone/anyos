@@ -22,9 +22,7 @@ use alloc::format;
 use alloc::string::String;
 use anyos_std::i18n;
 use libanyui_client as ui;
-use libconf_schema::{
-    default_int, manifest, RegistryScope, ServiceSchema,
-};
+use libconf_schema::{default_int, manifest, RegistryScope, ServiceSchema};
 use ui::Widget;
 
 use crate::layout;
@@ -58,7 +56,10 @@ fn input_schema() -> ServiceSchema<'static> {
 
 fn read_bool(rel_path: &str) -> bool {
     let _ = input_schema().register();
-    input_schema().read_i64(rel_path).map(|v| v != 0).unwrap_or(false)
+    input_schema()
+        .read_i64(rel_path)
+        .map(|v| v != 0)
+        .unwrap_or(false)
 }
 
 fn write_bool(rel_path: &str, value: bool) {
@@ -126,22 +127,15 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let buttons_card = layout::build_auto_card(&panel);
 
     let natural_now = read_bool("input/natural_scroll");
-    let nat_row = layout::build_setting_row(
-        &buttons_card,
-        i18n::t("Natural scrolling"),
-        true,
-    );
+    let nat_row = layout::build_setting_row(&buttons_card, i18n::t("Natural scrolling"), true);
     let nat_toggle = layout::add_toggle_to_row(&nat_row, natural_now);
     nat_toggle.on_checked_changed(|e| {
         write_bool("input/natural_scroll", e.checked);
     });
 
     let left_now = read_bool("input/left_handed");
-    let left_row = layout::build_setting_row(
-        &buttons_card,
-        i18n::t("Left-handed (swap buttons)"),
-        false,
-    );
+    let left_row =
+        layout::build_setting_row(&buttons_card, i18n::t("Left-handed (swap buttons)"), false);
     let left_toggle = layout::add_toggle_to_row(&left_row, left_now);
     left_toggle.on_checked_changed(|e| {
         write_bool("input/left_handed", e.checked);
@@ -151,11 +145,9 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
 
     // ── Card 2: Double-click (Phase 2) ──────────────────────────────────
     let dbl_card = layout::build_auto_card(&panel);
-    let dbl_now = read_int("input/double_click_ms", 400)
-        .clamp(DOUBLE_CLICK_MIN, DOUBLE_CLICK_MAX);
+    let dbl_now = read_int("input/double_click_ms", 400).clamp(DOUBLE_CLICK_MIN, DOUBLE_CLICK_MAX);
 
-    let dbl_row =
-        layout::build_setting_row(&dbl_card, i18n::t("Double-click speed"), true);
+    let dbl_row = layout::build_setting_row(&dbl_card, i18n::t("Double-click speed"), true);
     build_int_stepper(
         &dbl_row,
         "input/double_click_ms",
@@ -174,8 +166,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let speed_now =
         read_int("input/pointer_speed", 100).clamp(POINTER_SPEED_MIN, POINTER_SPEED_MAX);
 
-    let speed_row =
-        layout::build_setting_row(&speed_card, i18n::t("Pointer speed"), true);
+    let speed_row = layout::build_setting_row(&speed_card, i18n::t("Pointer speed"), true);
     build_int_stepper(
         &speed_row,
         "input/pointer_speed",
@@ -194,8 +185,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let cursor_now =
         read_int("input/cursor_size", 1).clamp(0, (CURSOR_SIZE_LABELS.len() - 1) as i64);
 
-    let cursor_row =
-        layout::build_setting_row(&cursor_card, i18n::t("Cursor size"), true);
+    let cursor_row = layout::build_setting_row(&cursor_card, i18n::t("Cursor size"), true);
     build_int_stepper(
         &cursor_row,
         "input/cursor_size",

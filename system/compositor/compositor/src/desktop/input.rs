@@ -1080,10 +1080,7 @@ impl Desktop {
                     if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
                         let fx = self.windows[idx].x;
                         let fy = self.windows[idx].y;
-                        self.push_event(
-                            win_id,
-                            [EVENT_WINDOW_MOVED, fx as u32, fy as u32, 0, 0],
-                        );
+                        self.push_event(win_id, [EVENT_WINDOW_MOVED, fx as u32, fy as u32, 0, 0]);
                     }
                 }
                 self.set_cursor_shape(CursorShape::Arrow);

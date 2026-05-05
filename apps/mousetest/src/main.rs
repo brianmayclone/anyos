@@ -278,11 +278,10 @@ fn refresh_button_labels() {
         "Last: {} ({}, x{})",
         btn, count, s.click.consecutive
     ));
-    s.lbl_wheel
-        .set_text(&format!(
-            "Wheel up: {}  down: {}",
-            s.wheel_up_events, s.wheel_down_events
-        ));
+    s.lbl_wheel.set_text(&format!(
+        "Wheel up: {}  down: {}",
+        s.wheel_up_events, s.wheel_down_events
+    ));
 }
 
 fn handle_mouse_move(cx: i32, cy: i32) {
@@ -383,10 +382,7 @@ fn handle_wheel(dz: i32) {
 fn monitor_label(dx: i32, dy: i32) -> String {
     let screens = ui::Screen::list();
     match screens.iter().find(|scr| {
-        dx >= scr.virtual_x
-            && dy >= scr.virtual_y
-            && dx < scr.right()
-            && dy < scr.bottom()
+        dx >= scr.virtual_x && dy >= scr.virtual_y && dx < scr.right() && dy < scr.bottom()
     }) {
         Some(scr) => format!(
             "M{} local=({},{})",

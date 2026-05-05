@@ -690,20 +690,19 @@ fn handle_agent_message(
                     bootstrap_monitor_table_from_kernel();
                 }
 
-                let (vx, vy, used_translation) =
-                    if let Some(rect) = lookup_monitor(display_id) {
-                        if rect.width != 0 && rect.height != 0 {
-                            (
-                                (x as i32 + rect.offset_x) as u32,
-                                (y as i32 + rect.offset_y) as u32,
-                                true,
-                            )
-                        } else {
-                            (x, y, false)
-                        }
+                let (vx, vy, used_translation) = if let Some(rect) = lookup_monitor(display_id) {
+                    if rect.width != 0 && rect.height != 0 {
+                        (
+                            (x as i32 + rect.offset_x) as u32,
+                            (y as i32 + rect.offset_y) as u32,
+                            true,
+                        )
                     } else {
                         (x, y, false)
-                    };
+                    }
+                } else {
+                    (x, y, false)
+                };
 
                 // Dedup identical samples on the translated coords; emit
                 // on every position OR button change. Always log button

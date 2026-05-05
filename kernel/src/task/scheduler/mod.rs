@@ -926,9 +926,7 @@ impl Scheduler {
             self.threads[idx].affinity_cpu = lightest_cpu;
             if was_ready {
                 self.remove_from_all_queues(tid);
-                self.per_cpu[lightest_cpu]
-                    .run_queue
-                    .enqueue(tid, priority);
+                self.per_cpu[lightest_cpu].run_queue.enqueue(tid, priority);
             }
         }
     }
@@ -1985,43 +1983,6 @@ fn schedule_inner(from_timer: bool) {
             }
         }
 
-        // CPU 0: periodic canary check on all non-Running threads.
-        // Rate-limited to every 100 ticks (~100ms) to avoid holding the lock
-        // too long with serial output. Only reports first corrupt thread found
-        // to keep the critical section short.
-        if from_timer && cpu_id == 0 {
-            static CANARY_CHECK_CTR: AtomicU32 = AtomicU32::new(0);
-            let ctr = CANARY_CHECK_CTR.fetch_add(1, Ordering::Relaxed);
-            if ctr % 100 == 0 {
-                use crate::task::context::CANARY_MAGIC;
-                for i in 0..sched.threads.len() {
-                    let t = &sched.threads[i];
-                    if t.context.save_complete == 1 && t.state != ThreadState::Running && !t.is_idle
-                    {
-                        if t.context.canary != CANARY_MAGIC {
-                            crate::serial_verbose_println!(
-                                "!CANARY DEAD: TID={} '{}' canary={:#018x} ctx={:#x}",
-                                t.tid,
-                                t.name_str(),
-                                t.context.canary,
-                                &t.context as *const _ as u64,
-                            );
-                            break; // Only report first — keep critical section short
-                        } else if t.context.checksum != t.context.compute_checksum() {
-                            crate::serial_verbose_println!(
-                                "!CHECKSUM FAIL: TID={} '{}' chk={:#018x} expect={:#018x}",
-                                t.tid,
-                                t.name_str(),
-                                t.context.checksum,
-                                t.context.compute_checksum(),
-                            );
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
         // Wake expired sleepers
         let n_cpus = sched.num_cpus();
         if from_timer {
@@ -2046,73 +2007,6 @@ fn schedule_inner(from_timer: bool) {
                             sched.threads[i].wake_at_tick = None;
                             sched.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
                         }
-                    }
-                }
-            }
-        }
-
-        // --- Periodic affinity rebalancing (CPU 0 only, every ~1 second) ---
-        // Counts how many Ready/Running threads have affinity to each CPU.
-        // If any CPU is overloaded (3+ more than the lightest), migrate one
-        // thread's affinity to the lightest CPU.  This is the ONLY place
-        // where affinity_cpu changes after spawn.
-        if from_timer && cpu_id == 0 {
-            static REBALANCE_CTR: AtomicU32 = AtomicU32::new(0);
-            let ctr = REBALANCE_CTR.fetch_add(1, Ordering::Relaxed);
-            if ctr % 1000 == 0 {
-                let mut aff_count = [0u32; MAX_CPUS];
-                for t in sched.threads.iter() {
-                    if t.is_idle {
-                        continue;
-                    }
-                    match t.state {
-                        ThreadState::Ready | ThreadState::Running => {
-                            let c = t.affinity_cpu;
-                            if c < n_cpus {
-                                aff_count[c] += 1;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                // Find busiest and lightest
-                let mut busiest_cpu = 0usize;
-                let mut busiest_val = 0u32;
-                let mut lightest_cpu = 0usize;
-                let mut lightest_val = u32::MAX;
-                for c in 0..n_cpus {
-                    if aff_count[c] > busiest_val {
-                        busiest_val = aff_count[c];
-                        busiest_cpu = c;
-                    }
-                    if aff_count[c] < lightest_val {
-                        lightest_val = aff_count[c];
-                        lightest_cpu = c;
-                    }
-                }
-                // Only rebalance if imbalance >= 3 threads
-                if busiest_val >= lightest_val + 3 && busiest_cpu != lightest_cpu {
-                    // Migrate the lowest-priority non-idle thread from busiest
-                    let mut victim_idx: Option<usize> = None;
-                    let mut victim_pri = 128u8; // start above max so first candidate always wins
-                    for (i, t) in sched.threads.iter().enumerate() {
-                        if t.is_idle || t.critical {
-                            continue;
-                        }
-                        if t.affinity_cpu == busiest_cpu {
-                            match t.state {
-                                ThreadState::Ready | ThreadState::Running => {
-                                    if victim_idx.is_none() || t.priority <= victim_pri {
-                                        victim_idx = Some(i);
-                                        victim_pri = t.priority;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    if let Some(vi) = victim_idx {
-                        sched.threads[vi].affinity_cpu = lightest_cpu;
                     }
                 }
             }

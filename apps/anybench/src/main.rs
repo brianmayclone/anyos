@@ -404,22 +404,58 @@ fn format_results_json(r: &BenchResults) -> String {
     let _ = writeln!(out, "  }},");
     let _ = writeln!(out, "  \"tests\": {{");
     let _ = writeln!(out, "    \"cpu_single\": ");
-    write_json_array(&mut out, &CPU_TEST_NAMES, &r.cpu_single_raw, &CPU_BASELINES, false);
+    write_json_array(
+        &mut out,
+        &CPU_TEST_NAMES,
+        &r.cpu_single_raw,
+        &CPU_BASELINES,
+        false,
+    );
     let _ = writeln!(out, ",");
     let _ = writeln!(out, "    \"cpu_multi\": ");
-    write_json_array(&mut out, &CPU_TEST_NAMES, &r.cpu_multi_raw, &CPU_BASELINES, false);
+    write_json_array(
+        &mut out,
+        &CPU_TEST_NAMES,
+        &r.cpu_multi_raw,
+        &CPU_BASELINES,
+        false,
+    );
     let _ = writeln!(out, ",");
     let _ = writeln!(out, "    \"gpu_onscreen\": ");
-    write_json_array(&mut out, &GPU_TEST_NAMES, &r.gpu_on_raw, &GPU_BASELINES, false);
+    write_json_array(
+        &mut out,
+        &GPU_TEST_NAMES,
+        &r.gpu_on_raw,
+        &GPU_BASELINES,
+        false,
+    );
     let _ = writeln!(out, ",");
     let _ = writeln!(out, "    \"gpu_offscreen\": ");
-    write_json_array(&mut out, &GPU_TEST_NAMES, &r.gpu_off_raw, &GPU_BASELINES, false);
+    write_json_array(
+        &mut out,
+        &GPU_TEST_NAMES,
+        &r.gpu_off_raw,
+        &GPU_BASELINES,
+        false,
+    );
     let _ = writeln!(out, ",");
     let _ = writeln!(out, "    \"gl3d\": ");
-    write_json_array(&mut out, &GL3D_TEST_NAMES, &r.gl3d_raw, &GL3D_BASELINES, false);
+    write_json_array(
+        &mut out,
+        &GL3D_TEST_NAMES,
+        &r.gl3d_raw,
+        &GL3D_BASELINES,
+        false,
+    );
     let _ = writeln!(out, ",");
     let _ = writeln!(out, "    \"disk\": ");
-    write_json_array(&mut out, &DISK_TEST_NAMES, &r.disk_raw, &DISK_BASELINES, true);
+    write_json_array(
+        &mut out,
+        &DISK_TEST_NAMES,
+        &r.disk_raw,
+        &DISK_BASELINES,
+        true,
+    );
     let _ = writeln!(out);
     let _ = writeln!(out, "  }}");
     let _ = writeln!(out, "}}");
@@ -1827,10 +1863,15 @@ fn export_gui_results(format: &str) {
     let results = current_gui_results();
     let (path, data) = match format {
         "json" => ("/tmp/anybench-results.json", format_results_json(&results)),
-        _ => ("/tmp/anybench-results.md", format_results_markdown(&results)),
+        _ => (
+            "/tmp/anybench-results.md",
+            format_results_markdown(&results),
+        ),
     };
     match anyos_std::fs::write_bytes(path, data.as_bytes()) {
-        Ok(()) => app().lbl_status.set_text(&format!("Results written to {}", path)),
+        Ok(()) => app()
+            .lbl_status
+            .set_text(&format!("Results written to {}", path)),
         Err(_) => app().lbl_status.set_text("Could not write results file."),
     }
 }
@@ -1839,9 +1880,13 @@ fn print_usage() {
     anyos_std::println!("anyBench");
     anyos_std::println!("Usage:");
     anyos_std::println!("  anybench                       Start GUI");
-    anyos_std::println!("  anybench --cli [--cpu|--disk|--all] [--format text|md|json] [--out PATH]");
+    anyos_std::println!(
+        "  anybench --cli [--cpu|--disk|--all] [--format text|md|json] [--out PATH]"
+    );
     anyos_std::println!("");
-    anyos_std::println!("Terminal mode runs CPU and Disk I/O tests. GPU and 3D tests need the GUI canvas.");
+    anyos_std::println!(
+        "Terminal mode runs CPU and Disk I/O tests. GPU and 3D tests need the GUI canvas."
+    );
 }
 
 fn run_cli(args: &[String]) {
@@ -1924,23 +1969,20 @@ fn main() {
     let mut arg_buf = [0u8; 512];
     let raw_args = anyos_std::process::args(&mut arg_buf);
     let args = anyos_std::args::tokenize(raw_args);
-    if args
-        .iter()
-        .any(|arg| {
-            arg == "--cli"
-                || arg == "--cpu"
-                || arg == "--disk"
-                || arg == "--io"
-                || arg == "--all"
-                || arg == "--format"
-                || arg == "-f"
-                || arg == "--out"
-                || arg == "-o"
-                || arg == "--json"
-                || arg == "--md"
-                || arg == "--markdown"
-        })
-    {
+    if args.iter().any(|arg| {
+        arg == "--cli"
+            || arg == "--cpu"
+            || arg == "--disk"
+            || arg == "--io"
+            || arg == "--all"
+            || arg == "--format"
+            || arg == "-f"
+            || arg == "--out"
+            || arg == "-o"
+            || arg == "--json"
+            || arg == "--md"
+            || arg == "--markdown"
+    }) {
         run_cli(&args);
         return;
     }
