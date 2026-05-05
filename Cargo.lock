@@ -778,16 +778,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "display-settings"
-version = "0.1.0"
-dependencies = [
- "anyos_std",
- "dynlink",
- "libanyui_client",
- "libdisplay_client",
-]
-
-[[package]]
 name = "dmesg"
 version = "0.1.0"
 dependencies = [
@@ -1601,6 +1591,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mousetest"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
 name = "mv"
 version = "0.1.0"
 dependencies = [
@@ -2061,6 +2060,7 @@ dependencies = [
  "dynlink",
  "libanyui_client",
  "libconf_schema",
+ "libdisplay_client",
  "libimage_client",
 ]
 
