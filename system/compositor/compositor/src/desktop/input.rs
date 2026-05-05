@@ -1156,6 +1156,40 @@ impl Desktop {
             }
         }
 
+        // ESC also cancels an active window-drag (titlebar drag) or
+        // resize, and forces all mouse buttons to "released". This is
+        // the escape hatch from VM stuck-button situations: when the
+        // host pointer leaves the QEMU SDL window with a button held,
+        // the guest never sees the corresponding ButtonUp from the
+        // host's release outside the window, so self.dragging stays
+        // set forever and subsequent clicks are processed as "still
+        // mid-drag". Hitting ESC clears the state.
+        if key_code == KEY_ESCAPE && down
+            && (self.dragging.is_some() || self.resizing.is_some() || self.mouse_buttons != 0)
+        {
+            // End drag/resize cleanly, restoring shadows and fixing focus.
+            if self.dragging.is_some() {
+                self.dragging = None;
+                self.compositor.damage_all();
+            }
+            if self.resizing.is_some() {
+                self.resizing = None;
+                self.compositor.resize_outline = None;
+                self.compositor.damage_all();
+            }
+            // Synthesize a release of every pressed button so app-level
+            // state stays consistent (apps that track press/release pairs
+            // would otherwise stay "stuck pressed" too).
+            if self.mouse_buttons != 0 {
+                let prev = self.mouse_buttons;
+                self.mouse_buttons = 0;
+                anyos_std::println!(
+                    "[compositor] ESC: force-released stuck buttons 0x{:x}",
+                    prev
+                );
+            }
+        }
+
         // ── Super key tap detection ─────────────────────────────────────────
         if key_code == KEY_LEFT_SUPER || key_code == KEY_RIGHT_SUPER {
             self.super_held = down;
