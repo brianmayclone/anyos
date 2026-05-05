@@ -389,19 +389,24 @@ impl Desktop {
                 (o.id, lx, ly)
             };
             // If the cursor crossed an output boundary since the
-            // last move, hide it on the previous one before showing
-            // on the new one. We track the last output id in
-            // self.last_cursor_output (None on first call).
+            // last move, position the cursor on the new output BEFORE
+            // making it visible there — virtio-gpu's show_cursor uses
+            // the driver's last-known cursor (x, y), which still
+            // points to the previous output's coordinate space and
+            // typically lands off-screen on a smaller secondary
+            // output. Move first, hide-old + show-new second.
             let prev = self.last_cursor_output.replace(target_id);
             if prev != Some(target_id) {
+                self.compositor.move_hw_cursor_on_output(target_id, lx, ly);
                 if let Some(p) = prev {
                     if p != target_id {
                         self.compositor.set_hw_cursor_visible_on_output(p, false);
                     }
                 }
                 self.compositor.set_hw_cursor_visible_on_output(target_id, true);
+            } else {
+                self.compositor.move_hw_cursor_on_output(target_id, lx, ly);
             }
-            self.compositor.move_hw_cursor_on_output(target_id, lx, ly);
         } else {
             // Single-output: legacy path. Clamp inside the primary's
             // bounds so the HW cursor never lands on a garbage offscreen
