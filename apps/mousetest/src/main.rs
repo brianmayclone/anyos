@@ -51,10 +51,6 @@ struct AppState {
     canvas: ui::Canvas,
     canvas_w: u32,
     canvas_h: u32,
-    /// Canvas position relative to window content area, set once after
-    /// layout. Used to translate canvas-local coords -> window-local.
-    canvas_off_x: i32,
-    canvas_off_y: i32,
 
     /// Last cursor position in canvas-local coords.
     cur_x: i32,
@@ -204,6 +200,17 @@ fn render_grid() {
     }
 }
 
+/// Map a canvas-local point to virtual-desktop coordinates by combining
+/// the window's frame position with the canvas's window-relative
+/// position (queried live from libanyui so layout changes / drags are
+/// reflected each event).
+fn canvas_to_desktop(s: &AppState, cx: i32, cy: i32) -> (i32, i32) {
+    let win: ui::Window = unsafe { core::mem::transmute(s.win_id) };
+    let (wx, wy) = win.get_position();
+    let (cax, cay) = s.canvas.get_abs_position();
+    (wx + cax + cx, wy + cay + cy)
+}
+
 fn refresh_position_labels() {
     let s = app();
     let win: ui::Window = unsafe { core::mem::transmute(s.win_id) };
@@ -215,14 +222,11 @@ fn refresh_position_labels() {
     s.lbl_canvas_pos
         .set_text(&format!("Canvas-local: ({}, {})", s.cur_x, s.cur_y));
 
-    // Desktop coords: window position + canvas offset within the window
-    // + cursor offset within the canvas. The canvas is docked DOCK_FILL
-    // below the info card and above the status card, so its offset is
-    // not constant unless we measure it. As a pragmatic shortcut we
-    // store canvas_off_x/y once at first render and assume the canvas
-    // doesn't relayout afterwards (the test app doesn't resize).
-    let dx = wx + s.canvas_off_x + s.cur_x;
-    let dy = wy + s.canvas_off_y + s.cur_y;
+    // Desktop coords via libanyui's get_abs_position — includes the
+    // window's frame offset (titlebar + borders) plus the canvas's
+    // position inside the window content area, queried live so a window
+    // drag or resize is picked up automatically.
+    let (dx, dy) = canvas_to_desktop(s, s.cur_x, s.cur_y);
     s.lbl_desktop_pos
         .set_text(&format!("Desktop: ({}, {})", dx, dy));
 
@@ -289,10 +293,7 @@ fn handle_mouse_down(cx: i32, cy: i32, button_mask: u32) {
     refresh_position_labels();
 
     // Per-event serial dump for offline analysis.
-    let win: ui::Window = unsafe { core::mem::transmute(s.win_id) };
-    let (wx, wy) = win.get_position();
-    let dx = wx + s.canvas_off_x + cx;
-    let dy = wy + s.canvas_off_y + cy;
+    let (dx, dy) = canvas_to_desktop(s, cx, cy);
     anyos_std::println!(
         "[mousetest] DOWN btn=0x{:x} canvas=({},{}) desktop=({},{}) consecutive={}",
         button_mask,
@@ -306,10 +307,7 @@ fn handle_mouse_down(cx: i32, cy: i32, button_mask: u32) {
 
 fn handle_mouse_up(cx: i32, cy: i32, button_mask: u32) {
     let s = app();
-    let win: ui::Window = unsafe { core::mem::transmute(s.win_id) };
-    let (wx, wy) = win.get_position();
-    let dx = wx + s.canvas_off_x + cx;
-    let dy = wy + s.canvas_off_y + cy;
+    let (dx, dy) = canvas_to_desktop(s, cx, cy);
     anyos_std::println!(
         "[mousetest]   UP btn=0x{:x} canvas=({},{}) desktop=({},{})",
         button_mask,
@@ -322,10 +320,7 @@ fn handle_mouse_up(cx: i32, cy: i32, button_mask: u32) {
 
 fn one_second_tick() {
     let s = app();
-    let win: ui::Window = unsafe { core::mem::transmute(s.win_id) };
-    let (wx, wy) = win.get_position();
-    let dx = wx + s.canvas_off_x + s.cur_x;
-    let dy = wy + s.canvas_off_y + s.cur_y;
+    let (dx, dy) = canvas_to_desktop(s, s.cur_x, s.cur_y);
     // Strict containment — Screen::at falls back to primary which would
     // log "M0" for a cursor that's actually off-screen.
     let screens = ui::Screen::list();
@@ -456,13 +451,6 @@ fn main() {
             canvas: canvas.clone(),
             canvas_w,
             canvas_h,
-            // Best-effort canvas offset within the window. Info card is
-            // 96 px tall, the canvas has 12 px left margin, no top margin
-            // (DOCK_FILL after DOCK_TOP/DOCK_BOTTOM). Title bar height is
-            // ~28 px; we add a fudge factor here. Window get_position
-            // returns the top-left of the *window*, including title bar.
-            canvas_off_x: 12,
-            canvas_off_y: 96 + 28,
             cur_x: -1,
             cur_y: -1,
             trail: anyos_std::Vec::with_capacity(TRAIL_LEN),
