@@ -285,6 +285,14 @@ fn handle_mouse_move(cx: i32, cy: i32) {
 }
 
 fn handle_mouse_down(cx: i32, cy: i32, button_mask: u32) {
+    // Filter out libanyui's wheel-as-mouse-down synthesised events
+    // (button=2 -> wheel up, button=3 -> wheel down). The proper wheel
+    // event is delivered via the on_wheel handler below; logging the
+    // synthesised down here would double-count and inflate the
+    // consecutive-click counter.
+    if button_mask == 2 || button_mask == 3 {
+        return;
+    }
     let s = app();
     s.cur_x = cx;
     s.cur_y = cy;
@@ -306,6 +314,9 @@ fn handle_mouse_down(cx: i32, cy: i32, button_mask: u32) {
 }
 
 fn handle_mouse_up(cx: i32, cy: i32, button_mask: u32) {
+    if button_mask == 2 || button_mask == 3 {
+        return;
+    }
     let s = app();
     let (dx, dy) = canvas_to_desktop(s, cx, cy);
     anyos_std::println!(
@@ -315,6 +326,24 @@ fn handle_mouse_up(cx: i32, cy: i32, button_mask: u32) {
         cy,
         dx,
         dy
+    );
+}
+
+fn handle_wheel(dz: i32) {
+    let s = app();
+    s.wheel_events = s.wheel_events.saturating_add(1);
+    refresh_button_labels();
+    let dir = if dz > 0 { "up" } else { "down" };
+    let (dx, dy) = canvas_to_desktop(s, s.cur_x, s.cur_y);
+    anyos_std::println!(
+        "[mousetest] WHEEL {} dz={} canvas=({},{}) desktop=({},{}) total={}",
+        dir,
+        dz,
+        s.cur_x,
+        s.cur_y,
+        dx,
+        dy,
+        s.wheel_events
     );
 }
 
@@ -480,17 +509,7 @@ fn main() {
     canvas.on_mouse_move(|cx, cy| handle_mouse_move(cx, cy));
     canvas.on_mouse_down(|cx, cy, btn| handle_mouse_down(cx, cy, btn));
     canvas.on_mouse_up(|cx, cy, btn| handle_mouse_up(cx, cy, btn));
-
-    // Scroll: subscribe via raw event API since Canvas has no typed
-    // wheel handler and the dz delta isn't exposed through libanyui's
-    // canvas mouse-info getter. We can at least count the events.
-    extern "C" fn on_scroll_thunk(_ctrl_id: u32, _event_type: u32, _userdata: u64) {
-        let s = app();
-        s.wheel_events = s.wheel_events.saturating_add(1);
-        refresh_button_labels();
-        anyos_std::println!("[mousetest] WHEEL count={}", s.wheel_events);
-    }
-    canvas.on_scroll_raw(on_scroll_thunk, 0);
+    canvas.on_wheel(|dz| handle_wheel(dz));
 
     // 1 Hz tick logging snapshot to serial.
     let _timer = ui::set_timer(1000, || one_second_tick());
