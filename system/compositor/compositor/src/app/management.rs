@@ -45,6 +45,8 @@ pub(crate) fn management_loop(
     const REAP_INTERVAL_MS: u32 = 250;
     let mut last_display_poll_ms: u32 = 0;
     const DISPLAY_POLL_INTERVAL_MS: u32 = 500;
+    let mut last_cursor_report_ms: u32 = sys::uptime_ms();
+    const CURSOR_REPORT_INTERVAL_MS: u32 = 15_000;
 
     loop {
         let now_ms = sys::uptime_ms();
@@ -61,6 +63,41 @@ pub(crate) fn management_loop(
             mgmt_last_report = now_ms;
         }
         mgmt_loops += 1;
+
+        // Periodic cursor heartbeat: where is the mouse and which
+        // monitor does the compositor currently believe owns it?
+        // Fires every 15 s so the serial log carries a baseline trace
+        // alongside the per-event [cursor] output transitions.
+        if now_ms.wrapping_sub(last_cursor_report_ms) >= CURSOR_REPORT_INTERVAL_MS {
+            last_cursor_report_ms = now_ms;
+            acquire_lock();
+            let desktop = unsafe { desktop_ref() };
+            let mx = desktop.mouse_x;
+            let my = desktop.mouse_y;
+            let outputs_len = desktop.compositor.outputs.len();
+            let mut hit: Option<(u32, i32, i32, u32, u32)> = None;
+            for o in desktop.compositor.outputs.iter() {
+                if mx >= o.virtual_x
+                    && my >= o.virtual_y
+                    && mx < o.virtual_x + o.fb_width as i32
+                    && my < o.virtual_y + o.fb_height as i32
+                {
+                    hit = Some((o.id, mx - o.virtual_x, my - o.virtual_y, o.fb_width, o.fb_height));
+                    break;
+                }
+            }
+            release_lock();
+            match hit {
+                Some((id, lx, ly, w, h)) => println!(
+                    "[cursor-hb] virt=({},{}) on M{} ({}x{}) local=({},{}) outputs={}",
+                    mx, my, id, w, h, lx, ly, outputs_len
+                ),
+                None => println!(
+                    "[cursor-hb] virt=({},{}) off-screen (no output contains it) outputs={}",
+                    mx, my, outputs_len
+                ),
+            }
+        }
 
         // Poll the kernel for display events (hot-plug, layout
         // changes from displayd's profile auto-switch). At 500ms
