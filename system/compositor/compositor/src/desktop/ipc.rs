@@ -56,6 +56,7 @@ impl Desktop {
                     EVENT_DROP => proto::EVT_DROP,
                     EVENT_DRAG_FEEDBACK => proto::EVT_DRAG_FEEDBACK,
                     EVENT_DRAG_END => proto::EVT_DRAG_END,
+                    EVENT_WINDOW_MOVED => proto::EVT_WINDOW_MOVED,
                     _ => continue,
                 };
                 out.push((target_sub, [ipc_type, win.id, evt[1], evt[2], evt[3]]));
@@ -791,12 +792,26 @@ impl Desktop {
                 None
             }
             proto::CMD_INJECT_POINTER => {
-                // vncd: relay pointer input from VNC client — move cursor and dispatch click.
-                // [CMD, x, y, buttons_mask, 0]
+                // Relay pointer input from a privileged source (vncd / vdagent).
+                // [CMD, x, y, buttons_mask, virtual_desktop_flag]
+                //
+                // virtual_desktop_flag = 0 (vncd legacy): x/y are scoped to the
+                //   primary output; the legacy multi-monitor edge-guard applies.
+                // virtual_desktop_flag = 1 (vdagent SPICE multi-monitor): x/y
+                //   are already in the *virtual desktop* coordinate space (i.e.
+                //   the SPICE display_id offset has been added in the agent).
+                //   Bypasses the edge-guard so clicks on a secondary SPICE
+                //   display reach that output instead of being snapped back
+                //   to output 0.
                 let x = cmd[1] as i32;
                 let y = cmd[2] as i32;
                 let buttons = cmd[3] as u8;
-                self.inject_pointer_event(x, y, buttons);
+                let is_virtual = cmd[4] != 0;
+                if is_virtual {
+                    self.inject_pointer_event_virtual(x, y, buttons);
+                } else {
+                    self.inject_pointer_event(x, y, buttons);
+                }
                 None
             }
             proto::CMD_SET_MODAL_OWNER => {

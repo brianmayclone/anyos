@@ -1163,25 +1163,31 @@ if [ "$SPICE_MODE" = true ]; then
 elif [ "$SPICE_APP_MODE" = true ]; then
     # Built-in SPICE viewer (`-display spice-app`) is the only display.
     # spice-app does NOT forward input to the emulated PS/2 / vmmouse
-    # devices, so we add virtio-mouse-pci + virtio-keyboard-pci. The guest
-    # virtio-input driver translates these events into the existing
-    # mouse/keyboard pipelines.
+    # devices, so we need *some* SPICE-routed pointer path.
     #
-    # agent-mouse=off forces the SPICE server to route pointer events
-    # through the emulated virtio-mouse-pci instead of the vdagent
-    # VD_AGENT_MOUSE_STATE channel. The vdagent path drops the right
-    # button on QEMU 8.x (only LEFT/MIDDLE encoded), which broke right-
-    # click context menus. The emulated path forwards all buttons.
+    # agent-mouse=on routes pointer events through the vdagent
+    # VD_AGENT_MOUSE_STATE channel — required for multi-monitor direct-
+    # click: only that channel carries `display_id`, which the guest
+    # vdagent translates to virtual-desktop coords (per-display offset
+    # cached from VD_AGENT_MONITORS_CONFIG). Without it, clicks on a
+    # secondary SPICE display land on the primary because the host
+    # spice-server scales x/y to scanout 0's pixel grid.
+    #
+    # Earlier we ran with agent-mouse=off + virtio-mouse-pci because
+    # vdagent didn't handle MOUSE_STATE yet. That code is now in
+    # place (system/daemons/vdagent/src/main.rs:VD_AGENT_MOUSE_STATE)
+    # with the correct SPICE→RFB button-mask shift (>> 1) & 0x1F.
     #
     # virtio-keyboard-pci is bound to the virtio-vga console (display=vga0)
     # so QEMU's input router prefers it over the legacy PS/2 atkbd handler
     # (which is registered without a console binding and would otherwise
     # win the tie).
-    SPICE_FLAGS="-spice port=5930,disable-ticketing=on,addr=127.0.0.1,agent-mouse=off -device virtio-mouse-pci -device virtio-serial -chardev spicevmc,id=vdagent,debug=0,name=vdagent -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 -device virtio-keyboard-pci,display=vga0"
+    SPICE_FLAGS="-spice port=5930,disable-ticketing=on,addr=127.0.0.1,agent-mouse=on -device virtio-serial -chardev spicevmc,id=vdagent,debug=0,name=vdagent -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 -device virtio-keyboard-pci,display=vga0"
     DISPLAY_FLAGS="-display spice-app"
-    SPICE_LABEL=", spice-app: port 5930 (built-in viewer, virtio-input)"
+    SPICE_LABEL=", spice-app: port 5930 (built-in viewer, vdagent mouse)"
     echo "SPICE built-in viewer on port 5930 (-display spice-app)."
-    echo "  Mouse: virtio-mouse-pci. Keyboard: virtio-keyboard-pci."
+    echo "  Mouse: vdagent VD_AGENT_MOUSE_STATE (multi-monitor direct-click)."
+    echo "  Keyboard: virtio-keyboard-pci."
 elif [ "$CLIPBOARD_MODE" = true ]; then
     # Clipboard sync only (GTK display stays). Uses QEMU's built-in qemu-vdagent chardev
     # which bridges the host clipboard into the virtio-serial channel without SPICE.

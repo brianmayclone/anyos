@@ -332,9 +332,14 @@ fn send_reply(fd: u32, reply_to: u32, error: u32) {
 /// mask right by one bit so QEMU's `1 << SpiceMouseButton` encoding lines up
 /// with the compositor's RFB-style mask (LEFT bit 0, etc.). Wheel ticks are
 /// edge-triggered — a bit toggle within one frame is one scroll notch.
-fn inject_mouse(comp_chan: u32, x: u32, y: u32, buttons: u32) {
+///
+/// `is_virtual_desktop`: when 1, x/y are already translated to global
+/// virtual-desktop coords (per-output offset added) and the compositor
+/// must bypass its single-output / vmmouse edge-guard. When 0, behaviour
+/// is the legacy vncd path (single-output absolute).
+fn inject_mouse(comp_chan: u32, x: u32, y: u32, buttons: u32, is_virtual_desktop: u32) {
     let mask = (buttons >> 1) & 0x1F;
-    let evt = [CMD_INJECT_POINTER, x, y, mask, 0];
+    let evt = [CMD_INJECT_POINTER, x, y, mask, is_virtual_desktop];
     ipc::evt_chan_emit(comp_chan, &evt);
 }
 
@@ -378,6 +383,103 @@ struct PointerState {
     initialized: bool,
 }
 
+/// Cached per-display offset/size from the most recent VD_AGENT_MONITORS_CONFIG.
+/// SPICE's `VDAgentMouseState.display_id` (offset 12 in the 13-byte packed
+/// payload) is the index into this table — x/y arrive in *local* pixel
+/// coordinates of display N and we translate to virtual-desktop coords by
+/// adding (offset_x, offset_y) of that display, mirroring what upstream
+/// linux-vdagentd does in `vdagentd/uinput.c`. Without this translation the
+/// compositor's per-output edge-guard would either reject clicks on the
+/// secondary display (stale-vmmouse path) or place them inside output 0.
+#[derive(Clone, Copy, Default)]
+struct MonitorRect {
+    offset_x: i32,
+    offset_y: i32,
+    width: u32,
+    height: u32,
+}
+const MAX_MONITORS: usize = 16;
+static mut MONITOR_TABLE: [MonitorRect; MAX_MONITORS] = [MonitorRect {
+    offset_x: 0,
+    offset_y: 0,
+    width: 0,
+    height: 0,
+}; MAX_MONITORS];
+static mut MONITOR_COUNT: usize = 0;
+
+fn set_monitor_table(entries: &[(i32, i32, u32, u32)]) {
+    unsafe {
+        let n = entries.len().min(MAX_MONITORS);
+        for (i, e) in entries.iter().take(n).enumerate() {
+            MONITOR_TABLE[i] = MonitorRect {
+                offset_x: e.0,
+                offset_y: e.1,
+                width: e.2,
+                height: e.3,
+            };
+        }
+        MONITOR_COUNT = n;
+    }
+}
+
+fn lookup_monitor(display_id: u8) -> Option<MonitorRect> {
+    unsafe {
+        let idx = display_id as usize;
+        if idx < MONITOR_COUNT {
+            Some(MONITOR_TABLE[idx])
+        } else {
+            None
+        }
+    }
+}
+
+/// Bootstrap the monitor offset table by querying the kernel display list.
+/// SPICE only sends VD_AGENT_MONITORS_CONFIG in response to a host-side
+/// layout change (resize, hotplug, …); for the initial state we have to
+/// derive the layout ourselves — exactly like upstream linux-vdagentd does
+/// from Xorg/Wayland, just we read from `anyos_std::display::list()` and
+/// assume the compositor's default horizontal stacking (output N at
+/// virtual_x = sum of widths of outputs 0..N).
+///
+/// Called lazily from the MOUSE_STATE handler when the cache is empty so
+/// the cost is paid only once, on the first mouse event after boot.
+fn bootstrap_monitor_table_from_kernel() {
+    let displays = anyos_std::display::list(16);
+    if displays.is_empty() {
+        return;
+    }
+    let mut table: Vec<(i32, i32, u32, u32)> = Vec::with_capacity(displays.len());
+    let mut x_cursor: i32 = 0;
+    for d in displays.iter() {
+        if !d.is_connected() {
+            continue;
+        }
+        let w = if d.current_w > 0 {
+            d.current_w
+        } else {
+            d.preferred_w
+        };
+        let h = if d.current_h > 0 {
+            d.current_h
+        } else {
+            d.preferred_h
+        };
+        if w == 0 || h == 0 {
+            continue;
+        }
+        table.push((x_cursor, 0, w, h));
+        x_cursor += w as i32;
+    }
+    if table.is_empty() {
+        return;
+    }
+    set_monitor_table(&table);
+    vd_info!(
+        "bootstrap: cached {} monitor offsets from kernel display list",
+        table.len()
+    );
+}
+
 /// Parse a SPICE VDAgentMonitorsConfig payload and push the resulting
 /// layout to displayd. Errors are logged but do not propagate — SPICE
 /// always wants a `VD_AGENT_REPLY` regardless of whether we could
@@ -406,6 +508,7 @@ fn handle_monitors_config(payload: &[u8]) {
         return;
     }
     let mut entries: Vec<anyos_std::display::LayoutEntry> = Vec::with_capacity(num);
+    let mut table: Vec<(i32, i32, u32, u32)> = Vec::with_capacity(num);
     for i in 0..num {
         let off = 8 + i * ENTRY_SIZE;
         let height = read_u32_le(payload, off);
@@ -413,9 +516,13 @@ fn handle_monitors_config(payload: &[u8]) {
         let _depth = read_u32_le(payload, off + 8);
         let x = read_u32_le(payload, off + 12) as i32;
         let y = read_u32_le(payload, off + 16) as i32;
+        // Always populate the table slot so display_id lookup is dense even
+        // when a slot is "disabled" (width=0). Downstream MOUSE_STATE
+        // translation falls back to identity for zero-size entries.
+        table.push((x, y, width, height));
         if width == 0 || height == 0 {
-            // Disabled monitor — skip; downstream layout is built from
-            // active monitors only.
+            // Disabled monitor — skip from the LayoutEntry list pushed to
+            // displayd, but keep the slot in the translation table.
             continue;
         }
         let mut entry = if entries.is_empty() {
@@ -426,6 +533,8 @@ fn handle_monitors_config(payload: &[u8]) {
         entry.mode_refresh_mhz = 60_000;
         entries.push(entry);
     }
+    set_monitor_table(&table);
+    vd_debug!("monitors_config: cached {} monitor offsets", table.len());
     if entries.is_empty() {
         vd_debug!("monitors_config: no enabled monitors after parse");
         return;
@@ -536,18 +645,60 @@ fn handle_agent_message(
         }
 
         VD_AGENT_MOUSE_STATE => {
-            // VDAgentMouseState: { u32 x, u32 y, u32 buttons, u8 display_id }
-            if payload.len() >= 12 {
+            // VDAgentMouseState wire layout (SPICE_ATTR_PACKED, 13 bytes):
+            //   u32 x          @0
+            //   u32 y          @4
+            //   u32 buttons    @8
+            //   u8  display_id @12
+            //
+            // x/y arrive in the *local* pixel coordinates of `display_id`
+            // — SPICE's qemu-side server tags them with whichever client
+            // SPICE-display window the host pointer is currently in. We
+            // translate to virtual-desktop coords by looking up the
+            // monitor offset cached from the most recent
+            // VD_AGENT_MONITORS_CONFIG. This mirrors what upstream
+            // linux-vdagentd (vdagentd/uinput.c) does before pushing
+            // events to uinput. Without translation, secondary-display
+            // clicks would land on the primary because the compositor's
+            // edge-guard treats them as stale-vmmouse samples.
+            if payload.len() >= 13 {
                 let x = read_u32_le(payload, 0);
                 let y = read_u32_le(payload, 4);
                 let buttons = read_u32_le(payload, 8);
+                let display_id = payload[12];
 
-                // Dedup identical samples; emit on every position OR button
-                // change. Always log button transitions at info level so the
-                // path stays observable in production.
+                // Lazy-bootstrap on the first MOUSE_STATE event we ever
+                // see if the host hasn't sent us a MONITORS_CONFIG yet.
+                // The SPICE host typically only sends MONITORS_CONFIG in
+                // response to a host-side layout change, never on startup
+                // — without this, display_id > 0 events would not be
+                // translated at all (local==virt) and clicks on the
+                // secondary display would be silently routed to display 0.
+                if unsafe { MONITOR_COUNT } == 0 {
+                    bootstrap_monitor_table_from_kernel();
+                }
+
+                let (vx, vy, used_translation) =
+                    if let Some(rect) = lookup_monitor(display_id) {
+                        if rect.width != 0 && rect.height != 0 {
+                            (
+                                (x as i32 + rect.offset_x) as u32,
+                                (y as i32 + rect.offset_y) as u32,
+                                true,
+                            )
+                        } else {
+                            (x, y, false)
+                        }
+                    } else {
+                        (x, y, false)
+                    };
+
+                // Dedup identical samples on the translated coords; emit
+                // on every position OR button change. Always log button
+                // transitions at info level so the path stays observable.
                 let same = last_pointer.initialized
-                    && last_pointer.x == x
-                    && last_pointer.y == y
+                    && last_pointer.x == vx
+                    && last_pointer.y == vy
                     && last_pointer.buttons == buttons;
                 if same {
                     return;
@@ -556,24 +707,37 @@ fn handle_agent_message(
                     || last_pointer.buttons != buttons;
                 if button_change {
                     vd_info!(
-                        "mouse buttons 0x{:x} -> 0x{:x} at ({},{})",
+                        "mouse buttons 0x{:x} -> 0x{:x} at display={} local=({},{}) virt=({},{})",
                         last_pointer.buttons,
                         buttons,
+                        display_id,
                         x,
-                        y
+                        y,
+                        vx,
+                        vy
                     );
                 } else {
                     let count =
                         MOUSE_LOG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                     if count < 4 {
-                        vd_info!("mouse #{} x={} y={} buttons=0x{:x}", count, x, y, buttons);
+                        vd_info!(
+                            "mouse #{} display={} local=({},{}) virt=({},{}) buttons=0x{:x}",
+                            count,
+                            display_id,
+                            x,
+                            y,
+                            vx,
+                            vy,
+                            buttons
+                        );
                     }
                 }
-                last_pointer.x = x;
-                last_pointer.y = y;
+                last_pointer.x = vx;
+                last_pointer.y = vy;
                 last_pointer.buttons = buttons;
                 last_pointer.initialized = true;
-                inject_mouse(comp_chan, x, y, buttons);
+                let virt_flag = if used_translation { 1 } else { 0 };
+                inject_mouse(comp_chan, vx, vy, buttons, virt_flag);
             }
         }
 
