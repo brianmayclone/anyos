@@ -336,17 +336,21 @@ pub fn sys_register_compositor() -> u32 {
         crate::task::scheduler::set_thread_priority(tid, 127);
         crate::serial_verbose_println!("[OK] Compositor registered (TID={}, priority=127)", tid);
 
-        // Multi-monitor: if more than one scanout is advertised by
-        // the GPU, switch off vmmouse so IRQ12 carries PS/2 (relative
-        // dx/dy) instead of absolute (vmmouse) events. Absolute coords
-        // are scoped to scanout 0's framebuffer dimensions and cannot
-        // address secondary outputs. The relative path accumulates
-        // across virtual_desktop_bounds and works on any output.
+        // Multi-monitor: vmmouse stays enabled. Absolute coords are
+        // scoped to scanout 0's framebuffer dimensions, but the
+        // compositor's apply_mouse_move_absolute path derives relative
+        // deltas from successive absolute samples on multi-monitor
+        // setups, so the cursor traverses virtual_desktop_bounds
+        // correctly. Disabling vmmouse leaves QEMU with no way to
+        // translate the host's absolute pointer position into PS/2
+        // deltas without saturating at ±127, producing the runaway
+        // drift to the bottom-right corner that we observed in the
+        // [mouse-diag] traces under both `-display sdl` multi-window
+        // and `-display gtk`.
         let advertised = crate::drivers::gpu::with_gpu(|g| g.display_count()).unwrap_or(1);
         if advertised > 1 {
-            crate::drivers::input::vmmouse::force_disable();
             crate::serial_println!(
-                "[OK] multi-monitor ({}): vmmouse disabled, PS/2 only",
+                "[OK] multi-monitor ({}): vmmouse stays enabled (delta-derivation in compositor)",
                 advertised
             );
         }
@@ -798,16 +802,28 @@ pub fn sys_input_poll(buf_ptr: u64, max_events: u32) -> u32 {
 
     // Poll absolute mouse position from hypervisor (VMMDev or SVGA cursor bypass).
     // Do this before draining PS/2 events so absolute position is always fresh.
-    if crate::drivers::vmmdev::is_available() {
-        if let Some((x, y, _btns)) = crate::drivers::vmmdev::poll_mouse() {
+    //
+    // Skip on multi-monitor: both sources report coordinates scoped to the
+    // primary scanout's framebuffer dimensions — there's no per-output
+    // tagging, so on a multi-head setup the cursor would get warped onto
+    // primary-relative positions every poll, fighting against the PS/2
+    // relative path that correctly traverses the virtual desktop. Same
+    // rationale as vmmouse::force_disable() in sys_register_compositor.
+    let multi_monitor = crate::drivers::gpu::with_gpu(|g| g.display_count())
+        .unwrap_or(1)
+        > 1;
+    if !multi_monitor {
+        if crate::drivers::vmmdev::is_available() {
+            if let Some((x, y, _btns)) = crate::drivers::vmmdev::poll_mouse() {
+                // Position-only: button state comes from IRQ-driven inject_absolute
+                crate::drivers::input::mouse::inject_position(x, y);
+            }
+        }
+        // VMware SVGA FIFO cursor bypass: host writes cursor pos to FIFO memory
+        if let Some((x, y)) = crate::drivers::gpu::vmware_svga::poll_cursor() {
             // Position-only: button state comes from IRQ-driven inject_absolute
             crate::drivers::input::mouse::inject_position(x, y);
         }
-    }
-    // VMware SVGA FIFO cursor bypass: host writes cursor pos to FIFO memory
-    if let Some((x, y)) = crate::drivers::gpu::vmware_svga::poll_cursor() {
-        // Position-only: button state comes from IRQ-driven inject_absolute
-        crate::drivers::input::mouse::inject_position(x, y);
     }
 
     // Drain mouse events

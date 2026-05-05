@@ -52,14 +52,27 @@ struct FrameAllocator {
 
 impl FrameAllocator {
     fn set_used(&mut self, frame: usize) {
+        if frame / 8 >= self.bitmap.len() {
+            return;
+        }
         self.bitmap[frame / 8] |= 1 << (frame % 8);
     }
 
     fn set_free(&mut self, frame: usize) {
+        if frame / 8 >= self.bitmap.len() {
+            return;
+        }
         self.bitmap[frame / 8] &= !(1 << (frame % 8));
     }
 
     fn is_used(&self, frame: usize) -> bool {
+        if frame / 8 >= self.bitmap.len() {
+            // Out-of-range frame number — happens when the deferred_reaper
+            // walks a corrupted PTE from a crashing user process. Treat as
+            // "not free" so the caller skips it; the alternative is a hard
+            // panic that brings down the whole system.
+            return true;
+        }
         self.bitmap[frame / 8] & (1 << (frame % 8)) != 0
     }
 }

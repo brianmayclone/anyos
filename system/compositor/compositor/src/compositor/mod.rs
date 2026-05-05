@@ -723,6 +723,18 @@ impl Compositor {
 
                 let bb = &mut self.outputs[oi].back_buffer;
                 let dst_stride = ow as usize;
+                // Defensive cap: an owned-pixels layer with width*height
+                // larger than the actual Vec size means the layer was
+                // resized without the buffer being grown — reading past
+                // the Vec on a raw ptr below would OOB into unmapped
+                // memory and page-fault. SHM layers can't be capped here
+                // without tracking the SHM size separately; we trust the
+                // shm_ptr was registered for the full layer.width*height.
+                let src_cap: usize = if layer.shm_ptr.is_null() {
+                    layer.pixels.len()
+                } else {
+                    src_w.saturating_mul(layer.height as usize)
+                };
                 for vy in iy..iy2 {
                     let layer_local_y = vy - ly; // 0..layer_h
                     let dst_y = (vy - oy) as usize;
@@ -732,6 +744,9 @@ impl Compositor {
                         let dst_idx = dst_y * dst_stride + dst_x;
                         let src_idx = (layer_local_y as usize) * src_w
                             + (layer_local_x as usize);
+                        if src_idx >= src_cap {
+                            continue;
+                        }
                         let p = unsafe { core::ptr::read(src_pixels.add(src_idx)) };
 
                         // Per-pixel alpha multiplier from rounded-corner

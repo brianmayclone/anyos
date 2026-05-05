@@ -505,44 +505,44 @@ impl Desktop {
         }
     }
 
-    /// Apply an absolute mouse position (from VMMDev).
+    /// Apply an absolute mouse position (from VMMDev / vmmouse).
+    ///
+    /// vmmouse reports coords scoped to scanout 0's pixel grid. On
+    /// multi-monitor we use direct placement only while the cursor is
+    /// on output 0; once it crosses onto a secondary output (via PS/2
+    /// relative motion through virtual_desktop_bounds) we ignore
+    /// vmmouse events that would snap it back. The user can then
+    /// freely interact with the secondary output via PS/2 and return
+    /// to output 0 by pushing the cursor back across the boundary.
     fn apply_mouse_move_absolute(&mut self, x: i32, y: i32) {
-        // Multi-monitor escape hatch: QEMU's SDL multi-window backend
-        // can't tell the guest which window a vmmouse click came from
-        // — the absolute coords are always scoped to the primary
-        // scanout's framebuffer dimensions, so any click on a
-        // secondary SDL window mis-routes back to the primary and the
-        // cursor can never reach a secondary at all.
-        //
-        // When more than one output is active we convert the absolute
-        // event into a relative delta against the previous absolute
-        // position, then funnel that delta through the relative path
-        // — that one is correctly output-agnostic because dx/dy
-        // accumulate across the virtual desktop. Dropping the events
-        // entirely (the previous defensive behaviour) leaves the
-        // cursor frozen if vmmouse stays engaged for any reason —
-        // a docked tablet, a stale --machine pc setting, or a SPICE
-        // vdagent path that still routes absolute. The delta-fallback
-        // keeps the cursor live regardless.
-        if self.compositor.outputs.len() >= 2 {
-            let prev_x = self.last_absolute_mouse_x.replace(x);
-            let prev_y = self.last_absolute_mouse_y.replace(y);
-            if let (Some(px), Some(py)) = (prev_x, prev_y) {
-                let dx = x - px;
-                let dy = y - py;
-                if dx != 0 || dy != 0 {
-                    self.apply_mouse_move(dx, dy);
-                }
-            }
-            return;
-        }
-
-        // Absolute pointer (vmmouse / tablet) — clamp to the union of
-        // all outputs, same logic as the relative path above.
         let (vmin_x, _vmin_y, vmax_x, _vmax_y) = self.compositor.virtual_desktop_bounds();
         let target_x = x.clamp(vmin_x, vmax_x - 1);
         let (_vmin_x2, vmin_y, _vmax_x2, vmax_y) = self.compositor.virtual_desktop_bounds();
         let target_y = y.clamp(vmin_y, vmax_y - 1);
+
+        // Multi-monitor edge guard: if the cursor is currently sitting
+        // on a non-primary output (by virtual_x), ignore vmmouse
+        // updates whose target lands inside output 0's region. Those
+        // events represent stale Window-0 cursor state from QEMU's
+        // vmmouse, which keeps reporting last position when the host
+        // pointer leaves Window 0. Without this guard the cursor on
+        // output 1 gets snapped back to (last_vmmouse_x, last_vmmouse_y)
+        // each frame, making secondary outputs unreachable.
+        if self.compositor.outputs.len() >= 2 {
+            let primary_w = self
+                .compositor
+                .outputs
+                .first()
+                .map(|o| o.fb_width as i32)
+                .unwrap_or(0);
+            let cursor_on_primary = self.mouse_x < primary_w;
+            let target_on_primary = target_x < primary_w;
+            if !cursor_on_primary && target_on_primary {
+                // Cursor is past output 0; vmmouse wants to drag it
+                // back. Skip — let PS/2 deltas drive secondary motion.
+                return;
+            }
+        }
 
         if self.pointer_locked_window().is_some() {
             let prev_x = self.last_absolute_mouse_x.replace(target_x);

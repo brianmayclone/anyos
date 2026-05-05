@@ -1059,9 +1059,16 @@ if [ "$HEADLESS" = true ]; then
 elif [ "$(uname)" = "Darwin" ]; then
     DISPLAY_FLAGS="-display cocoa"
 elif [ "$DISPLAYS" -gt 1 ] && [ "$SPICE_MODE" = false ] && [ "$SPICE_APP_MODE" = false ]; then
-    # Multi-monitor: SDL opens one host window per scanout, so each anyOS
-    # output is independently visible. GTK would only show scanout 0 by
-    # default (extra heads land in hidden View tabs), which hides the feature.
+    # Multi-monitor: SDL with one host window per scanout.
+    # GTK's auto-EDID reflects the GTK widget size (~640x443 default),
+    # which forces virtio-vga's preferred mode to that size and leaves
+    # output 1 with no usable mode at all — displayd's map_fb crashes.
+    # SDL multi-window honours virtio-vga xres/yres directly, so the
+    # scanouts come up correctly sized.
+    # The mouse drift we saw with PS/2 + SDL multi-window is fixed by
+    # adding `-device usb-tablet` further down (multi-monitor branch),
+    # which gives QEMU an absolute pointer it can deliver without the
+    # cross-window warp or ±127 PS/2 saturation.
     if [ "$VGA" = "virgl" ]; then
         DISPLAY_FLAGS="-display sdl,gl=on"
     else
@@ -1077,6 +1084,25 @@ fi
 # The VMware backdoor (vmport) is always present in QEMU's 'pc' machine type,
 # regardless of GPU mode. Works with all VGA backends (std, vmware, virtio, virgl).
 # --usb / --tablet override this with USB HID devices (interrupt transfers).
+#
+# Multi-monitor: PS/2 alone breaks badly with `-display sdl` multi-window
+# because crossing between SDL host windows produces huge warp deltas the
+# guest interprets as cursor "wandering". Attach one virtio-tablet-pci per
+# scanout — Phase 11 in the kernel binds them in PCI-enumeration order to
+# scanouts 0..N-1, so each tablet's absolute coords correctly target the
+# right output. Per-output absolute pointers + relative PS/2 fallback.
+INPUT_FLAGS=""
+if [ "$DISPLAYS" -gt 1 ]; then
+    # USB tablet provides an absolute pointer device that the kernel's
+    # USB-HID path injects via inject_absolute() → MoveAbsolute event →
+    # compositor's apply_mouse_move_absolute() with multi-monitor
+    # delta-derivation traverses virtual_desktop_bounds correctly.
+    # Without an absolute device, QEMU's PS/2 backend falls back to
+    # delta-saturation at ±127 (no clean abs->rel conversion path),
+    # producing runaway cursor drift. Diagnostic logging confirmed this
+    # behaviour under both SDL multi-window and GTK.
+    INPUT_FLAGS="-usb -device usb-tablet,id=tablet0"
+fi
 
 # Network: bridge or NAT (user)
 NET_FLAGS=""
@@ -1222,9 +1248,13 @@ fi
 # PS/2 (relative dx/dy) and the cursor traverses output edges via
 # accumulation, as Phase 3a wired up.
 MACHINE_FLAGS=""
-if [ "$DISPLAYS" -gt 1 ]; then
-    MACHINE_FLAGS="-machine pc,vmport=off"
-fi
+# Note: previously we forced `pc,vmport=off` for multi-monitor to disable
+# vmmouse. The kernel/compositor now use vmmouse on multi-monitor too —
+# the compositor derives relative deltas from successive absolute samples
+# in apply_mouse_move_absolute, which correctly traverses the virtual
+# desktop. Without vmmouse (vmport=off + no other absolute device), QEMU
+# has no clean way to translate the host's absolute pointer into PS/2
+# deltas and saturates at ±127, producing runaway cursor drift.
 
 QEMU_CMD="$QEMU_BIN_ESC \
     $MACHINE_FLAGS \
@@ -1243,6 +1273,7 @@ QEMU_CMD="$QEMU_BIN_ESC \
     $WIFI_FLAGS \
     $AUDIO_FLAGS \
     $USB_FLAGS \
+    $INPUT_FLAGS \
     $SPICE_FLAGS \
     $POWER_FLAGS"
 

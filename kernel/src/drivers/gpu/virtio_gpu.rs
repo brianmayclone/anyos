@@ -1589,6 +1589,23 @@ impl GpuDriver for VirtioGpu {
     }
 
     fn set_mode(&mut self, width: u32, height: u32, _bpp: u32) -> Option<(u32, u32, u32, u32)> {
+        // Idempotent re-apply: when displayd pushes the same mode that
+        // is already active (cold-boot layout matches the persisted
+        // setup), reuse the existing scanout state instead of tearing
+        // it down and re-allocating. The boot-time fb sits in the lower
+        // 64 MiB identity-map region; freeing it and re-allocating now
+        // (under user CR3 with the persisted layout call) hands back
+        // pages above that boundary, after which setup_display's
+        // write_bytes-on-phys-addr faults. Same root cause as the
+        // secondary-scanout path in set_mode_for_output.
+        if self.scanout_resource_id != 0
+            && self.width == width
+            && self.height == height
+            && self.fb_phys != 0
+        {
+            return Some((self.width, self.height, self.pitch, self.fb_phys as u32));
+        }
+
         // Tear down old display if active
         if self.scanout_resource_id != 0 {
             // Disable scanout
@@ -2019,6 +2036,25 @@ impl GpuDriver for VirtioGpu {
             return Some((0, 0, 0, 0));
         }
 
+        // Idempotent re-apply: when displayd pushes the same mode that
+        // is already active (cold-boot layout matches the persisted
+        // setup), reuse the existing scanout state instead of tearing
+        // it down and re-allocating. The boot-time fb sits in the lower
+        // 64 MiB identity-map region; freeing it and re-allocating now
+        // (under user CR3 with the persisted layout call) can hand back
+        // pages above that boundary, after which cmd_set_scanout fails
+        // and mode_for_output returns None for the rest of the session.
+        let idx = (output_id - 1) as usize;
+        if let Some(s) = self.extra_scanouts.get(idx) {
+            if s.resource_id != 0
+                && s.width == width
+                && s.height == height
+                && s.mirror_of.is_none()
+            {
+                return Some((s.width, s.height, s.pitch, s.fb_phys as u32));
+            }
+        }
+
         // Tear down whatever was on this scanout previously (mirror or own).
         self.disable_extra_scanout(output_id);
 
@@ -2286,6 +2322,29 @@ impl GpuDriver for VirtioGpu {
         for &(w, h) in super::COMMON_MODES {
             if w <= cap.0 && h <= cap.1 {
                 info.modes.push(OutputMode::new(w, h));
+            }
+        }
+        // Preferred mode may not be in COMMON_MODES (e.g. 1280×800 laptop
+        // panels, ultrawide 3440×1440). Layout validation requires an exact
+        // match against `modes`, so make sure the preferred entry is always
+        // present — otherwise displayd's first apply gets rejected with
+        // ModeUnsupported on cold boot.
+        if let Some(pref) = info.preferred_mode {
+            if !info
+                .modes
+                .iter()
+                .any(|m| m.width == pref.width && m.height == pref.height)
+            {
+                info.modes.push(pref);
+            }
+        }
+        if let Some(cur) = info.current_mode {
+            if !info
+                .modes
+                .iter()
+                .any(|m| m.width == cur.width && m.height == cur.height)
+            {
+                info.modes.push(cur);
             }
         }
         // EDID-derived metadata (manufacturer, physical size, hash).
