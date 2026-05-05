@@ -394,6 +394,18 @@ function(add_rust_user_program NAME)
   set(RUST_USER_BINS ${RUST_USER_BINS} ${SYSROOT_DIR}/System/bin/${NAME} PARENT_SCOPE)
 endfunction()
 
+function(add_rust_user_program_as NAME ARTIFACT)
+  add_custom_command(
+    OUTPUT ${SYSROOT_DIR}/System/bin/${NAME}
+    COMMAND ${ANYELF_EXECUTABLE} bin
+      ${USER_TARGET_DIR}/${USER_TARGET_TRIPLE}/release/${ARTIFACT}.elf
+      ${SYSROOT_DIR}/System/bin/${NAME}
+    DEPENDS ${WORKSPACE_STAMP} ${ANYELF_EXECUTABLE}
+    COMMENT "Converting ${ARTIFACT} ELF to flat binary as ${NAME}"
+  )
+  set(RUST_USER_BINS ${RUST_USER_BINS} ${SYSROOT_DIR}/System/bin/${NAME} PARENT_SCOPE)
+endfunction()
+
 function(add_rust_system_program NAME)
   add_custom_command(
     OUTPUT ${SYSROOT_DIR}/System/${NAME}
@@ -893,6 +905,7 @@ add_rust_user_program(bcedit)
 add_rust_user_program(sstore)
 add_rust_user_program(sget)
 add_rust_user_program(sdel)
+add_rust_user_program_as(anybench anybench_cmd)
 # gunzip is a copy of gzip (detects via argv[0])
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/bin/gunzip
