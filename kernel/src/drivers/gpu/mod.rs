@@ -486,7 +486,12 @@ pub trait GpuDriver: Send {
         // configured by pass 2 because validate() rejects mirror chains.
         for entry in layout.entries.iter().filter(|e| e.mirror_of.is_some()) {
             let source = entry.mirror_of.unwrap();
-            self.set_output_mirror(entry.id, source);
+            if !self.set_output_mirror(entry.id, source) {
+                return Err(output::LayoutError::MirrorUnsupported {
+                    output: entry.id,
+                    target: source,
+                });
+            }
         }
 
         Ok(())

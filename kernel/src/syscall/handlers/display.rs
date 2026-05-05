@@ -1805,7 +1805,12 @@ pub fn sys_display_list(buf_ptr: u64, buf_count: u32) -> u32 {
                 (info.physical_mm.0 as u32) | ((info.physical_mm.1 as u32) << 16);
             e.edid_hash = info.edid_hash;
             e.manufacturer = u32::from_le_bytes(info.manufacturer);
-            e.mirror_of = u32::MAX; // current state isn't tracked in OutputInfo yet
+            if let Some(target) = info.mirror_of {
+                e.flags |= 2;
+                e.mirror_of = target;
+            } else {
+                e.mirror_of = u32::MAX;
+            }
             dst[i as usize] = e;
         }
         total

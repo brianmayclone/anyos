@@ -2312,16 +2312,36 @@ impl GpuDriver for VirtioGpu {
                 info.current_mode = Some(OutputMode::new(w, h));
             }
         }
-        // Modes list = COMMON_MODES filtered to ≤ preferred (best effort).
+        // Primary output (id 0) has no entry in `extra_scanouts` — it
+        // never mirrors anything. Secondary outputs (id ≥ 1) live at
+        // `extra_scanouts[id - 1]` per the convention used everywhere
+        // else in this driver.
+        if output_id >= 1 {
+            if let Some(scanout) = self.extra_scanouts.get((output_id - 1) as usize) {
+                info.mirror_of = scanout.mirror_of;
+            }
+        }
+        // Modes list = COMMON_MODES filtered to <= preferred (best effort).
+        // Also offer rotated variants within the same longest-edge cap so
+        // portrait mode can be requested even when the host reports landscape
+        // as the preferred native geometry.
         // Drivers without per-output mode lists treat the union as candidates;
         // displayd's UI shows only entries that fit the connected monitor.
         let cap = info
             .preferred_mode
             .map(|m| (m.width, m.height))
             .unwrap_or((u32::MAX, u32::MAX));
+        let long_cap = cap.0.max(cap.1);
         for &(w, h) in super::COMMON_MODES {
             if w <= cap.0 && h <= cap.1 {
                 info.modes.push(OutputMode::new(w, h));
+            }
+            if h <= long_cap
+                && w <= long_cap
+                && h != w
+                && !info.modes.iter().any(|m| m.width == h && m.height == w)
+            {
+                info.modes.push(OutputMode::new(h, w));
             }
         }
         // Preferred mode may not be in COMMON_MODES (e.g. 1280×800 laptop

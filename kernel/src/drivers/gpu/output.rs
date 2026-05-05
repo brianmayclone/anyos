@@ -99,6 +99,9 @@ pub struct OutputInfo {
     /// 3-letter PNPID from EDID bytes 8-9 (e.g. `b"DEL"` for Dell),
     /// null-terminated. `[0; 4]` if EDID is unavailable.
     pub manufacturer: [u8; 4],
+
+    /// `Some(other_output_id)` when this output mirrors another scanout.
+    pub mirror_of: Option<u32>,
 }
 
 impl OutputInfo {
@@ -115,6 +118,7 @@ impl OutputInfo {
             physical_mm: (0, 0),
             edid_hash: 0,
             manufacturer: [0; 4],
+            mirror_of: None,
         }
     }
 }
@@ -302,6 +306,7 @@ pub enum LayoutError {
     /// Mirror entries pointing at a mirror entry — chain depth > 1.
     MirrorChain(u32),
     MirrorModeMismatch { output: u32, target: u32 },
+    MirrorUnsupported { output: u32, target: u32 },
 }
 
 impl LayoutError {
@@ -319,6 +324,7 @@ impl LayoutError {
             LayoutError::MirrorTargetMissing { .. } => 9,
             LayoutError::MirrorChain(_) => 10,
             LayoutError::MirrorModeMismatch { .. } => 11,
+            LayoutError::MirrorUnsupported { .. } => 12,
         }
     }
 }
