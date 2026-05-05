@@ -25,6 +25,7 @@ use crate::layout;
 struct State {
     infos: Vec<display::DisplayInfo>,
     layout_x: Vec<i32>,
+    initial_layout_x: Vec<i32>,
     dragging: Option<(usize, i32)>,
     canvas_id: u32,
     canvas_w: u32,
@@ -33,6 +34,33 @@ struct State {
     canvas_off_x: i32,
     canvas_off_y: i32,
     selected_idx: Option<usize>,
+    global_mode_id: u32,
+    apply_btn_id: u32,
+    status_label_id: u32,
+    output_uis: Vec<OutputUi>,
+    pending_confirm: Option<PendingConfirm>,
+}
+
+#[derive(Clone)]
+struct OutputUi {
+    idx: usize,
+    enabled_id: u32,
+    res_combo_id: u32,
+    orient_combo_id: u32,
+    scale_seg_id: u32,
+    frac_toggle_id: u32,
+    mirror_combo_id: u32,
+    resolution_opts: Vec<(u32, u32)>,
+}
+
+#[derive(Clone)]
+struct PendingConfirm {
+    timer_id: u32,
+    win_id: u32,
+    label_id: u32,
+    seconds_left: u32,
+    previous_outputs: Vec<displayd::OutputConfig>,
+    previous_global: displayd::GlobalConfig,
 }
 
 static mut STATE: Option<State> = None;
@@ -177,6 +205,273 @@ fn init_layout_x() {
         next_x += w as i32;
     }
     st().layout_x = xs;
+    st().initial_layout_x = st().layout_x.clone();
+}
+
+fn active_global_mode_is_mirror() -> bool {
+    st().infos
+        .iter()
+        .any(|info| info.is_connected() && info.is_mirror())
+}
+
+fn current_global_config() -> displayd::GlobalConfig {
+    let mut g = displayd::GlobalConfig::default();
+    g.mirror_mode = if active_global_mode_is_mirror() { 1 } else { 0 };
+    if let Some(primary) = st().infos.iter().find(|info| info.is_connected() && info.is_primary())
+    {
+        g.primary_edid_hash = primary.edid_hash;
+    } else if let Some(first) = st().infos.iter().find(|info| info.is_connected()) {
+        g.primary_edid_hash = first.edid_hash;
+    }
+    g
+}
+
+fn output_config_from_info(idx: usize, info: &display::DisplayInfo) -> displayd::OutputConfig {
+    let mut cfg = displayd::OutputConfig::default();
+    cfg.edid_hash = info.edid_hash;
+    cfg.enabled = if info.is_connected() { 1 } else { 0 };
+    cfg.orientation = 0;
+    let (w, h) = effective_size(info);
+    cfg.mode_w = w;
+    cfg.mode_h = h;
+    cfg.mode_refresh_mhz = if info.refresh_mhz > 0 {
+        info.refresh_mhz
+    } else {
+        60_000
+    };
+    cfg.scale_percent = 100;
+    cfg.fractional_scale = 0;
+    cfg.virtual_x = st().initial_layout_x.get(idx).copied().unwrap_or(0);
+    cfg.virtual_y = 0;
+    cfg.mirror_of_hash = if info.mirror_of == display::LayoutEntry::NO_MIRROR {
+        0
+    } else {
+        st().infos
+            .iter()
+            .find(|target| target.id == info.mirror_of)
+            .map(|target| target.edid_hash)
+            .unwrap_or(0)
+    };
+    cfg
+}
+
+fn capture_current_configs() -> Vec<displayd::OutputConfig> {
+    let mut out = Vec::new();
+    let n = st().infos.len();
+    for idx in 0..n {
+        let info = st().infos[idx];
+        if info.edid_hash != 0 {
+            out.push(output_config_from_info(idx, &info));
+        }
+    }
+    out
+}
+
+fn mirror_target_hash(ui: &OutputUi, state: u32) -> u64 {
+    if state == 0 {
+        return 0;
+    }
+    let mut nth = 1u32;
+    for (j, info) in st().infos.iter().enumerate() {
+        if j == ui.idx || !info.is_connected() {
+            continue;
+        }
+        if nth == state {
+            return info.edid_hash;
+        }
+        nth += 1;
+    }
+    0
+}
+
+fn output_config_from_controls(ui_state: &OutputUi) -> displayd::OutputConfig {
+    let info = st().infos[ui_state.idx];
+    let res_idx = ui::Control::from_id(ui_state.res_combo_id).get_state() as usize;
+    let (w, h) = ui_state
+        .resolution_opts
+        .get(res_idx)
+        .copied()
+        .unwrap_or_else(|| effective_size(&info));
+    let mut cfg = displayd::OutputConfig::default();
+    cfg.edid_hash = info.edid_hash;
+    cfg.enabled = if ui::Control::from_id(ui_state.enabled_id).get_state() != 0 {
+        1
+    } else {
+        0
+    };
+    cfg.orientation = ui::Control::from_id(ui_state.orient_combo_id).get_state();
+    cfg.mode_w = w;
+    cfg.mode_h = h;
+    cfg.mode_refresh_mhz = if info.refresh_mhz > 0 {
+        info.refresh_mhz
+    } else {
+        60_000
+    };
+    cfg.scale_percent = match ui::Control::from_id(ui_state.scale_seg_id).get_state() {
+        1 => 200,
+        _ => 100,
+    };
+    cfg.fractional_scale = if ui::Control::from_id(ui_state.frac_toggle_id).get_state() != 0 {
+        1
+    } else {
+        0
+    };
+    cfg.virtual_x = st().layout_x.get(ui_state.idx).copied().unwrap_or(0);
+    cfg.virtual_y = 0;
+    cfg.mirror_of_hash =
+        mirror_target_hash(ui_state, ui::Control::from_id(ui_state.mirror_combo_id).get_state());
+    cfg
+}
+
+fn set_status(text: &str) {
+    let id = st().status_label_id;
+    if id != 0 {
+        ui::Control::from_id(id).set_text(text);
+    }
+}
+
+fn apply_configs(outputs: &[displayd::OutputConfig], global: &displayd::GlobalConfig) -> bool {
+    let Some(client) = displayd::DisplaydClient::connect() else {
+        return false;
+    };
+    let mut ok = true;
+    for cfg in outputs {
+        if client.set_output_config(cfg).unwrap_or(u32::MAX) != 0 {
+            ok = false;
+        }
+    }
+    if client.set_global_config(global).unwrap_or(u32::MAX) != 0 {
+        ok = false;
+    }
+    client.disconnect();
+    ok
+}
+
+fn rollback_pending() {
+    let Some(pending) = st().pending_confirm.take() else {
+        return;
+    };
+    ui::kill_timer(pending.timer_id);
+    let _ = apply_configs(&pending.previous_outputs, &pending.previous_global);
+    ui::Window::from_id(pending.win_id).destroy();
+    set_status(i18n::t("Display changes were reverted."));
+}
+
+fn confirm_pending() {
+    let Some(pending) = st().pending_confirm.take() else {
+        return;
+    };
+    ui::kill_timer(pending.timer_id);
+    ui::Window::from_id(pending.win_id).destroy();
+    set_status(i18n::t("Display changes applied."));
+}
+
+extern "C" fn confirm_revert_clicked(_control_id: u32, _event_type: u32, _userdata: u64) {
+    rollback_pending();
+}
+
+extern "C" fn confirm_keep_clicked(_control_id: u32, _event_type: u32, _userdata: u64) {
+    confirm_pending();
+}
+
+fn show_confirm_window(previous_outputs: Vec<displayd::OutputConfig>, previous_global: displayd::GlobalConfig) {
+    if st().pending_confirm.is_some() {
+        rollback_pending();
+    }
+    let win = ui::Window::new_with_flags(
+        i18n::t("Keep display settings?"),
+        -1,
+        -1,
+        360,
+        150,
+        ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_ALWAYS_ON_TOP,
+    );
+    win.set_color(layout::card_bg());
+    let title = ui::Label::new(i18n::t("Keep these display settings?"));
+    title.set_position(18, 16);
+    title.set_size(320, 22);
+    title.set_font_size(15);
+    title.set_text_color(layout::text());
+    win.add(&title);
+
+    let msg = ui::Label::new(i18n::t("Reverting automatically in 10 seconds."));
+    msg.set_position(18, 46);
+    msg.set_size(320, 22);
+    msg.set_text_color(layout::text_dim());
+    win.add(&msg);
+    let label_id = msg.id();
+
+    let revert = ui::Button::new(i18n::t("Revert"));
+    revert.set_position(158, 102);
+    revert.set_size(86, 30);
+    win.add(&revert);
+    let keep = ui::Button::new(i18n::t("Keep"));
+    keep.set_position(254, 102);
+    keep.set_size(86, 30);
+    win.add(&keep);
+
+    ui::Control::from_id(revert.id()).on_click_raw(confirm_revert_clicked, 0);
+    ui::Control::from_id(keep.id()).on_click_raw(confirm_keep_clicked, 0);
+    ui::Control::from_id(win.id()).on_event_raw(ui::EVENT_CLOSE, confirm_revert_clicked, 0);
+
+    let timer_id = ui::set_timer(1000, || {
+        let Some(pending) = st().pending_confirm.as_mut() else {
+            return;
+        };
+        if pending.seconds_left == 0 {
+            rollback_pending();
+            return;
+        }
+        pending.seconds_left -= 1;
+        if pending.seconds_left == 0 {
+            rollback_pending();
+        } else {
+            ui::Control::from_id(pending.label_id).set_text(&format!(
+                "{} {} {}",
+                i18n::t("Reverting automatically in"),
+                pending.seconds_left,
+                i18n::t("seconds.")
+            ));
+        }
+    });
+
+    st().pending_confirm = Some(PendingConfirm {
+        timer_id,
+        win_id: win.id(),
+        label_id,
+        seconds_left: 10,
+        previous_outputs,
+        previous_global,
+    });
+}
+
+fn apply_pending_settings() {
+    let previous_outputs = capture_current_configs();
+    let previous_global = current_global_config();
+    let mut outputs = Vec::new();
+    for ui_state in st().output_uis.clone() {
+        outputs.push(output_config_from_controls(&ui_state));
+    }
+    let mut global = displayd::GlobalConfig::default();
+    global.mirror_mode = if st().global_mode_id != 0
+        && ui::Control::from_id(st().global_mode_id).get_state() == 1
+    {
+        1
+    } else {
+        0
+    };
+    if let Some(primary) = st().infos.iter().find(|info| info.is_connected() && info.is_primary())
+    {
+        global.primary_edid_hash = primary.edid_hash;
+    } else if let Some(first) = st().infos.iter().find(|info| info.is_connected()) {
+        global.primary_edid_hash = first.edid_hash;
+    }
+    if apply_configs(&outputs, &global) {
+        set_status(i18n::t("Confirm the display change."));
+        show_confirm_window(previous_outputs, previous_global);
+    } else {
+        set_status(i18n::t("Could not apply display settings."));
+    }
 }
 
 // ── Canvas drawing ──────────────────────────────────────────────────────────
@@ -281,31 +576,6 @@ fn output_at_canvas(cx: i32, cy: i32) -> Option<usize> {
     None
 }
 
-fn commit_drag(idx: usize) {
-    let info = st().infos[idx];
-    let mut cfg = displayd::OutputConfig::default();
-    cfg.edid_hash = info.edid_hash;
-    cfg.enabled = if info.is_connected() { 1 } else { 0 };
-    cfg.orientation = 0;
-    let (w, h) = effective_size(&info);
-    cfg.mode_w = w;
-    cfg.mode_h = h;
-    cfg.mode_refresh_mhz = if info.refresh_mhz > 0 {
-        info.refresh_mhz
-    } else {
-        60_000
-    };
-    cfg.scale_percent = 100;
-    cfg.fractional_scale = 0;
-    cfg.virtual_x = st().layout_x[idx];
-    cfg.virtual_y = 0;
-    cfg.mirror_of_hash = 0;
-    if let Some(client) = displayd::DisplaydClient::connect() {
-        let _ = client.set_output_config(&cfg);
-        client.disconnect();
-    }
-}
-
 // ── Build ───────────────────────────────────────────────────────────────────
 
 /// Build the multi-monitor section. Inserts mode card, drag-arrange
@@ -321,6 +591,7 @@ pub(crate) fn build(panel: &ui::View) {
         STATE = Some(State {
             infos,
             layout_x: Vec::new(),
+            initial_layout_x: Vec::new(),
             dragging: None,
             canvas_id: 0,
             canvas_w: 0,
@@ -329,6 +600,11 @@ pub(crate) fn build(panel: &ui::View) {
             canvas_off_x: 0,
             canvas_off_y: 0,
             selected_idx: None,
+            global_mode_id: 0,
+            apply_btn_id: 0,
+            status_label_id: 0,
+            output_uis: Vec::new(),
+            pending_confirm: None,
         });
     }
     init_layout_x();
@@ -346,14 +622,8 @@ pub(crate) fn build(panel: &ui::View) {
         ));
         mode_seg.set_position(200, 8);
         mode_seg.set_size(220, 28);
-        mode_seg.on_active_changed(|ev| {
-            let mut g = displayd::GlobalConfig::default();
-            g.mirror_mode = if ev.index == 1 { 1 } else { 0 };
-            if let Some(client) = displayd::DisplaydClient::connect() {
-                let _ = client.set_global_config(&g);
-                client.disconnect();
-            }
-        });
+        mode_seg.set_state(if active_global_mode_is_mirror() { 1 } else { 0 });
+        st().global_mode_id = mode_seg.id();
         mode_row.add(&mode_seg);
     }
 
@@ -421,7 +691,6 @@ pub(crate) fn build(panel: &ui::View) {
                         break;
                     }
                 }
-                commit_drag(idx);
                 render_canvas(&canvas_for_up);
             }
         });
@@ -435,6 +704,26 @@ pub(crate) fn build(panel: &ui::View) {
         }
         build_output_card(panel, idx);
     }
+
+    let apply_card = layout::build_auto_card(panel);
+    let row = ui::View::new();
+    row.set_dock(ui::DOCK_TOP);
+    row.set_size(552, 52);
+    row.set_margin(24, 8, 24, 8);
+    let status = ui::Label::new(i18n::t("Changes are applied together."));
+    status.set_position(0, 16);
+    status.set_size(360, 20);
+    status.set_text_color(layout::text_dim());
+    status.set_font_size(12);
+    row.add(&status);
+    st().status_label_id = status.id();
+    let apply_btn = ui::Button::new(i18n::t("Apply"));
+    apply_btn.set_position(424, 10);
+    apply_btn.set_size(120, 30);
+    apply_btn.on_click(|_| apply_pending_settings());
+    row.add(&apply_btn);
+    st().apply_btn_id = apply_btn.id();
+    apply_card.add(&row);
 }
 
 fn build_output_card(panel: &ui::View, idx: usize) {
@@ -503,56 +792,40 @@ fn build_output_card(panel: &ui::View, idx: usize) {
     frac_row.add(&frac_toggle);
     let frac_toggle_id = frac_toggle.id();
 
-    // Apply button
-    let apply_row = ui::View::new();
-    apply_row.set_dock(ui::DOCK_TOP);
-    apply_row.set_size(552, 44);
-    apply_row.set_margin(24, 4, 24, 8);
-    let apply_btn = ui::Button::new(i18n::t("Apply"));
-    apply_btn.set_position(0, 8);
-    apply_btn.set_size(120, 30);
-    apply_row.add(&apply_btn);
-    card.add(&apply_row);
+    layout::build_separator(&card);
 
-    let edid_hash = info.edid_hash;
-    let refresh_mhz = if info.refresh_mhz > 0 {
-        info.refresh_mhz
-    } else {
-        60_000
-    };
-    let opts_clone = opts.clone();
-    apply_btn.on_click(move |_| {
-        let res_idx = ui::Control::from_id(res_combo_id).get_state() as usize;
-        let (w, h) = opts_clone
-            .get(res_idx)
-            .copied()
-            .unwrap_or((info.current_w, info.current_h));
-        let mut cfg = displayd::OutputConfig::default();
-        cfg.edid_hash = edid_hash;
-        cfg.enabled = if ui::Control::from_id(enabled_id).get_state() != 0 {
-            1
-        } else {
-            0
-        };
-        cfg.orientation = ui::Control::from_id(orient_combo_id).get_state();
-        cfg.mode_w = w;
-        cfg.mode_h = h;
-        cfg.mode_refresh_mhz = refresh_mhz;
-        cfg.scale_percent = match ui::Control::from_id(scale_seg_id).get_state() {
-            1 => 200,
-            _ => 100,
-        };
-        cfg.fractional_scale = if ui::Control::from_id(frac_toggle_id).get_state() != 0 {
-            1
-        } else {
-            0
-        };
-        cfg.virtual_x = st().layout_x[idx];
-        cfg.virtual_y = 0;
-        cfg.mirror_of_hash = 0;
-        if let Some(client) = displayd::DisplaydClient::connect() {
-            let _ = client.set_output_config(&cfg);
-            client.disconnect();
+    // Per-output mirror target. "Extend" leaves this output independent;
+    // choosing another display persists mirror_of for mixed 3-monitor setups.
+    let mirror_row = layout::build_setting_row(&card, i18n::t("Use as"), false);
+    let mut mirror_items = String::from(i18n::t("Extend"));
+    let mut selected_mirror = 0u32;
+    let mut mirror_idx = 1u32;
+    for (j, other) in st().infos.iter().enumerate() {
+        if j != idx && other.is_connected() {
+            mirror_items.push('|');
+            mirror_items.push_str(&format!("{} {}", i18n::t("Mirror Display"), j + 1));
+            if info.mirror_of != display::LayoutEntry::NO_MIRROR && info.mirror_of == other.id {
+                selected_mirror = mirror_idx;
+            }
+            mirror_idx += 1;
         }
+    }
+    let mirror_combo = ui::ComboBox::new();
+    mirror_combo.set_position(200, 8);
+    mirror_combo.set_size(280, 28);
+    mirror_combo.set_items(&mirror_items);
+    mirror_combo.set_selected_index(Some(selected_mirror));
+    mirror_row.add(&mirror_combo);
+    let mirror_combo_id = mirror_combo.id();
+
+    st().output_uis.push(OutputUi {
+        idx,
+        enabled_id,
+        res_combo_id,
+        orient_combo_id,
+        scale_seg_id,
+        frac_toggle_id,
+        mirror_combo_id,
+        resolution_opts: opts,
     });
 }
