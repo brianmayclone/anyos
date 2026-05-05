@@ -19,6 +19,11 @@ pub struct Canvas {
     pub last_mouse_y: i32,
     /// Mouse button state from last mouse_down (0 = none, 1 = left, 2 = right).
     pub mouse_button: u32,
+    /// Last wheel delta (positive = up, negative = down). Set on every
+    /// EVENT_SCROLL fired against this canvas; readable via the
+    /// `anyui_canvas_get_wheel` export so apps can react to scroll
+    /// direction without rolling their own ScrollView.
+    pub last_wheel_dz: i32,
     /// When true, handle_mouse_move fires EVENT_CHANGE for drag-drawing.
     pub interactive: bool,
 }
@@ -34,6 +39,7 @@ impl Canvas {
             last_mouse_x: 0,
             last_mouse_y: 0,
             mouse_button: 0,
+            last_wheel_dz: 0,
             interactive: false,
         }
     }

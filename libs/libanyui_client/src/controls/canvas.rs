@@ -150,6 +150,20 @@ impl Canvas {
         (lib().on_event_fn)(self.ctrl.id, crate::EVENT_MOUSE_UP, thunk, ud);
     }
 
+    /// Register a typed wheel-scroll handler. The closure receives the
+    /// signed delta — positive = wheel up, negative = wheel down.
+    /// Backed by EVENT_SCROLL, which libanyui now fires on every scroll
+    /// against this canvas (in addition to the legacy synthesised
+    /// MOUSE_DOWN with button 2/3 for backwards compatibility).
+    pub fn on_wheel(&self, mut f: impl FnMut(i32) + 'static) {
+        let canvas_id = self.ctrl.id;
+        let (thunk, ud) = events::register(move |_id, _| {
+            let dz = (lib().canvas_get_wheel)(canvas_id);
+            f(dz);
+        });
+        (lib().on_event_fn)(self.ctrl.id, crate::EVENT_SCROLL, thunk, ud);
+    }
+
     /// Register callback for mouse move events (fires on every cursor movement over the canvas).
     pub fn on_mouse_move(&self, mut f: impl FnMut(i32, i32) + 'static) {
         let canvas_id = self.ctrl.id;

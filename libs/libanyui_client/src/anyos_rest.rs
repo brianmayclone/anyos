@@ -191,6 +191,7 @@ struct AnyuiLib {
     // Canvas extensions
     canvas_set_interactive: extern "C" fn(u32, u32),
     canvas_get_mouse: extern "C" fn(u32, *mut i32, *mut i32, *mut u32),
+    canvas_get_wheel: extern "C" fn(u32) -> i32,
     canvas_fill_ellipse: extern "C" fn(u32, i32, i32, i32, i32, u32),
     canvas_draw_ellipse: extern "C" fn(u32, i32, i32, i32, i32, u32),
     canvas_flood_fill: extern "C" fn(u32, i32, i32, u32),
@@ -524,6 +525,7 @@ pub fn init() -> bool {
             // Canvas extensions
             canvas_set_interactive: resolve(&handle, "anyui_canvas_set_interactive"),
             canvas_get_mouse: resolve(&handle, "anyui_canvas_get_mouse"),
+            canvas_get_wheel: resolve(&handle, "anyui_canvas_get_wheel"),
             canvas_fill_ellipse: resolve(&handle, "anyui_canvas_fill_ellipse"),
             canvas_draw_ellipse: resolve(&handle, "anyui_canvas_draw_ellipse"),
             canvas_flood_fill: resolve(&handle, "anyui_canvas_flood_fill"),

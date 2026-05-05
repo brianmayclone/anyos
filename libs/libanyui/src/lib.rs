@@ -1670,6 +1670,22 @@ pub extern "C" fn anyui_canvas_get_mouse(
     }
 }
 
+/// Get the most recent wheel-scroll delta on this canvas. Positive
+/// values are wheel-up, negative wheel-down. Returns 0 when no scroll
+/// event has been received yet, or the canvas id is invalid. Apps
+/// typically read this from an EVENT_SCROLL handler registered via
+/// `Control::on_scroll_raw` to react to scroll direction.
+#[no_mangle]
+pub extern "C" fn anyui_canvas_get_wheel(id: ControlId) -> i32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(cv) = as_canvas_ref(ctrl) {
+            return cv.last_wheel_dz;
+        }
+    }
+    0
+}
+
 /// Draw a filled ellipse.
 #[no_mangle]
 pub extern "C" fn anyui_canvas_fill_ellipse(
@@ -4447,6 +4463,7 @@ pub extern "C" fn anyui_get_position(id: ControlId, out_x: *mut i32, out_y: *mut
         }
     }
 }
+
 
 /// Get the absolute position of a control in window coordinates. This mirrors
 /// hit-testing offsets, including ScrollView scroll positions.

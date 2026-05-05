@@ -2133,11 +2133,36 @@ pub fn run_once() -> u32 {
                         }
                     }
 
-                    // If scroll was not consumed (e.g. Canvas), convert to mouse_down
-                    // with button 2 (scroll up) or 3 (scroll down) for raw controls
+                    // If scroll was not consumed (e.g. Canvas), still fire
+                    // EVENT_SCROLL on the hovered control so apps that
+                    // explicitly subscribe via on_scroll_raw receive the
+                    // event. Stash the dz on Canvas controls so they can
+                    // read the direction via anyui_canvas_get_wheel.
+                    // For backwards-compatibility we ALSO synthesise a
+                    // mouse_down with button 2 / 3, which is what older
+                    // apps (e.g. surf) listen for.
                     if !consumed {
                         if let Some(target_id) = st.hovered {
                             if let Some(idx) = control::find_idx(&st.controls, target_id) {
+                                // Stash the dz on Canvas controls so apps
+                                // can read scroll direction via the
+                                // anyui_canvas_get_wheel export.
+                                if st.controls[idx].kind() == control::ControlKind::Canvas {
+                                    if let Some(cv) = control::cast_mut::<
+                                        crate::controls::canvas::Canvas,
+                                    >(
+                                        &mut st.controls[idx],
+                                        control::ControlKind::Canvas,
+                                    ) {
+                                        cv.last_wheel_dz = dz;
+                                    }
+                                }
+                                fire_event_callback(
+                                    &st.controls,
+                                    target_id,
+                                    control::EVENT_SCROLL,
+                                    &mut pending_cbs,
+                                );
                                 let button = if dz < 0 { 2u32 } else { 3u32 };
                                 let (ax, ay) = control::abs_position(&st.controls, target_id);
                                 let local_x = st.last_mouse_x - ax;

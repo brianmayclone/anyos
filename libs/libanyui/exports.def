@@ -54,6 +54,7 @@ EXPORTS
     anyui_canvas_get_height
     anyui_canvas_set_interactive
     anyui_canvas_get_mouse
+    anyui_canvas_get_wheel
     anyui_canvas_fill_ellipse
     anyui_canvas_draw_ellipse
     anyui_canvas_flood_fill
