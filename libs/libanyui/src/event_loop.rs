@@ -22,7 +22,10 @@ use crate::control::{self, Callback, Control, ControlId, ControlKind};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-/// Double-click threshold in milliseconds (standard: 400ms).
+/// Double-click threshold (standard: 400ms). Phase-2 confd-backed
+/// override was reverted because every read blocks up to 5 s when
+/// confd is unreachable, which froze the entire UI hot-path on every
+/// click. A confd-watch-based path will replace this once available.
 const DOUBLE_CLICK_MS: u32 = 400;
 const FRAME_ACK_TIMEOUT_MS: u32 = 100;
 
@@ -2223,6 +2226,30 @@ pub fn run_once() -> u32 {
                         );
                     }
                     st.needs_layout = true;
+                }
+
+                compositor::EVT_WINDOW_MOVED => {
+                    // Compositor moved the window's frame (drag-end, "move
+                    // to other monitor" menubar button, maximize/restore,
+                    // tile, snap, …). Cache the new frame position on the
+                    // CompWindow so libanyui_client's
+                    // `Window::get_position()` returns the truth instead
+                    // of the stale spawn coords.
+                    //
+                    // IMPORTANT: do NOT write into `controls[Window].base().x/y`.
+                    // `abs_position` walks up the parent chain and adds
+                    // those coords to every descendant control, so a
+                    // non-zero Window x/y would shift all hit-tests and
+                    // child layout origins by that offset (visible as
+                    // wrongly-positioned panels until the next full
+                    // relayout). Frame position is purely a compositor-
+                    // owned property; the control tree stays at (0,0).
+                    let phys_x = ev[2] as i32;
+                    let phys_y = ev[3] as i32;
+                    if wi < st.comp_windows.len() {
+                        st.comp_windows[wi].frame_x = phys_x;
+                        st.comp_windows[wi].frame_y = phys_y;
+                    }
                 }
 
                 compositor::EVT_FULLSCREEN_ENTER => {

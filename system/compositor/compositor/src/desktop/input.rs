@@ -1076,6 +1076,19 @@ impl Desktop {
                     } else if mx >= sw - snap_margin - 1 {
                         self.snap_window_to_half(win_id, 1); // right half
                     }
+                    // Notify the app of the final window-frame position so
+                    // its cached x/y (used by Window::get_position) reflects
+                    // the drag. snap_window_to_half above also moves the
+                    // window — read the post-snap coords back out so the
+                    // event carries the truth either way.
+                    if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+                        let fx = self.windows[idx].x;
+                        let fy = self.windows[idx].y;
+                        self.push_event(
+                            win_id,
+                            [EVENT_WINDOW_MOVED, fx as u32, fy as u32, 0, 0],
+                        );
+                    }
                 }
                 self.set_cursor_shape(CursorShape::Arrow);
             }
@@ -1808,19 +1821,34 @@ impl Desktop {
         }
     }
 
+    /// Synthesize an absolute pointer event whose `(x, y)` are already in
+    /// virtual-desktop coordinates (e.g. SPICE vdagent multi-monitor path
+    /// where the per-display offset has been pre-added). Bypasses the
+    /// vmmouse / single-output edge-guard so clicks on a secondary
+    /// SPICE display actually land on that output.
+    pub(crate) fn inject_pointer_event_virtual(&mut self, x: i32, y: i32, buttons: u8) {
+        self.apply_mouse_move_absolute_virtual(x, y);
+        self.dispatch_injected_buttons(buttons);
+    }
+
     /// Synthesize an absolute pointer event from a VNC client.
     ///
     /// Moves the compositor cursor to `(x, y)` and dispatches a button
     /// state change if any button bit differs from the previous state.
     /// `buttons` uses the RFB mask: bit 0 = left, bit 1 = middle, bit 2 = right.
     pub(crate) fn inject_pointer_event(&mut self, x: i32, y: i32, buttons: u8) {
-        // Move cursor to the absolute position.
         self.apply_mouse_move_absolute(x, y);
+        self.dispatch_injected_buttons(buttons);
+    }
 
-        // We track the previous VNC button mask in a dedicated field so that
-        // we can synthesise proper press/release pairs. handle_mouse_button
-        // expects the *full* new button state (not just the changed bit),
-        // so we forward the whole 0x07 mask once per transition direction.
+    /// Press/release/scroll dispatch for an injected pointer event. The
+    /// previous mask lives in `self.vnc_buttons` (also reused by vdagent
+    /// SPICE injection — both paths share button-edge bookkeeping).
+    fn dispatch_injected_buttons(&mut self, buttons: u8) {
+        // Track the previous mask so we can synthesise proper press/release
+        // pairs. handle_mouse_button expects the *full* new button state
+        // (not just the changed bit), so we forward the whole 0x07 mask
+        // once per transition direction.
         let prev = self.vnc_buttons;
         let prim = (buttons & 0x07) as u32;
         let prim_prev = (prev & 0x07) as u32;

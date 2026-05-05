@@ -122,6 +122,15 @@ pub(crate) struct CompWindow {
     pub back_buffer: Vec<u32>,
     /// Saved logical size before fullscreen (for restore on exit).
     pub saved_logical_size_fs: Option<(u32, u32)>,
+    /// Cached compositor-owned window-frame x in physical pixels.
+    /// Updated on EVT_WINDOW_MOVED; queried by Window::get_position().
+    /// Stored in *physical* coords because the underlying compositor
+    /// API (`compositor::get_window_position`) and existing callers in
+    /// event_loop already work in physical, and the libanyui_client
+    /// `get_position` FFI returns physical too — converting on read
+    /// would break those call sites.
+    pub frame_x: i32,
+    pub frame_y: i32,
 }
 
 // ── Context menu popup window ─────────────────────────────────────────
@@ -641,6 +650,15 @@ pub extern "C" fn anyui_create_window(
     let pixel_count = (phys_w as usize)
         .saturating_mul(phys_h as usize)
         .min(16384 * 16384);
+    // Resolve the spawn-time frame position. -1 sentinels mean the
+    // compositor auto-placed the window; ask it where. The compositor
+    // returns *content-area* coords (physical pixels including title
+    // bar offset), which is exactly what `Window::get_position()` has
+    // historically exposed via this same call from popup-positioning
+    // call sites — keep the convention identical so existing callers
+    // continue to work unchanged.
+    let (initial_frame_x, initial_frame_y) =
+        compositor::get_window_position(st.channel_id, st.sub_id, window_id);
     st.comp_windows.push(CompWindow {
         window_id,
         shm_id,
@@ -657,6 +675,8 @@ pub extern "C" fn anyui_create_window(
         dirty_rect: None,
         back_buffer: alloc::vec![0u32; pixel_count],
         saved_logical_size_fs: None,
+        frame_x: initial_frame_x,
+        frame_y: initial_frame_y,
     });
     id
 }
@@ -4447,18 +4467,46 @@ pub extern "C" fn anyui_get_size(id: ControlId, out_w: *mut u32, out_h: *mut u32
 }
 
 /// Get the position of a control. Returns via out pointers.
+///
+/// For Window controls, this returns the **compositor-owned frame
+/// position** (physical pixels) cached in the matching `CompWindow`
+/// rather than `controls[].base().x/y`. Reasons:
+///
+/// 1. The window-frame position is owned by the compositor (drag,
+///    "move to other monitor", maximize/restore) and is communicated
+///    back via EVT_WINDOW_MOVED — the cache is always live.
+/// 2. `controls[Window].base().x/y` MUST stay (0,0) because
+///    `abs_position` walks parents and adds those coords; a non-zero
+///    value would shift every descendant control's hit-test and
+///    layout origin by the same offset, mis-rendering everything in
+///    the window.
+///
+/// For non-Window controls the historical control-tree-relative
+/// position is returned as before.
 #[no_mangle]
 pub extern "C" fn anyui_get_position(id: ControlId, out_x: *mut i32, out_y: *mut i32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        let (x, y) = if ctrl.kind() == control::ControlKind::Window {
+            // st.windows[i] is the control id of the i-th window;
+            // st.comp_windows[i] is the parallel CompWindow.
+            st.windows
+                .iter()
+                .position(|&w| w == id)
+                .and_then(|wi| st.comp_windows.get(wi))
+                .map(|cw| (cw.frame_x, cw.frame_y))
+                .unwrap_or((ctrl.base().x, ctrl.base().y))
+        } else {
+            (ctrl.base().x, ctrl.base().y)
+        };
         if !out_x.is_null() {
             unsafe {
-                *out_x = ctrl.base().x;
+                *out_x = x;
             }
         }
         if !out_y.is_null() {
             unsafe {
-                *out_y = ctrl.base().y;
+                *out_y = y;
             }
         }
     }

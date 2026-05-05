@@ -41,6 +41,7 @@ pub const EVT_NOTIFICATION_CLICK: u32 = 0x3010;
 pub const EVT_NOTIFICATION_DISMISSED: u32 = 0x3011;
 pub const EVT_FULLSCREEN_ENTER: u32 = 0x300D;
 pub const EVT_FULLSCREEN_EXIT: u32 = 0x300E;
+pub const EVT_WINDOW_MOVED: u32 = 0x300F;
 
 /// A handle to a compositor window.
 pub struct WindowHandle {

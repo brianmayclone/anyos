@@ -326,6 +326,15 @@ pub const EVT_FULLSCREEN_ENTER: u32 = 0x300D;
 /// Sent when the compositor exits fullscreen via Alt+Enter or Ctrl+Alt+Delete.
 pub const EVT_FULLSCREEN_EXIT: u32 = 0x300E;
 
+/// Window position changed: [EVT, window_id, new_x, new_y, 0]
+/// Sent whenever the compositor moves a window without the app's request
+/// (drag end, "move to other monitor" menubar action, restore from
+/// maximize). Apps that cache window position (libanyui's per-control
+/// `base().x/y`) need to refresh from this so calls like
+/// `Window::get_position()` keep returning the truth instead of the
+/// stale post-create position.
+pub const EVT_WINDOW_MOVED: u32 = 0x300F;
+
 /// Window opened (broadcast): [EVT, app_tid, win_id, 0, 0]
 /// Emitted when any app creates a window. Used by dock for filtering.
 pub const EVT_WINDOW_OPENED: u32 = 0x0060;

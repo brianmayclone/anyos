@@ -334,6 +334,7 @@ pub const EVENT_DRAG_LEAVE: u32 = 16;
 pub const EVENT_DROP: u32 = 17;
 pub const EVENT_DRAG_FEEDBACK: u32 = 18;
 pub const EVENT_DRAG_END: u32 = 19;
+pub const EVENT_WINDOW_MOVED: u32 = 20;
 
 // ── Hit Test ───────────────────────────────────────────────────────────────
 
@@ -1614,6 +1615,13 @@ impl Desktop {
             self.compositor.resize_layer(layer_id, new_cw, new_full_h);
             self.push_event(window_id, [EVENT_RESIZE, new_cw, new_ch, 0, 0]);
         }
+        // Notify the app so libanyui can refresh its cached window-frame
+        // position (otherwise Window::get_position keeps returning the
+        // initial spawn coords forever after a cross-monitor move).
+        self.push_event(
+            window_id,
+            [EVENT_WINDOW_MOVED, new_x as u32, new_y as u32, 0, 0],
+        );
         self.render_window(window_id);
     }
 
@@ -1633,6 +1641,10 @@ impl Desktop {
                     self.compositor.resize_layer(layer_id, sw, full_h);
                     self.render_window(win_id);
                     self.push_event(win_id, [EVENT_RESIZE, sw, sh, 0, 0]);
+                    self.push_event(
+                        win_id,
+                        [EVENT_WINDOW_MOVED, sx as u32, sy as u32, 0, 0],
+                    );
                 }
             } else {
                 let x = self.windows[idx].x;
@@ -1676,6 +1688,10 @@ impl Desktop {
                 self.compositor.resize_layer(layer_id, new_w, full_h);
                 self.render_window(win_id);
                 self.push_event(win_id, [EVENT_RESIZE, new_w, new_ch, 0, 0]);
+                self.push_event(
+                    win_id,
+                    [EVENT_WINDOW_MOVED, new_x as u32, new_y as u32, 0, 0],
+                );
             }
         }
     }
@@ -1747,6 +1763,10 @@ impl Desktop {
                 self.render_window(win_id);
                 // Notify app so it re-renders at the new size
                 self.push_event(win_id, [EVENT_RESIZE, content_w, content_h, 0, 0]);
+                self.push_event(
+                    win_id,
+                    [EVENT_WINDOW_MOVED, wx as u32, wy as u32, 0, 0],
+                );
             }
         }
         // Mark entire screen dirty so old window positions are repainted
@@ -1782,11 +1802,15 @@ impl Desktop {
                 .collect();
             for id in ids {
                 if let Some(idx) = self.windows.iter().position(|w| w.id == id) {
-                    if let Some((sx, sy, sw, sh)) = self.windows[idx].saved_bounds.take() {
+                    if let Some((sx, sy, _sw, _sh)) = self.windows[idx].saved_bounds.take() {
                         self.windows[idx].x = sx;
                         self.windows[idx].y = sy;
                         let layer_id = self.windows[idx].layer_id;
                         self.compositor.move_layer(layer_id, sx, sy);
+                        self.push_event(
+                            id,
+                            [EVENT_WINDOW_MOVED, sx as u32, sy as u32, 0, 0],
+                        );
                     }
                 }
             }
@@ -1846,6 +1870,10 @@ impl Desktop {
             self.render_window(win_id);
             // Notify app so it re-renders at the new size
             self.push_event(win_id, [EVENT_RESIZE, cw, ch, 0, 0]);
+            self.push_event(
+                win_id,
+                [EVENT_WINDOW_MOVED, wx as u32, wy as u32, 0, 0],
+            );
             // Mark entire screen dirty so old window position is repainted
             self.compositor.damage_all();
         }
