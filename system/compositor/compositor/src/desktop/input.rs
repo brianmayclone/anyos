@@ -560,13 +560,20 @@ impl Desktop {
         let target_y = y.clamp(vmin_y, vmax_y - 1);
 
         // Multi-monitor edge guard: if the cursor is currently sitting
-        // on a non-primary output (by virtual_x), ignore vmmouse
-        // updates whose target lands inside output 0's region. Those
-        // events represent stale Window-0 cursor state from QEMU's
-        // vmmouse, which keeps reporting last position when the host
-        // pointer leaves Window 0. Without this guard the cursor on
-        // output 1 gets snapped back to (last_vmmouse_x, last_vmmouse_y)
-        // each frame, making secondary outputs unreachable.
+        // on a non-primary output (by virtual_x), suppress STALE
+        // vmmouse events that would yank it back into output 0's
+        // region. "Stale" = same absolute coords as the last sample
+        // — this is what QEMU emits while the host pointer is outside
+        // the primary SDL window. Fresh vmmouse events (abs coords
+        // changed) DO get applied even when they target output 0,
+        // because the user is actively moving in the primary window
+        // and that's the signal that they want to come back.
+        //
+        // Without this distinction, the user got stuck on output 1
+        // forever: any motion in the primary window would have been
+        // treated as a "snap back" attempt and ignored, leaving the
+        // cursor on the secondary output even when the user wanted
+        // it on the primary.
         if self.compositor.outputs.len() >= 2 {
             let primary_w = self
                 .compositor
@@ -576,9 +583,9 @@ impl Desktop {
                 .unwrap_or(0);
             let cursor_on_primary = self.mouse_x < primary_w;
             let target_on_primary = target_x < primary_w;
-            if !cursor_on_primary && target_on_primary {
-                // Cursor is past output 0; vmmouse wants to drag it
-                // back. Skip — let PS/2 deltas drive secondary motion.
+            let stale = self.last_absolute_mouse_x == Some(target_x)
+                && self.last_absolute_mouse_y == Some(target_y);
+            if !cursor_on_primary && target_on_primary && stale {
                 return;
             }
         }
