@@ -1666,10 +1666,7 @@ impl Desktop {
                     self.compositor.resize_layer(layer_id, sw, full_h);
                     self.render_window(win_id);
                     self.push_event(win_id, [EVENT_RESIZE, sw, sh, 0, 0]);
-                    self.push_event(
-                        win_id,
-                        [EVENT_WINDOW_MOVED, sx as u32, sy as u32, 0, 0],
-                    );
+                    self.push_event(win_id, [EVENT_WINDOW_MOVED, sx as u32, sy as u32, 0, 0]);
                 }
             } else {
                 let x = self.windows[idx].x;
@@ -1788,10 +1785,7 @@ impl Desktop {
                 self.render_window(win_id);
                 // Notify app so it re-renders at the new size
                 self.push_event(win_id, [EVENT_RESIZE, content_w, content_h, 0, 0]);
-                self.push_event(
-                    win_id,
-                    [EVENT_WINDOW_MOVED, wx as u32, wy as u32, 0, 0],
-                );
+                self.push_event(win_id, [EVENT_WINDOW_MOVED, wx as u32, wy as u32, 0, 0]);
             }
         }
         // Mark entire screen dirty so old window positions are repainted
@@ -1832,10 +1826,7 @@ impl Desktop {
                         self.windows[idx].y = sy;
                         let layer_id = self.windows[idx].layer_id;
                         self.compositor.move_layer(layer_id, sx, sy);
-                        self.push_event(
-                            id,
-                            [EVENT_WINDOW_MOVED, sx as u32, sy as u32, 0, 0],
-                        );
+                        self.push_event(id, [EVENT_WINDOW_MOVED, sx as u32, sy as u32, 0, 0]);
                     }
                 }
             }
@@ -1895,10 +1886,7 @@ impl Desktop {
             self.render_window(win_id);
             // Notify app so it re-renders at the new size
             self.push_event(win_id, [EVENT_RESIZE, cw, ch, 0, 0]);
-            self.push_event(
-                win_id,
-                [EVENT_WINDOW_MOVED, wx as u32, wy as u32, 0, 0],
-            );
+            self.push_event(win_id, [EVENT_WINDOW_MOVED, wx as u32, wy as u32, 0, 0]);
             // Mark entire screen dirty so old window position is repainted
             self.compositor.damage_all();
         }

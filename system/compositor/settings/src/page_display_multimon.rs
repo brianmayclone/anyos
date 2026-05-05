@@ -215,7 +215,10 @@ fn active_global_mode_is_mirror() -> bool {
 fn current_global_config() -> displayd::GlobalConfig {
     let mut g = displayd::GlobalConfig::default();
     g.mirror_mode = if active_global_mode_is_mirror() { 1 } else { 0 };
-    if let Some(primary) = st().infos.iter().find(|info| info.is_connected() && info.is_primary())
+    if let Some(primary) = st()
+        .infos
+        .iter()
+        .find(|info| info.is_connected() && info.is_primary())
     {
         g.primary_edid_hash = primary.edid_hash;
     } else if let Some(first) = st().infos.iter().find(|info| info.is_connected()) {
@@ -316,8 +319,10 @@ fn output_config_from_controls(ui_state: &OutputUi) -> displayd::OutputConfig {
     };
     cfg.virtual_x = st().layout_x.get(ui_state.idx).copied().unwrap_or(0);
     cfg.virtual_y = 0;
-    cfg.mirror_of_hash =
-        mirror_target_hash(ui_state, ui::Control::from_id(ui_state.mirror_combo_id).get_state());
+    cfg.mirror_of_hash = mirror_target_hash(
+        ui_state,
+        ui::Control::from_id(ui_state.mirror_combo_id).get_state(),
+    );
     cfg
 }
 
@@ -372,7 +377,10 @@ extern "C" fn confirm_keep_clicked(_control_id: u32, _event_type: u32, _userdata
     confirm_pending();
 }
 
-fn show_confirm_window(previous_outputs: Vec<displayd::OutputConfig>, previous_global: displayd::GlobalConfig) {
+fn show_confirm_window(
+    previous_outputs: Vec<displayd::OutputConfig>,
+    previous_global: displayd::GlobalConfig,
+) {
     if st().pending_confirm.is_some() {
         rollback_pending();
     }
@@ -451,14 +459,16 @@ fn apply_pending_settings() {
         outputs.push(output_config_from_controls(&ui_state));
     }
     let mut global = displayd::GlobalConfig::default();
-    global.mirror_mode = if st().global_mode_id != 0
-        && ui::Control::from_id(st().global_mode_id).get_state() == 1
-    {
-        1
-    } else {
-        0
-    };
-    if let Some(primary) = st().infos.iter().find(|info| info.is_connected() && info.is_primary())
+    global.mirror_mode =
+        if st().global_mode_id != 0 && ui::Control::from_id(st().global_mode_id).get_state() == 1 {
+            1
+        } else {
+            0
+        };
+    if let Some(primary) = st()
+        .infos
+        .iter()
+        .find(|info| info.is_connected() && info.is_primary())
     {
         global.primary_edid_hash = primary.edid_hash;
     } else if let Some(first) = st().infos.iter().find(|info| info.is_connected()) {

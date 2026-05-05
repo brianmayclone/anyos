@@ -61,10 +61,11 @@ pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
                 // with a new wake_at_tick instead of making it immediately Ready.
                 if sched.threads[idx].sleep_remaining > 0 {
                     let now = crate::arch::hal::timer_current_ticks();
-                    sched.threads[idx].wake_at_tick =
-                        Some(now.wrapping_add(sched.threads[idx].sleep_remaining));
+                    let wake_at = now.wrapping_add(sched.threads[idx].sleep_remaining);
+                    sched.threads[idx].wake_at_tick = Some(wake_at);
                     sched.threads[idx].sleep_remaining = 0;
                     sched.threads[idx].state = ThreadState::Blocked;
+                    super::note_sleeper_deadline(wake_at);
                     crate::serial_verbose_println!(
                         "Signal {}: continued T{} (re-sleeping)",
                         sig,

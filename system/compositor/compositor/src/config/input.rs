@@ -29,7 +29,9 @@ static CURSOR_SIZE_IDX: AtomicU32 = AtomicU32::new(1);
 
 pub fn read_natural_scroll() -> bool {
     register_manifest();
-    read_i64("input/natural_scroll").map(|v| v != 0).unwrap_or(false)
+    read_i64("input/natural_scroll")
+        .map(|v| v != 0)
+        .unwrap_or(false)
 }
 
 pub fn save_natural_scroll(enabled: bool) {
@@ -47,7 +49,9 @@ pub fn natural_scroll_enabled() -> bool {
 
 pub fn read_left_handed() -> bool {
     register_manifest();
-    read_i64("input/left_handed").map(|v| v != 0).unwrap_or(false)
+    read_i64("input/left_handed")
+        .map(|v| v != 0)
+        .unwrap_or(false)
 }
 
 pub fn save_left_handed(enabled: bool) {

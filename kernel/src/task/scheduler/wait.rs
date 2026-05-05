@@ -43,6 +43,7 @@ pub fn waitpid(tid: u32) -> u32 {
                 // CPU to re-enqueue and potentially load a partially-saved
                 // context.
                 sched.threads[idx].last_cpu = cpu_id;
+                sched.threads[idx].wake_at_tick = None;
                 sched.threads[idx].state = ThreadState::Blocked;
                 sched.threads[idx].context.save_complete = 0;
             }
@@ -116,6 +117,7 @@ pub fn waitpid_any() -> (u32, u32) {
         // then clear save_complete (see waitpid for detailed rationale).
         if let Some(idx) = sched.current_idx(get_cpu_id()) {
             sched.threads[idx].last_cpu = get_cpu_id();
+            sched.threads[idx].wake_at_tick = None;
             sched.threads[idx].state = ThreadState::Blocked;
             sched.threads[idx].context.save_complete = 0;
         }
@@ -228,6 +230,7 @@ pub fn prepare_to_block_until(wake_at: u32) {
         sched.threads[idx].last_cpu = cpu_id;
         sched.threads[idx].state = ThreadState::Blocked;
         sched.threads[idx].context.save_complete = 0;
+        super::note_sleeper_deadline(wake_at);
     }
 }
 
@@ -249,6 +252,7 @@ pub fn sleep_until(wake_at: u32) {
             sched.threads[idx].last_cpu = cpu_id;
             sched.threads[idx].state = ThreadState::Blocked;
             sched.threads[idx].context.save_complete = 0;
+            super::note_sleeper_deadline(wake_at);
         }
     }
     schedule();
@@ -268,6 +272,7 @@ pub fn block_current_thread() {
             // CRITICAL: Set Blocked first, then clear save_complete
             // (same rationale as waitpid).
             sched.threads[idx].last_cpu = cpu_id;
+            sched.threads[idx].wake_at_tick = None;
             sched.threads[idx].state = ThreadState::Blocked;
             sched.threads[idx].context.save_complete = 0;
         }

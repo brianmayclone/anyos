@@ -54,14 +54,17 @@ pub fn debug_attach(debugger_tid: u32, target_tid: u32) -> u32 {
         let n = sched.num_cpus();
         let target_cpu = if cpu < n { cpu } else { 0 };
         sched.per_cpu[target_cpu].run_queue.remove(target_tid);
+        sched.threads[idx].wake_at_tick = None;
         sched.threads[idx].state = ThreadState::Blocked;
     } else if sched.threads[idx].state == ThreadState::Running {
         // Thread is currently running on some CPU — mark for suspend.
         // It will be blocked on next schedule tick.
+        sched.threads[idx].wake_at_tick = None;
         sched.threads[idx].state = ThreadState::Blocked;
         sched.threads[idx].context.save_complete = 0;
+    } else if sched.threads[idx].state == ThreadState::Blocked {
+        sched.threads[idx].wake_at_tick = None;
     }
-    // If already Blocked (e.g., sleeping), just keep it blocked
 
     0
 }
@@ -154,10 +157,14 @@ pub fn debug_suspend(debugger_tid: u32, target_tid: u32) -> u32 {
         let n = sched.num_cpus();
         let target_cpu = if cpu < n { cpu } else { 0 };
         sched.per_cpu[target_cpu].run_queue.remove(target_tid);
+        sched.threads[idx].wake_at_tick = None;
         sched.threads[idx].state = ThreadState::Blocked;
     } else if sched.threads[idx].state == ThreadState::Running {
+        sched.threads[idx].wake_at_tick = None;
         sched.threads[idx].state = ThreadState::Blocked;
         sched.threads[idx].context.save_complete = 0;
+    } else if sched.threads[idx].state == ThreadState::Blocked {
+        sched.threads[idx].wake_at_tick = None;
     }
 
     0
@@ -879,6 +886,7 @@ pub fn debug_auto_suspend(tid: u32, event_type: u32, addr: u64) {
                     // Set Blocked first so no CPU picks it via pick_eligible,
                     // then clear save_complete (same rationale as wait.rs).
                     if sched.threads[idx].state == ThreadState::Running {
+                        sched.threads[idx].wake_at_tick = None;
                         sched.threads[idx].state = ThreadState::Blocked;
                         sched.threads[idx].context.save_complete = 0;
                     }
