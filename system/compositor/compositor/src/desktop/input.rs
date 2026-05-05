@@ -397,6 +397,18 @@ impl Desktop {
             // output. Move first, hide-old + show-new second.
             let prev = self.last_cursor_output.replace(target_id);
             if prev != Some(target_id) {
+                anyos_std::println!(
+                    "[cursor] output transition: {} -> {} virt=({},{}) local=({},{})",
+                    match prev {
+                        Some(p) => alloc::format!("M{}", p),
+                        None => alloc::string::String::from("(initial)"),
+                    },
+                    target_id,
+                    self.mouse_x,
+                    self.mouse_y,
+                    lx,
+                    ly
+                );
                 self.compositor.move_hw_cursor_on_output(target_id, lx, ly);
                 if let Some(p) = prev {
                     if p != target_id {
