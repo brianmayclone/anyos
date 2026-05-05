@@ -1099,7 +1099,7 @@ add_app(mdview      ${CMAKE_SOURCE_DIR}/apps/mdview         "Markdown Viewer")
 add_app(clipman     ${CMAKE_SOURCE_DIR}/apps/clipman        "Clipboard Manager")
 add_app(vnc-settings ${CMAKE_SOURCE_DIR}/apps/vnc-settings "VNC Settings")
 add_app(ftp-settings ${CMAKE_SOURCE_DIR}/apps/ftp-settings "FTP Settings")
-add_app(display-settings ${CMAKE_SOURCE_DIR}/apps/display-settings "Displays")
+add_app(mousetest   ${CMAKE_SOURCE_DIR}/apps/mousetest     "Mouse Test")
 add_app(anybench    ${CMAKE_SOURCE_DIR}/apps/anybench      "anyBench")
 add_app(gldemo      ${CMAKE_SOURCE_DIR}/apps/gldemo        "GL Demo")
 add_app(forger      ${CMAKE_SOURCE_DIR}/apps/forger        "Forger")
@@ -1139,6 +1139,7 @@ add_custom_command(
     ${ANYOS_BUILD_STD_ARGS}
   DEPENDS
     ${DISPLAYD_SRC_DIR}/Cargo.toml
+    ${DISPLAYD_SRC_DIR}/build.rs
     ${DISPLAYD_SRC_DIR}/src/main.rs
     ${DISPLAYD_SRC_DIR}/src/protocol.rs
     ${DISPLAYD_SRC_DIR}/src/schema.rs

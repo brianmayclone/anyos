@@ -13,6 +13,7 @@ mod page_apps;
 mod page_dashboard;
 mod page_devices;
 mod page_display;
+mod page_display_multimon;
 mod page_dock;
 mod page_general;
 mod page_keyboard;

@@ -55,19 +55,17 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     layout::build_page_header(
         &panel,
         i18n::t("Display"),
-        i18n::t("Theme, monitor, resolution and wallpaper"),
+        i18n::t("Monitors, theme, resolution and wallpaper"),
     );
 
-    // ── Display Info card ───────────────────────────────────────────────
+    // ── GPU info card ───────────────────────────────────────────────────
     let info_card = layout::build_auto_card(&panel);
 
-    // GPU Driver
     let gpu = window::gpu_name();
     layout::build_info_row(&info_card, i18n::t("GPU Driver"), &gpu, true);
 
     layout::build_separator(&info_card);
 
-    // 2D Hardware acceleration
     let tc = ui::theme::colors();
     let accel_2d = window::gpu_has_accel();
     layout::build_info_row_colored(
@@ -84,7 +82,6 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
 
     layout::build_separator(&info_card);
 
-    // 3D Hardware acceleration
     let accel_3d = window::gpu_has_3d();
     layout::build_info_row_colored(
         &info_card,
@@ -98,52 +95,8 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         false,
     );
 
-    layout::build_separator(&info_card);
-
-    // Current Resolution
-    let (sw, sh) = window::screen_size();
-    let res_str = format!("{} x {}", sw, sh);
-    layout::build_info_row(&info_card, i18n::t("Current Resolution"), &res_str, false);
-
-    // Monitor info (from EDID)
-    if anyos_std::sys::monitor_count() > 0 {
-        if let Some(minfo) = anyos_std::sys::monitor_info(0) {
-            layout::build_separator(&info_card);
-            let mfr = str_from_bytes(&minfo.manufacturer);
-            let model = str_from_bytes(&minfo.model_name);
-            let mon_name = if model.is_empty() {
-                if mfr.is_empty() {
-                    alloc::string::String::from("Unknown")
-                } else {
-                    alloc::string::String::from(mfr)
-                }
-            } else {
-                format!("{} {}", mfr, model)
-            };
-            layout::build_info_row(&info_card, i18n::t("Monitor"), &mon_name, false);
-
-            let nw = unsafe { core::ptr::addr_of!(minfo.native_width).read_unaligned() };
-            let nh = unsafe { core::ptr::addr_of!(minfo.native_height).read_unaligned() };
-            if nw > 0 && nh > 0 {
-                layout::build_separator(&info_card);
-                let native_str = format!("{} x {}", nw, nh);
-                layout::build_info_row(
-                    &info_card,
-                    i18n::t("Native Resolution"),
-                    &native_str,
-                    false,
-                );
-            }
-
-            let wmm = unsafe { core::ptr::addr_of!(minfo.width_mm).read_unaligned() };
-            let hmm = unsafe { core::ptr::addr_of!(minfo.height_mm).read_unaligned() };
-            if wmm > 0 && hmm > 0 {
-                layout::build_separator(&info_card);
-                let size_str = format!("{} x {} mm", wmm, hmm);
-                layout::build_info_row(&info_card, i18n::t("Screen Size"), &size_str, false);
-            }
-        }
-    }
+    // ── Multi-monitor section (mode, drag-arrange, per-output detail) ──
+    crate::page_display_multimon::build(&panel);
 
     // ── Theme Appearance card ─────────────────────────────────────────────
     build_theme_card(&panel);
@@ -153,63 +106,6 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
 
     // ── DPI Scale card ───────────────────────────────────────────────────
     build_dpi_scale_card(&panel);
-
-    // ── Resolution picker card ──────────────────────────────────────────
-    let resolutions = window::list_resolutions();
-    if !resolutions.is_empty() {
-        let res_card = layout::build_auto_card(&panel);
-
-        let row = layout::build_setting_row(&res_card, i18n::t("Resolution"), true);
-
-        // Get native resolution from monitor (if available).
-        let native = if anyos_std::sys::monitor_count() > 0 {
-            anyos_std::sys::monitor_info(0).and_then(|m| {
-                let nw = unsafe { core::ptr::addr_of!(m.native_width).read_unaligned() };
-                let nh = unsafe { core::ptr::addr_of!(m.native_height).read_unaligned() };
-                if nw > 0 && nh > 0 {
-                    Some((nw, nh))
-                } else {
-                    None
-                }
-            })
-        } else {
-            None
-        };
-
-        // Build pipe-separated items string; mark native resolution.
-        let mut items = String::new();
-        let mut current_idx: u32 = 0;
-        for (i, &(rw, rh)) in resolutions.iter().enumerate() {
-            if i > 0 {
-                items.push('|');
-            }
-            let label = if native == Some((rw, rh)) {
-                format!("{} x {} ({})", rw, rh, i18n::t("native"))
-            } else {
-                format!("{} x {}", rw, rh)
-            };
-            items.push_str(&label);
-            if rw == sw && rh == sh {
-                current_idx = i as u32;
-            }
-        }
-
-        let dropdown = ui::DropDown::new(&items);
-        dropdown.set_position(200, 8);
-        dropdown.set_size(280, 28);
-        dropdown.set_selected_index(current_idx);
-
-        // On selection change: apply the resolution
-        let res_copy: Vec<(u32, u32)> = resolutions.clone();
-        dropdown.on_selection_changed(move |e| {
-            let idx = e.index as usize;
-            if idx < res_copy.len() {
-                let (rw, rh) = res_copy[idx];
-                window::set_resolution(rw, rh);
-            }
-        });
-        row.add(&dropdown);
-    }
 
     // ── Wallpaper card (async loading) ──────────────────────────────────
     let wp_card = layout::build_auto_card(&panel);
@@ -942,8 +838,3 @@ fn fmt_u32_bytes(val: u32) -> &'static [u8] {
     }
 }
 
-/// Extract a trimmed string from a null-terminated byte array.
-fn str_from_bytes(bytes: &[u8]) -> &str {
-    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-    core::str::from_utf8(&bytes[..end]).unwrap_or("").trim()
-}
