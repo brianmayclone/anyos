@@ -62,8 +62,9 @@ struct AppState {
     /// Click detection.
     click: ClickInfo,
 
-    /// Wheel event counter.
-    wheel_events: u32,
+    /// Wheel event counters.
+    wheel_up_events: u32,
+    wheel_down_events: u32,
 
     /// Status labels.
     lbl_win_pos: ui::Label,
@@ -269,7 +270,10 @@ fn refresh_button_labels() {
     s.lbl_button
         .set_text(&format!("Last: {} ({}, x{})", btn, count, s.click.consecutive));
     s.lbl_wheel
-        .set_text(&format!("Wheel events: {}", s.wheel_events));
+        .set_text(&format!(
+            "Wheel up: {}  down: {}",
+            s.wheel_up_events, s.wheel_down_events
+        ));
 }
 
 fn handle_mouse_move(cx: i32, cy: i32) {
@@ -302,13 +306,15 @@ fn handle_mouse_down(cx: i32, cy: i32, button_mask: u32) {
 
     // Per-event serial dump for offline analysis.
     let (dx, dy) = canvas_to_desktop(s, cx, cy);
+    let monitor = monitor_label(dx, dy);
     anyos_std::println!(
-        "[mousetest] DOWN btn=0x{:x} canvas=({},{}) desktop=({},{}) consecutive={}",
+        "[mousetest] DOWN btn=0x{:x} canvas=({},{}) desktop=({},{}) {} consecutive={}",
         button_mask,
         cx,
         cy,
         dx,
         dy,
+        monitor,
         s.click.consecutive
     );
 }
@@ -319,41 +325,55 @@ fn handle_mouse_up(cx: i32, cy: i32, button_mask: u32) {
     }
     let s = app();
     let (dx, dy) = canvas_to_desktop(s, cx, cy);
+    let monitor = monitor_label(dx, dy);
     anyos_std::println!(
-        "[mousetest]   UP btn=0x{:x} canvas=({},{}) desktop=({},{})",
+        "[mousetest]   UP btn=0x{:x} canvas=({},{}) desktop=({},{}) {}",
         button_mask,
         cx,
         cy,
         dx,
-        dy
+        dy,
+        monitor
     );
 }
 
 fn handle_wheel(dz: i32) {
     let s = app();
-    s.wheel_events = s.wheel_events.saturating_add(1);
+    if dz > 0 {
+        s.wheel_up_events = s.wheel_up_events.saturating_add(1);
+    } else if dz < 0 {
+        s.wheel_down_events = s.wheel_down_events.saturating_add(1);
+    }
     refresh_button_labels();
-    let dir = if dz > 0 { "up" } else { "down" };
+    let dir = if dz > 0 {
+        "up"
+    } else if dz < 0 {
+        "down"
+    } else {
+        "none"
+    };
     let (dx, dy) = canvas_to_desktop(s, s.cur_x, s.cur_y);
+    let monitor = monitor_label(dx, dy);
     anyos_std::println!(
-        "[mousetest] WHEEL {} dz={} canvas=({},{}) desktop=({},{}) total={}",
+        "[mousetest] WHEEL {} dz={} canvas=({},{}) desktop=({},{}) {} up={} down={}",
         dir,
         dz,
         s.cur_x,
         s.cur_y,
         dx,
         dy,
-        s.wheel_events
+        monitor,
+        s.wheel_up_events,
+        s.wheel_down_events
     );
 }
 
-fn one_second_tick() {
-    let s = app();
-    let (dx, dy) = canvas_to_desktop(s, s.cur_x, s.cur_y);
-    // Strict containment — Screen::at falls back to primary which would
-    // log "M0" for a cursor that's actually off-screen.
+/// Look up which output a virtual-desktop point sits on. Strict
+/// containment — `ui::Screen::at` falls back to the primary which would
+/// log "M0" for a cursor that's actually off-screen.
+fn monitor_label(dx: i32, dy: i32) -> String {
     let screens = ui::Screen::list();
-    let monitor: String = match screens.iter().find(|scr| {
+    match screens.iter().find(|scr| {
         dx >= scr.virtual_x
             && dy >= scr.virtual_y
             && dx < scr.right()
@@ -366,7 +386,13 @@ fn one_second_tick() {
             dy - scr.virtual_y
         ),
         None => String::from("(off-screen)"),
-    };
+    }
+}
+
+fn one_second_tick() {
+    let s = app();
+    let (dx, dy) = canvas_to_desktop(s, s.cur_x, s.cur_y);
+    let monitor = monitor_label(dx, dy);
     anyos_std::println!(
         "[mousetest] tick canvas=({},{}) desktop=({},{}) {} btn={} clicks={} wheel={}",
         s.cur_x,
@@ -376,7 +402,7 @@ fn one_second_tick() {
         monitor,
         button_label(s.click.button),
         s.click.consecutive,
-        s.wheel_events
+        format!("up={} down={}", s.wheel_up_events, s.wheel_down_events)
     );
 }
 
@@ -456,7 +482,7 @@ fn main() {
     lbl_button.set_text_color(COL_TEXT);
     status.add(&lbl_button);
 
-    let lbl_wheel = ui::Label::new("Wheel events: 0");
+    let lbl_wheel = ui::Label::new("Wheel up: 0  down: 0");
     lbl_wheel.set_position(430, 0);
     lbl_wheel.set_size(280, 20);
     lbl_wheel.set_text_color(COL_TEXT);
@@ -488,7 +514,8 @@ fn main() {
                 last_time_ms: 0,
                 consecutive: 0,
             },
-            wheel_events: 0,
+            wheel_up_events: 0,
+            wheel_down_events: 0,
             lbl_win_pos,
             lbl_win_size,
             lbl_canvas_pos,
