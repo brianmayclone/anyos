@@ -265,6 +265,42 @@ impl Desktop {
         self.mouse_x = (self.mouse_x + dx).clamp(vmin_x, vmax_x - 1);
         self.mouse_y = (self.mouse_y + dy).clamp(vmin_y, vmax_y - 1);
 
+        // Gap snap: with mismatched output sizes the bounding-box clamp
+        // can leave the cursor in a region that no output covers (e.g.
+        // 1920x1080 next to 1280x800 leaves a 1280x280 dead band below
+        // the secondary). Without this snap, output_at() falls back to
+        // the primary, the per-output HW cursor command gets local
+        // coords way past the primary's bounds, and the cursor goes
+        // invisible. Project the position onto the nearest output's
+        // rectangle by Manhattan distance.
+        if self.compositor.outputs.len() >= 2 {
+            let in_any = self.compositor.outputs.iter().any(|o| {
+                self.mouse_x >= o.virtual_x
+                    && self.mouse_y >= o.virtual_y
+                    && self.mouse_x < o.virtual_x + o.fb_width as i32
+                    && self.mouse_y < o.virtual_y + o.fb_height as i32
+            });
+            if !in_any {
+                let mut best: Option<(i32, i32, i32)> = None;
+                for o in &self.compositor.outputs {
+                    let cx = self
+                        .mouse_x
+                        .clamp(o.virtual_x, o.virtual_x + o.fb_width as i32 - 1);
+                    let cy = self
+                        .mouse_y
+                        .clamp(o.virtual_y, o.virtual_y + o.fb_height as i32 - 1);
+                    let d = (cx - self.mouse_x).abs() + (cy - self.mouse_y).abs();
+                    if best.map(|(bd, _, _)| d < bd).unwrap_or(true) {
+                        best = Some((d, cx, cy));
+                    }
+                }
+                if let Some((_, cx, cy)) = best {
+                    self.mouse_x = cx;
+                    self.mouse_y = cy;
+                }
+            }
+        }
+
         // Handle window drag — clamp Y so windows can never go under the menubar.
         if let Some(ref mut drag) = self.dragging {
             drag.moved = true;
