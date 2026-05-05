@@ -90,6 +90,11 @@ pub fn init_bsp() {
     }
 }
 
+/// Hardware LAPIC ID of the bootstrap processor.
+pub fn bsp_lapic_id() -> u8 {
+    BSP_LAPIC_ID.load(Ordering::SeqCst)
+}
+
 /// Write `cpu_id` into IA32_TSC_AUX so RDPID returns it directly.
 unsafe fn write_tsc_aux(cpu_id: u32) {
     core::arch::asm!(

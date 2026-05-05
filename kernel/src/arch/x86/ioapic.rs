@@ -130,9 +130,10 @@ fn setup_irq_routing(isos: &[IsoInfo]) {
             entry |= REDIR_LEVEL;
         }
 
-        // Destination: BSP (LAPIC ID 0) for now — fixed delivery, physical mode
+        // Destination: BSP — fixed delivery, physical mode.  LAPIC IDs are not
+        // guaranteed to be zero-based, so use the ID captured during SMP init.
         // High 32 bits contain destination APIC ID in bits 56-63 (relative to entry start)
-        entry |= 0; // destination = LAPIC 0
+        entry |= (crate::arch::x86::smp::bsp_lapic_id() as u64) << 56;
 
         write_redir(gsi, entry);
     }
