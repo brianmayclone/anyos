@@ -456,6 +456,16 @@ static DEFERRED_WAKE_NEXT: AtomicU32 = AtomicU32::new(0);
 /// hold time from ~256 atomic ops to a single Relaxed load per tick.
 static DEFERRED_WAKE_PENDING: AtomicU32 = AtomicU32::new(0);
 
+/// Next PIT tick at which the deferred maintenance thread should audit saved
+/// contexts. Keeping this out of schedule_inner avoids a global thread scan in
+/// the context-switch hot path.
+static NEXT_CONTEXT_AUDIT_TICK: AtomicU32 = AtomicU32::new(0);
+
+/// Next PIT tick at which deferred maintenance should rebalance stable CPU
+/// affinities. Rebalancing is useful, but it is not required to pick the next
+/// runnable thread.
+static NEXT_REBALANCE_TICK: AtomicU32 = AtomicU32::new(0);
+
 /// Enqueue a TID for deferred wake (called from IRQ context, lock-free).
 /// Uses circular overwrite when all slots are occupied for fairer eviction.
 pub fn deferred_wake(tid: u32) {
@@ -476,6 +486,49 @@ pub fn deferred_wake(tid: u32) {
     // All slots full — circular overwrite for fair eviction (count stays the same).
     let idx = DEFERRED_WAKE_NEXT.fetch_add(1, Ordering::Relaxed) as usize % DEFERRED_WAKE_SLOTS;
     DEFERRED_WAKE_TIDS[idx].store(tid, Ordering::Release);
+}
+
+#[derive(Clone, Copy)]
+enum ContextAuditKind {
+    Canary,
+    Checksum,
+}
+
+#[derive(Clone, Copy)]
+struct ContextAuditDiag {
+    kind: ContextAuditKind,
+    tid: u32,
+    name: [u8; 32],
+    name_len: usize,
+    value: u64,
+    expected: u64,
+    ctx: u64,
+}
+
+#[inline]
+fn thread_name_len(name: &[u8; 32]) -> usize {
+    name.iter().position(|&b| b == 0).unwrap_or(name.len())
+}
+
+#[inline]
+fn timer_tick_reached(now: u32, target: u32) -> bool {
+    now.wrapping_sub(target) < 0x8000_0000
+}
+
+fn periodic_maintenance_due(next_tick: &AtomicU32, now: u32, interval_ticks: u32) -> bool {
+    let interval_ticks = interval_ticks.max(1);
+    let target = next_tick.load(Ordering::Relaxed);
+    if !timer_tick_reached(now, target) {
+        return false;
+    }
+    next_tick
+        .compare_exchange(
+            target,
+            now.wrapping_add(interval_ticks),
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        )
+        .is_ok()
 }
 
 // --- Tick counters ---
@@ -755,6 +808,129 @@ impl Scheduler {
     #[inline]
     fn num_cpus(&self) -> usize {
         crate::arch::hal::cpu_count()
+    }
+
+    /// Scan saved contexts for canary/checksum damage.
+    ///
+    /// This is deliberately called by deferred maintenance instead of
+    /// schedule_inner: it is a full thread-list scan and only produces
+    /// diagnostics, so it must not lengthen every timer context switch.
+    fn audit_context_integrity_once(&self) -> Option<ContextAuditDiag> {
+        use crate::task::context::CANARY_MAGIC;
+
+        for thread in self.threads.iter() {
+            let t = thread.as_ref();
+            if t.context.save_complete != 1 || t.state == ThreadState::Running || t.is_idle {
+                continue;
+            }
+
+            let name = t.name;
+            let name_len = thread_name_len(&name);
+            let ctx = &t.context as *const _ as u64;
+            if t.context.canary != CANARY_MAGIC {
+                return Some(ContextAuditDiag {
+                    kind: ContextAuditKind::Canary,
+                    tid: t.tid,
+                    name,
+                    name_len,
+                    value: t.context.canary,
+                    expected: CANARY_MAGIC,
+                    ctx,
+                });
+            }
+
+            let expected = t.context.compute_checksum();
+            if t.context.checksum != expected {
+                return Some(ContextAuditDiag {
+                    kind: ContextAuditKind::Checksum,
+                    tid: t.tid,
+                    name,
+                    name_len,
+                    value: t.context.checksum,
+                    expected,
+                    ctx,
+                });
+            }
+        }
+
+        None
+    }
+
+    /// Periodically adjust stable CPU affinities when runnable work is skewed.
+    ///
+    /// The actual stealing path in pick_next keeps CPUs busy quickly; this slower
+    /// maintenance pass prevents wakeups from continuing to prefer an overloaded
+    /// CPU. Ready victims are moved to the new queue immediately.
+    fn rebalance_affinity_once(&mut self) {
+        let n_cpus = self.num_cpus();
+        if n_cpus <= 1 {
+            return;
+        }
+
+        let mut aff_count = [0u32; MAX_CPUS];
+        for t in self.threads.iter() {
+            if t.is_idle {
+                continue;
+            }
+            match t.state {
+                ThreadState::Ready | ThreadState::Running => {
+                    let c = t.affinity_cpu;
+                    if c < n_cpus {
+                        aff_count[c] += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut busiest_cpu = 0usize;
+        let mut busiest_val = 0u32;
+        let mut lightest_cpu = 0usize;
+        let mut lightest_val = u32::MAX;
+        for cpu in 0..n_cpus {
+            if aff_count[cpu] > busiest_val {
+                busiest_val = aff_count[cpu];
+                busiest_cpu = cpu;
+            }
+            if aff_count[cpu] < lightest_val {
+                lightest_val = aff_count[cpu];
+                lightest_cpu = cpu;
+            }
+        }
+
+        if busiest_cpu == lightest_cpu || busiest_val < lightest_val + 3 {
+            return;
+        }
+
+        let mut victim_idx: Option<usize> = None;
+        let mut victim_pri = 128u8;
+        for (idx, t) in self.threads.iter().enumerate() {
+            if t.is_idle || t.critical || t.affinity_cpu != busiest_cpu {
+                continue;
+            }
+            match t.state {
+                ThreadState::Ready | ThreadState::Running => {
+                    if victim_idx.is_none() || t.priority <= victim_pri {
+                        victim_idx = Some(idx);
+                        victim_pri = t.priority;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(idx) = victim_idx {
+            let tid = self.threads[idx].tid;
+            let priority = self.threads[idx].priority;
+            let was_ready = self.threads[idx].state == ThreadState::Ready;
+            self.threads[idx].affinity_cpu = lightest_cpu;
+            if was_ready {
+                self.remove_from_all_queues(tid);
+                self.per_cpu[lightest_cpu]
+                    .run_queue
+                    .enqueue(tid, priority);
+            }
+        }
     }
 
     /// Pick the CPU with the shortest ready queue for load balancing.
@@ -1621,6 +1797,63 @@ fn reap_terminated_threads() {
     drop(reaped);
 }
 
+fn run_deferred_scheduler_maintenance() {
+    let hz = crate::arch::hal::timer_frequency_hz().max(1) as u32;
+    let now = crate::arch::hal::timer_current_ticks();
+    let audit_due = periodic_maintenance_due(&NEXT_CONTEXT_AUDIT_TICK, now, (hz / 10).max(1));
+    let rebalance_due = periodic_maintenance_due(&NEXT_REBALANCE_TICK, now, hz);
+
+    if !audit_due && !rebalance_due {
+        return;
+    }
+
+    let audit_diag = {
+        let mut guard = SCHEDULER.lock();
+        let sched = match guard.as_mut() {
+            Some(sched) => sched,
+            None => return,
+        };
+
+        let audit_diag = if audit_due {
+            sched.audit_context_integrity_once()
+        } else {
+            None
+        };
+
+        if rebalance_due {
+            sched.rebalance_affinity_once();
+        }
+
+        audit_diag
+    };
+
+    if let Some(diag) = audit_diag {
+        let name = core::str::from_utf8(&diag.name[..diag.name_len]).unwrap_or("???");
+        match diag.kind {
+            ContextAuditKind::Canary => {
+                crate::serial_verbose_println!(
+                    "!CANARY DEAD: TID={} '{}' canary={:#018x} expect={:#018x} ctx={:#x}",
+                    diag.tid,
+                    name,
+                    diag.value,
+                    diag.expected,
+                    diag.ctx,
+                );
+            }
+            ContextAuditKind::Checksum => {
+                crate::serial_verbose_println!(
+                    "!CHECKSUM FAIL: TID={} '{}' chk={:#018x} expect={:#018x} ctx={:#x}",
+                    diag.tid,
+                    name,
+                    diag.value,
+                    diag.expected,
+                    diag.ctx,
+                );
+            }
+        }
+    }
+}
+
 pub extern "C" fn deferred_reaper_thread() {
     crate::serial_verbose_println!("  deferred_reaper started");
     loop {
@@ -1629,6 +1862,7 @@ pub extern "C" fn deferred_reaper_thread() {
         let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(sleep_ticks);
         sleep_until(wake_at);
         drain_deferred_scheduler_work();
+        run_deferred_scheduler_maintenance();
         reap_terminated_threads();
     }
 }
