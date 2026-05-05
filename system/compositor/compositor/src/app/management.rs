@@ -45,6 +45,8 @@ pub(crate) fn management_loop(
     const REAP_INTERVAL_MS: u32 = 250;
     let mut last_display_poll_ms: u32 = 0;
     const DISPLAY_POLL_INTERVAL_MS: u32 = 500;
+    let mut last_input_cfg_poll_ms: u32 = 0;
+    const INPUT_CFG_POLL_INTERVAL_MS: u32 = 500;
     let mut last_cursor_report_ms: u32 = sys::uptime_ms();
     const CURSOR_REPORT_INTERVAL_MS: u32 = 15_000;
 
@@ -128,6 +130,25 @@ pub(crate) fn management_loop(
                 }
             }
         }
+
+        // NOTE: Earlier we re-read the input prefs from confd here every
+        // 500 ms so live changes from the settings app would propagate
+        // without a compositor restart. That turned out to be very
+        // expensive in practice — `read_i64` on a key that confd hasn't
+        // answered yet blocks for `SINGLE_LINE_TIMEOUT_MS` (5 s) per
+        // call, and this poll fires on the same management thread that
+        // dispatches `process_input`. With confd briefly unreachable
+        // (e.g. during first boot, before the daemon has loaded its DB)
+        // every tick blocked the input pipeline for tens of seconds —
+        // visible as cursor "spotting" instead of a continuous trail.
+        //
+        // The initial values are loaded once in `bootstrap.rs` after
+        // confd's brief readiness window, which is sufficient until we
+        // wire a confd-watch / push-notification path. Settings-app
+        // changes currently require a compositor restart; that will be
+        // fixed when the watch path is in.
+        let _ = last_input_cfg_poll_ms;
+        let _ = INPUT_CFG_POLL_INTERVAL_MS;
 
         if boot_redraw_idx < boot_redraw_schedule.len() {
             let elapsed = now_ms.wrapping_sub(boot_start_ms);

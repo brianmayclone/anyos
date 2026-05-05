@@ -256,6 +256,14 @@ pub fn run() {
         } else {
             desktop::theme::set_scale_factor(100);
         }
+
+        // Prime the natural-scroll cell so the very first wheel event
+        // already honours the saved setting (otherwise it would behave
+        // as default-off until the management loop's first refresh).
+        config::refresh_natural_scroll();
+        if config::natural_scroll_enabled() {
+            println!("compositor: natural scrolling enabled");
+        }
     } else {
         desktop::theme::set_scale_factor(100);
         println!("compositor: setup mode — skipping config restore");

@@ -19,6 +19,27 @@ const COMPOSITOR_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
     default_int("resolution/height", 0),
     default_string("theme/mode", "dark"),
     default_string("theme/style", ""),
+    // Mouse wheel direction. 0 = traditional (wheel up scrolls content
+    // up = standard PC behaviour, factory default), 1 = natural
+    // scrolling (wheel up scrolls content down, like a touchpad).
+    // Applied in `handle_scroll` (sign flip on dz).
+    default_int("input/natural_scroll", 0),
+    // Left-handed mouse: swap primary (LEFT) and secondary (RIGHT)
+    // buttons in the compositor's button pipeline. 0 = right-handed
+    // (default), 1 = left-handed.
+    default_int("input/left_handed", 0),
+    // Double-click threshold in milliseconds. Standard: 400.
+    // Backend wiring lives in libanyui (per-process); for now the
+    // value is stored in confd and the UI reflects it, the runtime
+    // application is a Phase-2 follow-up.
+    default_int("input/double_click_ms", 400),
+    // Pointer speed in percent (50 = half, 100 = unchanged, 200 =
+    // double). Backend application is a Phase-2 follow-up — for
+    // now the value just round-trips through the UI.
+    default_int("input/pointer_speed", 100),
+    // Cursor size selector: 0 = small, 1 = medium (default), 2 = large.
+    // Backend cursor-render scaling is a Phase-2 follow-up.
+    default_int("input/cursor_size", 1),
 ];
 const COMPOSITOR_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
 const COMPOSITOR_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
@@ -32,6 +53,7 @@ const COMPOSITOR_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
         "display",
         "resolution",
         "theme",
+        "input",
     ],
     COMPOSITOR_DEFAULTS,
     COMPOSITOR_MIGRATIONS,

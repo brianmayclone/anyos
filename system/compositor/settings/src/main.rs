@@ -17,6 +17,7 @@ mod page_display_multimon;
 mod page_dock;
 mod page_general;
 mod page_keyboard;
+mod page_mouse;
 mod page_network;
 mod page_profile;
 mod page_sound;
@@ -287,6 +288,7 @@ fn build_page(idx: usize) {
         BuiltinId::Apps => page_apps::build(scroll),
         BuiltinId::Devices => page_devices::build(scroll),
         BuiltinId::Keyboard => page_keyboard::build(scroll),
+        BuiltinId::Mouse => page_mouse::build(scroll),
         BuiltinId::Network => page_network::build(scroll),
         BuiltinId::Update => page_update::build(scroll),
     };

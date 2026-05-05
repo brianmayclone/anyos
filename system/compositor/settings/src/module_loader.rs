@@ -77,12 +77,22 @@ pub fn builtin_pages() -> Vec<PageEntry> {
         i18n::t("System"),
         5,
     ));
+    // Input devices group: keyboard shortcuts and mouse settings live
+    // together under their own sidebar category instead of the catch-
+    // all "System" bucket.
+    m.push(b(
+        BuiltinId::Mouse,
+        i18n::t("Mouse"),
+        "dev_keyboard.ico",
+        i18n::t("Input Devices"),
+        0,
+    ));
     m.push(b(
         BuiltinId::Keyboard,
         i18n::t("Keyboard Shortcuts"),
-        "dev_cpu.ico",
-        i18n::t("System"),
-        6,
+        "dev_keyboard.ico",
+        i18n::t("Input Devices"),
+        1,
     ));
     m.push(b(
         BuiltinId::Network,

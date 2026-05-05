@@ -17,6 +17,7 @@ pub enum BuiltinId {
     Apps,
     Devices,
     Keyboard,
+    Mouse,
     Network,
     Update,
 }
