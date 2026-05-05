@@ -189,10 +189,7 @@ pub fn run() {
     // displayd, just with the kernel's bootstrap layout).
     let displayd_tid = process::spawn("/System/displayd", "");
     if displayd_tid != u32::MAX {
-        println!(
-            "compositor: displayd spawned (TID={})",
-            displayd_tid
-        );
+        println!("compositor: displayd spawned (TID={})", displayd_tid);
     } else {
         println!("compositor: WARNING — displayd not found; using boot-time layout only");
     }

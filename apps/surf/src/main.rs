@@ -2855,7 +2855,8 @@ fn handle_script_done(
         .cloned()
         .unwrap_or(libwebview::js::ScriptMode::Blocking);
     if matches!(mode, libwebview::js::ScriptMode::Module) {
-        st.tabs[tab_index].pending_scripts[slot] = Some(module_import_wrapper(&module_url_key(&url)));
+        st.tabs[tab_index].pending_scripts[slot] =
+            Some(module_import_wrapper(&module_url_key(&url)));
     } else if script_within_surf_limit(slot, &label, &text) {
         st.tabs[tab_index].pending_scripts[slot] = Some(text);
     } else {

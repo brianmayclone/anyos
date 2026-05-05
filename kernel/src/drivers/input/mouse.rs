@@ -270,12 +270,9 @@ fn process_packet(state: &mut MouseState, dz: i32) {
     if let Some(pending) = state.pending_release.take() {
         // Did the previously-pending release CLEAR (button still
         // pressed in this packet)? If so, ignore the transient.
-        let confirmed_left =
-            pending.left && !new_buttons.left;
-        let confirmed_right =
-            pending.right && !new_buttons.right;
-        let confirmed_middle =
-            pending.middle && !new_buttons.middle;
+        let confirmed_left = pending.left && !new_buttons.left;
+        let confirmed_right = pending.right && !new_buttons.right;
+        let confirmed_middle = pending.middle && !new_buttons.middle;
         if !confirmed_left && pending.left {
             new_buttons.left = true;
         }

@@ -1,3 +1,4 @@
+use crate::format::fmt_u32;
 use crate::types::CpuHistory;
 use libanyui_client as ui;
 
@@ -8,7 +9,8 @@ pub fn draw_cpu_graph(
     w: u32,
     h: u32,
     core: usize,
-    _current_pct: u32,
+    current_pct: u32,
+    current_mhz: u32,
     history: &CpuHistory,
 ) {
     let graph_bg = 0xFF1A1A2E;
@@ -18,7 +20,34 @@ pub fn draw_cpu_graph(
 
     cv.fill_rect(x, y, w, h, graph_bg);
 
-    // Title: "N: XX%"
+    let mut label = [0u8; 40];
+    let mut p = 0usize;
+    let mut num = [0u8; 12];
+    label[p] = b'C';
+    p += 1;
+    let s = fmt_u32(&mut num, core as u32);
+    label[p..p + s.len()].copy_from_slice(s.as_bytes());
+    p += s.len();
+    label[p..p + 2].copy_from_slice(b": ");
+    p += 2;
+    let s = fmt_u32(&mut num, current_pct);
+    label[p..p + s.len()].copy_from_slice(s.as_bytes());
+    p += s.len();
+    label[p] = b'%';
+    p += 1;
+    if current_mhz > 0 {
+        label[p] = b' ';
+        p += 1;
+        let s = fmt_u32(&mut num, current_mhz);
+        label[p..p + s.len()].copy_from_slice(s.as_bytes());
+        p += s.len();
+        label[p..p + 3].copy_from_slice(b"MHz");
+        p += 3;
+    }
+    if let Ok(text) = core::str::from_utf8(&label[..p]) {
+        cv.draw_text(x + 4, y + 2, 0xFFE8E8F0, 0, 11, text);
+    }
+
     let label_h = 16u32;
     // Draw graph area below label
     let gy = y + label_h as i32;

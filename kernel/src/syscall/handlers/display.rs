@@ -809,9 +809,7 @@ pub fn sys_input_poll(buf_ptr: u64, max_events: u32) -> u32 {
     // primary-relative positions every poll, fighting against the PS/2
     // relative path that correctly traverses the virtual desktop. Same
     // rationale as vmmouse::force_disable() in sys_register_compositor.
-    let multi_monitor = crate::drivers::gpu::with_gpu(|g| g.display_count())
-        .unwrap_or(1)
-        > 1;
+    let multi_monitor = crate::drivers::gpu::with_gpu(|g| g.display_count()).unwrap_or(1) > 1;
     if !multi_monitor {
         if crate::drivers::vmmdev::is_available() {
             if let Some((x, y, _btns)) = crate::drivers::vmmdev::poll_mouse() {
@@ -1732,35 +1730,35 @@ pub fn sys_gpu_3d_resource_destroy(_resource_id: u32) -> u32 {
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct DisplayInfoFfi {
-    pub id: u32,            //  0
-    pub connected: u32,     //  4  (boolean as u32 for alignment)
-    pub current_w: u32,     //  8
-    pub current_h: u32,     // 12
-    pub preferred_w: u32,   // 16
-    pub preferred_h: u32,   // 20
-    pub refresh_mhz: u32,   // 24
-    pub bpp: u32,           // 28
-    pub physical_mm: u32,   // 32  (low u16 = width mm, high u16 = height mm)
-    pub edid_hash: u64,     // 36
-    pub manufacturer: u32,  // 44  (4 ASCII bytes, null-terminated)
-    pub flags: u32,         // 48  (bit 0 = primary, bit 1 = mirror)
-    pub mirror_of: u32,     // 52  (0xFFFFFFFF = none)
-    pub _reserved: [u32; 2],// 56..64
+    pub id: u32,             //  0
+    pub connected: u32,      //  4  (boolean as u32 for alignment)
+    pub current_w: u32,      //  8
+    pub current_h: u32,      // 12
+    pub preferred_w: u32,    // 16
+    pub preferred_h: u32,    // 20
+    pub refresh_mhz: u32,    // 24
+    pub bpp: u32,            // 28
+    pub physical_mm: u32,    // 32  (low u16 = width mm, high u16 = height mm)
+    pub edid_hash: u64,      // 36
+    pub manufacturer: u32,   // 44  (4 ASCII bytes, null-terminated)
+    pub flags: u32,          // 48  (bit 0 = primary, bit 1 = mirror)
+    pub mirror_of: u32,      // 52  (0xFFFFFFFF = none)
+    pub _reserved: [u32; 2], // 56..64
 }
 
 /// Wire format for SYS_DISPLAY_SET_LAYOUT entries (36 bytes each).
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct LayoutEntryFfi {
-    pub id: u32,                 //  0
-    pub virtual_x: i32,          //  4
-    pub virtual_y: i32,          //  8
-    pub mode_w: u32,             // 12
-    pub mode_h: u32,             // 16
-    pub mode_refresh_mhz: u32,   // 20
-    pub scale: u32,              // 24  (percent, 100 = 1.0x)
-    pub flags: u32,              // 28  (bit 0 = primary)
-    pub mirror_of: u32,          // 32  (0xFFFFFFFF = none)
+    pub id: u32,               //  0
+    pub virtual_x: i32,        //  4
+    pub virtual_y: i32,        //  8
+    pub mode_w: u32,           // 12
+    pub mode_h: u32,           // 16
+    pub mode_refresh_mhz: u32, // 20
+    pub scale: u32,            // 24  (percent, 100 = 1.0x)
+    pub flags: u32,            // 28  (bit 0 = primary)
+    pub mirror_of: u32,        // 32  (0xFFFFFFFF = none)
 }
 
 /// SYS_DISPLAY_LIST (700): enumerate all advertised display outputs.
@@ -1801,8 +1799,7 @@ pub fn sys_display_list(buf_ptr: u64, buf_count: u32) -> u32 {
                     e.refresh_mhz = m.refresh_mhz;
                 }
             }
-            e.physical_mm =
-                (info.physical_mm.0 as u32) | ((info.physical_mm.1 as u32) << 16);
+            e.physical_mm = (info.physical_mm.0 as u32) | ((info.physical_mm.1 as u32) << 16);
             e.edid_hash = info.edid_hash;
             e.manufacturer = u32::from_le_bytes(info.manufacturer);
             if let Some(target) = info.mirror_of {
@@ -1855,7 +1852,11 @@ pub fn sys_display_set_layout(entries_ptr: u64, entry_count: u32) -> u32 {
         } else {
             e.mode_refresh_mhz
         };
-        let scale = if e.scale == 0 { 100 } else { e.scale.min(400) as u16 };
+        let scale = if e.scale == 0 {
+            100
+        } else {
+            e.scale.min(400) as u16
+        };
         layout.entries.push(OutputLayoutEntry {
             id: e.id,
             virtual_x: e.virtual_x,
@@ -1981,8 +1982,7 @@ pub fn sys_display_flush(output_id: u32, xy: u32, wh: u32) -> u32 {
     // First-call diagnostic only — log once per output so the boot test
     // can confirm the secondary render pass reaches the kernel without
     // spamming every frame.
-    static FLUSH_SEEN: core::sync::atomic::AtomicU32 =
-        core::sync::atomic::AtomicU32::new(0);
+    static FLUSH_SEEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     let mask = 1u32 << (output_id & 31);
     let prev = FLUSH_SEEN.fetch_or(mask, core::sync::atomic::Ordering::Relaxed);
     if prev & mask == 0 {

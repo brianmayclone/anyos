@@ -363,6 +363,79 @@ pub fn has_mwait() -> bool {
 }
 
 // =============================================================================
+// CPU Power Policy
+// =============================================================================
+
+/// Return the active CPU power profile.
+///
+/// 0 = power saver, 1 = balanced, 2 = performance.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn cpu_power_profile() -> u32 {
+    crate::arch::x86::power::active_profile()
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn cpu_power_profile() -> u32 {
+    1
+}
+
+/// Set the CPU power profile on the current CPU.
+///
+/// x86 uses Intel HWP, Intel legacy PERF_CTL, or AMD P-state MSRs when exposed.
+/// Under KVM this is best-effort against the virtualized host CPU surface.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn set_cpu_power_profile(profile: u32) -> bool {
+    crate::arch::x86::power::set_profile_id(profile)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn set_cpu_power_profile(profile: u32) -> bool {
+    profile <= 2
+}
+
+/// CPU power driver kind.
+///
+/// 0 = none, 1 = Intel HWP, 2 = Intel legacy P-state, 3 = AMD P-state,
+/// 4 = KVM/host-CPU best effort.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn cpu_power_driver_kind() -> u32 {
+    crate::arch::x86::power::driver_kind()
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn cpu_power_driver_kind() -> u32 {
+    0
+}
+
+/// Apply a pending global CPU power profile change to this CPU.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn sync_cpu_power_profile_on_current_cpu() {
+    crate::arch::x86::power::sync_profile_on_current_cpu();
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn sync_cpu_power_profile_on_current_cpu() {}
+
+/// Refresh current CPU frequency telemetry if its sampling interval elapsed.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn sample_cpu_frequency_on_current_cpu_if_due() {
+    crate::arch::x86::power::sample_current_cpu_frequency_mhz_if_due();
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn sample_cpu_frequency_on_current_cpu_if_due() {}
+
+// =============================================================================
 // Interrupt Controller
 // =============================================================================
 

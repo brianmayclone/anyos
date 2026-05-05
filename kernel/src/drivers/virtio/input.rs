@@ -245,15 +245,13 @@ impl InputBus {
                 match ev.code {
                     ABS_X => {
                         let span = (self.abs_x_max - self.abs_x_min).max(1);
-                        let local = ((raw - self.abs_x_min) as i64
-                            * self.out_w as i64
+                        let local = ((raw - self.abs_x_min) as i64 * self.out_w as i64
                             / span as i64) as i32;
                         self.acc_dx = local.clamp(0, self.out_w as i32 - 1);
                     }
                     ABS_Y => {
                         let span = (self.abs_y_max - self.abs_y_min).max(1);
-                        let local = ((raw - self.abs_y_min) as i64
-                            * self.out_h as i64
+                        let local = ((raw - self.abs_y_min) as i64 * self.out_h as i64
                             / span as i64) as i32;
                         self.acc_dy = local.clamp(0, self.out_h as i32 - 1);
                     }
@@ -279,9 +277,7 @@ impl InputBus {
                         // Treat as keyboard key. Only meaningful when the
                         // device is actually a keyboard; mouse devices won't
                         // emit non-BTN_* keycodes.
-                        if self.kind == InputKind::Keyboard
-                            || self.kind == InputKind::Unknown
-                        {
+                        if self.kind == InputKind::Keyboard || self.kind == InputKind::Unknown {
                             self.deliver_keyboard(code, pressed);
                         } else {
                             crate::serial_println!(
@@ -691,8 +687,8 @@ fn classify(vdev: &VirtioDevice) -> InputKind {
     // Mouse buttons live in the BTN_LEFT (0x110 = 272) bit. The bitmap is
     // little-endian; bit 272 is byte 34, bit 0.
     let has_btn_left = (key_sz as usize) > 34 && (key_bits[34] & 0x01) != 0;
-    let has_alpha_keys = (key_sz as usize) >= 4
-        && (key_bits[1] & 0xFE != 0 || key_bits[2] != 0 || key_bits[3] != 0);
+    let has_alpha_keys =
+        (key_sz as usize) >= 4 && (key_bits[1] & 0xFE != 0 || key_bits[2] != 0 || key_bits[3] != 0);
 
     if has_btn_left && has_rel {
         InputKind::Mouse
@@ -739,9 +735,7 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
     let caps = match virtio::find_capabilities(pci) {
         Some(c) => c,
         None => {
-            crate::serial_println!(
-                "[virtio-input] no modern PCI capabilities — abandoning probe"
-            );
+            crate::serial_println!("[virtio-input] no modern PCI capabilities — abandoning probe");
             return None;
         }
     };
@@ -784,8 +778,7 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
     let _statusq = vdev.setup_queue(STATUS_Q);
 
     // 7. Allocate one contiguous buffer for all event slots.
-    let pages_needed =
-        ((EVENT_SLOTS * EVENT_SIZE) + 4095) / 4096;
+    let pages_needed = ((EVENT_SLOTS * EVENT_SIZE) + 4095) / 4096;
     let event_buf_phys = match physical::alloc_contiguous(pages_needed.max(1)) {
         Some(p) => p.as_u64(),
         None => {
@@ -829,13 +822,12 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
                     .unwrap_or(false)
             })
             .count() as u32;
-        let advertised =
-            crate::drivers::gpu::with_gpu(|g| g.display_count()).unwrap_or(1);
+        let advertised = crate::drivers::gpu::with_gpu(|g| g.display_count()).unwrap_or(1);
         if mouse_index < advertised {
             output_id = mouse_index as u8;
             // Pull this scanout's dimensions for ABS scaling.
-            if let Some(info) = crate::drivers::gpu::with_gpu(|g| g.output_info(mouse_index))
-                .flatten()
+            if let Some(info) =
+                crate::drivers::gpu::with_gpu(|g| g.output_info(mouse_index)).flatten()
             {
                 if let Some(m) = info.current_mode.or(info.preferred_mode) {
                     out_w = m.width;

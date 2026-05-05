@@ -143,13 +143,21 @@ fn render_grid() {
     let ch = s.canvas_h as i32;
     let mut x = 0i32;
     while x <= cw {
-        let col = if x % 100 == 0 { COL_GRID_MAJOR } else { COL_GRID };
+        let col = if x % 100 == 0 {
+            COL_GRID_MAJOR
+        } else {
+            COL_GRID
+        };
         canvas.fill_rect(x, 0, 1, ch as u32, col);
         x += 25;
     }
     let mut y = 0i32;
     while y <= ch {
-        let col = if y % 100 == 0 { COL_GRID_MAJOR } else { COL_GRID };
+        let col = if y % 100 == 0 {
+            COL_GRID_MAJOR
+        } else {
+            COL_GRID
+        };
         canvas.fill_rect(0, y, cw as u32, 1, col);
         y += 25;
     }
@@ -218,8 +226,10 @@ fn refresh_position_labels() {
     let (wx, wy) = win.get_position();
     let (ww, wh) = win.get_size();
 
-    s.lbl_win_pos.set_text(&format!("Window pos: ({}, {})", wx, wy));
-    s.lbl_win_size.set_text(&format!("Window size: {}x{}", ww, wh));
+    s.lbl_win_pos
+        .set_text(&format!("Window pos: ({}, {})", wx, wy));
+    s.lbl_win_size
+        .set_text(&format!("Window size: {}x{}", ww, wh));
     s.lbl_canvas_pos
         .set_text(&format!("Canvas-local: ({}, {})", s.cur_x, s.cur_y));
 
@@ -236,10 +246,7 @@ fn refresh_position_labels() {
     // somewhere?" question. Do strict containment ourselves.
     let screens = ui::Screen::list();
     let containing = screens.iter().find(|scr| {
-        dx >= scr.virtual_x
-            && dy >= scr.virtual_y
-            && dx < scr.right()
-            && dy < scr.bottom()
+        dx >= scr.virtual_x && dy >= scr.virtual_y && dx < scr.right() && dy < scr.bottom()
     });
     if let Some(scr) = containing {
         let lx = dx - scr.virtual_x;
@@ -267,8 +274,10 @@ fn refresh_button_labels() {
     let s = app();
     let btn = button_label(s.click.button);
     let count = click_count_word(s.click.consecutive);
-    s.lbl_button
-        .set_text(&format!("Last: {} ({}, x{})", btn, count, s.click.consecutive));
+    s.lbl_button.set_text(&format!(
+        "Last: {} ({}, x{})",
+        btn, count, s.click.consecutive
+    ));
     s.lbl_wheel
         .set_text(&format!(
             "Wheel up: {}  down: {}",

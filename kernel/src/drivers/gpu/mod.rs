@@ -14,8 +14,7 @@ pub mod virtio_gpu;
 pub mod vmware_svga;
 
 pub use output::{
-    DisplayEvent, LayoutError, OutputInfo, OutputLayout, OutputLayoutEntry, OutputMode,
-    MAX_OUTPUTS,
+    DisplayEvent, LayoutError, OutputInfo, OutputLayout, OutputLayoutEntry, OutputMode, MAX_OUTPUTS,
 };
 
 use crate::sync::mutex::Mutex;

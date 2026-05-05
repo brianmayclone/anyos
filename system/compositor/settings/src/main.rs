@@ -19,6 +19,7 @@ mod page_general;
 mod page_keyboard;
 mod page_mouse;
 mod page_network;
+mod page_power;
 mod page_profile;
 mod page_sound;
 mod page_update;
@@ -282,6 +283,7 @@ fn build_page(idx: usize) {
         BuiltinId::Dashboard => page_dashboard::build(scroll),
         BuiltinId::General => page_general::build(scroll),
         BuiltinId::Profile => page_profile::build(scroll),
+        BuiltinId::Power => page_power::build(scroll),
         BuiltinId::Display => page_display::build(scroll),
         BuiltinId::Dock => page_dock::build(scroll),
         BuiltinId::Sound => page_sound::build(scroll),

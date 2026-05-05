@@ -16,7 +16,12 @@ struct BitReader<'a> {
 
 impl<'a> BitReader<'a> {
     fn new(data: &'a [u8]) -> Self {
-        BitReader { data, pos: 0, bit_buf: 0, bit_count: 0 }
+        BitReader {
+            data,
+            pos: 0,
+            bit_buf: 0,
+            bit_count: 0,
+        }
     }
 
     fn ensure_bits(&mut self, count: u8) {
@@ -131,16 +136,26 @@ impl HuffmanTable {
 
 fn build_fixed_literal_table() -> HuffmanTable {
     let mut lengths = [0u8; 288];
-    for i in 0..=143 { lengths[i] = 8; }
-    for i in 144..=255 { lengths[i] = 9; }
-    for i in 256..=279 { lengths[i] = 7; }
-    for i in 280..=287 { lengths[i] = 8; }
+    for i in 0..=143 {
+        lengths[i] = 8;
+    }
+    for i in 144..=255 {
+        lengths[i] = 9;
+    }
+    for i in 256..=279 {
+        lengths[i] = 7;
+    }
+    for i in 280..=287 {
+        lengths[i] = 8;
+    }
     HuffmanTable::build(&lengths, 288)
 }
 
 fn build_fixed_distance_table() -> HuffmanTable {
     let mut lengths = [0u8; 32];
-    for i in 0..32 { lengths[i] = 5; }
+    for i in 0..32 {
+        lengths[i] = 5;
+    }
     HuffmanTable::build(&lengths, 32)
 }
 
@@ -148,30 +163,25 @@ fn build_fixed_distance_table() -> HuffmanTable {
 
 /// Length base values for codes 257..285.
 const LENGTH_BASE: [u16; 29] = [
-    3, 4, 5, 6, 7, 8, 9, 10, 11, 13,
-    15, 17, 19, 23, 27, 31, 35, 43, 51, 59,
-    67, 83, 99, 115, 131, 163, 195, 227, 258,
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
+    163, 195, 227, 258,
 ];
 
 /// Extra bits for length codes 257..285.
 const LENGTH_EXTRA: [u8; 29] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
-    1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
-    4, 4, 4, 4, 5, 5, 5, 5, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
 ];
 
 /// Distance base values for codes 0..29.
 const DIST_BASE: [u16; 30] = [
-    1, 2, 3, 4, 5, 7, 9, 13, 17, 25,
-    33, 49, 65, 97, 129, 193, 257, 385, 513, 769,
-    1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+    2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
 ];
 
 /// Extra bits for distance codes 0..29.
 const DIST_EXTRA: [u8; 30] = [
-    0, 0, 0, 0, 1, 1, 2, 2, 3, 3,
-    4, 4, 5, 5, 6, 6, 7, 7, 8, 8,
-    9, 9, 10, 10, 11, 11, 12, 12, 13, 13,
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
+    13,
 ];
 
 // ─── Code Length Order ──────────────────────────────────────────────────────
@@ -241,21 +251,30 @@ pub fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
                             let repeat = reader.read_bits(2) as usize + 3;
                             let prev = if i > 0 { lengths[i - 1] } else { 0 };
                             for _ in 0..repeat {
-                                if i < total { lengths[i] = prev; i += 1; }
+                                if i < total {
+                                    lengths[i] = prev;
+                                    i += 1;
+                                }
                             }
                         }
                         17 => {
                             // Repeat 0 for 3..10 times
                             let repeat = reader.read_bits(3) as usize + 3;
                             for _ in 0..repeat {
-                                if i < total { lengths[i] = 0; i += 1; }
+                                if i < total {
+                                    lengths[i] = 0;
+                                    i += 1;
+                                }
                             }
                         }
                         18 => {
                             // Repeat 0 for 11..138 times
                             let repeat = reader.read_bits(7) as usize + 11;
                             for _ in 0..repeat {
-                                if i < total { lengths[i] = 0; i += 1; }
+                                if i < total {
+                                    lengths[i] = 0;
+                                    i += 1;
+                                }
                             }
                         }
                         _ => return None,
@@ -300,15 +319,15 @@ fn decode_block(
             if len_idx >= 29 {
                 return None;
             }
-            let length = LENGTH_BASE[len_idx] as usize
-                + reader.read_bits(LENGTH_EXTRA[len_idx]) as usize;
+            let length =
+                LENGTH_BASE[len_idx] as usize + reader.read_bits(LENGTH_EXTRA[len_idx]) as usize;
 
             let dist_sym = dist_table.decode(reader) as usize;
             if dist_sym >= 30 {
                 return None;
             }
-            let distance = DIST_BASE[dist_sym] as usize
-                + reader.read_bits(DIST_EXTRA[dist_sym]) as usize;
+            let distance =
+                DIST_BASE[dist_sym] as usize + reader.read_bits(DIST_EXTRA[dist_sym]) as usize;
 
             // Copy from sliding window
             if distance > output.len() {

@@ -111,7 +111,8 @@ pub fn sys_dmesg(buf_ptr: u64, buf_size: u32) -> u32 {
 }
 
 /// sys_sysinfo - Get system information.
-/// arg1=cmd: 0=memory, 1=threads, 2=cpus, 3=cpu_load
+/// arg1=cmd: 0=memory, 1=threads, 2=cpus, 3=cpu_load, 4=hardware,
+///           5=cpu_power, 6=cpu_frequency
 /// arg2=buf_ptr, arg3=buf_size
 pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
     match cmd {
@@ -213,7 +214,7 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
             0
         }
         4 => {
-            // Hardware info: up to 108-byte struct (backwards-compatible)
+            // Hardware info: up to 116-byte struct (backwards-compatible)
             //   [0..48]    CPU brand string (null-terminated)
             //   [48..64]   CPU vendor string (null-terminated)
             //   [64..68]   TSC frequency in MHz (u32 LE)
@@ -226,11 +227,21 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
             //   [92..96]   Framebuffer BPP (u32 LE)
             //   [96..100]  Current CPU frequency in MHz (u32 LE)
             //   [100..104] Max CPU frequency in MHz (u32 LE)
-            //   [104..108] Power features: bit0=HWP, bit1=Turbo, bit2=APERF (u32 LE)
+            //   [104..108] Power features: bit0=HWP, bit1=Turbo, bit2=APERF,
+            //              bit3=hypervisor, bit4=active frequency control (u32 LE)
+            //   [108..112] Active CPU power profile: 0=saver,1=balanced,2=performance
+            //   [112..116] CPU power driver: 0=none,1=Intel HWP,2=Intel legacy,
+            //              3=AMD P-state,4=KVM/host best-effort
             if buf_ptr == 0 || buf_size < 96 {
                 return u32::MAX;
             }
-            let actual_size = if buf_size >= 108 { 108usize } else { 96usize };
+            let actual_size = if buf_size >= 116 {
+                116usize
+            } else if buf_size >= 108 {
+                108usize
+            } else {
+                96usize
+            };
             if !is_valid_user_ptr(buf_ptr as u64, actual_size as u64) {
                 return u32::MAX;
             }
@@ -277,11 +288,11 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
                 buf[92..96].copy_from_slice(&(fb.bpp as u32).to_le_bytes());
             }
 
-            // Extended fields (108-byte callers only)
+            // Extended fields (108/116-byte callers only)
             if actual_size >= 108 {
                 #[cfg(target_arch = "x86_64")]
                 {
-                    let cur_freq = crate::arch::x86::power::current_frequency_mhz();
+                    let cur_freq = crate::arch::x86::power::average_frequency_mhz();
                     let max_freq = crate::arch::x86::power::max_frequency_mhz();
                     let features = crate::arch::x86::power::features_bitfield();
                     buf[96..100].copy_from_slice(&cur_freq.to_le_bytes());
@@ -290,8 +301,95 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
                 }
                 // ARM64: fields left as 0 (filled above)
             }
+            if actual_size >= 116 {
+                let profile = crate::arch::hal::cpu_power_profile();
+                let driver = crate::arch::hal::cpu_power_driver_kind();
+                buf[108..112].copy_from_slice(&profile.to_le_bytes());
+                buf[112..116].copy_from_slice(&driver.to_le_bytes());
+            }
 
             actual_size as u32
+        }
+        5 => {
+            // CPU power profile.
+            // Query with a >=20-byte buffer:
+            //   [0] profile, [1] driver, [2] features, [3] current MHz, [4] max MHz.
+            // Set with buf_size=0 and buf_ptr=<profile id>.
+            if buf_size == 0 {
+                return if crate::arch::hal::set_cpu_power_profile(buf_ptr as u32) {
+                    0
+                } else {
+                    u32::MAX
+                };
+            }
+            if buf_ptr == 0 || buf_size < 20 || !is_valid_user_ptr(buf_ptr, 20) {
+                return u32::MAX;
+            }
+            unsafe {
+                let buf = buf_ptr as *mut u32;
+                *buf = crate::arch::hal::cpu_power_profile();
+                *buf.add(1) = crate::arch::hal::cpu_power_driver_kind();
+                #[cfg(target_arch = "x86_64")]
+                {
+                    *buf.add(2) = crate::arch::x86::power::features_bitfield();
+                    *buf.add(3) = crate::arch::x86::power::average_frequency_mhz();
+                    *buf.add(4) = crate::arch::x86::power::max_frequency_mhz();
+                }
+                #[cfg(target_arch = "aarch64")]
+                {
+                    *buf.add(2) = 0;
+                    *buf.add(3) = 0;
+                    *buf.add(4) = 0;
+                }
+            }
+            20
+        }
+        6 => {
+            // CPU frequency snapshot:
+            //   [0] num_cpus
+            //   [1] average current MHz across sampled CPUs
+            //   [2] total current MHz across sampled CPUs
+            //   [3] max CPU MHz
+            //   [4] power driver
+            //   [5] active power profile
+            //   [6] power feature bitfield
+            //   [7] reserved
+            //   [8..] per-core current MHz, one u32 per CPU
+            let num_cpus = crate::arch::hal::cpu_count().min(64);
+            let required = 32usize.saturating_add(num_cpus.saturating_mul(4));
+            if buf_ptr == 0 || buf_size < 32 || !is_valid_user_ptr(buf_ptr, buf_size as u64) {
+                return u32::MAX;
+            }
+            let words = (buf_size as usize) / 4;
+            unsafe {
+                let buf = buf_ptr as *mut u32;
+                for i in 0..words {
+                    *buf.add(i) = 0;
+                }
+                *buf = num_cpus as u32;
+                *buf.add(4) = crate::arch::hal::cpu_power_driver_kind();
+                *buf.add(5) = crate::arch::hal::cpu_power_profile();
+                #[cfg(target_arch = "x86_64")]
+                {
+                    crate::arch::x86::power::sample_current_cpu_frequency_mhz();
+                    *buf.add(1) = crate::arch::x86::power::average_frequency_mhz();
+                    *buf.add(2) = crate::arch::x86::power::total_frequency_mhz();
+                    *buf.add(3) = crate::arch::x86::power::max_frequency_mhz();
+                    *buf.add(6) = crate::arch::x86::power::features_bitfield();
+                    let limit = num_cpus.min(words.saturating_sub(8));
+                    for cpu in 0..limit {
+                        *buf.add(8 + cpu) = crate::arch::x86::power::per_cpu_frequency_mhz(cpu);
+                    }
+                }
+                #[cfg(target_arch = "aarch64")]
+                {
+                    *buf.add(1) = 0;
+                    *buf.add(2) = 0;
+                    *buf.add(3) = 0;
+                    *buf.add(6) = 0;
+                }
+            }
+            required.min(buf_size as usize) as u32
         }
         _ => u32::MAX,
     }

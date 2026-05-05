@@ -86,17 +86,28 @@ const VD_AGENT_CLIPBOARD_UTF8_TEXT: u32 = 1;
 /// Earlier versions of this file used wrong values (2/3) for the clipboard
 /// caps, which caused QEMU's SPICE server to think we couldn't do clipboard
 /// at all (bit 2 is REPLY, bit 3 is the deprecated legacy CLIPBOARD).
-#[allow(dead_code)] const VD_AGENT_CAP_MOUSE_STATE: u32 = 0;
-#[allow(dead_code)] const VD_AGENT_CAP_MONITORS_CONFIG: u32 = 1;
-#[allow(dead_code)] const VD_AGENT_CAP_REPLY: u32 = 2;
-#[allow(dead_code)] const VD_AGENT_CAP_CLIPBOARD: u32 = 3; // legacy, deprecated
-#[allow(dead_code)] const VD_AGENT_CAP_DISPLAY_CONFIG: u32 = 4;
-#[allow(dead_code)] const VD_AGENT_CAP_CLIPBOARD_BY_DEMAND: u32 = 5;
-#[allow(dead_code)] const VD_AGENT_CAP_CLIPBOARD_SELECTION: u32 = 6;
-#[allow(dead_code)] const VD_AGENT_CAP_SPARSE_MONITORS_CONFIG: u32 = 7;
-#[allow(dead_code)] const VD_AGENT_CAP_GUEST_LINEEND_LF: u32 = 8;
-#[allow(dead_code)] const VD_AGENT_CAP_GUEST_LINEEND_CRLF: u32 = 9;
-#[allow(dead_code)] const VD_AGENT_CAP_MAX_CLIPBOARD: u32 = 10;
+#[allow(dead_code)]
+const VD_AGENT_CAP_MOUSE_STATE: u32 = 0;
+#[allow(dead_code)]
+const VD_AGENT_CAP_MONITORS_CONFIG: u32 = 1;
+#[allow(dead_code)]
+const VD_AGENT_CAP_REPLY: u32 = 2;
+#[allow(dead_code)]
+const VD_AGENT_CAP_CLIPBOARD: u32 = 3; // legacy, deprecated
+#[allow(dead_code)]
+const VD_AGENT_CAP_DISPLAY_CONFIG: u32 = 4;
+#[allow(dead_code)]
+const VD_AGENT_CAP_CLIPBOARD_BY_DEMAND: u32 = 5;
+#[allow(dead_code)]
+const VD_AGENT_CAP_CLIPBOARD_SELECTION: u32 = 6;
+#[allow(dead_code)]
+const VD_AGENT_CAP_SPARSE_MONITORS_CONFIG: u32 = 7;
+#[allow(dead_code)]
+const VD_AGENT_CAP_GUEST_LINEEND_LF: u32 = 8;
+#[allow(dead_code)]
+const VD_AGENT_CAP_GUEST_LINEEND_CRLF: u32 = 9;
+#[allow(dead_code)]
+const VD_AGENT_CAP_MAX_CLIPBOARD: u32 = 10;
 
 // QEMU's SPICE server actually serialises mouse buttons as `1 << SpiceMouseButton`,
 // not `SpiceMouseButtonMask`: LEFT (enum=1) -> bit 1, MIDDLE (2) -> bit 2,
@@ -199,7 +210,10 @@ fn get_compositor_clipboard(comp_chan: u32, reply_chan: u32, sub_id: u32, buf: &
 /// virtio-serial port, with a debug-level hex dump of the first 32 bytes
 /// so the outbound wire stream is visible alongside the inbound dump.
 fn write_chunk(fd: u32, msg: &[u8]) {
-    if matches!(unsafe { CURRENT_LOG_LEVEL }, LogLevel::Debug | LogLevel::Trace) {
+    if matches!(
+        unsafe { CURRENT_LOG_LEVEL },
+        LogLevel::Debug | LogLevel::Trace
+    ) {
         let dump_len = msg.len().min(32);
         let mut hex = String::new();
         for b in &msg[..dump_len] {
@@ -282,8 +296,10 @@ fn send_capabilities_reply(fd: u32) {
 
 // VDAgent selection IDs (when CLIPBOARD_SELECTION cap is active).
 const VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD: u8 = 0;
-#[allow(dead_code)] const VD_AGENT_CLIPBOARD_SELECTION_PRIMARY: u8 = 1;
-#[allow(dead_code)] const VD_AGENT_CLIPBOARD_SELECTION_SECONDARY: u8 = 2;
+#[allow(dead_code)]
+const VD_AGENT_CLIPBOARD_SELECTION_PRIMARY: u8 = 1;
+#[allow(dead_code)]
+const VD_AGENT_CLIPBOARD_SELECTION_SECONDARY: u8 = 2;
 
 /// 4-byte selection prefix used when CLIPBOARD_SELECTION is negotiated:
 /// [u8 selection][u8 reserved[3]].
@@ -486,10 +502,7 @@ fn bootstrap_monitor_table_from_kernel() {
 /// honour the request.
 fn handle_monitors_config(payload: &[u8]) {
     if payload.len() < 8 {
-        vd_debug!(
-            "monitors_config: short payload ({} bytes)",
-            payload.len()
-        );
+        vd_debug!("monitors_config: short payload ({} bytes)", payload.len());
         return;
     }
     let num = read_u32_le(payload, 0) as usize;
@@ -541,11 +554,11 @@ fn handle_monitors_config(payload: &[u8]) {
     }
     if let Some(client) = libdisplay_client::DisplaydClient::connect() {
         match client.push_layout(&entries) {
-            Some(0) => vd_debug!("monitors_config: pushed {} entries to displayd", entries.len()),
-            Some(code) => vd_debug!(
-                "monitors_config: displayd rejected layout (code {})",
-                code
+            Some(0) => vd_debug!(
+                "monitors_config: pushed {} entries to displayd",
+                entries.len()
             ),
+            Some(code) => vd_debug!("monitors_config: displayd rejected layout (code {})", code),
             None => vd_debug!("monitors_config: timeout waiting for displayd"),
         }
         client.disconnect();
@@ -605,9 +618,8 @@ fn handle_agent_message(
 
             // Reply with CLIPBOARD_REQUEST (UTF8_TEXT) — same selection prefix.
             let mut req_payload = Vec::with_capacity(8);
-            req_payload.extend_from_slice(&selection_prefix(
-                VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD,
-            ));
+            req_payload
+                .extend_from_slice(&selection_prefix(VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD));
             req_payload.extend_from_slice(&VD_AGENT_CLIPBOARD_UTF8_TEXT.to_le_bytes());
             let msg = build_message(VD_AGENT_CLIPBOARD_REQUEST, &req_payload);
             write_chunk(fd, &msg);
@@ -703,8 +715,7 @@ fn handle_agent_message(
                 if same {
                     return;
                 }
-                let button_change = !last_pointer.initialized
-                    || last_pointer.buttons != buttons;
+                let button_change = !last_pointer.initialized || last_pointer.buttons != buttons;
                 if button_change {
                     vd_info!(
                         "mouse buttons 0x{:x} -> 0x{:x} at display={} local=({},{}) virt=({},{})",
@@ -717,8 +728,7 @@ fn handle_agent_message(
                         vy
                     );
                 } else {
-                    let count =
-                        MOUSE_LOG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    let count = MOUSE_LOG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                     if count < 4 {
                         vd_info!(
                             "mouse #{} display={} local=({},{}) virt=({},{}) buttons=0x{:x}",
@@ -838,7 +848,9 @@ fn main() {
 
     vd_info!(
         "starting (port_name={}, poll={}ms, idle={}ms)",
-        cfg.port_name, cfg.clipboard_poll_ms, cfg.idle_sleep_ms
+        cfg.port_name,
+        cfg.clipboard_poll_ms,
+        cfg.idle_sleep_ms
     );
 
     // Open the VirtIO serial port (named, alias, or fallback).
@@ -886,8 +898,7 @@ fn main() {
     let mut last_clipboard: Vec<u8> = Vec::new();
     {
         let mut buf = [0u8; 4096];
-        let len =
-            get_compositor_clipboard(comp_chan, reply_chan, sub_id, &mut buf) as usize;
+        let len = get_compositor_clipboard(comp_chan, reply_chan, sub_id, &mut buf) as usize;
         if len > 0 && len <= buf.len() {
             last_clipboard.extend_from_slice(&buf[..len]);
             vd_debug!("startup baseline clipboard: {} bytes", len);
@@ -905,13 +916,21 @@ fn main() {
         if n > 0 && n != u32::MAX {
             let n = n as usize;
             // Wire dump (debug-only): first 32 bytes of every inbound read.
-            if matches!(unsafe { CURRENT_LOG_LEVEL }, LogLevel::Debug | LogLevel::Trace) {
+            if matches!(
+                unsafe { CURRENT_LOG_LEVEL },
+                LogLevel::Debug | LogLevel::Trace
+            ) {
                 let dump_len = n.min(32);
                 let mut hex = String::new();
                 for b in &read_buf[..dump_len] {
                     let _ = core::fmt::write(&mut hex, format_args!("{:02x} ", b));
                 }
-                vd_debug!("wire IN: {}B {}{}", n, hex, if n > dump_len { "..." } else { "" });
+                vd_debug!(
+                    "wire IN: {}B {}{}",
+                    n,
+                    hex,
+                    if n > dump_len { "..." } else { "" }
+                );
             }
             reassembly_buf.extend_from_slice(&read_buf[..n]);
 
@@ -973,7 +992,10 @@ fn main() {
                 if clip_data != last_clipboard.as_slice() {
                     last_clipboard.clear();
                     last_clipboard.extend_from_slice(clip_data);
-                    vd_debug!("local clipboard changed ({} bytes) -> host", clip_data.len());
+                    vd_debug!(
+                        "local clipboard changed ({} bytes) -> host",
+                        clip_data.len()
+                    );
                     send_clipboard_grab(fd);
                 }
             }

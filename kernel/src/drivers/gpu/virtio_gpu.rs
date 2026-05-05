@@ -2046,10 +2046,7 @@ impl GpuDriver for VirtioGpu {
         // and mode_for_output returns None for the rest of the session.
         let idx = (output_id - 1) as usize;
         if let Some(s) = self.extra_scanouts.get(idx) {
-            if s.resource_id != 0
-                && s.width == width
-                && s.height == height
-                && s.mirror_of.is_none()
+            if s.resource_id != 0 && s.width == width && s.height == height && s.mirror_of.is_none()
             {
                 return Some((s.width, s.height, s.pitch, s.fb_phys as u32));
             }
@@ -2283,10 +2280,7 @@ impl GpuDriver for VirtioGpu {
         true
     }
 
-    fn output_info(
-        &mut self,
-        output_id: u32,
-    ) -> Option<crate::drivers::gpu::output::OutputInfo> {
+    fn output_info(&mut self, output_id: u32) -> Option<crate::drivers::gpu::output::OutputInfo> {
         use crate::drivers::gpu::output::{OutputInfo, OutputMode};
         if output_id >= self.num_scanouts_advertised {
             return None;
@@ -2385,10 +2379,8 @@ impl GpuDriver for VirtioGpu {
             // outputs look "disconnected" to user-space layout code on
             // the very first cold boot.
             if info.preferred_mode.is_none() {
-                let h_active =
-                    (edid[56] as u32) | (((edid[58] as u32) >> 4) << 8);
-                let v_active =
-                    (edid[59] as u32) | (((edid[61] as u32) >> 4) << 8);
+                let h_active = (edid[56] as u32) | (((edid[58] as u32) >> 4) << 8);
+                let v_active = (edid[59] as u32) | (((edid[61] as u32) >> 4) << 8);
                 if h_active >= 640 && v_active >= 480 {
                     info.preferred_mode = Some(OutputMode::new(h_active, v_active));
                     info.connected = true;
@@ -2404,8 +2396,7 @@ impl GpuDriver for VirtioGpu {
         // ISR instead, but polling is correct (the spec only requires
         // events_read to be sticky until events_clear is written).
         if self.device.device_cfg != 0 {
-            let events =
-                unsafe { core::ptr::read_volatile(self.device.device_cfg as *const u32) };
+            let events = unsafe { core::ptr::read_volatile(self.device.device_cfg as *const u32) };
             const VIRTIO_GPU_EVENT_DISPLAY: u32 = 1 << 0;
             if events & VIRTIO_GPU_EVENT_DISPLAY != 0 {
                 // Ack the bit (write same value to events_clear at +4).
@@ -2584,9 +2575,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     // num_capsets u32 @ 12). Clamp to MAX_OUTPUTS — the spec already caps
     // it at 16 but defending against a misbehaving host is cheap.
     let num_scanouts_advertised = if device.device_cfg != 0 {
-        let n = unsafe {
-            core::ptr::read_volatile((device.device_cfg + 8) as *const u32)
-        };
+        let n = unsafe { core::ptr::read_volatile((device.device_cfg + 8) as *const u32) };
         n.clamp(1, super::output::MAX_OUTPUTS as u32)
     } else {
         1
@@ -2754,10 +2743,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
                     );
                 }
                 None => {
-                    crate::serial_println!(
-                        "[!] VirtIO GPU: scanout {} setup failed",
-                        output_id
-                    );
+                    crate::serial_println!("[!] VirtIO GPU: scanout {} setup failed", output_id);
                 }
             }
         }

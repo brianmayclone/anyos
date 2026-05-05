@@ -84,7 +84,13 @@ pub(crate) fn management_loop(
                     && mx < o.virtual_x + o.fb_width as i32
                     && my < o.virtual_y + o.fb_height as i32
                 {
-                    hit = Some((o.id, mx - o.virtual_x, my - o.virtual_y, o.fb_width, o.fb_height));
+                    hit = Some((
+                        o.id,
+                        mx - o.virtual_x,
+                        my - o.virtual_y,
+                        o.fb_width,
+                        o.fb_height,
+                    ));
                     break;
                 }
             }

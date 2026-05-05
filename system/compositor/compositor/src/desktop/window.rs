@@ -133,10 +133,7 @@ pub(crate) fn monitor_btn_right_inset() -> i32 {
 pub(crate) fn monitor_btn_x_at(window_full_w: u32, slot: u32) -> i32 {
     let w = monitor_btn_w() as i32;
     let gap = monitor_btn_gap();
-    window_full_w as i32
-        - monitor_btn_right_inset()
-        - (slot as i32 + 1) * w
-        - (slot as i32) * gap
+    window_full_w as i32 - monitor_btn_right_inset() - (slot as i32 + 1) * w - (slot as i32) * gap
 }
 
 /// Render one monitor-send button at the given X. The button shows a
@@ -178,26 +175,56 @@ fn render_monitor_btn(
     let stroke = color_titlebar_text();
     // Top + bottom of monitor frame.
     fill_rect(
-        pixels, stride, full_h, glyph_x, glyph_y,
-        glyph_w as u32, 1, stroke,
+        pixels,
+        stride,
+        full_h,
+        glyph_x,
+        glyph_y,
+        glyph_w as u32,
+        1,
+        stroke,
     );
     fill_rect(
-        pixels, stride, full_h, glyph_x, glyph_y + glyph_h - 1,
-        glyph_w as u32, 1, stroke,
+        pixels,
+        stride,
+        full_h,
+        glyph_x,
+        glyph_y + glyph_h - 1,
+        glyph_w as u32,
+        1,
+        stroke,
     );
     // Left + right side.
     fill_rect(
-        pixels, stride, full_h, glyph_x, glyph_y,
-        1, glyph_h as u32, stroke,
+        pixels,
+        stride,
+        full_h,
+        glyph_x,
+        glyph_y,
+        1,
+        glyph_h as u32,
+        stroke,
     );
     fill_rect(
-        pixels, stride, full_h, glyph_x + glyph_w - 1, glyph_y,
-        1, glyph_h as u32, stroke,
+        pixels,
+        stride,
+        full_h,
+        glyph_x + glyph_w - 1,
+        glyph_y,
+        1,
+        glyph_h as u32,
+        stroke,
     );
     // Stand pixel.
     fill_rect(
-        pixels, stride, full_h, glyph_x + glyph_w / 2 - 1,
-        glyph_y + glyph_h, 2, 1, stroke,
+        pixels,
+        stride,
+        full_h,
+        glyph_x + glyph_w / 2 - 1,
+        glyph_y + glyph_h,
+        2,
+        1,
+        stroke,
     );
 
     // Digit (target output id 0..9).
@@ -1096,8 +1123,7 @@ impl Desktop {
         let shortcut_slot = self.windows[win_idx].shortcut_slot;
         // Pre-compute the list of "send to monitor" target output ids.
         // Done before layer_pixels() borrows self.compositor mutably.
-        let other_outputs: alloc::vec::Vec<u8> =
-            self.other_outputs_for_window(window_id);
+        let other_outputs: alloc::vec::Vec<u8> = self.other_outputs_for_window(window_id);
         // Stack-copy title to avoid heap allocation (title.clone())
         let mut title_buf = [0u8; 256];
         let title_len = self.windows[win_idx].title.len().min(256);
@@ -1292,8 +1318,7 @@ impl Desktop {
         let focused = self.windows[win_idx].focused;
         let full_h = self.windows[win_idx].full_height();
         let shortcut_slot = self.windows[win_idx].shortcut_slot;
-        let other_outputs: alloc::vec::Vec<u8> =
-            self.other_outputs_for_window(window_id);
+        let other_outputs: alloc::vec::Vec<u8> = self.other_outputs_for_window(window_id);
         // Stack-copy title to avoid heap allocation (title.clone())
         let mut title_buf = [0u8; 256];
         let title_len = self.windows[win_idx].title.len().min(256);
@@ -2589,8 +2614,7 @@ impl Desktop {
                 if let Some(win) = self.windows.iter().find(|w| w.id == wid) {
                     let cx_w = win.x + (win.content_width as i32 / 2);
                     let cy_w = win.y;
-                    slot_output_id_pre[slot] =
-                        self.compositor.output_at(cx_w, cy_w).id as u8;
+                    slot_output_id_pre[slot] = self.compositor.output_at(cx_w, cy_w).id as u8;
                 }
             }
         }
@@ -2793,17 +2817,7 @@ impl Desktop {
                         3 => 0xFFAF52DE, // 4th — purple
                         _ => 0xFF8E8E93, // 5th+ — neutral grey
                     };
-                    fill_rounded_rect(
-                        pixels,
-                        stride,
-                        overlay_h,
-                        mb_x,
-                        by,
-                        mb_w,
-                        badge_h,
-                        4,
-                        mb_bg,
-                    );
+                    fill_rounded_rect(pixels, stride, overlay_h, mb_x, by, mb_w, badge_h, 4, mb_bg);
                     let mut mlbl = [0u8; 4];
                     mlbl[0] = b'M';
                     if oid < 10 {
@@ -2817,14 +2831,7 @@ impl Desktop {
                     let mltx = mb_x + (mb_w as i32 - mlw as i32) / 2;
                     let mlty = by + (badge_h as i32 - mlh as i32) / 2;
                     anyos_std::ui::window::font_render_buf(
-                        FONT_ID,
-                        label_fs,
-                        pixels,
-                        stride,
-                        overlay_h,
-                        mltx,
-                        mlty,
-                        0xFFFFFFFF,
+                        FONT_ID, label_fs, pixels, stride, overlay_h, mltx, mlty, 0xFFFFFFFF,
                         mlbl_str,
                     );
                     mb_w + crate::desktop::theme::scale(4)
@@ -2867,8 +2874,9 @@ impl Desktop {
                 if slot_has_window[slot] {
                     let tstr = core::str::from_utf8(&slot_titles[slot][..slot_title_lens[slot]])
                         .unwrap_or("");
-                    let max_tw = card_w
-                        .saturating_sub(badge_w + monitor_badge_w + crate::desktop::theme::scale(18));
+                    let max_tw = card_w.saturating_sub(
+                        badge_w + monitor_badge_w + crate::desktop::theme::scale(18),
+                    );
                     let tlen = title_display_len(tstr, max_tw);
                     let display = if tlen < tstr.len() && tlen > 0 {
                         &tstr[..tlen]
@@ -2876,7 +2884,8 @@ impl Desktop {
                         tstr
                     };
                     if !display.is_empty() {
-                        let ttx = bx + badge_w as i32
+                        let ttx = bx
+                            + badge_w as i32
                             + monitor_badge_w as i32
                             + crate::desktop::theme::scale_i32(6);
                         let (_, tth) =

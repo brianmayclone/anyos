@@ -331,15 +331,31 @@ pub fn fetch_cpu(state: &mut CpuState) {
         state.prev_core_total[i] = ct;
         state.prev_core_idle[i] = ci;
     }
+
+    if let Some(freq) = sys::cpu_frequency_info() {
+        state.avg_freq_mhz = freq.average_mhz;
+        state.total_freq_mhz = freq.total_mhz;
+        state.max_freq_mhz = freq.max_mhz;
+        let n = (state.num_cpus as usize).min(MAX_CPUS);
+        for i in 0..n {
+            state.core_freq_mhz[i] = freq.per_core_mhz[i];
+        }
+        for i in n..MAX_CPUS {
+            state.core_freq_mhz[i] = 0;
+        }
+    }
 }
 
 pub fn fetch_hwinfo() -> HwInfo {
-    let mut buf = [0u8; 108];
+    let mut buf = [0u8; 116];
     sys::sysinfo(4, &mut buf);
+    let freq = sys::cpu_frequency_info().unwrap_or_default();
     let mut brand = [0u8; 48];
     let mut vendor = [0u8; 16];
     brand.copy_from_slice(&buf[0..48]);
     vendor.copy_from_slice(&buf[48..64]);
+    let buf_profile = u32::from_le_bytes([buf[108], buf[109], buf[110], buf[111]]);
+    let buf_driver = u32::from_le_bytes([buf[112], buf[113], buf[114], buf[115]]);
     HwInfo {
         brand,
         vendor,
@@ -351,8 +367,25 @@ pub fn fetch_hwinfo() -> HwInfo {
         fb_width: u32::from_le_bytes([buf[84], buf[85], buf[86], buf[87]]),
         fb_height: u32::from_le_bytes([buf[88], buf[89], buf[90], buf[91]]),
         fb_bpp: u32::from_le_bytes([buf[92], buf[93], buf[94], buf[95]]),
-        cpu_freq_mhz: u32::from_le_bytes([buf[96], buf[97], buf[98], buf[99]]),
-        max_freq_mhz: u32::from_le_bytes([buf[100], buf[101], buf[102], buf[103]]),
-        power_features: u32::from_le_bytes([buf[104], buf[105], buf[106], buf[107]]),
+        cpu_freq_mhz: freq
+            .average_mhz
+            .max(u32::from_le_bytes([buf[96], buf[97], buf[98], buf[99]])),
+        total_cpu_freq_mhz: freq.total_mhz,
+        max_freq_mhz: freq
+            .max_mhz
+            .max(u32::from_le_bytes([buf[100], buf[101], buf[102], buf[103]])),
+        power_features: freq.features
+            | u32::from_le_bytes([buf[104], buf[105], buf[106], buf[107]]),
+        power_profile: if freq.num_cpus > 0 {
+            freq.profile
+        } else {
+            buf_profile
+        },
+        power_driver: if freq.driver > 0 {
+            freq.driver
+        } else {
+            buf_driver
+        },
+        core_freq_mhz: freq.per_core_mhz,
     }
 }

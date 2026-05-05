@@ -72,10 +72,7 @@ impl Desktop {
                 if wy >= by && wy < by + bh {
                     let other_ids = self.other_outputs_for_window(win.id);
                     for (slot, &target_id) in other_ids.iter().enumerate() {
-                        let bx = super::window::monitor_btn_x_at(
-                            win.content_width,
-                            slot as u32,
-                        );
+                        let bx = super::window::monitor_btn_x_at(win.content_width, slot as u32);
                         if wx >= bx && wx < bx + bw {
                             return Some((win.id, HitTest::MonitorButton(target_id)));
                         }
@@ -151,11 +148,7 @@ impl Desktop {
                     // apply_mouse_move_absolute.
                     let oid = evt[4] as u8;
                     if oid != 0xFF {
-                        if let Some(o) = self
-                            .compositor
-                            .outputs
-                            .iter()
-                            .find(|o| o.id as u8 == oid)
+                        if let Some(o) = self.compositor.outputs.iter().find(|o| o.id as u8 == oid)
                         {
                             abs_x = o.virtual_x + raw_x;
                             abs_y = o.virtual_y + raw_y;
@@ -275,9 +268,11 @@ impl Desktop {
         // short output makes the cursor hop to the destination's
         // visible Y range instead of disappearing into the gap.
         if self.compositor.outputs.len() >= 2 {
-            let target = self.compositor.outputs.iter().find(|o| {
-                new_x >= o.virtual_x && new_x < o.virtual_x + o.fb_width as i32
-            });
+            let target = self
+                .compositor
+                .outputs
+                .iter()
+                .find(|o| new_x >= o.virtual_x && new_x < o.virtual_x + o.fb_width as i32);
             self.mouse_y = if let Some(o) = target {
                 new_y.clamp(o.virtual_y, o.virtual_y + o.fb_height as i32 - 1)
             } else {
@@ -437,7 +432,8 @@ impl Desktop {
                         self.compositor.set_hw_cursor_visible_on_output(p, false);
                     }
                 }
-                self.compositor.set_hw_cursor_visible_on_output(target_id, true);
+                self.compositor
+                    .set_hw_cursor_visible_on_output(target_id, true);
             } else {
                 self.compositor.move_hw_cursor_on_output(target_id, lx, ly);
             }
@@ -1152,10 +1148,7 @@ impl Desktop {
             // (implicit mouse capture). Falls back to the focused window
             // if no capture was registered (e.g. press happened on a
             // non-content hit area).
-            let target = self
-                .mouse_down_capture
-                .take()
-                .or(self.focused_window);
+            let target = self.mouse_down_capture.take().or(self.focused_window);
             if let Some(win_id) = target {
                 if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
                     let lx = self.mouse_x - self.windows[idx].x;
@@ -1223,7 +1216,8 @@ impl Desktop {
         // host's release outside the window, so self.dragging stays
         // set forever and subsequent clicks are processed as "still
         // mid-drag". Hitting ESC clears the state.
-        if key_code == KEY_ESCAPE && down
+        if key_code == KEY_ESCAPE
+            && down
             && (self.dragging.is_some() || self.resizing.is_some() || self.mouse_buttons != 0)
         {
             // End drag/resize cleanly, restoring shadows and fixing focus.

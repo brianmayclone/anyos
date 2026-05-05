@@ -7,6 +7,7 @@ use anyos_std::println;
 use anyos_std::process;
 use anyos_std::Box;
 use libami::{AmiClient, AmiValue};
+use libconf_schema::{default_int, manifest, RegistryScope, ServiceSchema};
 
 use libanyui_client as ui;
 use libinstall;
@@ -17,6 +18,20 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 anyos_std::entry!(main);
 
 mod assets;
+
+const POWER_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "profile/power",
+    RegistryScope::System,
+    1,
+    &["config", "scheduler"],
+    &[
+        default_int("config/profile", 1),
+        default_int("scheduler/placement", 1),
+        default_int("scheduler/efficiency_bias", 50),
+    ],
+    &[],
+);
+const POWER_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("init", &POWER_MANIFEST);
 
 const DIALOG_W: u32 = 340;
 const DIALOG_H: u32 = 280;
@@ -109,12 +124,30 @@ fn wait_for_confd_ready() -> bool {
     false
 }
 
+fn apply_power_config() {
+    let _ = POWER_SCHEMA.register();
+    let profile = POWER_SCHEMA
+        .read_i64("config/profile")
+        .unwrap_or(1)
+        .clamp(0, 2) as u32;
+    if anyos_std::sys::set_cpu_power_profile(profile) {
+        println!("init: applied CPU power profile {}", profile);
+    } else {
+        println!(
+            "init: CPU power profile {} stored for scheduler policy",
+            profile
+        );
+    }
+}
+
 // ── Worker thread ───────────────────────────────────────────────────────────
 
 fn worker_entry() {
     recover_pending_upgrade_if_needed();
 
-    let _ = wait_for_confd_ready();
+    if wait_for_confd_ready() {
+        apply_power_config();
+    }
     set_status("Starting services...");
     PROGRESS.store(15, Ordering::Release);
     run_service_manager();
