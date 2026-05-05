@@ -226,7 +226,17 @@ fn refresh_position_labels() {
     s.lbl_desktop_pos
         .set_text(&format!("Desktop: ({}, {})", dx, dy));
 
-    if let Some(scr) = ui::Screen::at(dx, dy) {
+    // Note: ui::Screen::at falls back to the primary when no screen
+    // contains the point — useless for the "is the cursor visible
+    // somewhere?" question. Do strict containment ourselves.
+    let screens = ui::Screen::list();
+    let containing = screens.iter().find(|scr| {
+        dx >= scr.virtual_x
+            && dy >= scr.virtual_y
+            && dx < scr.right()
+            && dy < scr.bottom()
+    });
+    if let Some(scr) = containing {
         let lx = dx - scr.virtual_x;
         let ly = dy - scr.virtual_y;
         let primary = if scr.primary { " primary" } else { "" };
@@ -237,8 +247,14 @@ fn refresh_position_labels() {
         s.lbl_monitor_local
             .set_text(&format!("Monitor-local: ({}, {})", lx, ly));
     } else {
-        s.lbl_monitor.set_text("Monitor: (cursor outside any output)");
-        s.lbl_monitor_local.set_text("Monitor-local: (n/a)");
+        // Cursor sits outside every output — typical when the window
+        // has been dragged so the canvas extends past a monitor edge.
+        // Surface this clearly instead of silently reporting the
+        // primary monitor's coords (which would be misleading).
+        s.lbl_monitor
+            .set_text("Monitor: (outside any output — window past screen edge?)");
+        s.lbl_monitor_local
+            .set_text(&format!("Monitor-local: n/a (desktop=({}, {}))", dx, dy));
     }
 }
 
@@ -310,14 +326,22 @@ fn one_second_tick() {
     let (wx, wy) = win.get_position();
     let dx = wx + s.canvas_off_x + s.cur_x;
     let dy = wy + s.canvas_off_y + s.cur_y;
-    let monitor: String = match ui::Screen::at(dx, dy) {
+    // Strict containment — Screen::at falls back to primary which would
+    // log "M0" for a cursor that's actually off-screen.
+    let screens = ui::Screen::list();
+    let monitor: String = match screens.iter().find(|scr| {
+        dx >= scr.virtual_x
+            && dy >= scr.virtual_y
+            && dx < scr.right()
+            && dy < scr.bottom()
+    }) {
         Some(scr) => format!(
             "M{} local=({},{})",
             scr.id,
             dx - scr.virtual_x,
             dy - scr.virtual_y
         ),
-        None => String::from("(none)"),
+        None => String::from("(off-screen)"),
     };
     anyos_std::println!(
         "[mousetest] tick canvas=({},{}) desktop=({},{}) {} btn={} clicks={} wheel={}",
