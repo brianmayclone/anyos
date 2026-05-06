@@ -380,6 +380,19 @@ impl BuddyZone {
         }
         self.total_frames += end_frame - start_frame;
 
+        // Walk the region low→high to find the natural power-of-two
+        // splits, but COLLECT them first and then push in reverse
+        // order. push_free is LIFO; pushing high first means the
+        // lowest block lands at the head of its order's free list,
+        // and a subsequent alloc returns low memory naturally —
+        // important because anyOS's legacy callers (AHCI, AC97,
+        // virtio rings, page tables, heap pages) dereference the
+        // returned phys address directly through the boot identity
+        // map, which only covers the lower 128 MiB.
+        const MAX_BLOCKS: usize = 256;
+        let mut blocks: [(u32, u8); MAX_BLOCKS] = [(0, 0); MAX_BLOCKS];
+        let mut n = 0usize;
+
         let mut f = start_frame;
         while f < end_frame {
             let mut order = MAX_ORDER;
@@ -393,8 +406,26 @@ impl BuddyZone {
                 }
                 order -= 1;
             }
-            self.push_free(f, order);
+            if n < MAX_BLOCKS {
+                blocks[n] = (f as u32, order as u8);
+                n += 1;
+            } else {
+                // Rare: a region with > 256 power-of-two splits
+                // (would need a really gnarly E820 layout). Push
+                // immediately to avoid losing the block; the
+                // resulting free-list order may not be ideal but
+                // we don't drop pages.
+                self.push_free(f, order);
+            }
             f += 1usize << order;
+        }
+
+        // Push collected blocks in reverse: highest address first,
+        // lowest last. After this, the lowest free block sits at
+        // the head of the free list of its order.
+        for i in (0..n).rev() {
+            let (frame, order) = blocks[i];
+            self.push_free(frame as usize, order as usize);
         }
     }
 
