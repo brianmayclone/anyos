@@ -288,6 +288,12 @@ pub fn page_nx_flag() -> u64 {
     PAGE_NX
 }
 
+/// Alias of kernel_cr3 for cross-arch APIs that want a name not
+/// tied to the x86 CR3 register. ARM64 returns TTBR1_EL1.
+pub fn kernel_pml4_phys() -> u64 {
+    kernel_cr3()
+}
+
 /// Get the kernel page table base (TTBR1_EL1).
 pub fn kernel_cr3() -> u64 {
     let ttbr1: u64;

@@ -39,6 +39,7 @@ fn init_cpu() {
 fn init_memory() {
     let (ram_base, ram_size) = arch::arm64::boot::detect_memory();
     memory::physical::init_arm64(ram_base, ram_size);
+    memory::physmap::init_arm64(ram_base, ram_size);
     memory::heap::init();
     serial_println!("[OK] Heap allocator initialized");
     graphics::cc_font::init();

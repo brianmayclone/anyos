@@ -883,6 +883,14 @@ pub fn kernel_cr3() -> u64 {
     unsafe { PML4_PHYS }
 }
 
+/// Alias of `kernel_cr3()` used by physmap initialisation. Named
+/// after what it returns rather than the CR3 register so the
+/// physmap module reads naturally without thinking about x86
+/// register names.
+pub fn kernel_pml4_phys() -> u64 {
+    unsafe { PML4_PHYS }
+}
+
 /// Get the current page table root physical address (CR3).
 pub fn current_cr3() -> u64 {
     let cr3: u64;

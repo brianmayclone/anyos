@@ -34,6 +34,11 @@ pub(super) fn init_memory(boot_info: &BootInfo) {
     arch::x86::pat::init();
     memory::physical::init(boot_info);
     memory::virtual_mem::init(boot_info);
+    // physmap goes between virtual_mem and heap so heap setup can
+    // already use the new mapping if it wants. Failure (OOM during
+    // PD allocation) is non-fatal: the kernel continues with
+    // identity-map only, just without large-RAM capability.
+    memory::physmap::init(boot_info);
     memory::heap::init();
     serial_println!("[OK] Heap allocator initialized");
 }
