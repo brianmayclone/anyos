@@ -228,20 +228,34 @@ fn current_global_config() -> displayd::GlobalConfig {
 }
 
 fn output_config_from_info(idx: usize, info: &display::DisplayInfo) -> displayd::OutputConfig {
-    let mut cfg = displayd::OutputConfig::default();
+    // Start from whatever displayd has persisted so the rollback
+    // baseline (used by the Keep/Revert dialog) matches what the user
+    // was looking at before they edited. Falls back to defaults derived
+    // from the live OutputInfo when displayd has no record yet.
+    let persisted = displayd::DisplaydClient::connect()
+        .and_then(|c| {
+            let cfg = c.get_output_config(info.edid_hash);
+            c.disconnect();
+            cfg
+        });
+    let mut cfg = persisted.unwrap_or_else(displayd::OutputConfig::default);
     cfg.edid_hash = info.edid_hash;
+    if cfg.mode_w == 0 || cfg.mode_h == 0 {
+        let (w, h) = effective_size(info);
+        cfg.mode_w = w;
+        cfg.mode_h = h;
+    }
+    if cfg.mode_refresh_mhz == 0 {
+        cfg.mode_refresh_mhz = if info.refresh_mhz > 0 {
+            info.refresh_mhz
+        } else {
+            60_000
+        };
+    }
+    if cfg.scale_percent == 0 {
+        cfg.scale_percent = 100;
+    }
     cfg.enabled = if info.is_connected() { 1 } else { 0 };
-    cfg.orientation = 0;
-    let (w, h) = effective_size(info);
-    cfg.mode_w = w;
-    cfg.mode_h = h;
-    cfg.mode_refresh_mhz = if info.refresh_mhz > 0 {
-        info.refresh_mhz
-    } else {
-        60_000
-    };
-    cfg.scale_percent = 100;
-    cfg.fractional_scale = 0;
     cfg.virtual_x = st().initial_layout_x.get(idx).copied().unwrap_or(0);
     cfg.virtual_y = 0;
     cfg.mirror_of_hash = if info.mirror_of == display::LayoutEntry::NO_MIRROR {
@@ -308,10 +322,11 @@ fn output_config_from_controls(ui_state: &OutputUi) -> displayd::OutputConfig {
     } else {
         60_000
     };
-    cfg.scale_percent = match ui::Control::from_id(ui_state.scale_seg_id).get_state() {
-        1 => 200,
-        _ => 100,
-    };
+    // DropDown index n → 100 + n*25 (clamped to the 9-entry range so
+    // an out-of-range state from a stale UI session still produces a
+    // sane percentage).
+    let scale_idx = ui::Control::from_id(ui_state.scale_seg_id).get_state().min(8);
+    cfg.scale_percent = 100 + scale_idx * 25;
     cfg.fractional_scale = if ui::Control::from_id(ui_state.frac_toggle_id).get_state() != 0 {
         1
     } else {
@@ -713,21 +728,28 @@ pub(crate) fn build(panel: &ui::View) {
     let apply_card = layout::build_auto_card(panel);
     let row = ui::View::new();
     row.set_dock(ui::DOCK_TOP);
-    row.set_size(552, 52);
+    row.set_size(0, 52);
     row.set_margin(24, 8, 24, 8);
-    let status = ui::Label::new(i18n::t("Changes are applied together."));
-    status.set_position(0, 16);
-    status.set_size(360, 20);
-    status.set_text_color(layout::text_dim());
-    status.set_font_size(12);
-    row.add(&status);
-    st().status_label_id = status.id();
+    // Apply button docks to the right edge of the row so it stays
+    // visible even when the panel is narrower than the original
+    // 552-px design (small viewports, e.g. 640×480). The status label
+    // takes the remaining width.
     let apply_btn = ui::Button::new(i18n::t("Apply"));
-    apply_btn.set_position(424, 10);
+    apply_btn.set_dock(ui::DOCK_RIGHT);
     apply_btn.set_size(120, 30);
+    apply_btn.set_margin(8, 11, 0, 11);
     apply_btn.on_click(|_| apply_pending_settings());
     row.add(&apply_btn);
     st().apply_btn_id = apply_btn.id();
+
+    let status = ui::Label::new(i18n::t("Changes are applied together."));
+    status.set_dock(ui::DOCK_FILL);
+    status.set_text_color(layout::text_dim());
+    status.set_font_size(12);
+    status.set_margin(0, 16, 0, 16);
+    row.add(&status);
+    st().status_label_id = status.id();
+
     apply_card.add(&row);
 }
 
@@ -735,9 +757,23 @@ fn build_output_card(panel: &ui::View, idx: usize) {
     let info = st().infos[idx];
     let card = layout::build_auto_card(panel);
 
+    // Pull the persisted config (orientation, scale, fractional, …)
+    // before building widgets so each widget can be initialized with
+    // the right value. If displayd has no record yet the call returns
+    // None and we use defaults.
+    let persisted = displayd::DisplaydClient::connect()
+        .and_then(|c| {
+            let cfg = c.get_output_config(info.edid_hash);
+            c.disconnect();
+            cfg
+        });
+
     // Header row: name + enabled toggle
     let hdr = layout::build_setting_row(&card, &friendly_name(&info), true);
-    let enabled_toggle = ui::Toggle::new(info.is_connected());
+    let enabled_default = persisted
+        .map(|p| p.enabled != 0)
+        .unwrap_or(info.is_connected());
+    let enabled_toggle = ui::Toggle::new(enabled_default);
     enabled_toggle.set_position(480, 8);
     enabled_toggle.set_size(60, 26);
     hdr.add(&enabled_toggle);
@@ -752,7 +788,10 @@ fn build_output_card(panel: &ui::View, idx: usize) {
     res_combo.set_position(200, 8);
     res_combo.set_size(280, 28);
     res_combo.set_items(&build_combo_items(&opts));
-    let cur = (info.current_w, info.current_h);
+    let cur = match persisted {
+        Some(p) if p.mode_w > 0 && p.mode_h > 0 => (p.mode_w, p.mode_h),
+        _ => (info.current_w, info.current_h),
+    };
     if let Some(i) = select_combo_index(&opts, cur) {
         res_combo.set_selected_index(Some(i));
     }
@@ -773,17 +812,26 @@ fn build_output_card(panel: &ui::View, idx: usize) {
         i18n::t("Landscape (flipped)"),
         i18n::t("Portrait (flipped)")
     ));
-    orient_combo.set_selected_index(Some(0));
+    let orient_idx = persisted.map(|p| p.orientation).unwrap_or(0);
+    orient_combo.set_selected_index(Some(orient_idx.min(3)));
     orient_row.add(&orient_combo);
     let orient_combo_id = orient_combo.id();
 
     layout::build_separator(&card);
 
-    // Scale segmented
+    // Scale dropdown (100 % .. 300 %, 25 % steps). Maps directly onto
+    // the per-output `scale_percent` value persisted by displayd; the
+    // primary output's value is also mirrored into the UISYS shared
+    // page so all anyui apps pick it up. Index n → percent = 100 + n*25.
     let scale_row = layout::build_setting_row(&card, i18n::t("Scale"), false);
-    let scale_seg = ui::SegmentedControl::new("100 %|200 %");
+    let scale_seg = ui::DropDown::new(
+        "100 %|125 %|150 %|175 %|200 %|225 %|250 %|275 %|300 %",
+    );
     scale_seg.set_position(200, 8);
-    scale_seg.set_size(180, 28);
+    scale_seg.set_size(280, 28);
+    let saved_scale = persisted.map(|p| p.scale_percent).unwrap_or(100);
+    let scale_idx = (saved_scale.saturating_sub(100) / 25).min(8);
+    scale_seg.set_selected_index(scale_idx);
     scale_row.add(&scale_seg);
     let scale_seg_id = scale_seg.id();
 
@@ -791,7 +839,8 @@ fn build_output_card(panel: &ui::View, idx: usize) {
 
     // Fractional scale toggle
     let frac_row = layout::build_setting_row(&card, i18n::t("Fractional scaling"), false);
-    let frac_toggle = ui::Toggle::new(false);
+    let frac_default = persisted.map(|p| p.fractional_scale != 0).unwrap_or(false);
+    let frac_toggle = ui::Toggle::new(frac_default);
     frac_toggle.set_position(480, 8);
     frac_toggle.set_size(60, 26);
     frac_row.add(&frac_toggle);

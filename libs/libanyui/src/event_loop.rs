@@ -2098,8 +2098,59 @@ pub fn run_once() -> u32 {
                     let modifiers = ev[3];
                     st.last_modifiers = modifiers;
 
-                    // Dispatch to hovered control, bubbling up to ScrollView if needed
+                    // Shift + wheel → horizontal scroll. Bubble up from
+                    // the hovered control until we find a ScrollView and
+                    // shift its scroll_x. We bypass handle_scroll() (which
+                    // is the trait's vertical-only path) because changing
+                    // the trait signature would touch every control.
                     let mut consumed = false;
+                    if (modifiers & control::MOD_SHIFT) != 0 {
+                        if let Some(target_id) = st.hovered {
+                            let mut cur = target_id;
+                            loop {
+                                if let Some(idx) = control::find_idx(&st.controls, cur) {
+                                    if st.controls[idx].kind() == control::ControlKind::ScrollView {
+                                        if let Some(sv) = control::cast_mut::<
+                                            crate::controls::scroll_view::ScrollView,
+                                        >(
+                                            &mut st.controls[idx],
+                                            control::ControlKind::ScrollView,
+                                        ) {
+                                            // Same step size as vertical (dz * 20).
+                                            // Negate so wheel-up scrolls left, matching
+                                            // the vertical convention (wheel-up → up).
+                                            if sv.apply_scroll_delta_x(-dz * 20) {
+                                                fire_event_callback(
+                                                    &st.controls,
+                                                    cur,
+                                                    control::EVENT_SCROLL,
+                                                    &mut pending_cbs,
+                                                );
+                                                fire_event_callback(
+                                                    &st.controls,
+                                                    cur,
+                                                    control::EVENT_CHANGE,
+                                                    &mut pending_cbs,
+                                                );
+                                            }
+                                            consumed = true;
+                                            break;
+                                        }
+                                    }
+                                    let parent = st.controls[idx].parent_id();
+                                    if parent == 0 || parent == cur {
+                                        break;
+                                    }
+                                    cur = parent;
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // Dispatch to hovered control, bubbling up to ScrollView if needed
+                    if !consumed {
                     if let Some(target_id) = st.hovered {
                         let mut cur = target_id;
                         loop {
@@ -2135,6 +2186,7 @@ pub fn run_once() -> u32 {
                             }
                         }
                     }
+                    } // end `if !consumed` for shift-aware horizontal path
 
                     // If scroll was not consumed (e.g. Canvas), still fire
                     // EVENT_SCROLL on the hovered control so apps that

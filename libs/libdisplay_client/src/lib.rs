@@ -62,6 +62,14 @@ pub const EVT_PROFILE_DELETED: u32 = 0x7010;
 pub const CMD_LOAD_PROFILE: u32 = 0x7011;
 pub const EVT_PROFILE_LOADED: u32 = 0x7012;
 
+/// Read the persisted per-output config for a given EDID hash. The
+/// daemon writes an `OutputConfig` blob into a freshly-allocated SHM
+/// region; the caller maps it, copies it out, then unmaps. Returns
+/// `Some(cfg)` if the daemon had any persisted config (even partial —
+/// missing fields fall back to defaults), `None` otherwise.
+pub const CMD_GET_OUTPUT_CONFIG: u32 = 0x7013;
+pub const EVT_OUTPUT_CONFIG_DATA: u32 = 0x7014;
+
 /// Per-output settings as persisted in confd. Marshalled to displayd
 /// via SHM (96 bytes), see CMD_SET_OUTPUT_CONFIG.
 #[repr(C)]
@@ -226,6 +234,44 @@ impl DisplaydClient {
         ipc::shm_unmap(shm);
         ipc::shm_destroy(shm);
         result
+    }
+
+    /// Read the persisted OutputConfig for `edid_hash`. Returns `None`
+    /// if displayd has no record (e.g. fresh boot, first time the
+    /// monitor is plugged in) or on transport error. The returned
+    /// `enabled` flag follows the persisted value; if displayd has
+    /// no `enabled` key the default is `1`.
+    pub fn get_output_config(&self, edid_hash: u64) -> Option<OutputConfig> {
+        let lo = (edid_hash & 0xFFFF_FFFF) as u32;
+        let hi = (edid_hash >> 32) as u32;
+        let req = [CMD_GET_OUTPUT_CONFIG, self.sub, lo, hi, 0];
+        ipc::evt_chan_emit(self.chan, &req);
+        let evt = self.wait_response(EVT_OUTPUT_CONFIG_DATA)?;
+        // evt[1] = result code (0 = found, non-zero = not present);
+        // evt[2] = SHM id with OutputConfig blob.
+        if evt[1] != 0 {
+            return None;
+        }
+        let shm = evt[2];
+        if shm == 0 {
+            return None;
+        }
+        let addr = ipc::shm_map(shm);
+        if addr == 0 {
+            ipc::shm_destroy(shm);
+            return None;
+        }
+        let mut cfg = OutputConfig::default();
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                addr as *const u8,
+                &mut cfg as *mut OutputConfig as *mut u8,
+                core::mem::size_of::<OutputConfig>(),
+            );
+        }
+        ipc::shm_unmap(shm);
+        ipc::shm_destroy(shm);
+        Some(cfg)
     }
 
     /// Persist global display config (mirror mode, primary monitor)
