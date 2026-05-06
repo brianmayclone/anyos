@@ -93,6 +93,13 @@ pub const EVT_PROFILE_DELETED: u32 = 0x7010;
 pub const CMD_LOAD_PROFILE: u32 = 0x7011;
 pub const EVT_PROFILE_LOADED: u32 = 0x7012;
 
+/// Read the persisted OutputConfig for a given EDID hash (split into
+/// evt[2]=lo, evt[3]=hi). The daemon allocates a fresh SHM region,
+/// copies the blob into it, and returns its id in evt[2] of the
+/// response. The client maps it, copies out, then unmaps + destroys.
+pub const CMD_GET_OUTPUT_CONFIG: u32 = 0x7013;
+pub const EVT_OUTPUT_CONFIG_DATA: u32 = 0x7014;
+
 pub fn handle_request(evt: &[u32; 5]) -> [u32; 5] {
     match evt[0] {
         CMD_LIST_OUTPUTS => {
@@ -146,19 +153,9 @@ pub fn handle_request(evt: &[u32; 5]) -> [u32; 5] {
             [EVT_HOTPLUG_DONE, 0, 0, 0, 0]
         }
         CMD_SET_OUTPUT_CONFIG => {
-            // SHM payload = OutputConfigBlob (#[repr(C)], 96 bytes):
-            //   u64  edid_hash       (0)
-            //   u32  enabled         (8)
-            //   u32  orientation     (12)
-            //   u32  mode_w          (16)
-            //   u32  mode_h          (20)
-            //   u32  mode_refresh_mhz(24)
-            //   u32  scale_percent   (28)
-            //   u32  fractional_scale(32) // bool as u32
-            //   i32  virtual_x       (36)
-            //   i32  virtual_y       (40)
-            //   u64  mirror_of_hash  (44, 0 = none)
-            //   u8[44] friendly_name (52..96, null-padded)
+            // SHM payload = OutputConfigBlob (#[repr(C)], 104 bytes,
+            // see OFF_* constants below for the field layout — the u64
+            // mirror_of_hash forces 8-byte alignment after virtual_y).
             let shm_id = evt[2];
             let addr = ipc::shm_map(shm_id);
             if addr == 0 {
@@ -169,6 +166,29 @@ pub fn handle_request(evt: &[u32; 5]) -> [u32; 5] {
             // Persisted; now re-apply so the kernel sees the change.
             crate::apply_persisted_layout();
             [EVT_OUTPUT_CONFIG_OK, r, 0, 0, 0]
+        }
+        CMD_GET_OUTPUT_CONFIG => {
+            // Wire: evt[2] = edid_hash low 32 bits, evt[3] = high 32.
+            let edid_hash =
+                (evt[2] as u64) | ((evt[3] as u64) << 32);
+            if edid_hash == 0 {
+                return [EVT_OUTPUT_CONFIG_DATA, u32::MAX, 0, 0, 0];
+            }
+            let shm = ipc::shm_create(OUTPUT_CONFIG_BLOB_SIZE as u32);
+            if shm == u32::MAX {
+                return [EVT_OUTPUT_CONFIG_DATA, u32::MAX, 0, 0, 0];
+            }
+            let addr = ipc::shm_map(shm);
+            if addr == 0 {
+                ipc::shm_destroy(shm);
+                return [EVT_OUTPUT_CONFIG_DATA, u32::MAX, 0, 0, 0];
+            }
+            let found = unsafe { read_output_config_into(edid_hash, addr as u64) };
+            ipc::shm_unmap(shm);
+            // The client maps + unmaps + destroys; we return the id so
+            // it can do that. If nothing was persisted we still hand
+            // back a zeroed blob so the client gets defaults.
+            [EVT_OUTPUT_CONFIG_DATA, if found { 0 } else { 0 }, shm, 0, 0]
         }
         CMD_SET_GLOBAL_CONFIG => {
             // SHM payload = GlobalConfigBlob (#[repr(C)], 32 bytes):
@@ -242,13 +262,35 @@ pub fn handle_request(evt: &[u32; 5]) -> [u32; 5] {
     }
 }
 
+/// Wire size of the `OutputConfig` blob from libdisplay_client. The
+/// matching Rust struct uses #[repr(C)] with a u64 field after two i32s,
+/// which the compiler aligns to 8: that produces a 104-byte layout
+/// (edid 0..8, enabled 8..12, orientation 12..16, mode_w 16..20,
+///  mode_h 20..24, refresh 24..28, scale 28..32, frac 32..36,
+///  virtual_x 36..40, virtual_y 40..44, /* 4 bytes alignment pad */,
+///  mirror_of_hash 48..56, friendly_name 56..100, /* 4 bytes tail pad */).
+pub(crate) const OUTPUT_CONFIG_BLOB_SIZE: usize = 104;
+pub(crate) const OFF_EDID_HASH: usize = 0;
+pub(crate) const OFF_ENABLED: usize = 8;
+pub(crate) const OFF_ORIENTATION: usize = 12;
+pub(crate) const OFF_MODE_W: usize = 16;
+pub(crate) const OFF_MODE_H: usize = 20;
+pub(crate) const OFF_MODE_REFRESH: usize = 24;
+pub(crate) const OFF_SCALE: usize = 28;
+pub(crate) const OFF_FRACTIONAL: usize = 32;
+pub(crate) const OFF_VIRTUAL_X: usize = 36;
+pub(crate) const OFF_VIRTUAL_Y: usize = 40;
+pub(crate) const OFF_MIRROR_OF: usize = 48;
+pub(crate) const OFF_FRIENDLY_NAME: usize = 56;
+pub(crate) const FRIENDLY_NAME_LEN: usize = 44;
+
 /// Read the SHM-resident OutputConfigBlob (see CMD_SET_OUTPUT_CONFIG)
 /// and persist its fields. Writes both the live `config/output/...`
 /// keys (so apply_persisted_layout picks them up immediately) and
 /// the same fields under `config/setups/<active>/output/<edid>/...`
 /// so re-plugging this exact monitor combination restores the change.
 unsafe fn write_output_config(addr: u64) -> u32 {
-    let bytes = core::slice::from_raw_parts(addr as *const u8, 96);
+    let bytes = core::slice::from_raw_parts(addr as *const u8, OUTPUT_CONFIG_BLOB_SIZE);
     let read_u64 = |off: usize| -> u64 {
         u64::from_le_bytes([
             bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3],
@@ -260,38 +302,127 @@ unsafe fn write_output_config(addr: u64) -> u32 {
     };
     let read_i32 = |off: usize| -> i32 { read_u32(off) as i32 };
 
-    let edid_hash = read_u64(0);
+    let edid_hash = read_u64(OFF_EDID_HASH);
     if edid_hash == 0 {
         return 1;
     }
-    let mirror_hash = read_u64(44);
+    let mirror_hash = read_u64(OFF_MIRROR_OF);
     let mirror_str = if mirror_hash == 0 {
         anyos_std::String::new()
     } else {
         crate::schema::edid_hex(mirror_hash)
     };
-    // Friendly name: 44 bytes null-padded ASCII at offset 52.
-    let name_end = (52..96).find(|&i| bytes[i] == 0).unwrap_or(96);
-    let friendly = if name_end > 52 {
-        core::str::from_utf8(&bytes[52..name_end]).unwrap_or("")
+    let name_lo = OFF_FRIENDLY_NAME;
+    let name_hi = OFF_FRIENDLY_NAME + FRIENDLY_NAME_LEN;
+    let name_end = (name_lo..name_hi).find(|&i| bytes[i] == 0).unwrap_or(name_hi);
+    let friendly = if name_end > name_lo {
+        core::str::from_utf8(&bytes[name_lo..name_end]).unwrap_or("")
     } else {
         ""
     };
     crate::write_output_to_live_and_active_setup(
         edid_hash,
-        read_u32(8) != 0,
-        read_u32(12) as i64,
-        read_u32(16) as i64,
-        read_u32(20) as i64,
-        read_u32(24) as i64,
-        read_u32(28) as i64,
-        read_u32(32) != 0,
-        read_i32(36) as i64,
-        read_i32(40) as i64,
+        read_u32(OFF_ENABLED) != 0,
+        read_u32(OFF_ORIENTATION) as i64,
+        read_u32(OFF_MODE_W) as i64,
+        read_u32(OFF_MODE_H) as i64,
+        read_u32(OFF_MODE_REFRESH) as i64,
+        read_u32(OFF_SCALE) as i64,
+        read_u32(OFF_FRACTIONAL) != 0,
+        read_i32(OFF_VIRTUAL_X) as i64,
+        read_i32(OFF_VIRTUAL_Y) as i64,
         &mirror_str,
         friendly,
     );
     0
+}
+
+/// Marshal the persisted live OutputConfig for `edid_hash` into the
+/// SHM blob at `addr`. Returns true if displayd had any persisted
+/// keys for this EDID, false if everything came from defaults. Either
+/// way the blob is fully populated so the client can use the result
+/// without checking individual fields.
+unsafe fn read_output_config_into(edid_hash: u64, addr: u64) -> bool {
+    use crate::schema::{edid_hex, output_key, DISPLAYD_SCHEMA};
+    let bytes = core::slice::from_raw_parts_mut(addr as *mut u8, OUTPUT_CONFIG_BLOB_SIZE);
+    for b in bytes.iter_mut() {
+        *b = 0;
+    }
+    let write_u64 = |bytes: &mut [u8], off: usize, v: u64| {
+        bytes[off..off + 8].copy_from_slice(&v.to_le_bytes());
+    };
+    let write_u32 = |bytes: &mut [u8], off: usize, v: u32| {
+        bytes[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    };
+    let write_i32 = |bytes: &mut [u8], off: usize, v: i32| {
+        bytes[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    };
+
+    let hex = edid_hex(edid_hash);
+    write_u64(bytes, OFF_EDID_HASH, edid_hash);
+
+    let mut any = false;
+    let read_i64_default = |key: &str, default: i64, any: &mut bool| -> i64 {
+        match DISPLAYD_SCHEMA.read_i64(&output_key(&hex, key)) {
+            Some(v) => { *any = true; v }
+            None => default,
+        }
+    };
+    let read_bool_default = |key: &str, default: bool, any: &mut bool| -> bool {
+        match DISPLAYD_SCHEMA.read_bool(&output_key(&hex, key)) {
+            Some(v) => { *any = true; v }
+            None => default,
+        }
+    };
+
+    let enabled = read_bool_default("enabled", true, &mut any);
+    let orientation = read_i64_default("orientation", 0, &mut any);
+    let mode_w = read_i64_default("mode_w", 0, &mut any);
+    let mode_h = read_i64_default("mode_h", 0, &mut any);
+    let refresh = read_i64_default("mode_refresh_mhz", 60_000, &mut any);
+    let scale = read_i64_default("scale_percent", 100, &mut any);
+    let frac = read_bool_default("fractional_scale", false, &mut any);
+    let virtual_x = read_i64_default("virtual_x", 0, &mut any);
+    let virtual_y = read_i64_default("virtual_y", 0, &mut any);
+
+    write_u32(bytes, OFF_ENABLED, if enabled { 1 } else { 0 });
+    write_u32(bytes, OFF_ORIENTATION, orientation as u32);
+    write_u32(bytes, OFF_MODE_W, mode_w as u32);
+    write_u32(bytes, OFF_MODE_H, mode_h as u32);
+    write_u32(bytes, OFF_MODE_REFRESH, refresh as u32);
+    write_u32(bytes, OFF_SCALE, scale as u32);
+    write_u32(bytes, OFF_FRACTIONAL, if frac { 1 } else { 0 });
+    write_i32(bytes, OFF_VIRTUAL_X, virtual_x as i32);
+    write_i32(bytes, OFF_VIRTUAL_Y, virtual_y as i32);
+
+    // mirror_of: stored as a hex string of the target EDID hash; convert
+    // back to the u64 hash by looking up which connected output matches.
+    let mirror_hex = DISPLAYD_SCHEMA
+        .read_string(&output_key(&hex, "mirror_of"))
+        .unwrap_or_default();
+    if !mirror_hex.is_empty() {
+        any = true;
+        // Walk live outputs and find the one whose EDID hex matches.
+        let infos = anyos_std::display::list(16);
+        for info in &infos {
+            if info.is_connected() && edid_hex(info.edid_hash) == mirror_hex {
+                write_u64(bytes, OFF_MIRROR_OF, info.edid_hash);
+                break;
+            }
+        }
+    }
+
+    let friendly = DISPLAYD_SCHEMA
+        .read_string(&output_key(&hex, "friendly_name"))
+        .unwrap_or_default();
+    if !friendly.is_empty() {
+        any = true;
+        let fb = friendly.as_bytes();
+        let n = fb.len().min(FRIENDLY_NAME_LEN);
+        bytes[OFF_FRIENDLY_NAME..OFF_FRIENDLY_NAME + n].copy_from_slice(&fb[..n]);
+    }
+
+    any
 }
 
 /// SHM-resident profile name: 32 bytes UTF-8, null-padded. Used by
