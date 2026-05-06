@@ -400,11 +400,24 @@ pub fn sys_map_framebuffer(out_info_ptr: u64) -> u32 {
         return u32::MAX;
     }
 
-    // Get framebuffer info from GPU driver
+    // Get framebuffer info from GPU driver. The first-page address from
+    // get_mode() is informational only; the actual per-page mapping
+    // walks framebuffer_pages() to support scatter-gather framebuffers
+    // that aren't physically contiguous (the runtime mode-change path
+    // on virtio-gpu allocates pages individually so it doesn't fail on
+    // long-running systems where contiguous physmem is fragmented).
     let (width, height, pitch, fb_phys) = match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
         Some(m) => m,
         None => return u32::MAX,
     };
+    let pages_vec: alloc::vec::Vec<u64> =
+        match crate::drivers::gpu::with_gpu(|g| g.framebuffer_pages()) {
+            Some(v) => v,
+            None => return u32::MAX,
+        };
+    if pages_vec.is_empty() {
+        return u32::MAX;
+    }
 
     // Map the visible framebuffer into the compositor's address space at 0x20000000.
     // A fixed 16 MiB mapping is not enough for 4K-ish VirtIO modes
@@ -415,11 +428,17 @@ pub fn sys_map_framebuffer(out_info_ptr: u64) -> u32 {
         return u32::MAX;
     }
     let pages = (fb_total_bytes + crate::memory::FRAME_SIZE - 1) / crate::memory::FRAME_SIZE;
+    if pages > pages_vec.len() {
+        crate::serial_verbose_println!(
+            "sys_map_framebuffer: page-list short ({} < {})",
+            pages_vec.len(),
+            pages
+        );
+        return u32::MAX;
+    }
 
     for i in 0..pages {
-        let phys_addr = crate::memory::address::PhysAddr::new(
-            fb_phys as u64 + (i * crate::memory::FRAME_SIZE) as u64,
-        );
+        let phys_addr = crate::memory::address::PhysAddr::new(pages_vec[i]);
         let virt_addr = crate::memory::address::VirtAddr::new(
             fb_user_base + (i * crate::memory::FRAME_SIZE) as u64,
         );
@@ -1268,6 +1287,13 @@ pub fn sys_grant_framebuffer(target_tid: u32, out_info_ptr: u64) -> u32 {
         Some(m) => m,
         None => return u32::MAX,
     };
+    // Per-page list — driver may have allocated the framebuffer as
+    // scatter-gather rather than one contiguous block.
+    let pages_vec: alloc::vec::Vec<u64> =
+        match crate::drivers::gpu::with_gpu(|g| g.framebuffer_pages()) {
+            Some(v) => v,
+            None => return u32::MAX,
+        };
 
     // Get target thread's page directory
     let pd_phys = match crate::task::scheduler::thread_page_directory(target_tid) {
@@ -1278,11 +1304,14 @@ pub fn sys_grant_framebuffer(target_tid: u32, out_info_ptr: u64) -> u32 {
     let fb_user_base: u64 = 0x1900_0000;
     let fb_total_bytes = height as usize * pitch as usize;
     let pages = (fb_total_bytes + 4095) / 4096;
+    if pages > pages_vec.len() {
+        return u32::MAX;
+    }
 
     // Map framebuffer pages into the target's address space
     // Flags: Present + Writable + User + Write-Through (0x0F)
     for i in 0..pages {
-        let phys = crate::memory::address::PhysAddr::new(fb_phys as u64 + (i * 4096) as u64);
+        let phys = crate::memory::address::PhysAddr::new(pages_vec[i]);
         let virt = crate::memory::address::VirtAddr::new(fb_user_base + (i * 4096) as u64);
         crate::memory::virtual_mem::map_page_in_pd(pd_phys, virt, phys, 0x0F);
     }

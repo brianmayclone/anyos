@@ -412,11 +412,17 @@ pub struct VirtioGpu {
 
     // Display state for output 0 (primary scanout). See ScanoutState
     // comment above for why these inline fields stay in place.
+    //
+    // `fb_phys` is the FIRST physical frame's address — kept around for
+    // legacy callers (e.g. boot-splash) that still treat the framebuffer
+    // as one contiguous block. The authoritative per-page list lives in
+    // `fb_page_list`. Both are kept in sync; fb_pages == fb_page_list.len().
     width: u32,
     height: u32,
     pitch: u32,
     fb_phys: u64,
     fb_pages: usize,
+    fb_page_list: alloc::vec::Vec<u64>,
 
     /// Scanout state for outputs 1..num_scanouts_advertised. Index 0 in
     /// this Vec corresponds to output_id 1.
@@ -769,83 +775,83 @@ impl VirtioGpu {
         self.send_ctrl_cmd(bytes);
     }
 
-    fn cmd_attach_backing(&mut self, resource_id: u32, pages_phys: u64, num_pages: usize) -> bool {
-        // Build command: header + entries in a temp buffer
-        // The attach_backing header is followed by an array of MemEntry structs
-        let hdr = ResourceAttachBacking {
-            hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING),
-            resource_id,
-            nr_entries: num_pages as u32,
-        };
+    /// Attach one contiguous range as the backing store. Used by all
+    /// the existing callers (cursor buffer, 3D context buffer, etc.)
+    /// that already had a contiguous allocation. New scatter-gather
+    /// callers should use [`cmd_attach_backing_pages`] directly.
+    fn cmd_attach_backing(
+        &mut self,
+        resource_id: u32,
+        pages_phys: u64,
+        num_pages: usize,
+    ) -> bool {
+        let pages: alloc::vec::Vec<u64> = (0..num_pages as u64)
+            .map(|i| pages_phys + i * 4096)
+            .collect();
+        self.cmd_attach_backing_pages(resource_id, &pages)
+    }
+
+    /// Attach a list of physical pages as the backing store for a
+    /// virtio-gpu 2D resource. Each page is announced as its own
+    /// MemEntry, and physically-adjacent pages get coalesced into one
+    /// entry with `length = adjacent_count * 4096` to save command-
+    /// buffer space — modern resolutions allocate hundreds of pages
+    /// and a 4 KiB cmd buffer doesn't fit them as separate entries.
+    ///
+    /// `pages` lists the guest-physical address of each 4 KiB page
+    /// in scanline order. Caller is responsible for ensuring the
+    /// pages stay live until cmd_detach_backing is issued.
+    fn cmd_attach_backing_pages(&mut self, resource_id: u32, pages: &[u64]) -> bool {
+        if pages.is_empty() {
+            return false;
+        }
+
+        // First, coalesce physically-adjacent pages into runs.
+        let mut runs: alloc::vec::Vec<(u64, u32)> = alloc::vec::Vec::new();
+        let mut run_addr = pages[0];
+        let mut run_len: u32 = 4096;
+        for i in 1..pages.len() {
+            if pages[i] == run_addr + run_len as u64 {
+                run_len = run_len.saturating_add(4096);
+            } else {
+                runs.push((run_addr, run_len));
+                run_addr = pages[i];
+                run_len = 4096;
+            }
+        }
+        runs.push((run_addr, run_len));
 
         let hdr_size = core::mem::size_of::<ResourceAttachBacking>();
         let entry_size = core::mem::size_of::<MemEntry>();
-        let total = hdr_size + num_pages * entry_size;
 
+        // Hard cap: cmd_buf is 4 KiB, hdr is 24 B, each entry is 16 B
+        // → max ~248 entries. After coalescing this comfortably fits any
+        // reasonable framebuffer (a 4K mode allocated as ~7600 random
+        // pages still coalesces to dozens-to-hundreds of runs in
+        // practice). If the run count still doesn't fit, fail loudly so
+        // we know to grow cmd_buf.
+        let total = hdr_size + runs.len() * entry_size;
         if total > 4096 {
-            // Too many pages for a single command buffer — use a single large entry
-            // (backing store IS contiguous)
-            let hdr_single = ResourceAttachBacking {
-                hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING),
-                resource_id,
-                nr_entries: 1,
-            };
-            let entry = MemEntry {
-                addr: pages_phys,
-                length: (num_pages * 4096) as u32,
-                padding: 0,
-            };
-
-            // Write header + single entry to cmd buffer
-            unsafe {
-                let dst = self.cmd_buf as *mut u8;
-                core::ptr::copy_nonoverlapping(&hdr_single as *const _ as *const u8, dst, hdr_size);
-                core::ptr::copy_nonoverlapping(
-                    &entry as *const _ as *const u8,
-                    dst.add(hdr_size),
-                    entry_size,
-                );
-            }
-
-            let cmd_len = hdr_size + entry_size;
-            // Zero response
-            unsafe {
-                core::ptr::write_bytes(self.resp_buf as *mut u8, 0, 24);
-            }
-
-            let common_cfg = self.device.common_cfg;
-            let notify_addr = self.device.notify_base;
-            let notify_off_mul = self.device.notify_off_mul;
-            virtio::mmio_write16(common_cfg + 0x16, 0);
-            let notify_off = virtio::mmio_read16(common_cfg + 0x1E);
-            let notify_virt = notify_addr + (notify_off as u64) * (notify_off_mul as u64);
-
-            let result = self.controlq.execute_sync(
-                &[(self.cmd_buf, cmd_len as u32)],
-                &[(self.resp_buf, 24)],
-                || {
-                    virtio::mmio_write16(notify_virt, 0);
-                },
+            crate::serial_verbose_println!(
+                "  VirtIO GPU: attach_backing too fragmented ({} runs > 248 max)",
+                runs.len()
             );
-
-            let _ = virtio::mmio_read8(self.device.isr_addr);
-            if result.is_none() {
-                return false;
-            }
-            let resp = unsafe { core::ptr::read_volatile(self.resp_buf as *const u32) };
-            return resp == VIRTIO_GPU_RESP_OK_NODATA;
+            return false;
         }
 
-        // Write header to cmd buffer
+        let hdr = ResourceAttachBacking {
+            hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING),
+            resource_id,
+            nr_entries: runs.len() as u32,
+        };
+
         unsafe {
             let dst = self.cmd_buf as *mut u8;
             core::ptr::copy_nonoverlapping(&hdr as *const _ as *const u8, dst, hdr_size);
-
-            // Write entries: one per page
-            for i in 0..num_pages {
+            for (i, &(addr, length)) in runs.iter().enumerate() {
                 let entry = MemEntry {
-                    addr: pages_phys + (i as u64) * 4096,
-                    length: 4096,
+                    addr,
+                    length,
                     padding: 0,
                 };
                 core::ptr::copy_nonoverlapping(
@@ -854,10 +860,6 @@ impl VirtioGpu {
                     entry_size,
                 );
             }
-        }
-
-        // Zero response
-        unsafe {
             core::ptr::write_bytes(self.resp_buf as *mut u8, 0, 24);
         }
 
@@ -1609,30 +1611,47 @@ impl GpuDriver for VirtioGpu {
         // Try to allocate the *new* framebuffer FIRST, before tearing
         // down the old one. If allocation fails (fragmentation, OOM)
         // the old scanout stays fully functional and we just report
-        // failure to the caller. The previous order (free → alloc)
-        // produced an unrecoverable state on failure: the old display
-        // was gone but the new one couldn't be created, leaving
-        // self.fb_phys = 0 while self.width/height advertised the new
-        // mode, so subsequent map_framebuffer calls handed user space
-        // a mapping at phys=0 → KVM emulation failure on the first
-        // access.
+        // failure to the caller.
+        //
+        // Allocation strategy: scatter-gather. Allocate pages one at a
+        // time so we never fail because of physmem fragmentation. The
+        // virtio-gpu device-side resource accepts any list of guest-
+        // physical pages (via cmd_attach_backing_pages), and the
+        // user-space mapping in sys_map_framebuffer walks the same
+        // page list to install per-page PTEs. The kernel itself never
+        // touches the framebuffer through fb_phys directly anymore;
+        // every consumer either goes via the user-mapping (compositor)
+        // or fetches the page list (capture, etc.).
         let fb_size = (width as usize) * (height as usize) * 4;
         let num_pages = (fb_size + 4095) / 4096;
-        let new_fb_phys = match physical::alloc_contiguous(num_pages) {
-            Some(p) => p.as_u64(),
-            None => {
-                crate::serial_verbose_println!(
-                    "  VirtIO GPU: failed to allocate {} pages for framebuffer (current {}x{} stays active)",
-                    num_pages,
-                    self.width,
-                    self.height
-                );
-                return None;
+        let mut new_pages: alloc::vec::Vec<u64> = alloc::vec::Vec::with_capacity(num_pages);
+        for _ in 0..num_pages {
+            match physical::alloc_frame() {
+                Some(p) => new_pages.push(p.as_u64()),
+                None => {
+                    // Out of memory. Roll back: free what we got so far
+                    // and bail. The old scanout is still live.
+                    crate::serial_verbose_println!(
+                        "  VirtIO GPU: out of physmem allocating {} pages (got {}, current {}x{} stays active)",
+                        num_pages,
+                        new_pages.len(),
+                        self.width,
+                        self.height
+                    );
+                    for &p in &new_pages {
+                        physical::free_frame(crate::memory::address::PhysAddr::new(p));
+                    }
+                    return None;
+                }
             }
-        };
-        // Zero the new framebuffer before announcing it to the device.
-        unsafe {
-            core::ptr::write_bytes(new_fb_phys as *mut u8, 0, num_pages * 4096);
+        }
+
+        // Zero each new page so the freshly-attached framebuffer doesn't
+        // show whatever the previous owner left there.
+        for &p in &new_pages {
+            unsafe {
+                core::ptr::write_bytes(p as *mut u8, 0, 4096);
+            }
         }
 
         // Allocation succeeded — now safely tear down the old scanout.
@@ -1642,22 +1661,33 @@ impl GpuDriver for VirtioGpu {
             self.cmd_resource_unref(self.scanout_resource_id);
             self.scanout_resource_id = 0;
 
-            if self.fb_phys != 0 {
+            // Free the old per-page list (if scatter-gather) or the old
+            // contiguous range (if boot-time setup).
+            if !self.fb_page_list.is_empty() {
+                for &p in &self.fb_page_list {
+                    physical::free_frame(crate::memory::address::PhysAddr::new(p));
+                }
+                self.fb_page_list.clear();
+            } else if self.fb_phys != 0 {
                 for i in 0..self.fb_pages {
                     physical::free_frame(crate::memory::address::PhysAddr::new(
                         self.fb_phys + (i as u64) * 4096,
                     ));
                 }
-                self.fb_phys = 0;
-                self.fb_pages = 0;
             }
+            self.fb_phys = 0;
+            self.fb_pages = 0;
         }
 
-        // Commit the new framebuffer state and bring up the device-side
-        // resource. setup_display will skip its own allocation because
-        // we hand it the pre-allocated phys via fb_phys.
-        self.fb_phys = new_fb_phys;
+        // Commit new framebuffer state. fb_phys is set to the FIRST
+        // page so legacy callers (boot-splash, etc.) that haven't been
+        // updated still see *a* valid pointer; correctness for those
+        // paths is best-effort because they implicitly assume
+        // contiguity that no longer holds. New code must use
+        // framebuffer_pages() instead.
+        self.fb_phys = new_pages[0];
         self.fb_pages = num_pages;
+        self.fb_page_list = new_pages;
         self.width = width;
         self.height = height;
         self.pitch = width * 4;
@@ -1675,10 +1705,16 @@ impl GpuDriver for VirtioGpu {
             crate::serial_verbose_println!("  VirtIO GPU: RESOURCE_CREATE_2D failed");
             ok = false;
         }
-        if ok && !self.cmd_attach_backing(res_id, new_fb_phys, num_pages) {
-            crate::serial_verbose_println!("  VirtIO GPU: RESOURCE_ATTACH_BACKING failed");
-            self.cmd_resource_unref(res_id);
-            ok = false;
+        if ok {
+            // Snapshot the page list to a local Vec so cmd_attach_backing_pages
+            // gets a `&[u64]` reborrow without holding `&self.fb_page_list`
+            // across the &mut self call.
+            let pages_snapshot = self.fb_page_list.clone();
+            if !self.cmd_attach_backing_pages(res_id, &pages_snapshot) {
+                crate::serial_verbose_println!("  VirtIO GPU: RESOURCE_ATTACH_BACKING failed");
+                self.cmd_resource_unref(res_id);
+                ok = false;
+            }
         }
         if ok && !self.cmd_set_scanout(0, res_id, width, height) {
             crate::serial_verbose_println!("  VirtIO GPU: SET_SCANOUT failed");
@@ -1691,11 +1727,10 @@ impl GpuDriver for VirtioGpu {
             // we just allocated; we have no working scanout, but at
             // least we don't leak. Caller sees None and can decide what
             // to do.
-            for i in 0..num_pages {
-                physical::free_frame(crate::memory::address::PhysAddr::new(
-                    new_fb_phys + (i as u64) * 4096,
-                ));
+            for &p in &self.fb_page_list {
+                physical::free_frame(crate::memory::address::PhysAddr::new(p));
             }
+            self.fb_page_list.clear();
             self.fb_phys = 0;
             self.fb_pages = 0;
             return None;
@@ -1704,11 +1739,11 @@ impl GpuDriver for VirtioGpu {
         self.scanout_resource_id = res_id;
 
         crate::serial_verbose_println!(
-            "  VirtIO GPU: display {}x{} resource={} fb={:#x} ({} pages)",
+            "  VirtIO GPU: display {}x{} resource={} fb_first={:#x} ({} pages, scatter-gather)",
             width,
             height,
             res_id,
-            new_fb_phys,
+            self.fb_phys,
             num_pages
         );
 
@@ -1718,6 +1753,24 @@ impl GpuDriver for VirtioGpu {
         self.cmd_resource_flush(self.scanout_resource_id, 0, 0, width, height);
 
         Some((self.width, self.height, self.pitch, self.fb_phys as u32))
+    }
+
+    fn framebuffer_pages(&self) -> alloc::vec::Vec<u64> {
+        // If we allocated as scatter-gather (set_mode path), return the
+        // exact list. Otherwise (boot-time setup_display path) the
+        // pages are physically contiguous starting at fb_phys, so
+        // synthesise a Vec from fb_phys + i*4096.
+        if !self.fb_page_list.is_empty() {
+            return self.fb_page_list.clone();
+        }
+        if self.fb_phys == 0 || self.fb_pages == 0 {
+            return alloc::vec::Vec::new();
+        }
+        let mut v = alloc::vec::Vec::with_capacity(self.fb_pages);
+        for i in 0..self.fb_pages {
+            v.push(self.fb_phys + (i as u64) * 4096);
+        }
+        v
     }
 
     fn get_mode(&self) -> (u32, u32, u32, u32) {
@@ -2689,6 +2742,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         pitch: 0,
         fb_phys: 0,
         fb_pages: 0,
+        fb_page_list: alloc::vec::Vec::new(),
         extra_scanouts,
         num_scanouts_advertised,
         pending_events: alloc::collections::VecDeque::new(),

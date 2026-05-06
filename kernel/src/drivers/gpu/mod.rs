@@ -118,7 +118,34 @@ pub trait GpuDriver: Send {
     fn set_mode(&mut self, width: u32, height: u32, bpp: u32) -> Option<(u32, u32, u32, u32)>;
 
     /// Get current mode: (width, height, pitch, fb_phys).
+    ///
+    /// `fb_phys` is the address of the FIRST physical frame backing the
+    /// framebuffer. Callers that need to map the entire framebuffer
+    /// MUST NOT assume the rest of the pages are contiguous after this
+    /// first one — modern resolutions easily exceed any practical
+    /// contiguous allocation reach. Use [`framebuffer_pages`] instead.
     fn get_mode(&self) -> (u32, u32, u32, u32);
+
+    /// Per-page physical addresses of the active primary framebuffer,
+    /// in scanline order. Length == ceil(height * pitch / FRAME_SIZE).
+    /// Default returns a single-entry list synthesised from `get_mode`
+    /// for legacy contiguous-only drivers; modern drivers (virtio-gpu)
+    /// override this with the actual scatter-gather page list.
+    fn framebuffer_pages(&self) -> alloc::vec::Vec<u64> {
+        let (width, height, pitch, fb_phys) = self.get_mode();
+        if fb_phys == 0 {
+            return alloc::vec::Vec::new();
+        }
+        let bytes = (height as usize) * (pitch as usize);
+        let n = (bytes + crate::memory::FRAME_SIZE - 1) / crate::memory::FRAME_SIZE;
+        let mut v: alloc::vec::Vec<u64> = alloc::vec::Vec::with_capacity(n);
+        let _ = width;
+        let base = fb_phys as u64;
+        for i in 0..n {
+            v.push(base + (i as u64) * crate::memory::FRAME_SIZE as u64);
+        }
+        v
+    }
 
     /// List supported resolutions.
     fn supported_modes(&self) -> &[(u32, u32)] {
