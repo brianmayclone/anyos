@@ -427,16 +427,35 @@ mod buddy_backend {
     /// initialised yet — `physmap::phys_to_virt_or_identity` falls
     /// back to identity-map and would page-fault on > 128 MiB.
     ///
+    /// CRITICAL: unlike the bitmap backend, the buddy writes a u32
+    /// link word into every frame the moment it enters a free list.
+    /// We therefore MUST exclude reserved regions (first 2 MiB,
+    /// kernel image) from the regions we hand to add_free_region.
+    /// reserve_range after the fact won't do — by then we've already
+    /// trampled BSS / .data / kernel text.
+    ///
     /// `late_init` runs after physmap is up and brings in the rest.
-    /// Until then, virtual_mem::init has the lower 128 MiB to play
-    /// with, which is more than enough for its PML4/PT setup.
     pub fn init(boot_info: &BootInfo) {
         let memory_map = unsafe { boot_info.memory_map() };
-        let mut z = ZONE.lock();
 
-        // Register USABLE regions, but TRUNCATE each to the lower
-        // 128 MiB. The high portions are deferred to late_init.
+        // Compute reserved ranges before touching the buddy:
+        //   [0, 2 MiB)       BIOS, real-mode trampoline, bootloader
+        //   [k_start, k_end) kernel image (text + data + bss + .boot_stack)
+        let first_mb_frames = (2 * 1024 * 1024) / FRAME_SIZE;
+        let kernel_start_phys = boot_info.kernel_phys_start as u64;
+        let linker_kernel_end_phys =
+            unsafe { (&_kernel_end as *const u8 as u64) - KERNEL_VIRT_BASE };
+        let kernel_end_phys = if linker_kernel_end_phys > boot_info.kernel_phys_end as u64 {
+            linker_kernel_end_phys
+        } else {
+            boot_info.kernel_phys_end as u64
+        };
+        let ks = PhysAddr::new(kernel_start_phys).frame_align_down().frame_index();
+        let ke = PhysAddr::new(kernel_end_phys).frame_align_up().frame_index();
+
+        let mut z = ZONE.lock();
         let stage1_max = LOW_MAX_FRAME;
+
         for entry in memory_map {
             if entry.entry_type != E820_TYPE_USABLE {
                 continue;
@@ -451,25 +470,14 @@ mod buddy_backend {
             if s >= e {
                 continue;
             }
-            z.add_free_region(s, e);
+            // Subtract the reserved ranges from [s, e) before
+            // registering. We process [s, e) as a single open
+            // interval and clip it against the union of:
+            //   [0, first_mb_frames)
+            //   [ks, ke)
+            // The result is up to three disjoint sub-intervals.
+            register_free_minus_reserved(&mut z, s, e, first_mb_frames, ks, ke);
         }
-
-        // Reserve first 2 MiB (BIOS, real-mode trampoline, bootloader).
-        let first_mb_frames = (2 * 1024 * 1024) / FRAME_SIZE;
-        z.reserve_range(0, first_mb_frames);
-
-        // Reserve kernel image (text + data + bss + .boot_stack).
-        let kernel_start_phys = boot_info.kernel_phys_start as u64;
-        let linker_kernel_end_phys =
-            unsafe { (&_kernel_end as *const u8 as u64) - KERNEL_VIRT_BASE };
-        let kernel_end_phys = if linker_kernel_end_phys > boot_info.kernel_phys_end as u64 {
-            linker_kernel_end_phys
-        } else {
-            boot_info.kernel_phys_end as u64
-        };
-        let ks = PhysAddr::new(kernel_start_phys).frame_align_down().frame_index();
-        let ke = PhysAddr::new(kernel_end_phys).frame_align_up().frame_index();
-        z.reserve_range(ks, ke);
 
         crate::serial_verbose_println!(
             "Reserving kernel region: {:#010x} - {:#010x} [buddy stage1]",
@@ -483,10 +491,48 @@ mod buddy_backend {
         );
     }
 
+    /// Subtract `[lo_lo, lo_hi) ∪ [k_start, k_end)` from `[start, end)`
+    /// and feed the surviving intervals to `add_free_region`. Caller
+    /// holds the zone lock.
+    fn register_free_minus_reserved(
+        z: &mut BuddyZone,
+        start: usize,
+        end: usize,
+        lo_hi: usize,
+        k_start: usize,
+        k_end: usize,
+    ) {
+        // Up to four candidate cut points; we use the simplest
+        // approach of clipping iteratively against each reserved
+        // range, since both ranges are fixed and ordered.
+        // First cut against [0, lo_hi).
+        let mid_start = start.max(lo_hi);
+        if mid_start >= end {
+            return;
+        }
+        // Now cut [mid_start, end) against [k_start, k_end).
+        if k_end <= mid_start || k_start >= end {
+            // No overlap with kernel range — register as one piece.
+            z.add_free_region(mid_start, end);
+            return;
+        }
+        // Overlap exists. Emit prefix and/or suffix.
+        if mid_start < k_start {
+            z.add_free_region(mid_start, k_start.min(end));
+        }
+        if k_end < end {
+            z.add_free_region(k_end.max(mid_start), end);
+        }
+    }
+
     /// Stage 2: now that physmap is live, register the high portion
     /// of every USABLE region (frames ≥ LOW_MAX_FRAME). Buddy can
     /// write link words into those pages because physmap maps them
     /// at PHYSMAP_BASE + phys.
+    ///
+    /// High regions don't overlap the kernel image (which sits
+    /// below 128 MiB) so we don't need the reserved-range
+    /// subtraction here.
     pub fn late_init(boot_info: &BootInfo) {
         let memory_map = unsafe { boot_info.memory_map() };
         let mut z = ZONE.lock();
@@ -526,17 +572,23 @@ mod buddy_backend {
         let start_frame = (ram_base as usize) / FRAME_SIZE;
         let end_frame = (ram_end as usize) / FRAME_SIZE;
 
-        // ARM64 already has TTBR1 mapping all RAM, so physmap is
-        // effectively live from the start. We can register everything
-        // in stage 1.
-        let mut z = ZONE.lock();
-        z.add_free_region(start_frame, end_frame);
-
+        // Kernel sits at the very start of RAM on ARM64. Skip those
+        // frames when registering the free region — buddy writes
+        // link words into freed pages and would corrupt the kernel
+        // image otherwise.
         let kernel_end_virt = unsafe { &_kernel_end as *const u8 as u64 };
         let kernel_end_phys = kernel_end_virt - ARM64_PHYS_TO_VIRT;
         let kernel_end_frame =
             ((kernel_end_phys as usize) + FRAME_SIZE - 1) / FRAME_SIZE;
-        z.reserve_range(start_frame, kernel_end_frame);
+
+        // ARM64 already has TTBR1 mapping all RAM, so physmap is
+        // effectively live from the start. We register everything
+        // above the kernel image as one region.
+        let mut z = ZONE.lock();
+        let free_start = start_frame.max(kernel_end_frame);
+        if free_start < end_frame {
+            z.add_free_region(free_start, end_frame);
+        }
 
         let free_mib = z.free_frames * FRAME_SIZE / (1024 * 1024);
         crate::serial_verbose_println!(
