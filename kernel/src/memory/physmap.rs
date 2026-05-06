@@ -97,10 +97,16 @@ const PAGE_HUGE: u64 = 1 << 7;
 /// mappings; gives a noticeable perf win for physmap because the
 /// kernel touches it constantly.
 const PAGE_GLOBAL: u64 = 1 << 8;
-/// No-Execute. Physmap pages should never be executed; setting NX
-/// turns a stray jump into a clean fault instead of "execute random
-/// data".
-const PAGE_NX: u64 = 1u64 << 63;
+// Note on PAGE_NX: setting bit 63 in any PTE requires EFER.NXE = 1.
+// On x86_64 anyOS sets NXE in syscall_msr::init_bsp(), which runs
+// AFTER init_memory() — so during physmap::init() it is NOT yet on,
+// and any PTE with bit 63 set becomes a reserved-bit violation as
+// soon as the page is touched. We therefore omit NX here and rely
+// on physmap being a kernel-only window (no user mode can reach
+// PML4[384] via lower-half PML4 entries) for data-only enforcement.
+// If we want NX-protected physmap later, init must be split: install
+// PD entries in init_memory(), set the NX bit in a second pass after
+// EFER.NXE goes live.
 
 /// Highest physical address actually backed by physmap, set by
 /// `init()`. Reads above this should fall through to the older
@@ -301,8 +307,7 @@ pub fn init(boot_info: &BootInfo) {
                 | PAGE_PRESENT
                 | PAGE_WRITABLE
                 | PAGE_HUGE
-                | PAGE_GLOBAL
-                | PAGE_NX;
+                | PAGE_GLOBAL;
             unsafe {
                 core::ptr::write_volatile(pd.add(pd_i), entry);
             }
