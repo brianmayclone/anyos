@@ -681,6 +681,28 @@ pub(crate) fn apply_persisted_layout() {
             entries.len(),
             mirror_mode
         );
+
+        // Mirror the primary output's scale_percent into the UISYS
+        // shared page so all anyui apps pick up the new DPI factor
+        // immediately. The primary entry is the one with FLAG_PRIMARY
+        // set; falls back to the first entry if the flag-search misses
+        // (which shouldn't happen because the validator requires
+        // exactly one primary).
+        // FLAG bit 0 = primary (matches kernel LayoutEntryFfi.flags
+        // and LayoutEntry::primary's `flags: 1` initializer).
+        let primary_scale = entries
+            .iter()
+            .find(|e| (e.flags & 1) != 0)
+            .or_else(|| entries.first())
+            .map(|e| e.scale)
+            .unwrap_or(100);
+        // UISYS layout (see compositor/desktop/theme.rs):
+        //   base = 0x0400_0000, scale offset = 0x14
+        // Clamp + round to a 25 % step the way set_scale_factor does
+        // so a stray "13" or "150 %"-vs-"125 %" mismatch can't slip in.
+        let clamped = primary_scale.max(100).min(300);
+        let rounded = ((clamped + 12) / 25) * 25;
+        let _ = anyos_std::dll::set_dll_u32(0x0400_0000, 0x14, rounded);
     } else if r == u32::MAX {
         println!("[displayd] set_layout failed (hard error)");
     } else {

@@ -322,10 +322,11 @@ fn output_config_from_controls(ui_state: &OutputUi) -> displayd::OutputConfig {
     } else {
         60_000
     };
-    cfg.scale_percent = match ui::Control::from_id(ui_state.scale_seg_id).get_state() {
-        1 => 200,
-        _ => 100,
-    };
+    // DropDown index n → 100 + n*25 (clamped to the 9-entry range so
+    // an out-of-range state from a stale UI session still produces a
+    // sane percentage).
+    let scale_idx = ui::Control::from_id(ui_state.scale_seg_id).get_state().min(8);
+    cfg.scale_percent = 100 + scale_idx * 25;
     cfg.fractional_scale = if ui::Control::from_id(ui_state.frac_toggle_id).get_state() != 0 {
         1
     } else {
@@ -811,16 +812,19 @@ fn build_output_card(panel: &ui::View, idx: usize) {
 
     layout::build_separator(&card);
 
-    // Scale segmented (100 %, 200 %)
+    // Scale dropdown (100 % .. 300 %, 25 % steps). Maps directly onto
+    // the per-output `scale_percent` value persisted by displayd; the
+    // primary output's value is also mirrored into the UISYS shared
+    // page so all anyui apps pick it up. Index n → percent = 100 + n*25.
     let scale_row = layout::build_setting_row(&card, i18n::t("Scale"), false);
-    let scale_seg = ui::SegmentedControl::new("100 %|200 %");
+    let scale_seg = ui::DropDown::new(
+        "100 %|125 %|150 %|175 %|200 %|225 %|250 %|275 %|300 %",
+    );
     scale_seg.set_position(200, 8);
-    scale_seg.set_size(180, 28);
-    let scale_idx = match persisted.map(|p| p.scale_percent).unwrap_or(100) {
-        v if v >= 200 => 1,
-        _ => 0,
-    };
-    scale_seg.set_state(scale_idx);
+    scale_seg.set_size(280, 28);
+    let saved_scale = persisted.map(|p| p.scale_percent).unwrap_or(100);
+    let scale_idx = (saved_scale.saturating_sub(100) / 25).min(8);
+    scale_seg.set_selected_index(scale_idx);
     scale_row.add(&scale_seg);
     let scale_seg_id = scale_seg.id();
 
