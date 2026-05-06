@@ -613,28 +613,48 @@ mod buddy_backend {
         let mut z = ZONE.lock();
         let limit = bm.address_frames;
 
+        // First pass: collect all free runs into a static buffer.
+        // We can't allocate (heap isn't up yet) so use a fixed
+        // array — practical RAM has at most a few dozen disjoint
+        // USABLE regions after subtracting reserved ones.
+        const MAX_RUNS: usize = 64;
+        let mut runs: [(usize, usize); MAX_RUNS] = [(0, 0); MAX_RUNS];
+        let mut n_runs = 0usize;
         let mut run_start: Option<usize> = None;
-        let mut migrated: usize = 0;
         for f in 0..limit {
             if !bm.is_used(f) {
                 if run_start.is_none() {
                     run_start = Some(f);
                 }
             } else if let Some(s) = run_start.take() {
-                z.add_free_region(s, f);
-                migrated += f - s;
-                // Mark the migrated range used in bootmem so that
-                // any post-late_init bootmem call (which shouldn't
-                // happen, but defensively) doesn't double-allocate.
-                for ff in s..f {
-                    bm.set_used(ff);
+                if n_runs < MAX_RUNS {
+                    runs[n_runs] = (s, f);
+                    n_runs += 1;
                 }
             }
         }
         if let Some(s) = run_start {
-            z.add_free_region(s, limit);
-            migrated += limit - s;
-            for ff in s..limit {
+            if n_runs < MAX_RUNS {
+                runs[n_runs] = (s, limit);
+                n_runs += 1;
+            }
+        }
+
+        // Second pass: hand runs to the buddy IN REVERSE ORDER —
+        // high address first, low last. The buddy is LIFO per
+        // order, so the last region pushed comes out first on
+        // alloc. Pushing low last means subsequent alloc_frame
+        // calls preferentially get low-memory frames, which is
+        // what every legacy caller (AHCI, AC97, virtio rings,
+        // heap pages, page-table pages) needs to dereference via
+        // identity-map. Without this the buddy hands out 3 GiB
+        // addresses first and every legacy-style write faults.
+        let mut migrated: usize = 0;
+        for i in (0..n_runs).rev() {
+            let (s, e) = runs[i];
+            z.add_free_region(s, e);
+            migrated += e - s;
+            for ff in s..e {
                 bm.set_used(ff);
             }
         }
@@ -705,6 +725,9 @@ mod buddy_backend {
         let mut z = ZONE.lock();
         let limit = bm.address_frames;
 
+        const MAX_RUNS: usize = 64;
+        let mut runs: [(usize, usize); MAX_RUNS] = [(0, 0); MAX_RUNS];
+        let mut n_runs = 0usize;
         let mut run_start: Option<usize> = None;
         for f in 0..limit {
             if !bm.is_used(f) {
@@ -712,15 +735,24 @@ mod buddy_backend {
                     run_start = Some(f);
                 }
             } else if let Some(s) = run_start.take() {
-                z.add_free_region(s, f);
-                for ff in s..f {
-                    bm.set_used(ff);
+                if n_runs < MAX_RUNS {
+                    runs[n_runs] = (s, f);
+                    n_runs += 1;
                 }
             }
         }
         if let Some(s) = run_start {
-            z.add_free_region(s, limit);
-            for ff in s..limit {
+            if n_runs < MAX_RUNS {
+                runs[n_runs] = (s, limit);
+                n_runs += 1;
+            }
+        }
+        // Push runs high→low so low addresses end up at the head
+        // of the buddy's free lists (LIFO) and come out first.
+        for i in (0..n_runs).rev() {
+            let (s, e) = runs[i];
+            z.add_free_region(s, e);
+            for ff in s..e {
                 bm.set_used(ff);
             }
         }
@@ -802,51 +834,19 @@ mod buddy_backend {
 
     pub fn alloc_frame() -> Option<PhysAddr> {
         if BUDDY_LIVE.load(Ordering::Acquire) {
-            // Backward compatibility: every legacy caller of
-            // alloc_frame assumes the returned phys address is
-            // dereferenceable through the boot identity map (i.e.
-            // < 128 MiB on x86_64). AC97 BDL, audio buffers,
-            // hardware-virt structures, AHCI sub-allocations all
-            // do `*(phys as *mut u8)`. Until those callers migrate
-            // to physmap, alloc_frame must return low memory too.
+            // late_init pushes runs high→low, so the buddy's order-0
+            // free list has low-memory frames at the head. alloc_frame
+            // therefore returns low memory naturally for the first
+            // ~32K calls (128 MiB / 4 KiB). Legacy callers (AHCI,
+            // AC97, virtio rings, page tables) get identity-mappable
+            // addresses without any retry overhead.
             //
-            // We don't bias the buddy zone; we just sample frames
-            // and reject high ones. In practice the zone hands out
-            // recently-freed leaves first, and once init is done
-            // those tend to be high (high memory was added later).
-            // We need an aggressive retry budget therefore.
-            //
-            // Long-term fix: separate ZONE_DMA / ZONE_NORMAL and
-            // route page-table allocations to ZONE_NORMAL.
-            #[cfg(target_arch = "x86_64")]
-            {
-                let mut z = ZONE.lock();
-                let mut rejected: [usize; 64] = [0usize; 64];
-                let mut n = 0usize;
-                let result = loop {
-                    let f = match z.alloc_frame() {
-                        Some(f) => f,
-                        None => break None,
-                    };
-                    if f < LOW_MAX_FRAME {
-                        break Some(f);
-                    }
-                    if n >= rejected.len() {
-                        z.free_pages(f, 0);
-                        break None;
-                    }
-                    rejected[n] = f;
-                    n += 1;
-                };
-                for i in 0..n {
-                    z.free_pages(rejected[i], 0);
-                }
-                return result.map(frame_to_phys);
-            }
-            #[cfg(not(target_arch = "x86_64"))]
-            {
-                ZONE.lock().alloc_frame().map(frame_to_phys)
-            }
+            // Once low memory is exhausted, callers receive high
+            // addresses. Code that dereferences phys-as-virt will
+            // fault — the long-term fix is migrating those callers
+            // to physmap. ZONE_DMA / ZONE_NORMAL split is the proper
+            // structural answer.
+            ZONE.lock().alloc_frame().map(frame_to_phys)
         } else {
             bootmem_alloc_frame().map(frame_to_phys)
         }
