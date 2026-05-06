@@ -153,13 +153,43 @@ impl Compositor {
             core::mem::swap(&mut self.compositing_damage, &mut self.prev_damage);
             self.compositing_damage.clear();
         } else {
-            let damage_len = self.compositing_damage.len();
-            for i in 0..damage_len {
-                let r = self.compositing_damage[i];
-                self.flush_region(&r, 0);
-                self.gpu_cmds.push([
-                    GPU_UPDATE, r.x as u32, r.y as u32, r.width, r.height, 0, 0, 0, 0,
-                ]);
+            // Damage rects are in *logical* (post-rotation) coordinates,
+            // but GPU_UPDATE addresses the hardware framebuffer. For
+            // rotated outputs the per-rect mapping would have to inverse
+            // the rotation transform; rotation is rare and we already
+            // re-blit the whole frame via copy_rotated_to_fb in
+            // flush_region, so just issue a single full-screen update
+            // covering the panel's hardware extents instead. Identity
+            // rotation keeps the cheap per-rect path.
+            let primary_rotation = self
+                .outputs
+                .first()
+                .map(|o| o.rotation)
+                .unwrap_or(0);
+            if primary_rotation != 0 {
+                let logical_w = self.fb_width;
+                let logical_h = self.fb_height;
+                let (hw_w, hw_h) = if primary_rotation == 1 || primary_rotation == 3 {
+                    (logical_h, logical_w)
+                } else {
+                    (logical_w, logical_h)
+                };
+                let damage_len = self.compositing_damage.len();
+                for i in 0..damage_len {
+                    let r = self.compositing_damage[i];
+                    self.flush_region(&r, 0);
+                }
+                self.gpu_cmds
+                    .push([GPU_UPDATE, 0, 0, hw_w, hw_h, 0, 0, 0, 0]);
+            } else {
+                let damage_len = self.compositing_damage.len();
+                for i in 0..damage_len {
+                    let r = self.compositing_damage[i];
+                    self.flush_region(&r, 0);
+                    self.gpu_cmds.push([
+                        GPU_UPDATE, r.x as u32, r.y as u32, r.width, r.height, 0, 0, 0, 0,
+                    ]);
+                }
             }
             self.compositing_damage.clear();
         }
