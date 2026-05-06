@@ -1,481 +1,653 @@
-//! Physical frame allocator using a bitmap.
+//! Physical frame allocator — facade over either the bitmap or buddy backend.
 //!
-//! Manages 4 KiB physical frames up to 64 GiB of RAM. The bitmap tracks
-//! free/used state for each frame, initialized from the BIOS E820 memory map.
-//! All operations are protected by an IRQ-safe spinlock for SMP safety.
+//! # Backends
 //!
-//! The bitmap is a static array in BSS (2 MiB), so it costs nothing until
-//! the pages containing it are demand-faulted. With QEMU `-m 1024M`, only
-//! the first 32 KiB of the bitmap is actually used.
+//! Two allocator implementations live behind the same public API:
+//!
+//! * **Bitmap** (default, `cfg(not(feature = "buddy_alloc"))`): the
+//!   long-standing 1-bit-per-frame allocator with linear-scan
+//!   contiguous allocation. Robust, but susceptible to
+//!   fragmentation on long-running systems.
+//!
+//! * **Buddy** (`cfg(feature = "buddy_alloc")`): the new buddy
+//!   allocator from `memory::buddy`. O(MAX_ORDER) allocation,
+//!   automatic coalescing, no fragmentation drift.
+//!
+//! Both backends present the same external API:
+//!
+//! ```ignore
+//! pub fn alloc_frame() -> Option<PhysAddr>
+//! pub fn alloc_contiguous(count: usize) -> Option<PhysAddr>
+//! pub fn alloc_frame_low() -> Option<PhysAddr>     // x86 only
+//! pub fn free_frame(addr: PhysAddr)
+//! pub fn reserve_frame(addr: PhysAddr)
+//! pub fn free_frame_count() -> usize
+//! pub fn free_frames() -> usize
+//! pub fn total_frames() -> usize
+//! pub fn init(boot_info: &BootInfo)            // x86_64 only
+//! pub fn init_arm64(ram_base: u64, ram_size: u64)  // aarch64 only
+//! pub fn is_allocator_locked() -> bool
+//! pub fn is_allocator_locked_by_cpu(cpu: u32) -> bool
+//! pub unsafe fn force_unlock_allocator()
+//! ```
+//!
+//! No caller has to know which backend is active. CMake exposes a
+//! flip via `-DANYOS_BUDDY_ALLOC=ON` while we validate the new
+//! backend in shipped images.
 
-use crate::boot_info::{BootInfo, E820_TYPE_USABLE};
+use crate::boot_info::BootInfo;
 use crate::memory::address::PhysAddr;
 use crate::memory::FRAME_SIZE;
-use crate::sync::spinlock::Spinlock;
 
-/// Maximum supported physical memory (64 GiB).
-const MAX_MEMORY: usize = 64 * 1024 * 1024 * 1024;
-/// Total number of frames that can be tracked in the bitmap.
-const MAX_FRAMES: usize = MAX_MEMORY / FRAME_SIZE;
-/// Size of the bitmap in bytes (1 bit per frame, 2 MiB for 64 GiB).
-const BITMAP_SIZE: usize = MAX_FRAMES / 8;
+// ──────────────────────────────────────────────────────────────────
+// Bitmap backend (default).
+// ──────────────────────────────────────────────────────────────────
 
-// Kernel virtual base (must match link.ld and boot.asm)
-const KERNEL_VIRT_BASE: u64 = 0xFFFF_FFFF_8000_0000;
+#[cfg(not(feature = "buddy_alloc"))]
+mod bitmap_backend {
+    use super::*;
+    use crate::boot_info::E820_TYPE_USABLE;
+    use crate::sync::spinlock::Spinlock;
 
-// _kernel_end from link.ld already includes the dedicated .boot_stack section,
-// so no separate KERNEL_STACK_SIZE constant is needed here.
+    /// Maximum supported physical memory (64 GiB).
+    const MAX_MEMORY: usize = 64 * 1024 * 1024 * 1024;
+    const MAX_FRAMES: usize = MAX_MEMORY / FRAME_SIZE;
+    const BITMAP_SIZE: usize = MAX_FRAMES / 8;
 
-extern "C" {
-    static _kernel_end: u8;
-}
+    const KERNEL_VIRT_BASE: u64 = 0xFFFF_FFFF_8000_0000;
 
-/// Physical frame allocator state.
-///
-/// Field order matters: `total_frames`/`free_frames` are placed BEFORE the
-/// 2 MiB bitmap so they sit at the start of BSS.  The boot stack now lives in
-/// a dedicated .boot_stack linker section above BSS, so stack overflow cannot
-/// silently corrupt BSS statics.  The field ordering remains as an extra
-/// safety margin in case of unexpected memory pressure.
-#[repr(C)]
-struct FrameAllocator {
-    /// Actual usable physical frames (sum of all E820 usable regions).
-    /// Used for reporting total memory to userspace.
-    total_frames: usize,
-    /// Highest frame index in the address space (covers MMIO holes).
-    /// Used for bitmap sizing and allocation search bounds.
-    address_frames: usize,
-    free_frames: usize,
-    next_search: usize,
-    bitmap: [u8; BITMAP_SIZE],
-}
-
-impl FrameAllocator {
-    fn set_used(&mut self, frame: usize) {
-        if frame / 8 >= self.bitmap.len() {
-            return;
-        }
-        self.bitmap[frame / 8] |= 1 << (frame % 8);
+    extern "C" {
+        static _kernel_end: u8;
     }
 
-    fn set_free(&mut self, frame: usize) {
-        if frame / 8 >= self.bitmap.len() {
-            return;
-        }
-        self.bitmap[frame / 8] &= !(1 << (frame % 8));
+    #[repr(C)]
+    pub(super) struct FrameAllocator {
+        pub total_frames: usize,
+        pub address_frames: usize,
+        pub free_frames: usize,
+        pub next_search: usize,
+        bitmap: [u8; BITMAP_SIZE],
     }
 
-    fn is_used(&self, frame: usize) -> bool {
-        if frame / 8 >= self.bitmap.len() {
-            // Out-of-range frame number — happens when the deferred_reaper
-            // walks a corrupted PTE from a crashing user process. Treat as
-            // "not free" so the caller skips it; the alternative is a hard
-            // panic that brings down the whole system.
-            return true;
+    impl FrameAllocator {
+        fn set_used(&mut self, frame: usize) {
+            if frame / 8 >= self.bitmap.len() {
+                return;
+            }
+            self.bitmap[frame / 8] |= 1 << (frame % 8);
         }
-        self.bitmap[frame / 8] & (1 << (frame % 8)) != 0
+        fn set_free(&mut self, frame: usize) {
+            if frame / 8 >= self.bitmap.len() {
+                return;
+            }
+            self.bitmap[frame / 8] &= !(1 << (frame % 8));
+        }
+        pub(super) fn is_used(&self, frame: usize) -> bool {
+            if frame / 8 >= self.bitmap.len() {
+                return true;
+            }
+            self.bitmap[frame / 8] & (1 << (frame % 8)) != 0
+        }
     }
-}
 
-static ALLOCATOR: Spinlock<FrameAllocator> = Spinlock::new(FrameAllocator {
-    bitmap: [0; BITMAP_SIZE], // Zero-init → lives in BSS
-    total_frames: 0,
-    address_frames: 0,
-    free_frames: 0,
-    next_search: 0,
-});
+    pub(super) static ALLOCATOR: Spinlock<FrameAllocator> = Spinlock::new(FrameAllocator {
+        bitmap: [0; BITMAP_SIZE],
+        total_frames: 0,
+        address_frames: 0,
+        free_frames: 0,
+        next_search: 0,
+    });
 
-/// Initialize the physical frame allocator from the E820 memory map.
-///
-/// Marks usable regions as free, then reserves the first 2 MiB (legacy/bootloader area)
-/// and the kernel's code, BSS, and stack regions.
-pub fn init(boot_info: &BootInfo) {
-    let memory_map = unsafe { boot_info.memory_map() };
+    /// Maximum physical address for contiguous allocations.
+    #[cfg(target_arch = "x86_64")]
+    const CONTIGUOUS_MAX_FRAME: usize = (128 * 1024 * 1024) / FRAME_SIZE;
+    #[cfg(target_arch = "aarch64")]
+    const CONTIGUOUS_MAX_FRAME: usize = MAX_FRAMES;
 
-    let mut alloc = ALLOCATOR.lock();
+    pub fn init(boot_info: &BootInfo) {
+        let memory_map = unsafe { boot_info.memory_map() };
+        let mut alloc = ALLOCATOR.lock();
 
-    // First pass: find highest usable address to size the bitmap.
-    // Only consider USABLE entries — reserved MMIO regions (IOAPIC, LAPIC, etc.)
-    // can have addresses far above actual RAM and would bloat total_frames.
-    let mut max_usable_addr: u64 = 0;
-    for entry in memory_map {
-        if entry.entry_type == E820_TYPE_USABLE {
-            let end = entry.base_addr + entry.length;
-            if end > max_usable_addr {
-                max_usable_addr = end;
+        let mut max_usable_addr: u64 = 0;
+        for entry in memory_map {
+            if entry.entry_type == E820_TYPE_USABLE {
+                let end = entry.base_addr + entry.length;
+                if end > max_usable_addr {
+                    max_usable_addr = end;
+                }
             }
         }
-    }
-
-    // Cap at MAX_MEMORY
-    if max_usable_addr > MAX_MEMORY as u64 {
-        max_usable_addr = MAX_MEMORY as u64;
-    }
-
-    // address_frames covers the full address range (including MMIO holes)
-    // for bitmap sizing and allocation search bounds.
-    alloc.address_frames = (max_usable_addr as usize) / FRAME_SIZE;
-
-    // total_frames is the actual sum of usable memory (excludes MMIO holes).
-    let mut total_usable_bytes: u64 = 0;
-    for entry in memory_map {
-        if entry.entry_type == E820_TYPE_USABLE {
-            let end = entry.base_addr + entry.length;
-            let capped = if end > max_usable_addr {
-                max_usable_addr - entry.base_addr
-            } else {
-                entry.length
-            };
-            total_usable_bytes += capped;
+        if max_usable_addr > MAX_MEMORY as u64 {
+            max_usable_addr = MAX_MEMORY as u64;
         }
-    }
-    alloc.total_frames = ((total_usable_bytes as usize) + FRAME_SIZE - 1) / FRAME_SIZE;
-    alloc.free_frames = 0;
+        alloc.address_frames = (max_usable_addr as usize) / FRAME_SIZE;
 
-    // Fill bitmap with 0xFF (all used) for the actual address range.
-    // The bitmap is zero-initialized in BSS — we only touch the bytes
-    // corresponding to the physical address space, not the full 2 MiB.
-    let bitmap_bytes_needed = (alloc.address_frames + 7) / 8;
-    for byte in alloc.bitmap[..bitmap_bytes_needed].iter_mut() {
-        *byte = 0xFF;
-    }
+        let mut total_usable_bytes: u64 = 0;
+        for entry in memory_map {
+            if entry.entry_type == E820_TYPE_USABLE {
+                let end = entry.base_addr + entry.length;
+                let capped = if end > max_usable_addr {
+                    max_usable_addr - entry.base_addr
+                } else {
+                    entry.length
+                };
+                total_usable_bytes += capped;
+            }
+        }
+        alloc.total_frames = ((total_usable_bytes as usize) + FRAME_SIZE - 1) / FRAME_SIZE;
+        alloc.free_frames = 0;
 
-    // Mark usable regions as free
-    for entry in memory_map {
-        if entry.entry_type != E820_TYPE_USABLE {
-            continue;
+        let bitmap_bytes_needed = (alloc.address_frames + 7) / 8;
+        for byte in alloc.bitmap[..bitmap_bytes_needed].iter_mut() {
+            *byte = 0xFF;
         }
 
-        let start = PhysAddr::new(entry.base_addr).frame_align_up();
-        let end = PhysAddr::new(entry.base_addr + entry.length).frame_align_down();
-
-        if start.as_u64() >= end.as_u64() {
-            continue;
+        for entry in memory_map {
+            if entry.entry_type != E820_TYPE_USABLE {
+                continue;
+            }
+            let start = PhysAddr::new(entry.base_addr).frame_align_up();
+            let end = PhysAddr::new(entry.base_addr + entry.length).frame_align_down();
+            if start.as_u64() >= end.as_u64() {
+                continue;
+            }
+            for frame in start.frame_index()..end.frame_index() {
+                if frame < MAX_FRAMES {
+                    alloc.set_free(frame);
+                    alloc.free_frames += 1;
+                }
+            }
         }
 
-        let start_frame = start.frame_index();
-        let end_frame = end.frame_index();
+        let first_mb_frames = (2 * 1024 * 1024) / FRAME_SIZE;
+        for frame in 0..first_mb_frames {
+            if !alloc.is_used(frame) {
+                alloc.set_used(frame);
+                alloc.free_frames -= 1;
+            }
+        }
 
+        let kernel_start = PhysAddr::new(boot_info.kernel_phys_start as u64).frame_align_down();
+        let linker_kernel_end_phys =
+            unsafe { (&_kernel_end as *const u8 as u64) - KERNEL_VIRT_BASE };
+        let kernel_end_phys = if linker_kernel_end_phys > boot_info.kernel_phys_end as u64 {
+            linker_kernel_end_phys
+        } else {
+            boot_info.kernel_phys_end as u64
+        };
+        let kernel_end = PhysAddr::new(kernel_end_phys).frame_align_up();
+        let kern_start_val = kernel_start.as_u64();
+        let kern_end_val = kernel_end.as_u64();
+        for frame in kernel_start.frame_index()..kernel_end.frame_index() {
+            if frame < MAX_FRAMES && !alloc.is_used(frame) {
+                alloc.set_used(frame);
+                alloc.free_frames -= 1;
+            }
+        }
+
+        let total_mib = alloc.total_frames * FRAME_SIZE / (1024 * 1024);
+        let free_frames = alloc.free_frames;
+        let free_mib = free_frames * FRAME_SIZE / (1024 * 1024);
+        drop(alloc);
+
+        crate::serial_verbose_println!(
+            "Reserving kernel region: {:#010x} - {:#010x} (includes BSS + stack)",
+            kern_start_val,
+            kern_end_val
+        );
+        crate::serial_verbose_println!(
+            "Physical memory: {} MiB total, {} frames free ({} MiB) [bitmap]",
+            total_mib,
+            free_frames,
+            free_mib
+        );
+    }
+
+    pub fn init_arm64(ram_base: u64, ram_size: u64) {
+        const ARM64_PHYS_TO_VIRT: u64 = 0xFFFF_0000_4000_0000;
+        let ram_end = ram_base + ram_size;
+        let start_frame = (ram_base as usize) / FRAME_SIZE;
+        let end_frame = (ram_end as usize) / FRAME_SIZE;
+
+        let mut alloc = ALLOCATOR.lock();
+        alloc.total_frames = (ram_size as usize) / FRAME_SIZE;
+        alloc.address_frames = end_frame;
+        alloc.free_frames = 0;
+
+        let bitmap_bytes = (end_frame + 7) / 8;
+        for byte in alloc.bitmap[..bitmap_bytes].iter_mut() {
+            *byte = 0xFF;
+        }
         for frame in start_frame..end_frame {
             if frame < MAX_FRAMES {
                 alloc.set_free(frame);
                 alloc.free_frames += 1;
             }
         }
-    }
 
-    // Re-mark reserved regions as used:
-    // - First 2 MiB (legacy area, bootloader, boot info, memory map,
-    //   kernel at 1MB, and kernel stack growing down from physical 0x200000)
-    let first_mb_frames = (2 * 1024 * 1024) / FRAME_SIZE;
-    for frame in 0..first_mb_frames {
-        if !alloc.is_used(frame) {
-            alloc.set_used(frame);
-            alloc.free_frames -= 1;
-        }
-    }
-
-    // - Kernel region (including BSS which is not in the flat binary)
-    //   _kernel_end from linker script is a virtual address; convert to physical
-    let kernel_start = PhysAddr::new(boot_info.kernel_phys_start as u64).frame_align_down();
-    let linker_kernel_end_phys = unsafe { (&_kernel_end as *const u8 as u64) - KERNEL_VIRT_BASE };
-    // Use the larger of BootInfo's kernel_phys_end and the linker's _kernel_end
-    let kernel_end_phys = if linker_kernel_end_phys > boot_info.kernel_phys_end as u64 {
-        linker_kernel_end_phys
-    } else {
-        boot_info.kernel_phys_end as u64
-    };
-    // _kernel_end already covers BSS + the 512 KiB .boot_stack section.
-    let kernel_end = PhysAddr::new(kernel_end_phys).frame_align_up();
-    let kern_start_val = kernel_start.as_u64();
-    let kern_end_val = kernel_end.as_u64();
-    for frame in kernel_start.frame_index()..kernel_end.frame_index() {
-        if frame < MAX_FRAMES && !alloc.is_used(frame) {
-            alloc.set_used(frame);
-            alloc.free_frames -= 1;
-        }
-    }
-
-    let total_mib = alloc.total_frames * FRAME_SIZE / (1024 * 1024);
-    let free_frames = alloc.free_frames;
-    let free_mib = free_frames * FRAME_SIZE / (1024 * 1024);
-    drop(alloc); // Release lock BEFORE logging
-
-    crate::serial_verbose_println!(
-        "Reserving kernel region: {:#010x} - {:#010x} (includes BSS + stack)",
-        kern_start_val,
-        kern_end_val
-    );
-    crate::serial_verbose_println!(
-        "Physical memory: {} MiB total, {} frames free ({} MiB)",
-        total_mib,
-        free_frames,
-        free_mib
-    );
-}
-
-/// Allocate a single 4 KiB physical frame, returning its physical address.
-///
-/// Uses next-fit: resumes scanning from where the last allocation left off.
-/// This makes sequential allocations O(1) amortized instead of O(n).
-pub fn alloc_frame() -> Option<PhysAddr> {
-    let mut alloc = ALLOCATOR.lock();
-    let total = alloc.address_frames;
-    if alloc.free_frames == 0 {
-        return None;
-    }
-    let start = alloc.next_search;
-    // Search from next_search to end
-    for i in start..total {
-        if !alloc.is_used(i) {
-            alloc.set_used(i);
-            alloc.free_frames -= 1;
-            alloc.next_search = i + 1;
-            return Some(PhysAddr::new((i * FRAME_SIZE) as u64));
-        }
-    }
-    // Wrap around: search from 0 to start
-    for i in 0..start {
-        if !alloc.is_used(i) {
-            alloc.set_used(i);
-            alloc.free_frames -= 1;
-            alloc.next_search = i + 1;
-            return Some(PhysAddr::new((i * FRAME_SIZE) as u64));
-        }
-    }
-    None
-}
-
-/// Free a physical frame, returning it to the allocator pool.
-///
-/// Has no effect if the frame is already free.
-pub fn free_frame(addr: PhysAddr) {
-    let mut alloc = ALLOCATOR.lock();
-    let frame = addr.frame_index();
-    if alloc.is_used(frame) {
-        alloc.set_free(frame);
-        alloc.free_frames += 1;
-        // Hint allocator to reuse freed region sooner
-        if frame < alloc.next_search {
-            alloc.next_search = frame;
-        }
-    }
-}
-
-/// Returns the number of free physical frames currently available.
-pub fn free_frame_count() -> usize {
-    ALLOCATOR.lock().free_frames
-}
-
-/// Lock-free check if the physical frame allocator lock is currently held.
-pub fn is_allocator_locked() -> bool {
-    ALLOCATOR.is_locked()
-}
-
-/// Check if this CPU holds the allocator lock.
-pub fn is_allocator_locked_by_cpu(cpu: u32) -> bool {
-    ALLOCATOR.is_held_by_cpu(cpu)
-}
-
-/// Force-release the allocator lock unconditionally.
-///
-/// # Safety
-/// Must only be called when `is_allocator_locked_by_cpu(cpu)` returns true
-/// for the current CPU. The allocator's internal state may be inconsistent.
-pub unsafe fn force_unlock_allocator() {
-    ALLOCATOR.force_unlock();
-}
-
-/// Returns the number of free physical frames (alias for [`free_frame_count`]).
-pub fn free_frames() -> usize {
-    ALLOCATOR.lock().free_frames
-}
-
-/// Allocate a single 4 KiB physical frame from the identity-mapped low region
-/// (physical address < 128 MiB on x86-64, full range on aarch64).
-///
-/// Used by the hardware virtualization subsystem for VMCS/VMCB/page-table pages
-/// that must be accessible via the kernel's identity mapping.
-pub fn alloc_frame_low() -> Option<PhysAddr> {
-    let mut alloc = ALLOCATOR.lock();
-    if alloc.free_frames == 0 {
-        return None;
-    }
-    let limit = alloc.address_frames.min(CONTIGUOUS_MAX_FRAME);
-    for i in 0..limit {
-        if !alloc.is_used(i) {
-            alloc.set_used(i);
-            alloc.free_frames -= 1;
-            return Some(PhysAddr::new((i * FRAME_SIZE) as u64));
-        }
-    }
-    None
-}
-
-/// Maximum physical address for contiguous allocations (128 MiB).
-///
-/// Contiguous allocations are used for DMA buffers and GPU framebuffers that are
-/// accessed via identity mapping (physical address == virtual address). The kernel
-/// identity-maps the first 128 MiB of physical memory, so contiguous allocations
-/// must not exceed this boundary.
-///
-/// On ARM64, the kernel TTBR1 maps the entire RAM range (1 GiB block) so there
-/// is no 128 MiB identity-map constraint — allow the full allocator range.
-#[cfg(target_arch = "x86_64")]
-const CONTIGUOUS_MAX_FRAME: usize = (128 * 1024 * 1024) / FRAME_SIZE; // frame 32768
-#[cfg(target_arch = "aarch64")]
-const CONTIGUOUS_MAX_FRAME: usize = MAX_FRAMES;
-
-/// Allocate `count` physically contiguous 4 KiB frames.
-///
-/// Scans the bitmap for a run of `count` consecutive free frames (first-fit),
-/// constrained to the identity-mapped region (< 128 MiB) so the result is
-/// safely accessible via identity mapping from any CR3 context.
-/// Returns the physical address of the first frame, or `None` if unavailable.
-pub fn alloc_contiguous(count: usize) -> Option<PhysAddr> {
-    if count == 0 {
-        return None;
-    }
-    let mut alloc = ALLOCATOR.lock();
-    let limit = alloc.address_frames.min(CONTIGUOUS_MAX_FRAME);
-    if count > limit {
-        return None;
-    }
-
-    // Scan top-down. The single-page allocator (alloc_frame) scans
-    // bottom-up and tends to scatter small allocations across the
-    // first few MiB; big contiguous requests (a freshly-resized
-    // framebuffer) almost always fail when they too start scanning
-    // from 0 because by then the lower region is heavily fragmented.
-    // Walking from the top reserves the contiguous-friendly upper
-    // half of the identity-map for these large requests while small
-    // sub-page allocations keep nibbling from the bottom.
-    let mut run_end = limit; // exclusive; current run covers [run_end-run_len, run_end)
-    let mut run_len = 0usize;
-    let mut i = limit;
-    while i > 0 {
-        i -= 1;
-        if !alloc.is_used(i) {
-            if run_len == 0 {
-                run_end = i + 1;
+        let kernel_end_virt = unsafe { &_kernel_end as *const u8 as u64 };
+        let kernel_end_phys = kernel_end_virt - ARM64_PHYS_TO_VIRT;
+        let kernel_end_frame = ((kernel_end_phys as usize) + FRAME_SIZE - 1) / FRAME_SIZE;
+        for frame in start_frame..kernel_end_frame {
+            if frame < MAX_FRAMES && !alloc.is_used(frame) {
+                alloc.set_used(frame);
+                alloc.free_frames -= 1;
             }
-            run_len += 1;
-            if run_len >= count {
-                let run_start = run_end - count;
-                for j in run_start..run_end {
-                    alloc.set_used(j);
-                    alloc.free_frames -= 1;
+        }
+        alloc.next_search = kernel_end_frame;
+
+        crate::serial_verbose_println!(
+            "Physical memory: {} MiB RAM ({:#010x}-{:#010x}), {} frames free ({} MiB) [bitmap]",
+            ram_size / (1024 * 1024),
+            ram_base,
+            ram_end,
+            alloc.free_frames,
+            alloc.free_frames * FRAME_SIZE / (1024 * 1024)
+        );
+    }
+
+    pub fn alloc_frame() -> Option<PhysAddr> {
+        let mut alloc = ALLOCATOR.lock();
+        let total = alloc.address_frames;
+        if alloc.free_frames == 0 {
+            return None;
+        }
+        let start = alloc.next_search;
+        for i in start..total {
+            if !alloc.is_used(i) {
+                alloc.set_used(i);
+                alloc.free_frames -= 1;
+                alloc.next_search = i + 1;
+                return Some(PhysAddr::new((i * FRAME_SIZE) as u64));
+            }
+        }
+        for i in 0..start {
+            if !alloc.is_used(i) {
+                alloc.set_used(i);
+                alloc.free_frames -= 1;
+                alloc.next_search = i + 1;
+                return Some(PhysAddr::new((i * FRAME_SIZE) as u64));
+            }
+        }
+        None
+    }
+
+    pub fn alloc_frame_low() -> Option<PhysAddr> {
+        let mut alloc = ALLOCATOR.lock();
+        if alloc.free_frames == 0 {
+            return None;
+        }
+        let limit = alloc.address_frames.min(CONTIGUOUS_MAX_FRAME);
+        for i in 0..limit {
+            if !alloc.is_used(i) {
+                alloc.set_used(i);
+                alloc.free_frames -= 1;
+                return Some(PhysAddr::new((i * FRAME_SIZE) as u64));
+            }
+        }
+        None
+    }
+
+    pub fn alloc_contiguous(count: usize) -> Option<PhysAddr> {
+        if count == 0 {
+            return None;
+        }
+        let mut alloc = ALLOCATOR.lock();
+        let limit = alloc.address_frames.min(CONTIGUOUS_MAX_FRAME);
+        if count > limit {
+            return None;
+        }
+        // Top-down scan first; falls back to bottom-up.
+        let mut run_end = limit;
+        let mut run_len = 0usize;
+        let mut i = limit;
+        while i > 0 {
+            i -= 1;
+            if !alloc.is_used(i) {
+                if run_len == 0 {
+                    run_end = i + 1;
                 }
-                return Some(PhysAddr::new((run_start * FRAME_SIZE) as u64));
-            }
-        } else {
-            run_len = 0;
-        }
-    }
-
-    // Top-down didn't find a slot — fall back to the original
-    // bottom-up sweep so we still try every possible run before
-    // giving up. (Top-down can miss runs at the very bottom of the
-    // bitmap because we only look at one direction.)
-    let mut run_start = 0usize;
-    run_len = 0;
-    for i in 0..limit {
-        if !alloc.is_used(i) {
-            if run_len == 0 {
-                run_start = i;
-            }
-            run_len += 1;
-            if run_len >= count {
-                for j in run_start..run_start + count {
-                    alloc.set_used(j);
-                    alloc.free_frames -= 1;
+                run_len += 1;
+                if run_len >= count {
+                    let run_start = run_end - count;
+                    for j in run_start..run_end {
+                        alloc.set_used(j);
+                        alloc.free_frames -= 1;
+                    }
+                    return Some(PhysAddr::new((run_start * FRAME_SIZE) as u64));
                 }
-                return Some(PhysAddr::new((run_start * FRAME_SIZE) as u64));
+            } else {
+                run_len = 0;
             }
-        } else {
-            run_len = 0;
         }
-    }
-    None
-}
-
-/// Returns the total number of physical frames tracked by the allocator.
-pub fn total_frames() -> usize {
-    ALLOCATOR.lock().total_frames
-}
-
-/// Reserve (mark as used) a specific physical frame.
-///
-/// Used on ARM64 where the kernel heap is pre-mapped by a 1 GiB block
-/// and the backing frames must be excluded from allocation.
-/// Has no effect if the frame is already marked as used.
-pub fn reserve_frame(addr: PhysAddr) {
-    let mut alloc = ALLOCATOR.lock();
-    let frame = addr.frame_index();
-    if frame < MAX_FRAMES && !alloc.is_used(frame) {
-        alloc.set_used(frame);
-        alloc.free_frames -= 1;
-    }
-}
-
-/// Initialize the physical frame allocator for ARM64 (QEMU virt machine).
-///
-/// ARM64 does not have an E820 memory map — RAM layout comes from DTB or
-/// is hardcoded for the QEMU virt platform (RAM at 0x4000_0000).
-#[cfg(target_arch = "aarch64")]
-pub fn init_arm64(ram_base: u64, ram_size: u64) {
-    // Kernel virtual-to-physical offset (matching boot.S 1 GiB block mapping)
-    const ARM64_PHYS_TO_VIRT: u64 = 0xFFFF_0000_4000_0000;
-
-    let ram_end = ram_base + ram_size;
-    let start_frame = (ram_base as usize) / FRAME_SIZE;
-    let end_frame = (ram_end as usize) / FRAME_SIZE;
-
-    let mut alloc = ALLOCATOR.lock();
-
-    alloc.total_frames = (ram_size as usize) / FRAME_SIZE;
-    alloc.address_frames = end_frame;
-    alloc.free_frames = 0;
-
-    // Mark everything up to end_frame as used (0xFF = all bits set).
-    let bitmap_bytes = (end_frame + 7) / 8;
-    for byte in alloc.bitmap[..bitmap_bytes].iter_mut() {
-        *byte = 0xFF;
+        let mut run_start = 0usize;
+        run_len = 0;
+        for i in 0..limit {
+            if !alloc.is_used(i) {
+                if run_len == 0 {
+                    run_start = i;
+                }
+                run_len += 1;
+                if run_len >= count {
+                    for j in run_start..run_start + count {
+                        alloc.set_used(j);
+                        alloc.free_frames -= 1;
+                    }
+                    return Some(PhysAddr::new((run_start * FRAME_SIZE) as u64));
+                }
+            } else {
+                run_len = 0;
+            }
+        }
+        None
     }
 
-    // Free the RAM region.
-    for frame in start_frame..end_frame {
-        if frame < MAX_FRAMES {
+    pub fn free_frame(addr: PhysAddr) {
+        let mut alloc = ALLOCATOR.lock();
+        let frame = addr.frame_index();
+        if alloc.is_used(frame) {
             alloc.set_free(frame);
             alloc.free_frames += 1;
+            if frame < alloc.next_search {
+                alloc.next_search = frame;
+            }
         }
     }
 
-    // Reserve kernel region: from RAM base to _kernel_end (physical).
-    let kernel_end_virt = unsafe { &_kernel_end as *const u8 as u64 };
-    let kernel_end_phys = kernel_end_virt - ARM64_PHYS_TO_VIRT;
-    let kernel_end_frame = ((kernel_end_phys as usize) + FRAME_SIZE - 1) / FRAME_SIZE;
-
-    for frame in start_frame..kernel_end_frame {
+    pub fn reserve_frame(addr: PhysAddr) {
+        let mut alloc = ALLOCATOR.lock();
+        let frame = addr.frame_index();
         if frame < MAX_FRAMES && !alloc.is_used(frame) {
             alloc.set_used(frame);
             alloc.free_frames -= 1;
         }
     }
 
-    alloc.next_search = kernel_end_frame;
+    pub fn free_frame_count() -> usize {
+        ALLOCATOR.lock().free_frames
+    }
+    pub fn total_frames() -> usize {
+        ALLOCATOR.lock().total_frames
+    }
+    pub fn is_allocator_locked() -> bool {
+        ALLOCATOR.is_locked()
+    }
+    pub fn is_allocator_locked_by_cpu(cpu: u32) -> bool {
+        ALLOCATOR.is_held_by_cpu(cpu)
+    }
+    pub unsafe fn force_unlock_allocator() {
+        ALLOCATOR.force_unlock();
+    }
+}
 
-    crate::serial_verbose_println!(
-        "Physical memory: {} MiB RAM ({:#010x}-{:#010x}), {} frames free ({} MiB)",
-        ram_size / (1024 * 1024),
-        ram_base,
-        ram_end,
-        alloc.free_frames,
-        alloc.free_frames * FRAME_SIZE / (1024 * 1024)
-    );
-    crate::serial_verbose_println!(
-        "  Kernel region reserved: {:#010x}-{:#010x}",
-        ram_base,
-        kernel_end_phys
-    );
+// ──────────────────────────────────────────────────────────────────
+// Buddy backend.
+// ──────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "buddy_alloc")]
+mod buddy_backend {
+    use super::*;
+    use crate::boot_info::E820_TYPE_USABLE;
+    use crate::memory::buddy::{order_for, BuddyZone, MAX_ORDER};
+    use crate::sync::spinlock::Spinlock;
+
+    const KERNEL_VIRT_BASE: u64 = 0xFFFF_FFFF_8000_0000;
+
+    extern "C" {
+        static _kernel_end: u8;
+    }
+
+    /// Single global buddy zone. Per-CPU caches are a follow-up commit.
+    static ZONE: Spinlock<BuddyZone> = Spinlock::new(BuddyZone::new());
+
+    /// On x86_64 the legacy `alloc_contiguous` path required the
+    /// returned phys to live within the lower 128 MiB identity-map.
+    /// physmap removes that restriction, but until every caller has
+    /// migrated to dereferencing through physmap we keep the same
+    /// guarantee for `alloc_frame_low()`. Callers that genuinely need
+    /// low memory (legacy DMA, real-mode trampolines) use that
+    /// function explicitly.
+    #[cfg(target_arch = "x86_64")]
+    const LOW_MAX_FRAME: usize = (128 * 1024 * 1024) / FRAME_SIZE;
+    #[cfg(target_arch = "aarch64")]
+    const LOW_MAX_FRAME: usize = usize::MAX;
+
+    /// Bring up the buddy zone from the E820 map. Same staging order
+    /// as the bitmap backend: register every USABLE region first,
+    /// then carve out reserved areas (first 2 MiB, kernel image).
+    pub fn init(boot_info: &BootInfo) {
+        let memory_map = unsafe { boot_info.memory_map() };
+        let mut z = ZONE.lock();
+
+        // Register USABLE regions.
+        for entry in memory_map {
+            if entry.entry_type != E820_TYPE_USABLE {
+                continue;
+            }
+            let start = PhysAddr::new(entry.base_addr).frame_align_up();
+            let end = PhysAddr::new(entry.base_addr + entry.length).frame_align_down();
+            if start.as_u64() >= end.as_u64() {
+                continue;
+            }
+            z.add_free_region(start.frame_index(), end.frame_index());
+        }
+
+        // Reserve first 2 MiB (BIOS, real-mode trampoline, bootloader stage).
+        let first_mb_frames = (2 * 1024 * 1024) / FRAME_SIZE;
+        z.reserve_range(0, first_mb_frames);
+
+        // Reserve the kernel image (image text + data + bss + .boot_stack).
+        let kernel_start_phys = boot_info.kernel_phys_start as u64;
+        let linker_kernel_end_phys =
+            unsafe { (&_kernel_end as *const u8 as u64) - KERNEL_VIRT_BASE };
+        let kernel_end_phys = if linker_kernel_end_phys > boot_info.kernel_phys_end as u64 {
+            linker_kernel_end_phys
+        } else {
+            boot_info.kernel_phys_end as u64
+        };
+        let ks = PhysAddr::new(kernel_start_phys).frame_align_down().frame_index();
+        let ke = PhysAddr::new(kernel_end_phys).frame_align_up().frame_index();
+        z.reserve_range(ks, ke);
+
+        let total_mib = z.total_frames * FRAME_SIZE / (1024 * 1024);
+        let free_mib = z.free_frames * FRAME_SIZE / (1024 * 1024);
+        crate::serial_verbose_println!(
+            "Reserving kernel region: {:#010x} - {:#010x} [buddy]",
+            kernel_start_phys,
+            kernel_end_phys
+        );
+        crate::serial_verbose_println!(
+            "Physical memory: {} MiB total, {} MiB free [buddy]",
+            total_mib,
+            free_mib
+        );
+    }
+
+    pub fn init_arm64(ram_base: u64, ram_size: u64) {
+        const ARM64_PHYS_TO_VIRT: u64 = 0xFFFF_0000_4000_0000;
+        let ram_end = ram_base + ram_size;
+        let start_frame = (ram_base as usize) / FRAME_SIZE;
+        let end_frame = (ram_end as usize) / FRAME_SIZE;
+
+        let mut z = ZONE.lock();
+        z.add_free_region(start_frame, end_frame);
+
+        let kernel_end_virt = unsafe { &_kernel_end as *const u8 as u64 };
+        let kernel_end_phys = kernel_end_virt - ARM64_PHYS_TO_VIRT;
+        let kernel_end_frame =
+            ((kernel_end_phys as usize) + FRAME_SIZE - 1) / FRAME_SIZE;
+        z.reserve_range(start_frame, kernel_end_frame);
+
+        let free_mib = z.free_frames * FRAME_SIZE / (1024 * 1024);
+        crate::serial_verbose_println!(
+            "Physical memory: {} MiB RAM ({:#010x}-{:#010x}), {} MiB free [buddy]",
+            ram_size / (1024 * 1024),
+            ram_base,
+            ram_end,
+            free_mib
+        );
+    }
+
+    #[inline]
+    fn frame_to_phys(frame: usize) -> PhysAddr {
+        PhysAddr::new((frame * FRAME_SIZE) as u64)
+    }
+
+    pub fn alloc_frame() -> Option<PhysAddr> {
+        ZONE.lock().alloc_frame().map(frame_to_phys)
+    }
+
+    pub fn alloc_frame_low() -> Option<PhysAddr> {
+        // Buddy doesn't have a built-in "below address X" knob (Linux
+        // would call this a separate ZONE_DMA). For our use cases —
+        // x86 hardware-virt structures, real-mode trampoline frames —
+        // we walk the order-0 free list looking for a frame below
+        // LOW_MAX_FRAME. Fallback to a small linear retry budget so
+        // we don't spin if low memory is exhausted.
+        if LOW_MAX_FRAME == usize::MAX {
+            return alloc_frame();
+        }
+        let mut z = ZONE.lock();
+        // Try up to 32 order-0 allocations; keep any low-memory
+        // frame, push back the others as free at order 0. If the
+        // first try is below LOW_MAX_FRAME we exit immediately —
+        // common case once buddy returns a young free leaf.
+        let mut rejected: [usize; 32] = [usize::MAX; 32];
+        let mut n = 0usize;
+        let result = loop {
+            let f = match z.alloc_frame() {
+                Some(f) => f,
+                None => break None,
+            };
+            if f < LOW_MAX_FRAME {
+                break Some(f);
+            }
+            if n >= rejected.len() {
+                // Give back the last sample too and bail; better to
+                // fail than to drain the entire allocator looking
+                // for a low frame.
+                z.free_pages(f, 0);
+                break None;
+            }
+            rejected[n] = f;
+            n += 1;
+        };
+        for i in 0..n {
+            z.free_pages(rejected[i], 0);
+        }
+        result.map(frame_to_phys)
+    }
+
+    pub fn alloc_contiguous(count: usize) -> Option<PhysAddr> {
+        if count == 0 {
+            return None;
+        }
+        let order = order_for(count);
+        if order > MAX_ORDER {
+            return None;
+        }
+        ZONE.lock().alloc_pages(order).map(frame_to_phys)
+    }
+
+    pub fn free_frame(addr: PhysAddr) {
+        let frame = addr.frame_index();
+        ZONE.lock().free_frame(frame);
+    }
+
+    pub fn reserve_frame(addr: PhysAddr) {
+        let frame = addr.frame_index();
+        ZONE.lock().reserve_frame(frame);
+    }
+
+    pub fn free_frame_count() -> usize {
+        ZONE.lock().free_frames
+    }
+
+    pub fn total_frames() -> usize {
+        ZONE.lock().total_frames
+    }
+
+    pub fn is_allocator_locked() -> bool {
+        ZONE.is_locked()
+    }
+    pub fn is_allocator_locked_by_cpu(cpu: u32) -> bool {
+        ZONE.is_held_by_cpu(cpu)
+    }
+    pub unsafe fn force_unlock_allocator() {
+        ZONE.force_unlock();
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Public API — dispatches to the active backend.
+// ──────────────────────────────────────────────────────────────────
+
+#[cfg(not(feature = "buddy_alloc"))]
+use bitmap_backend as backend;
+#[cfg(feature = "buddy_alloc")]
+use buddy_backend as backend;
+
+#[cfg(target_arch = "x86_64")]
+pub fn init(boot_info: &BootInfo) {
+    backend::init(boot_info);
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn init_arm64(ram_base: u64, ram_size: u64) {
+    backend::init_arm64(ram_base, ram_size);
+}
+
+#[inline]
+pub fn alloc_frame() -> Option<PhysAddr> {
+    backend::alloc_frame()
+}
+
+#[inline]
+pub fn alloc_frame_low() -> Option<PhysAddr> {
+    backend::alloc_frame_low()
+}
+
+#[inline]
+pub fn alloc_contiguous(count: usize) -> Option<PhysAddr> {
+    backend::alloc_contiguous(count)
+}
+
+#[inline]
+pub fn free_frame(addr: PhysAddr) {
+    backend::free_frame(addr)
+}
+
+#[inline]
+pub fn reserve_frame(addr: PhysAddr) {
+    backend::reserve_frame(addr)
+}
+
+#[inline]
+pub fn free_frame_count() -> usize {
+    backend::free_frame_count()
+}
+
+#[inline]
+pub fn total_frames() -> usize {
+    backend::total_frames()
+}
+
+#[inline]
+pub fn free_frames() -> usize {
+    backend::free_frame_count()
+}
+
+#[inline]
+pub fn is_allocator_locked() -> bool {
+    backend::is_allocator_locked()
+}
+
+#[inline]
+pub fn is_allocator_locked_by_cpu(cpu: u32) -> bool {
+    backend::is_allocator_locked_by_cpu(cpu)
+}
+
+#[inline]
+pub unsafe fn force_unlock_allocator() {
+    backend::force_unlock_allocator()
 }
