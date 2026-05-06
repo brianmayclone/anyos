@@ -416,6 +416,26 @@ fn is_portrait_orientation(orientation: i64) -> bool {
     orientation == 1 || orientation == 3
 }
 
+/// Look up the persisted rotation (0..=3) for an output identified by
+/// EDID hash. 0 = native landscape, 1 = 90° CCW (portrait),
+/// 2 = 180° (landscape flipped), 3 = 270° (portrait flipped). Default
+/// 0 when no setting is present.
+fn rotation_for_output(edid_hash: u64) -> u32 {
+    use crate::schema::{edid_hex, output_key, DISPLAYD_SCHEMA};
+    if edid_hash == 0 {
+        return 0;
+    }
+    let hex = edid_hex(edid_hash);
+    let v = DISPLAYD_SCHEMA
+        .read_i64(&output_key(&hex, "orientation"))
+        .unwrap_or(0);
+    if !(0..=3).contains(&v) {
+        0
+    } else {
+        v as u32
+    }
+}
+
 fn output_cap(info: &display::DisplayInfo) -> (u32, u32) {
     if info.preferred_w > 0 && info.preferred_h > 0 {
         (info.preferred_w, info.preferred_h)
@@ -567,9 +587,12 @@ pub(crate) fn apply_persisted_layout() {
         let orientation = DISPLAYD_SCHEMA
             .read_i64(&output_key(&hex, "orientation"))
             .unwrap_or(0);
-        if is_portrait_orientation(orientation) {
-            core::mem::swap(&mut w, &mut h);
-        }
+        // The mode itself (w,h) stays at the panel's native landscape
+        // resolution — that's what the hardware scanout always produces.
+        // The rotation is encoded in LayoutEntry.flags and applied by
+        // the compositor when blitting; the kernel sees virtual_w/h
+        // already swapped for layout purposes.
+        let _ = orientation;
         let _ = frac;
         Some((w, h, refresh, scale, true))
     };
@@ -584,19 +607,25 @@ pub(crate) fn apply_persisted_layout() {
             None => return,
         };
         (pw, ph) = choose_global_mirror_mode(&infos, pw, ph);
+        let prot = rotation_for_output(primary.edid_hash);
         let mut e = LayoutEntry::primary(primary.id, 0, 0, pw, ph);
         e.mode_refresh_mhz = prefresh;
         e.scale = pscale as u32;
+        e.flags = LayoutEntry::flags_with_rotation(e.flags, prot);
         entries.push(e);
         for info in &infos {
             if info.id == primary.id || !info.is_connected() {
                 continue;
             }
             // Even mirrors need an entry so the kernel knows about them.
+            // Mirrors share the source's rotation: a single framebuffer
+            // resource backs both, so independent rotations would mean
+            // a different pixel layout per output.
             let mut e = LayoutEntry::secondary(info.id, 0, 0, pw, ph);
             e.mode_refresh_mhz = prefresh;
             e.scale = pscale as u32;
             e.mirror_of = primary.id;
+            e.flags = LayoutEntry::flags_with_rotation(e.flags, prot);
             entries.push(e);
         }
     } else {
@@ -608,11 +637,21 @@ pub(crate) fn apply_persisted_layout() {
             Some(v) => v,
             None => return,
         };
+        let prot = rotation_for_output(primary.edid_hash);
         let mut e = LayoutEntry::primary(primary.id, 0, 0, pw, ph);
         e.mode_refresh_mhz = prefresh;
         e.scale = pscale as u32;
+        e.flags = LayoutEntry::flags_with_rotation(e.flags, prot);
         entries.push(e);
-        next_x = pw as i32;
+        // Stack the next output to the right of the primary's logical
+        // (rotated) width — rotated outputs occupy fewer horizontal
+        // pixels in virtual desktop coordinates.
+        let primary_logical_w = if LayoutEntry::rotation_swaps_dimensions(prot) {
+            ph
+        } else {
+            pw
+        };
+        next_x = primary_logical_w as i32;
 
         for info in &infos {
             if info.id == primary.id || !info.is_connected() {
@@ -662,8 +701,32 @@ pub(crate) fn apply_persisted_layout() {
             let mut e = LayoutEntry::secondary(info.id, vx, vy, mode_w, mode_h);
             e.mode_refresh_mhz = mode_refresh;
             e.scale = mode_scale as u32;
-            if let Some(target_id) = mirror_target_id {
+            // Mirrored outputs adopt the source's rotation (single
+            // framebuffer); independent outputs use their own setting.
+            let rot = if let Some(target_id) = mirror_target_id {
                 e.mirror_of = target_id;
+                infos
+                    .iter()
+                    .find(|o| o.id == target_id)
+                    .map(|o| rotation_for_output(o.edid_hash))
+                    .unwrap_or(0)
+            } else {
+                rotation_for_output(info.edid_hash)
+            };
+            e.flags = LayoutEntry::flags_with_rotation(e.flags, rot);
+            // If we placed this output via the default "stack to the
+            // right" path, advance next_x by its logical (rotated)
+            // width so subsequent outputs land beside it without
+            // overlapping.
+            if saved_x.is_none() || saved_y.is_none() {
+                let logical_w = if LayoutEntry::rotation_swaps_dimensions(rot) {
+                    mode_h
+                } else {
+                    mode_w
+                };
+                // next_x was already advanced for the original w; correct
+                // it to the rotated width.
+                next_x = next_x - w as i32 + logical_w as i32;
             }
             entries.push(e);
         }

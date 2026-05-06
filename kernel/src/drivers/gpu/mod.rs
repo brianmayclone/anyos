@@ -493,6 +493,18 @@ pub trait GpuDriver: Send {
             }
         }
 
+        // Cache per-output rotation for sys_display_get_rotation. Outputs
+        // not present in the new layout are reset to 0 (landscape).
+        for id in 0..total {
+            let rot = layout
+                .entries
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.rotation)
+                .unwrap_or(0);
+            set_output_rotation(id, rot);
+        }
+
         Ok(())
     }
 
@@ -545,6 +557,37 @@ pub trait GpuDriver: Send {
 /// that needs GPU state must use [`try_lock_gpu`] (non-blocking) and handle
 /// the `None` case gracefully.
 static GPU: Mutex<Option<Box<dyn GpuDriver>>> = Mutex::new(None);
+
+/// Per-output rotation table, in 90° steps (0..=3). 0 = native landscape
+/// (the boot default). Updated by `apply_layout` whenever a layout is
+/// committed; read by `sys_display_get_rotation` so the compositor can
+/// learn whether to apply software rotation when blitting.
+static OUTPUT_ROTATION: [AtomicU32; output::MAX_OUTPUTS] = [
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+];
+
+/// Read the rotation cached for `output_id`, or 0 if the id is out of
+/// range. Cheap atomic load; safe to call from any context.
+pub fn output_rotation(output_id: u32) -> u32 {
+    let idx = output_id as usize;
+    if idx >= output::MAX_OUTPUTS {
+        return 0;
+    }
+    OUTPUT_ROTATION[idx].load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Update the cached rotation for `output_id`. Called by `apply_layout`
+/// after a successful layout commit.
+pub fn set_output_rotation(output_id: u32, rotation: u8) {
+    let idx = output_id as usize;
+    if idx >= output::MAX_OUTPUTS {
+        return;
+    }
+    OUTPUT_ROTATION[idx].store(rotation as u32, core::sync::atomic::Ordering::Relaxed);
+}
 
 /// Register a GPU driver (called from HAL driver factory during PCI probe).
 /// Clears the poison flag if set from a previous crash.

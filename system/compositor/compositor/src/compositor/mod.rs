@@ -74,6 +74,15 @@ pub struct Output {
     /// purposes — full DPI-aware widget rendering is a larger anyui
     /// pipeline change saved for a separate phase.
     pub scale_percent: u16,
+
+    /// Rotation applied when copying the back buffer to the hardware
+    /// framebuffer. 0 = no rotation, 1 = 90° CCW, 2 = 180°, 3 = 270°.
+    /// The back buffer is composed in logical (rotated) dimensions —
+    /// `fb_width × fb_height` here is the *logical* size, while the
+    /// hardware scanout uses the panel's native landscape resolution.
+    /// `flush_back_to_fb_with_rotation` performs the coordinate
+    /// transform on copy.
+    pub rotation: u8,
 }
 
 impl Output {
@@ -97,6 +106,7 @@ impl Output {
             primary: true,
             mirror_of: None,
             scale_percent: 100,
+            rotation: 0,
         }
     }
 }
@@ -105,6 +115,97 @@ impl Output {
 // not Send/Sync by default but the rest of the compositor already
 // asserts the same invariant for its own fb_ptr field.
 unsafe impl Send for Output {}
+
+/// Copy a rectangle of pixels from a logical-coordinate source buffer
+/// (`src` of size `logical_w × logical_h`) into the hardware-scanout
+/// framebuffer (`dst`, `hw_w × hw_h`, stride `dst_stride_px` u32 entries
+/// per row), applying a 90° step rotation.
+///
+/// Rotation modes match `LayoutEntry::FLAG_ROTATION_*`:
+///   0 → no rotation (identity, fastest path)
+///   1 → 90° CCW   (logical x→hw y, logical y→hw_w-1-x)
+///   2 → 180°
+///   3 → 270° CCW  (logical x→hw_h-1-y, logical y→x)
+///
+/// The non-zero paths walk `src` row-major and write one pixel per
+/// iteration. That's slower than the identity memcpy, but rotation is
+/// rare (a handful of pixel writes per second compared to many MB/s
+/// for the raw blit), and a per-pixel transform keeps the geometry
+/// trivially correct. A SIMD/blocked variant can replace this if
+/// rotated outputs become a performance pain point.
+///
+/// SAFETY: caller must ensure `src.len() == logical_w * logical_h`,
+/// `dst` covers at least `hw_h * dst_stride_px` u32s, and that
+/// (logical_w, logical_h) match the rotation orientation of the
+/// hardware framebuffer (90° / 270° → logical_w == hw_h && logical_h == hw_w;
+/// 0° / 180° → logical == hw).
+pub unsafe fn copy_rotated_to_fb(
+    src: *const u32,
+    logical_w: u32,
+    logical_h: u32,
+    dst: *mut u32,
+    hw_w: u32,
+    hw_h: u32,
+    dst_stride_px: u32,
+    rotation: u8,
+) {
+    let lw = logical_w as usize;
+    let lh = logical_h as usize;
+    let hw = hw_w as usize;
+    let hh = hw_h as usize;
+    let stride = dst_stride_px as usize;
+    match rotation & 0b11 {
+        0 => {
+            // Identity: row-by-row copy honouring dst stride.
+            for y in 0..lh.min(hh) {
+                core::ptr::copy_nonoverlapping(
+                    src.add(y * lw),
+                    dst.add(y * stride),
+                    lw.min(hw),
+                );
+            }
+        }
+        1 => {
+            // 90° CCW: hw[y][x] = logical[x][hw_h-1-y]
+            // Equivalently for each src(lx, ly): dst(ly, lw-1-lx) is
+            // not right — let's walk dst once.
+            for y in 0..hh {
+                for x in 0..hw {
+                    let lx = y;
+                    let ly = (hw - 1).saturating_sub(x);
+                    if lx < lw && ly < lh {
+                        *dst.add(y * stride + x) = *src.add(ly * lw + lx);
+                    }
+                }
+            }
+        }
+        2 => {
+            // 180°: dst(y, x) = src(lh-1-y, lw-1-x)
+            for y in 0..hh {
+                for x in 0..hw {
+                    let ly = (lh - 1).saturating_sub(y);
+                    let lx = (lw - 1).saturating_sub(x);
+                    if lx < lw && ly < lh {
+                        *dst.add(y * stride + x) = *src.add(ly * lw + lx);
+                    }
+                }
+            }
+        }
+        3 => {
+            // 270° CCW: dst(y, x) = src(x, lh-1-y)  (with logical = hw_h × hw_w)
+            for y in 0..hh {
+                for x in 0..hw {
+                    let lx = (hh - 1).saturating_sub(y);
+                    let ly = x;
+                    if lx < lw && ly < lh {
+                        *dst.add(y * stride + x) = *src.add(ly * lw + lx);
+                    }
+                }
+            }
+        }
+        _ => unreachable!(),
+    }
+}
 
 pub struct Compositor {
     /// Framebuffer pointer (MMIO VRAM mapped at 0x20000000)
@@ -182,13 +283,27 @@ pub struct Compositor {
 impl Compositor {
     /// Create a new compositor with the given framebuffer parameters.
     pub fn new(fb_ptr: *mut u32, width: u32, height: u32, pitch: u32) -> Self {
-        let pixel_count = (width * height) as usize;
+        // The kernel may already have a cached rotation for output 0
+        // (e.g. boot-time displayd applied a layout before the
+        // compositor came up). Honour it so the very first composite
+        // pass produces correctly rotated pixels. `width × height`
+        // here is the hardware scanout size; logical sizes are swapped
+        // for portrait orientations.
+        let rotation = anyos_std::display::get_rotation(0) as u8;
+        let (logical_w, logical_h) = if rotation == 1 || rotation == 3 {
+            (height, width)
+        } else {
+            (width, height)
+        };
+        let pixel_count = (logical_w * logical_h) as usize;
+        let mut primary = Output::primary_view(fb_ptr, logical_w, logical_h, pitch);
+        primary.rotation = rotation;
         Compositor {
             fb_ptr,
-            fb_width: width,
-            fb_height: height,
+            fb_width: logical_w,
+            fb_height: logical_h,
             fb_pitch: pitch,
-            outputs: alloc::vec![Output::primary_view(fb_ptr, width, height, pitch)],
+            outputs: alloc::vec![primary],
             back_buffer: vec![0u32; pixel_count],
             layers: Vec::with_capacity(32),
             next_layer_id: 1,
@@ -204,7 +319,7 @@ impl Compositor {
             focused_layer_id: None,
             accel_move_hint: None,
             vram_allocator: None,
-            blur_temp: Vec::with_capacity(width.max(height) as usize),
+            blur_temp: Vec::with_capacity(logical_w.max(logical_h) as usize),
             blur_generation: 1,
             compositing_damage: Vec::with_capacity(32),
             vram_dirty: false,
@@ -325,22 +440,33 @@ impl Compositor {
                 core::ptr::write_bytes(fb_info.fb_addr as *mut u32, 0, pixels);
             }
             let scale_percent = if fb_info.width >= 2560 { 200 } else { 100 };
+            // The kernel-cached rotation determines whether logical
+            // dimensions (the values the rest of the compositor sees as
+            // fb_width/fb_height) match the hardware scanout (landscape)
+            // or are the swapped portrait size.
+            let rotation = anyos_std::display::get_rotation(info.id) as u8;
+            let (logical_w, logical_h) = if rotation == 1 || rotation == 3 {
+                (fb_info.height, fb_info.width)
+            } else {
+                (fb_info.width, fb_info.height)
+            };
             self.outputs.push(Output {
                 id: info.id,
                 virtual_x: next_x,
                 virtual_y: 0,
                 fb_ptr: fb_info.fb_addr as *mut u32,
-                fb_width: fb_info.width,
-                fb_height: fb_info.height,
+                fb_width: logical_w,
+                fb_height: logical_h,
                 fb_pitch: fb_info.pitch,
-                back_buffer: alloc::vec![0u32; (fb_info.width * fb_info.height) as usize],
+                back_buffer: alloc::vec![0u32; (logical_w * logical_h) as usize],
                 damage: Vec::with_capacity(32),
                 primary: false,
                 mirror_of: None,
                 scale_percent,
+                rotation,
             });
             let _ = anyos_std::display::flush(info.id, 0, 0, fb_info.width, fb_info.height);
-            next_x += fb_info.width as i32;
+            next_x += logical_w as i32;
             let _ = w;
             let _ = h;
         }
@@ -413,19 +539,26 @@ impl Compositor {
             // panel; default to 200% scale so fonts/padding are usable.
             // Users can override via display.conf later.
             let scale_percent = if fb_info.width >= 2560 { 200 } else { 100 };
+            let rotation = anyos_std::display::get_rotation(info.id) as u8;
+            let (logical_w, logical_h) = if rotation == 1 || rotation == 3 {
+                (fb_info.height, fb_info.width)
+            } else {
+                (fb_info.width, fb_info.height)
+            };
             self.outputs.push(Output {
                 id: info.id,
                 virtual_x: next_x,
                 virtual_y: 0,
                 fb_ptr: fb_info.fb_addr as *mut u32,
-                fb_width: fb_info.width,
-                fb_height: fb_info.height,
+                fb_width: logical_w,
+                fb_height: logical_h,
                 fb_pitch: fb_info.pitch,
-                back_buffer: alloc::vec![0u32; (fb_info.width * fb_info.height) as usize],
+                back_buffer: alloc::vec![0u32; (logical_w * logical_h) as usize],
                 damage: Vec::with_capacity(32),
                 primary: false,
                 mirror_of: None,
                 scale_percent,
+                rotation,
             });
 
             // Tell the kernel to flush the now-zeroed framebuffer so the
@@ -433,16 +566,19 @@ impl Compositor {
             let _ = anyos_std::display::flush(info.id, 0, 0, fb_info.width, fb_info.height);
 
             anyos_std::println!(
-                "[compositor] output {} active at virt=({},{}), {}x{}, fb_va={:#x}",
+                "[compositor] output {} active at virt=({},{}), logical {}x{} (rot={}, hw {}x{}), fb_va={:#x}",
                 info.id,
                 next_x,
                 0,
+                logical_w,
+                logical_h,
+                rotation,
                 fb_info.width,
                 fb_info.height,
                 fb_info.fb_addr
             );
 
-            next_x += fb_info.width as i32;
+            next_x += logical_w as i32;
         }
     }
 
@@ -808,25 +944,37 @@ impl Compositor {
                 }
             }
 
-            // Flush back_buffer to per-output framebuffer (stride conversion).
+            // Flush back_buffer to per-output framebuffer. When the
+            // output is rotated, ow/oh are the logical (rotated)
+            // dimensions; the hardware scanout still wants its native
+            // landscape layout, so we apply the transform during the
+            // copy. Identity (rotation == 0) is the fast row-memcpy path.
+            let rotation = self.outputs[oi].rotation;
+            let (hw_w, hw_h) = if rotation == 1 || rotation == 3 {
+                (oh, ow)
+            } else {
+                (ow, oh)
+            };
             unsafe {
                 let bb = &self.outputs[oi].back_buffer;
-                let dst_stride_px = (fb_pitch / 4) as usize;
-                let src_stride = ow as usize;
-                for row in 0..(oh as usize) {
-                    let src_off = row * src_stride;
-                    let dst_off = row * dst_stride_px;
-                    core::ptr::copy_nonoverlapping(
-                        bb.as_ptr().add(src_off),
-                        fb_ptr.add(dst_off),
-                        ow as usize,
-                    );
-                }
+                let dst_stride_px = fb_pitch / 4;
+                copy_rotated_to_fb(
+                    bb.as_ptr(),
+                    ow,
+                    oh,
+                    fb_ptr,
+                    hw_w,
+                    hw_h,
+                    dst_stride_px,
+                    rotation,
+                );
             }
 
-            // Tell the GPU to transfer + flush this output.
+            // Tell the GPU to transfer + flush this output. The flush
+            // rect is in hardware-pixel coordinates, so we hand it the
+            // post-rotation hw_w/hw_h.
             let output_id = self.outputs[oi].id;
-            let _ = anyos_std::display::flush(output_id, 0, 0, ow, oh);
+            let _ = anyos_std::display::flush(output_id, 0, 0, hw_w, hw_h);
         }
     }
 
@@ -1184,6 +1332,41 @@ impl Compositor {
         // In GMR mode, the GPU will DMA-read from back_buffer directly.
         // Skip the CPU memcpy to VRAM entirely.
         if self.gmr_active && y_offset == 0 {
+            return;
+        }
+
+        // Rotated outputs: a partial back-buffer rect maps to a partial
+        // hardware rect of *different* shape; computing the bounding
+        // rect in hardware coordinates per damage region is non-trivial
+        // and the savings are small versus a full rotated blit. Fall
+        // back to whole-screen rotation when this primary output is
+        // rotated; rotation is rare and the back-to-fb cost dominates.
+        let primary_rotation = self
+            .outputs
+            .first()
+            .map(|o| o.rotation)
+            .unwrap_or(0);
+        if primary_rotation != 0 {
+            let logical_w = self.fb_width;
+            let logical_h = self.fb_height;
+            let (hw_w, hw_h) = if primary_rotation == 1 || primary_rotation == 3 {
+                (logical_h, logical_w)
+            } else {
+                (logical_w, logical_h)
+            };
+            unsafe {
+                copy_rotated_to_fb(
+                    self.back_buffer.as_ptr(),
+                    logical_w,
+                    logical_h,
+                    self.fb_ptr.add((y_offset as usize) * (self.fb_pitch as usize / 4)),
+                    hw_w,
+                    hw_h,
+                    self.fb_pitch / 4,
+                    primary_rotation,
+                );
+            }
+            self.vram_dirty = true;
             return;
         }
 

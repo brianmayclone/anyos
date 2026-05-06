@@ -1857,12 +1857,26 @@ pub fn sys_display_set_layout(entries_ptr: u64, entry_count: u32) -> u32 {
         } else {
             e.scale.min(400) as u16
         };
+        // Rotation lives in flags bits 4..6 (00=0°, 01=90°, 10=180°,
+        // 11=270°). When rotation swaps the logical orientation we
+        // expose virtual_w/virtual_h with the post-rotation dimensions
+        // so the compositor lays out windows in portrait coordinates,
+        // even though the underlying mode (panel native scanout) is
+        // always landscape.
+        let rotation = ((e.flags >> 4) & 0b11) as u8;
+        let scaled_w = ((e.mode_w as u32) * 100u32) / (scale as u32);
+        let scaled_h = ((e.mode_h as u32) * 100u32) / (scale as u32);
+        let (vw, vh) = if rotation == 1 || rotation == 3 {
+            (scaled_h, scaled_w)
+        } else {
+            (scaled_w, scaled_h)
+        };
         layout.entries.push(OutputLayoutEntry {
             id: e.id,
             virtual_x: e.virtual_x,
             virtual_y: e.virtual_y,
-            virtual_w: ((e.mode_w as u32) * 100u32) / (scale as u32),
-            virtual_h: ((e.mode_h as u32) * 100u32) / (scale as u32),
+            virtual_w: vw,
+            virtual_h: vh,
             mode: OutputMode {
                 width: e.mode_w,
                 height: e.mode_h,
@@ -1876,6 +1890,7 @@ pub fn sys_display_set_layout(entries_ptr: u64, entry_count: u32) -> u32 {
                 Some(e.mirror_of)
             },
             primary: (e.flags & 1) != 0,
+            rotation,
         });
     }
     crate::drivers::gpu::with_gpu(|g| match g.apply_layout(&layout) {
@@ -1888,6 +1903,20 @@ pub fn sys_display_set_layout(entries_ptr: u64, entry_count: u32) -> u32 {
 #[cfg(target_arch = "aarch64")]
 pub fn sys_display_set_layout(_entries_ptr: u64, _entry_count: u32) -> u32 {
     u32::MAX
+}
+
+/// SYS_DISPLAY_GET_ROTATION (706): read the current rotation (0..=3,
+/// 90° steps) for `output_id`. Returns `u32::MAX` for unknown ids or
+/// when no GPU is registered. The compositor uses this to decide
+/// whether to apply software rotation when blitting.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_display_get_rotation(output_id: u32) -> u32 {
+    crate::drivers::gpu::output_rotation(output_id)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_display_get_rotation(_output_id: u32) -> u32 {
+    0
 }
 
 /// SYS_DISPLAY_MAP_FB (702): map output `output_id`'s framebuffer into

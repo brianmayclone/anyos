@@ -158,6 +158,17 @@ pub struct OutputLayoutEntry {
     /// Exactly one entry in a layout must be marked primary; new
     /// windows without an explicit output preference are placed there.
     pub primary: bool,
+
+    /// Rotation in 90° steps applied when the compositor blits into
+    /// this output's framebuffer. 0 = native landscape (no rotation,
+    /// the default), 1 = 90° CCW (portrait), 2 = 180° (landscape
+    /// flipped), 3 = 270° CCW (portrait flipped). The hardware mode
+    /// (`mode.width × mode.height`) is always the panel's native
+    /// orientation; the compositor is responsible for rotating window
+    /// pixels into that buffer. `virtual_w/virtual_h` reflect the
+    /// rotated logical size (so layouts and window placement use
+    /// portrait dimensions when rotation == 1 or 3).
+    pub rotation: u8,
 }
 
 /// A complete proposed display configuration.

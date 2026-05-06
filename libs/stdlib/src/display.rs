@@ -10,8 +10,9 @@
 //! process returns an error.
 
 use crate::raw::{
-    syscall0, syscall1_u64, syscall2, syscall2_u64, syscall3, SYS_DISPLAY_FLUSH, SYS_DISPLAY_LIST,
-    SYS_DISPLAY_MAP_FB, SYS_DISPLAY_POLL_EVENT, SYS_DISPLAY_SET_LAYOUT, SYS_REGISTER_DISPLAY_OWNER,
+    syscall0, syscall1, syscall1_u64, syscall2, syscall2_u64, syscall3, SYS_DISPLAY_FLUSH,
+    SYS_DISPLAY_GET_ROTATION, SYS_DISPLAY_LIST, SYS_DISPLAY_MAP_FB, SYS_DISPLAY_POLL_EVENT,
+    SYS_DISPLAY_SET_LAYOUT, SYS_REGISTER_DISPLAY_OWNER,
 };
 use crate::Vec;
 
@@ -82,6 +83,32 @@ pub struct LayoutEntry {
 impl LayoutEntry {
     /// `mirror_of` value meaning "not a mirror".
     pub const NO_MIRROR: u32 = u32::MAX;
+
+    /// `flags` bit 0: this output is the primary one.
+    pub const FLAG_PRIMARY: u32 = 1 << 0;
+    /// `flags` bit 1: reserved for "is mirror entry" (legacy, derived from
+    /// `mirror_of != NO_MIRROR` instead).
+    /// `flags` bits 4..6: rotation in 90° steps.
+    /// 00 = 0° (landscape), 01 = 90° (portrait, ccw),
+    /// 10 = 180° (landscape flipped), 11 = 270° (portrait flipped).
+    pub const FLAG_ROTATION_SHIFT: u32 = 4;
+    pub const FLAG_ROTATION_MASK: u32 = 0b11 << Self::FLAG_ROTATION_SHIFT;
+
+    /// Extract the rotation field from a flags word: 0..=3.
+    pub fn rotation_from_flags(flags: u32) -> u32 {
+        (flags & Self::FLAG_ROTATION_MASK) >> Self::FLAG_ROTATION_SHIFT
+    }
+
+    /// Insert a rotation value (0..=3) into a flags word.
+    pub fn flags_with_rotation(flags: u32, rotation: u32) -> u32 {
+        (flags & !Self::FLAG_ROTATION_MASK)
+            | ((rotation & 0b11) << Self::FLAG_ROTATION_SHIFT)
+    }
+
+    /// Convenience: a 90° rotation swaps the logical width and height.
+    pub fn rotation_swaps_dimensions(rotation: u32) -> bool {
+        rotation == 1 || rotation == 3
+    }
 
     pub fn primary(id: u32, x: i32, y: i32, w: u32, h: u32) -> Self {
         Self {
@@ -192,6 +219,20 @@ pub fn flush(output_id: u32, x: u32, y: u32, w: u32, h: u32) -> u32 {
 /// Returns 0 on success, `u32::MAX` if already taken.
 pub fn register_owner() -> u32 {
     syscall0(SYS_REGISTER_DISPLAY_OWNER)
+}
+
+/// Read the current rotation for `output_id` in 90° steps. 0 = native
+/// landscape (no rotation), 1 = 90° CCW (portrait), 2 = 180°, 3 = 270°.
+/// Returns 0 for unknown ids — never traps the caller. The compositor
+/// queries this when binding a new framebuffer mapping so it can set up
+/// rotated blits.
+pub fn get_rotation(output_id: u32) -> u32 {
+    let r = syscall1(SYS_DISPLAY_GET_ROTATION, output_id as u64);
+    if r == u32::MAX {
+        0
+    } else {
+        r & 0b11
+    }
 }
 
 /// Drain one display event. Returns `DisplayEvent::None` if no event is

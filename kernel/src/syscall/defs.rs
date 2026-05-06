@@ -338,6 +338,11 @@ pub const SYS_DISPLAY_MAP_FB: u32 = 702;
 pub const SYS_DISPLAY_FLUSH: u32 = 703;
 pub const SYS_DISPLAY_POLL_EVENT: u32 = 704;
 pub const SYS_REGISTER_DISPLAY_OWNER: u32 = 705;
+/// Read the current rotation for `output_id`. Returns 0..=3 (90° steps,
+/// 0 = native landscape) or `u32::MAX` on bad arg / no GPU. Used by the
+/// compositor to decide whether to apply software rotation when blitting
+/// window pixels into this output's framebuffer.
+pub const SYS_DISPLAY_GET_ROTATION: u32 = 706;
 
 /// Register frame pushed by `syscall_fast.asm`.
 ///

@@ -301,6 +301,7 @@ pub(crate) fn dispatch_inner(
         SYS_DISPLAY_FLUSH => handlers::sys_display_flush(arg1 as u32, arg2 as u32, arg3 as u32),
         SYS_DISPLAY_POLL_EVENT => handlers::sys_display_poll_event(),
         SYS_REGISTER_DISPLAY_OWNER => handlers::sys_register_display_owner(),
+        SYS_DISPLAY_GET_ROTATION => handlers::sys_display_get_rotation(arg1 as u32),
 
         // Audio
         SYS_AUDIO_WRITE => handlers::sys_audio_write(arg1, arg2 as u32),
