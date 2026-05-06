@@ -154,12 +154,24 @@ fn auto_scale_from_display_info(info: &display::DisplayInfo) -> Option<u32> {
     let diag_mm = isqrt_u64(
         (phys_w_mm as u64) * (phys_w_mm as u64) + (phys_h_mm as u64) * (phys_h_mm as u64),
     );
-    if (100..=2000).contains(&diag_mm) {
+    // EDID-derived DPI is only trustworthy when the physical size looks
+    // like a real panel. Sub-200 mm diagonals on a desktop-class
+    // resolution are almost always synthetic EDID stubs (QEMU
+    // virtio-gpu, missing EDID, etc.) and produce absurdly high "DPI"
+    // values that scale the UI 200–300 %. Require at least 200 mm
+    // diagonal (≈ 8"), and fall back to the resolution-based heuristic
+    // for anything that fails the sanity check or implies > 200 DPI on
+    // an HD-or-smaller mode (also a broken-EDID signature).
+    if (200..=2000).contains(&diag_mm) {
         let diag_px =
             isqrt_u64((width as u64) * (width as u64) + (height as u64) * (height as u64));
         if diag_px > 0 {
             let dpi = ((diag_px * 254) + diag_mm * 5) / (diag_mm * 10);
-            return Some(auto_scale_for_dpi(dpi as u32));
+            let max_dim = width.max(height);
+            let dpi_implausible = dpi > 200 && max_dim <= 1920;
+            if !dpi_implausible {
+                return Some(auto_scale_for_dpi(dpi as u32));
+            }
         }
     }
 
