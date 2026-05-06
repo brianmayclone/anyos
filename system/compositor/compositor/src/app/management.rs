@@ -122,10 +122,30 @@ pub(crate) fn management_loop(
                     anyos_std::display::DisplayEvent::HotplugChanged
                     | anyos_std::display::DisplayEvent::LayoutApplied
                     | anyos_std::display::DisplayEvent::PreferredModeChanged { .. } => {
-                        // Output set may have changed: refresh the
-                        // compositor's per-output state and reflow
-                        // any windows that were on disappeared
-                        // monitors back onto a still-active one.
+                        // displayd's set_layout path can change the
+                        // primary output's mode (a per-output Resolution
+                        // change in Settings) but does NOT fire
+                        // EVT_RESOLUTION_CHANGED, so handle_resolution_change
+                        // (the path that actually calls resize_fb) is
+                        // never invoked along this route. Bridge the two:
+                        // re-query the kernel framebuffer here, and if the
+                        // primary's size changed since the last compose,
+                        // route through handle_resolution_change before
+                        // refreshing per-output state. Without this the
+                        // back buffer stride goes out of sync with the
+                        // hardware framebuffer pitch on every Settings →
+                        // Display → Resolution change, producing the
+                        // tiled / striped artifacts users see.
+                        if let Some(fb) = anyos_std::ipc::map_framebuffer() {
+                            acquire_lock();
+                            let desktop = unsafe { desktop_ref() };
+                            if fb.width != desktop.screen_width
+                                || fb.height != desktop.screen_height
+                            {
+                                desktop.handle_resolution_change(fb.width, fb.height);
+                            }
+                            release_lock();
+                        }
                         acquire_lock();
                         let desktop = unsafe { desktop_ref() };
                         desktop.refresh_outputs_and_reflow();
