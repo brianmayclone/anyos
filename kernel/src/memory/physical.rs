@@ -477,8 +477,24 @@ mod buddy_backend {
         bitmap: [0u8; STAGE1_BITMAP_BYTES],
     });
 
-    /// Single global buddy zone. Populated in late_init.
-    static ZONE: Spinlock<BuddyZone> = Spinlock::new(BuddyZone::new());
+    /// Two buddy zones, split by physical address. ZONE_DMA covers
+    /// the lower 128 MiB on x86_64 (the boot identity-map region —
+    /// required by legacy "phys as *mut" callers). ZONE_NORMAL
+    /// covers everything above. On ARM64 there's only ZONE_NORMAL
+    /// because TTBR1 maps all RAM uniformly.
+    ///
+    /// Allocation tries ZONE_DMA first when callers need
+    /// identity-map dereferenceable memory (alloc_frame,
+    /// alloc_contiguous, alloc_frame_low all default to this).
+    /// ZONE_NORMAL is used when ZONE_DMA is exhausted; the legacy
+    /// callers will fault on high frames and we'll need to migrate
+    /// them to physmap, but that's a separate per-driver task.
+    ///
+    /// New code that goes through physmap should call alloc_frame_any
+    /// to skip ZONE_DMA and avoid wasting the precious low region on
+    /// allocations that don't need it.
+    static ZONE_DMA: Spinlock<BuddyZone> = Spinlock::new(BuddyZone::new());
+    static ZONE_NORMAL: Spinlock<BuddyZone> = Spinlock::new(BuddyZone::new());
 
     /// On x86_64 the legacy `alloc_contiguous` path required the
     /// returned phys to live within the lower 128 MiB identity-map.
@@ -610,65 +626,80 @@ mod buddy_backend {
     /// largest aligned power-of-two blocks.
     pub fn late_init(_boot_info: &BootInfo) {
         let mut bm = BOOTMEM.lock();
-        let mut z = ZONE.lock();
+        let mut zd = ZONE_DMA.lock();
+        let mut zn = ZONE_NORMAL.lock();
         let limit = bm.address_frames;
 
-        // First pass: collect all free runs into a static buffer.
-        // We can't allocate (heap isn't up yet) so use a fixed
-        // array — practical RAM has at most a few dozen disjoint
-        // USABLE regions after subtracting reserved ones.
-        const MAX_RUNS: usize = 64;
-        let mut runs: [(usize, usize); MAX_RUNS] = [(0, 0); MAX_RUNS];
-        let mut n_runs = 0usize;
+        // Find every free run in the bootmem bitmap. Each run is then
+        // split at LOW_MAX_FRAME and the parts handed to the
+        // appropriate zone: ZONE_DMA gets the portion below the
+        // identity-map boundary, ZONE_NORMAL gets the rest.
+        let mut migrated: usize = 0;
         let mut run_start: Option<usize> = None;
+        let dma_max = LOW_MAX_FRAME;
         for f in 0..limit {
             if !bm.is_used(f) {
                 if run_start.is_none() {
                     run_start = Some(f);
                 }
             } else if let Some(s) = run_start.take() {
-                if n_runs < MAX_RUNS {
-                    runs[n_runs] = (s, f);
-                    n_runs += 1;
-                }
+                migrate_run(&mut zd, &mut zn, &mut bm, s, f, dma_max);
+                migrated += f - s;
             }
         }
         if let Some(s) = run_start {
-            if n_runs < MAX_RUNS {
-                runs[n_runs] = (s, limit);
-                n_runs += 1;
-            }
-        }
-
-        // Second pass: hand runs to the buddy IN REVERSE ORDER —
-        // high address first, low last. The buddy is LIFO per
-        // order, so the last region pushed comes out first on
-        // alloc. Pushing low last means subsequent alloc_frame
-        // calls preferentially get low-memory frames, which is
-        // what every legacy caller (AHCI, AC97, virtio rings,
-        // heap pages, page-table pages) needs to dereference via
-        // identity-map. Without this the buddy hands out 3 GiB
-        // addresses first and every legacy-style write faults.
-        let mut migrated: usize = 0;
-        for i in (0..n_runs).rev() {
-            let (s, e) = runs[i];
-            z.add_free_region(s, e);
-            migrated += e - s;
-            for ff in s..e {
-                bm.set_used(ff);
-            }
+            migrate_run(&mut zd, &mut zn, &mut bm, s, limit, dma_max);
+            migrated += limit - s;
         }
         bm.free_frames = 0;
 
         let migrated_mib = migrated * FRAME_SIZE / (1024 * 1024);
-        let total_mib = z.total_frames * FRAME_SIZE / (1024 * 1024);
+        let dma_mib = zd.free_frames * FRAME_SIZE / (1024 * 1024);
+        let normal_mib = zn.free_frames * FRAME_SIZE / (1024 * 1024);
         crate::serial_verbose_println!(
-            "Physical memory: migrated {} MiB into buddy ({} MiB tracked) [buddy live]",
+            "Physical memory: migrated {} MiB into buddy (DMA {} MiB / NORMAL {} MiB) [buddy live]",
             migrated_mib,
-            total_mib
+            dma_mib,
+            normal_mib
         );
 
         BUDDY_LIVE.store(true, Ordering::Release);
+    }
+
+    /// Push a contiguous bootmem run into the appropriate buddy
+    /// zone(s), splitting at the DMA/NORMAL boundary if necessary.
+    /// Marks the migrated frames as used in the bootmem bitmap so
+    /// subsequent passes don't double-count.
+    fn migrate_run(
+        zd: &mut BuddyZone,
+        zn: &mut BuddyZone,
+        bm: &mut Bootmem,
+        s: usize,
+        e: usize,
+        dma_max: usize,
+    ) {
+        if e <= s {
+            return;
+        }
+        if dma_max == usize::MAX {
+            // ARM64: no zone split.
+            zd.add_free_region(s, e);
+            for ff in s..e {
+                bm.set_used(ff);
+            }
+            return;
+        }
+        if e <= dma_max {
+            zd.add_free_region(s, e);
+        } else if s >= dma_max {
+            zn.add_free_region(s, e);
+        } else {
+            zd.add_free_region(s, dma_max);
+            zn.add_free_region(dma_max, e);
+        }
+        for ff in s..e {
+            bm.set_used(ff);
+        }
     }
 
     pub fn init_arm64(ram_base: u64, ram_size: u64) {
@@ -722,12 +753,11 @@ mod buddy_backend {
 
     fn late_init_common() {
         let mut bm = BOOTMEM.lock();
-        let mut z = ZONE.lock();
+        let mut zd = ZONE_DMA.lock();
+        let mut zn = ZONE_NORMAL.lock();
         let limit = bm.address_frames;
+        let dma_max = LOW_MAX_FRAME;
 
-        const MAX_RUNS: usize = 64;
-        let mut runs: [(usize, usize); MAX_RUNS] = [(0, 0); MAX_RUNS];
-        let mut n_runs = 0usize;
         let mut run_start: Option<usize> = None;
         for f in 0..limit {
             if !bm.is_used(f) {
@@ -735,26 +765,11 @@ mod buddy_backend {
                     run_start = Some(f);
                 }
             } else if let Some(s) = run_start.take() {
-                if n_runs < MAX_RUNS {
-                    runs[n_runs] = (s, f);
-                    n_runs += 1;
-                }
+                migrate_run(&mut zd, &mut zn, &mut bm, s, f, dma_max);
             }
         }
         if let Some(s) = run_start {
-            if n_runs < MAX_RUNS {
-                runs[n_runs] = (s, limit);
-                n_runs += 1;
-            }
-        }
-        // Push runs high→low so low addresses end up at the head
-        // of the buddy's free lists (LIFO) and come out first.
-        for i in (0..n_runs).rev() {
-            let (s, e) = runs[i];
-            z.add_free_region(s, e);
-            for ff in s..e {
-                bm.set_used(ff);
-            }
+            migrate_run(&mut zd, &mut zn, &mut bm, s, limit, dma_max);
         }
         bm.free_frames = 0;
         BUDDY_LIVE.store(true, Ordering::Release);
@@ -834,55 +849,34 @@ mod buddy_backend {
 
     pub fn alloc_frame() -> Option<PhysAddr> {
         if BUDDY_LIVE.load(Ordering::Acquire) {
-            // late_init pushes runs high→low, so the buddy's order-0
-            // free list has low-memory frames at the head. alloc_frame
-            // therefore returns low memory naturally for the first
-            // ~32K calls (128 MiB / 4 KiB). Legacy callers (AHCI,
-            // AC97, virtio rings, page tables) get identity-mappable
-            // addresses without any retry overhead.
-            //
-            // Once low memory is exhausted, callers receive high
-            // addresses. Code that dereferences phys-as-virt will
-            // fault — the long-term fix is migrating those callers
-            // to physmap. ZONE_DMA / ZONE_NORMAL split is the proper
-            // structural answer.
-            ZONE.lock().alloc_frame().map(frame_to_phys)
+            // Try ZONE_DMA first (low memory, < 128 MiB). Legacy
+            // callers do `*(phys as *mut)` and depend on identity
+            // map, so we must hand out low frames first. Fall back
+            // to ZONE_NORMAL when DMA is exhausted; callers that
+            // can't dereference high memory will fault and need
+            // migration to physmap.
+            let dma = ZONE_DMA.lock().alloc_frame().map(frame_to_phys);
+            if dma.is_some() {
+                return dma;
+            }
+            ZONE_NORMAL.lock().alloc_frame().map(frame_to_phys)
         } else {
             bootmem_alloc_frame().map(frame_to_phys)
         }
     }
 
     pub fn alloc_frame_low() -> Option<PhysAddr> {
+        // alloc_frame_low has the same contract as alloc_frame in
+        // the dual-zone world: ZONE_DMA returns < LOW_MAX_FRAME by
+        // construction. No retry needed — alloc_frame already tries
+        // ZONE_DMA first and falls back to ZONE_NORMAL only if DMA
+        // is empty. We refuse the fallback here so callers get a
+        // hard "no low memory" answer instead of a silent high-mem
+        // pointer that will fault on first deref.
         if !BUDDY_LIVE.load(Ordering::Acquire) {
-            // During bootmem the allocator already searches from
-            // low; just hand out a normal frame.
             return alloc_frame();
         }
-        if LOW_MAX_FRAME == usize::MAX {
-            return alloc_frame();
-        }
-        let mut z = ZONE.lock();
-        let mut rejected: [usize; 32] = [usize::MAX; 32];
-        let mut n = 0usize;
-        let result = loop {
-            let f = match z.alloc_frame() {
-                Some(f) => f,
-                None => break None,
-            };
-            if f < LOW_MAX_FRAME {
-                break Some(f);
-            }
-            if n >= rejected.len() {
-                z.free_pages(f, 0);
-                break None;
-            }
-            rejected[n] = f;
-            n += 1;
-        };
-        for i in 0..n {
-            z.free_pages(rejected[i], 0);
-        }
-        result.map(frame_to_phys)
+        ZONE_DMA.lock().alloc_frame().map(frame_to_phys)
     }
 
     pub fn alloc_contiguous(count: usize) -> Option<PhysAddr> {
@@ -894,55 +888,17 @@ mod buddy_backend {
             if order > MAX_ORDER {
                 return None;
             }
-            // alloc_contiguous historically returned low-memory
-            // frames (< 128 MiB on x86_64) because every caller —
-            // AHCI bounce/CLB/FB/CT, virtio queue rings, xHCI ERST,
-            // SVM IOPM/MSRPM, rtl8188eu DMA rings — does
-            // `*(phys as *mut u8)`, treating the physical address
-            // as a kernel-virtual one via the boot identity map.
-            // Buddy by default hands out the highest-address block
-            // it can find for contiguous requests; that yields a
-            // pointer the legacy callers can't dereference.
-            //
-            // Until those callers migrate to physmap-based access,
-            // we preserve the contract: try repeatedly, keeping
-            // the first block that lands below LOW_MAX_FRAME, and
-            // returning the rejected high blocks to the buddy.
-            // 32 retries is enough in practice — the buddy's
-            // allocation order is deterministic, so once we've
-            // pulled out the high blocks the next one is usually
-            // low.
-            #[cfg(target_arch = "x86_64")]
-            {
-                let mut z = ZONE.lock();
-                let mut rejected: [(usize, usize); 32] = [(0, 0); 32];
-                let mut n = 0usize;
-                let result = loop {
-                    let f = match z.alloc_pages(order) {
-                        Some(f) => f,
-                        None => break None,
-                    };
-                    // Block must fit entirely in low memory: start AND
-                    // start + count both below LOW_MAX_FRAME.
-                    if f + (1usize << order) <= LOW_MAX_FRAME {
-                        break Some(f);
-                    }
-                    if n >= rejected.len() {
-                        z.free_pages(f, order);
-                        break None;
-                    }
-                    rejected[n] = (f, order);
-                    n += 1;
-                };
-                for i in 0..n {
-                    z.free_pages(rejected[i].0, rejected[i].1);
-                }
-                return result.map(frame_to_phys);
+            // Same DMA-first policy as alloc_frame: every legacy
+            // caller of alloc_contiguous (AHCI CLB/FB/CT/bounce,
+            // virtio rings, xHCI ERST, SVM structures,
+            // rtl8188eu rings, AC97 BDL) does identity-map
+            // dereferences, so we must hand out low memory until
+            // those callers migrate to physmap.
+            let dma = ZONE_DMA.lock().alloc_pages(order).map(frame_to_phys);
+            if dma.is_some() {
+                return dma;
             }
-            #[cfg(not(target_arch = "x86_64"))]
-            {
-                ZONE.lock().alloc_pages(order).map(frame_to_phys)
-            }
+            ZONE_NORMAL.lock().alloc_pages(order).map(frame_to_phys)
         } else {
             bootmem_alloc_contiguous(count).map(frame_to_phys)
         }
@@ -951,18 +907,13 @@ mod buddy_backend {
     pub fn free_frame(addr: PhysAddr) {
         let frame = addr.frame_index();
         if BUDDY_LIVE.load(Ordering::Acquire) {
-            // Heuristic: if the frame is below STAGE1_MAX_FRAMES AND
-            // the bootmem bitmap still records it as in-use AND the
-            // buddy zone hasn't seen it (bitmap says used), it was
-            // allocated through bootmem. Free it back into bootmem
-            // just in case some early-boot caller stashed an address
-            // and is now releasing it. In practice every bootmem
-            // allocation is for a permanent kernel structure (PML4,
-            // PT, etc.) so this branch is rarely hit, but it keeps
-            // the API contract clean.
-            //
-            // For frames the buddy owns, plain free_frame works.
-            ZONE.lock().free_frame(frame);
+            // Route to the zone that owns this frame. ZONE_DMA owns
+            // [0, LOW_MAX_FRAME); ZONE_NORMAL owns the rest.
+            if frame < LOW_MAX_FRAME {
+                ZONE_DMA.lock().free_frame(frame);
+            } else {
+                ZONE_NORMAL.lock().free_frame(frame);
+            }
         } else {
             bootmem_free_frame(frame);
         }
@@ -971,7 +922,11 @@ mod buddy_backend {
     pub fn reserve_frame(addr: PhysAddr) {
         let frame = addr.frame_index();
         if BUDDY_LIVE.load(Ordering::Acquire) {
-            ZONE.lock().reserve_frame(frame);
+            if frame < LOW_MAX_FRAME {
+                ZONE_DMA.lock().reserve_frame(frame);
+            } else {
+                ZONE_NORMAL.lock().reserve_frame(frame);
+            }
         } else {
             let mut bm = BOOTMEM.lock();
             if frame < STAGE1_MAX_FRAMES && !bm.is_used(frame) {
@@ -983,7 +938,7 @@ mod buddy_backend {
 
     pub fn free_frame_count() -> usize {
         if BUDDY_LIVE.load(Ordering::Acquire) {
-            ZONE.lock().free_frames
+            ZONE_DMA.lock().free_frames + ZONE_NORMAL.lock().free_frames
         } else {
             BOOTMEM.lock().free_frames
         }
@@ -991,7 +946,7 @@ mod buddy_backend {
 
     pub fn total_frames() -> usize {
         if BUDDY_LIVE.load(Ordering::Acquire) {
-            ZONE.lock().total_frames
+            ZONE_DMA.lock().total_frames + ZONE_NORMAL.lock().total_frames
         } else {
             BOOTMEM.lock().total_frames
         }
@@ -999,21 +954,22 @@ mod buddy_backend {
 
     pub fn is_allocator_locked() -> bool {
         if BUDDY_LIVE.load(Ordering::Acquire) {
-            ZONE.is_locked()
+            ZONE_DMA.is_locked() || ZONE_NORMAL.is_locked()
         } else {
             BOOTMEM.is_locked()
         }
     }
     pub fn is_allocator_locked_by_cpu(cpu: u32) -> bool {
         if BUDDY_LIVE.load(Ordering::Acquire) {
-            ZONE.is_held_by_cpu(cpu)
+            ZONE_DMA.is_held_by_cpu(cpu) || ZONE_NORMAL.is_held_by_cpu(cpu)
         } else {
             BOOTMEM.is_held_by_cpu(cpu)
         }
     }
     pub unsafe fn force_unlock_allocator() {
         if BUDDY_LIVE.load(Ordering::Acquire) {
-            ZONE.force_unlock();
+            ZONE_DMA.force_unlock();
+            ZONE_NORMAL.force_unlock();
         } else {
             BOOTMEM.force_unlock();
         }

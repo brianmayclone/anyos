@@ -138,6 +138,12 @@ pub struct BuddyZone {
     /// are a `u32` (LINK_NIL for None) pointing at the next free
     /// block of the same order.
     free_list_heads: [u32; NUM_ORDERS],
+    /// Tail of the intrusive free list per order. Maintained so
+    /// `push_free_to_tail` is O(1); used during boot-time
+    /// region registration to preserve ascending-address order in
+    /// the free list. Runtime `free_pages` still pushes to the
+    /// head (cache-friendly LIFO for recently-freed blocks).
+    free_list_tails: [u32; NUM_ORDERS],
     /// Number of free blocks per order. Kept in sync with the
     /// intrusive lists for O(1) `audit` and diagnostic dumps without
     /// walking the lists.
@@ -156,6 +162,7 @@ impl BuddyZone {
             used_bitmap: [0u8; BITMAP_BYTES],
             order_of_alloc: [0u8; MAX_FRAMES],
             free_list_heads: [LINK_NIL; NUM_ORDERS],
+            free_list_tails: [LINK_NIL; NUM_ORDERS],
             free_count: [0u32; NUM_ORDERS],
         }
     }
@@ -277,6 +284,37 @@ impl BuddyZone {
         self.mark_range_free(frame, count);
         self.write_link(frame, prev_head);
         self.free_list_heads[order] = frame as u32;
+        if self.free_list_tails[order] == LINK_NIL {
+            // List was empty — new block is also the tail.
+            self.free_list_tails[order] = frame as u32;
+        }
+        self.free_count[order] = self.free_count[order].saturating_add(1);
+        self.free_frames += count;
+    }
+
+    /// Push a free block at the TAIL of its order's list. Used by
+    /// `add_free_region` so that consecutive low→high inserts produce
+    /// an ascending-by-address free list — the head is the lowest
+    /// block, so subsequent allocations consistently return low
+    /// memory until the list drains. Critical for backward
+    /// compatibility with phys-as-virt callers that rely on the
+    /// boot identity map (lower 128 MiB on x86_64).
+    fn push_free_to_tail(&mut self, frame: usize, order: usize) {
+        debug_assert!(order < NUM_ORDERS);
+        let count = 1usize << order;
+        self.mark_range_free(frame, count);
+        // The new block has no successor — it's the new tail.
+        self.write_link(frame, LINK_NIL);
+        let prev_tail = self.free_list_tails[order];
+        if prev_tail == LINK_NIL {
+            // Empty list: new block is both head and tail.
+            self.free_list_heads[order] = frame as u32;
+        } else {
+            // Non-empty: update old tail's link to point at the new
+            // block.
+            self.write_link(prev_tail as usize, frame as u32);
+        }
+        self.free_list_tails[order] = frame as u32;
         self.free_count[order] = self.free_count[order].saturating_add(1);
         self.free_frames += count;
     }
@@ -292,6 +330,10 @@ impl BuddyZone {
         let frame = head as usize;
         let next = self.read_link(frame);
         self.free_list_heads[order] = next;
+        if next == LINK_NIL {
+            // List is now empty — clear the tail too.
+            self.free_list_tails[order] = LINK_NIL;
+        }
         self.free_count[order] = self.free_count[order].saturating_sub(1);
         let count = 1usize << order;
         self.mark_range_used(frame, count);
@@ -317,6 +359,9 @@ impl BuddyZone {
         if head == target {
             let next = self.read_link(frame);
             self.free_list_heads[order] = next;
+            if next == LINK_NIL {
+                self.free_list_tails[order] = LINK_NIL;
+            }
             self.free_count[order] = self.free_count[order].saturating_sub(1);
             let count = 1usize << order;
             self.mark_range_used(frame, count);
@@ -334,6 +379,10 @@ impl BuddyZone {
             if cur == target {
                 let next = self.read_link(frame);
                 self.write_link(prev as usize, next);
+                if next == LINK_NIL {
+                    // We removed the tail. prev is now the new tail.
+                    self.free_list_tails[order] = prev;
+                }
                 self.free_count[order] = self.free_count[order].saturating_sub(1);
                 let count = 1usize << order;
                 self.mark_range_used(frame, count);
@@ -379,20 +428,20 @@ impl BuddyZone {
             self.address_frames = end_frame;
         }
         self.total_frames += end_frame - start_frame;
-
-        // Walk the region low→high to find the natural power-of-two
-        // splits, but COLLECT them first and then push in reverse
-        // order. push_free is LIFO; pushing high first means the
-        // lowest block lands at the head of its order's free list,
-        // and a subsequent alloc returns low memory naturally —
-        // important because anyOS's legacy callers (AHCI, AC97,
-        // virtio rings, page tables, heap pages) dereference the
-        // returned phys address directly through the boot identity
-        // map, which only covers the lower 128 MiB.
-        const MAX_BLOCKS: usize = 256;
-        let mut blocks: [(u32, u8); MAX_BLOCKS] = [(0, 0); MAX_BLOCKS];
-        let mut n = 0usize;
-
+        // Walk the region low→high and append each natural
+        // power-of-two block to the TAIL of its order's free list.
+        // Tail-append preserves ascending-address order, so the
+        // head of every order's list is the lowest block in that
+        // order — and `pop_free` (which always pops the head) hands
+        // out low addresses until the list drains.
+        //
+        // Critical for backward compatibility: anyOS's legacy
+        // callers (AHCI, AC97, virtio rings, page tables, heap
+        // pages, hardware-virt structures) dereference the
+        // returned phys address through the boot identity map,
+        // which only covers the lower 128 MiB on x86_64. Without
+        // ascending-order free lists those callers would get
+        // multi-GiB addresses and page-fault on first touch.
         let mut f = start_frame;
         while f < end_frame {
             let mut order = MAX_ORDER;
@@ -406,26 +455,8 @@ impl BuddyZone {
                 }
                 order -= 1;
             }
-            if n < MAX_BLOCKS {
-                blocks[n] = (f as u32, order as u8);
-                n += 1;
-            } else {
-                // Rare: a region with > 256 power-of-two splits
-                // (would need a really gnarly E820 layout). Push
-                // immediately to avoid losing the block; the
-                // resulting free-list order may not be ideal but
-                // we don't drop pages.
-                self.push_free(f, order);
-            }
+            self.push_free_to_tail(f, order);
             f += 1usize << order;
-        }
-
-        // Push collected blocks in reverse: highest address first,
-        // lowest last. After this, the lowest free block sits at
-        // the head of the free list of its order.
-        for i in (0..n).rev() {
-            let (frame, order) = blocks[i];
-            self.push_free(frame as usize, order as usize);
         }
     }
 
