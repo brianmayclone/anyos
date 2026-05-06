@@ -17,6 +17,7 @@ static UNIT_SUITES: &[&TestSuite] = &[
     &super::tests::net_tests::SUITE,
     &super::tests::net_types_tests::SUITE,
     &super::tests::memory_tests::SUITE,
+    &super::tests::physmap_tests::SUITE,
     &super::tests::heap_stress_tests::SUITE,
     &super::tests::vma_tests::SUITE,
     &super::tests::crypto_tests::SUITE,
