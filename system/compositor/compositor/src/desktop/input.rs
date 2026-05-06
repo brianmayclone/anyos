@@ -23,6 +23,37 @@ const INPUT_MOUSE_BUTTON: u32 = 4;
 const INPUT_MOUSE_SCROLL: u32 = 5;
 const INPUT_MOUSE_MOVE_ABSOLUTE: u32 = 6;
 
+/// Map a hardware-pixel mouse coordinate (origin top-left of the panel
+/// in its native landscape orientation) into the compositor's logical
+/// coordinate space (post-rotation). `logical_w` / `logical_h` are the
+/// output's logical extents — the values stored on `Output.fb_width` /
+/// `fb_height` *after* `refresh_outputs` swaps them for portrait modes.
+///
+/// Inverse of the transform used by `copy_rotated_to_fb` so a click on
+/// any pixel hits the same window the user sees there.
+fn rotate_hw_to_logical(
+    hw_x: i32,
+    hw_y: i32,
+    logical_w: u32,
+    logical_h: u32,
+    rotation: u8,
+) -> (i32, i32) {
+    let lw = logical_w as i32;
+    let lh = logical_h as i32;
+    match rotation & 0b11 {
+        0 => (hw_x, hw_y),
+        // 90° CCW: logical = (hw_y, lh - 1 - hw_x). The hw grid is
+        // (lh × lw) — width and height swapped relative to logical.
+        1 => (hw_y, (lh - 1).saturating_sub(hw_x)),
+        // 180°: simple flip on both axes; hw grid is (lw × lh).
+        2 => ((lw - 1).saturating_sub(hw_x), (lh - 1).saturating_sub(hw_y)),
+        // 270° CCW: logical = (lw - 1 - hw_y, hw_x). The hw grid is
+        // (lh × lw) again.
+        3 => ((lw - 1).saturating_sub(hw_y), hw_x),
+        _ => (hw_x, hw_y),
+    }
+}
+
 // ── Desktop Input Methods ──────────────────────────────────────────────────
 
 impl Desktop {
@@ -150,16 +181,34 @@ impl Desktop {
                     if oid != 0xFF {
                         if let Some(o) = self.compositor.outputs.iter().find(|o| o.id as u8 == oid)
                         {
-                            abs_x = o.virtual_x + raw_x;
-                            abs_y = o.virtual_y + raw_y;
+                            // raw_x/raw_y arrive in the panel's hardware
+                            // (landscape) grid; the compositor's logical
+                            // coord space is post-rotation. Map hw → logical
+                            // before translating to virtual desktop.
+                            let (lx, ly) = rotate_hw_to_logical(
+                                raw_x, raw_y, o.fb_width, o.fb_height, o.rotation,
+                            );
+                            abs_x = o.virtual_x + lx;
+                            abs_y = o.virtual_y + ly;
                         } else {
                             abs_x = raw_x;
                             abs_y = raw_y;
                         }
                         absolute_translated = true;
                     } else {
-                        abs_x = raw_x;
-                        abs_y = raw_y;
+                        // vmmouse / VMMDev reports against scanout 0's
+                        // hw pixel grid. Apply the same rotation transform
+                        // for the primary output before downstream code
+                        // treats this as a logical-coordinate position.
+                        let (lx, ly) = if let Some(o) = self.compositor.outputs.first() {
+                            rotate_hw_to_logical(
+                                raw_x, raw_y, o.fb_width, o.fb_height, o.rotation,
+                            )
+                        } else {
+                            (raw_x, raw_y)
+                        };
+                        abs_x = lx;
+                        abs_y = ly;
                         absolute_translated = false;
                     }
                     absolute_move = true;
