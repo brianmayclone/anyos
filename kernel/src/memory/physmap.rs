@@ -62,7 +62,8 @@
 
 use crate::boot_info::{BootInfo, E820_TYPE_USABLE};
 use crate::memory::address::PhysAddr;
-use crate::memory::physical;
+// physical:: not needed anymore — physmap allocates PT pages from
+// its own static BSS pool to avoid a boot-time cycle with buddy.
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Kernel-virtual base where physmap starts.
@@ -188,12 +189,77 @@ pub fn phys_to_virt_or_identity(phys: PhysAddr) -> *mut u8 {
     p as *mut u8
 }
 
+/// Bootstrap pool for physmap's own page-table pages. Physmap needs
+/// 1 PDPT + N PDs (one per GiB of mapped RAM). For the 64 GiB cap
+/// that's 65 frames worst case = 260 KiB. We size at 80 to give a
+/// small margin and keep alignment trivial.
+///
+/// Why not call `physical::alloc_frame()`?  Because under
+/// `--features buddy_alloc` the production allocator is the buddy,
+/// which builds its free lists by writing intrusive link words into
+/// freed pages — and that needs physmap to be ready, creating a
+/// boot-time cycle: buddy_init → write_link → physmap_lookup →
+/// physmap_init → physical::alloc_frame → buddy_alloc which is the
+/// thing we're bootstrapping. Linux solves this by having a
+/// separate bootmem allocator that hands page-table pages to the
+/// physmap setup; we use a fixed BSS pool because anyOS only ever
+/// needs a handful of pages.
+///
+/// Each entry in the pool is a 4 KiB page. The pool is accessed
+/// only from `init`, before any other code can race against it.
+const PHYSMAP_PT_POOL_PAGES: usize = 80;
+
+#[repr(C, align(4096))]
+struct PhysmapPtPool {
+    pages: [[u8; 4096]; PHYSMAP_PT_POOL_PAGES],
+}
+
+static mut PHYSMAP_PT_POOL: PhysmapPtPool = PhysmapPtPool {
+    pages: [[0u8; 4096]; PHYSMAP_PT_POOL_PAGES],
+};
+
+static PHYSMAP_PT_POOL_NEXT: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// Hand out one zeroed page-table page from the bootstrap pool.
+/// Returns the page's physical address (== virtual since the pool
+/// lives in the kernel image, which is identity-mapped + higher-half
+/// aliased; we use the physical address derived from the linker
+/// layout). Returns 0 if the pool is exhausted.
+fn alloc_pt_page_from_pool() -> u64 {
+    let next = PHYSMAP_PT_POOL_NEXT
+        .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if next >= PHYSMAP_PT_POOL_PAGES {
+        return 0;
+    }
+    // SAFETY: each pool entry is exclusively assigned via the atomic
+    // counter, so no two callers ever see the same `next`.
+    let page_va = unsafe {
+        (&PHYSMAP_PT_POOL.pages[next] as *const _) as u64
+    };
+    // Convert kernel-virtual to physical: the kernel image is mapped
+    // both at its physical load address (low identity-map) and at
+    // KERNEL_VIRT_BASE in the higher half. The linker places statics
+    // in the higher half, so subtract KERNEL_VIRT_BASE to get phys.
+    const KERNEL_VIRT_BASE: u64 = 0xFFFF_FFFF_8000_0000;
+    let page_phys = if page_va >= KERNEL_VIRT_BASE {
+        page_va - KERNEL_VIRT_BASE
+    } else {
+        page_va
+    };
+    // Zero the page (it's already zeroed via BSS, but reset on
+    // re-use isn't needed because we never recycle pool pages).
+    unsafe {
+        core::ptr::write_bytes(page_va as *mut u8, 0, 4096);
+    }
+    page_phys
+}
+
 /// Install PD entries covering every USABLE E820 region (truncated
 /// to the physmap limit) at PHYSMAP_BASE + phys.
 ///
-/// SAFETY: must run after the kernel PML4 is in CR3 and the heap
-/// allocator can be skipped (we use raw frames, not Box). Idempotent
-/// — calling twice is a no-op because the second call sees existing
+/// SAFETY: must run after the kernel PML4 is in CR3. Idempotent —
+/// calling twice is a no-op because the second call sees existing
 /// PDPT/PD entries and reuses them.
 #[cfg(target_arch = "x86_64")]
 pub fn init(boot_info: &BootInfo) {
@@ -241,20 +307,19 @@ pub fn init(boot_info: &BootInfo) {
     let pml4 = pml4_phys as *mut u64;
 
     // Allocate a PDPT for PML4[384] if it doesn't already exist.
+    // We use a static BSS pool instead of physical::alloc_frame() to
+    // avoid a boot-time circular dependency under --features
+    // buddy_alloc — see the PhysmapPtPool comment above.
     let pdpt_phys = unsafe {
         let pml4_entry = core::ptr::read_volatile(pml4.add(PHYSMAP_PML4_INDEX));
         if pml4_entry & PAGE_PRESENT != 0 {
             pml4_entry & 0x000F_FFFF_FFFF_F000
         } else {
-            let new_pdpt = match physical::alloc_frame() {
-                Some(p) => p.as_u64(),
-                None => {
-                    crate::serial_verbose_println!("[physmap] OOM allocating PDPT");
-                    return;
-                }
-            };
-            // Zero the new PDPT.
-            core::ptr::write_bytes(new_pdpt as *mut u8, 0, 4096);
+            let new_pdpt = alloc_pt_page_from_pool();
+            if new_pdpt == 0 {
+                crate::serial_verbose_println!("[physmap] PT pool exhausted (PDPT)");
+                return;
+            }
             core::ptr::write_volatile(
                 pml4.add(PHYSMAP_PML4_INDEX),
                 new_pdpt | PAGE_PRESENT | PAGE_WRITABLE,
@@ -276,17 +341,14 @@ pub fn init(boot_info: &BootInfo) {
             if pdpt_entry & PAGE_PRESENT != 0 {
                 pdpt_entry & 0x000F_FFFF_FFFF_F000
             } else {
-                let new_pd = match physical::alloc_frame() {
-                    Some(p) => p.as_u64(),
-                    None => {
-                        crate::serial_verbose_println!(
-                            "[physmap] OOM allocating PD at GiB {}",
-                            pdpt_i
-                        );
-                        return;
-                    }
-                };
-                core::ptr::write_bytes(new_pd as *mut u8, 0, 4096);
+                let new_pd = alloc_pt_page_from_pool();
+                if new_pd == 0 {
+                    crate::serial_verbose_println!(
+                        "[physmap] PT pool exhausted at GiB {}",
+                        pdpt_i
+                    );
+                    return;
+                }
                 core::ptr::write_volatile(
                     pdpt.add(pdpt_i),
                     new_pd | PAGE_PRESENT | PAGE_WRITABLE,

@@ -104,6 +104,9 @@ mod bitmap_backend {
     #[cfg(target_arch = "aarch64")]
     const CONTIGUOUS_MAX_FRAME: usize = MAX_FRAMES;
 
+    /// Two-stage init: stage 1 (`init`) registers everything in one
+    /// pass — bitmap doesn't have the buddy's "must read/write the
+    /// freed page" constraint so there's no cycle here.
     pub fn init(boot_info: &BootInfo) {
         let memory_map = unsafe { boot_info.memory_map() };
         let mut alloc = ALLOCATOR.lock();
@@ -202,6 +205,11 @@ mod bitmap_backend {
             free_mib
         );
     }
+
+    /// Bitmap stage 2 — no-op. Bitmap registers everything in stage 1
+    /// because it doesn't have to write into the freed pages.
+    pub fn late_init(_boot_info: &BootInfo) {}
+    pub fn late_init_arm64(_ram_base: u64, _ram_size: u64) {}
 
     pub fn init_arm64(ram_base: u64, ram_size: u64) {
         const ARM64_PHYS_TO_VIRT: u64 = 0xFFFF_0000_4000_0000;
@@ -412,14 +420,23 @@ mod buddy_backend {
     #[cfg(target_arch = "aarch64")]
     const LOW_MAX_FRAME: usize = usize::MAX;
 
-    /// Bring up the buddy zone from the E820 map. Same staging order
-    /// as the bitmap backend: register every USABLE region first,
-    /// then carve out reserved areas (first 2 MiB, kernel image).
+    /// Stage 1: register only frames reachable through the boot
+    /// identity map (lower 128 MiB on x86_64). The buddy needs to
+    /// write intrusive link words into every freed page, and
+    /// physmap (which would let us reach high frames) hasn't been
+    /// initialised yet — `physmap::phys_to_virt_or_identity` falls
+    /// back to identity-map and would page-fault on > 128 MiB.
+    ///
+    /// `late_init` runs after physmap is up and brings in the rest.
+    /// Until then, virtual_mem::init has the lower 128 MiB to play
+    /// with, which is more than enough for its PML4/PT setup.
     pub fn init(boot_info: &BootInfo) {
         let memory_map = unsafe { boot_info.memory_map() };
         let mut z = ZONE.lock();
 
-        // Register USABLE regions.
+        // Register USABLE regions, but TRUNCATE each to the lower
+        // 128 MiB. The high portions are deferred to late_init.
+        let stage1_max = LOW_MAX_FRAME;
         for entry in memory_map {
             if entry.entry_type != E820_TYPE_USABLE {
                 continue;
@@ -429,14 +446,19 @@ mod buddy_backend {
             if start.as_u64() >= end.as_u64() {
                 continue;
             }
-            z.add_free_region(start.frame_index(), end.frame_index());
+            let s = start.frame_index();
+            let e = end.frame_index().min(stage1_max);
+            if s >= e {
+                continue;
+            }
+            z.add_free_region(s, e);
         }
 
-        // Reserve first 2 MiB (BIOS, real-mode trampoline, bootloader stage).
+        // Reserve first 2 MiB (BIOS, real-mode trampoline, bootloader).
         let first_mb_frames = (2 * 1024 * 1024) / FRAME_SIZE;
         z.reserve_range(0, first_mb_frames);
 
-        // Reserve the kernel image (image text + data + bss + .boot_stack).
+        // Reserve kernel image (text + data + bss + .boot_stack).
         let kernel_start_phys = boot_info.kernel_phys_start as u64;
         let linker_kernel_end_phys =
             unsafe { (&_kernel_end as *const u8 as u64) - KERNEL_VIRT_BASE };
@@ -449,15 +471,50 @@ mod buddy_backend {
         let ke = PhysAddr::new(kernel_end_phys).frame_align_up().frame_index();
         z.reserve_range(ks, ke);
 
-        let total_mib = z.total_frames * FRAME_SIZE / (1024 * 1024);
-        let free_mib = z.free_frames * FRAME_SIZE / (1024 * 1024);
         crate::serial_verbose_println!(
-            "Reserving kernel region: {:#010x} - {:#010x} [buddy]",
+            "Reserving kernel region: {:#010x} - {:#010x} [buddy stage1]",
             kernel_start_phys,
             kernel_end_phys
         );
+        let stage1_free_mib = z.free_frames * FRAME_SIZE / (1024 * 1024);
         crate::serial_verbose_println!(
-            "Physical memory: {} MiB total, {} MiB free [buddy]",
+            "Physical memory stage 1: {} MiB free below 128 MiB [buddy]",
+            stage1_free_mib
+        );
+    }
+
+    /// Stage 2: now that physmap is live, register the high portion
+    /// of every USABLE region (frames ≥ LOW_MAX_FRAME). Buddy can
+    /// write link words into those pages because physmap maps them
+    /// at PHYSMAP_BASE + phys.
+    pub fn late_init(boot_info: &BootInfo) {
+        let memory_map = unsafe { boot_info.memory_map() };
+        let mut z = ZONE.lock();
+        let stage1_max = LOW_MAX_FRAME;
+
+        let before = z.free_frames;
+        for entry in memory_map {
+            if entry.entry_type != E820_TYPE_USABLE {
+                continue;
+            }
+            let start = PhysAddr::new(entry.base_addr).frame_align_up();
+            let end = PhysAddr::new(entry.base_addr + entry.length).frame_align_down();
+            if start.as_u64() >= end.as_u64() {
+                continue;
+            }
+            let s = start.frame_index().max(stage1_max);
+            let e = end.frame_index();
+            if s >= e {
+                continue;
+            }
+            z.add_free_region(s, e);
+        }
+        let added_mib = (z.free_frames - before) * FRAME_SIZE / (1024 * 1024);
+        let total_mib = z.total_frames * FRAME_SIZE / (1024 * 1024);
+        let free_mib = z.free_frames * FRAME_SIZE / (1024 * 1024);
+        crate::serial_verbose_println!(
+            "Physical memory stage 2: +{} MiB above 128 MiB; total {} MiB ({} MiB free) [buddy]",
+            added_mib,
             total_mib,
             free_mib
         );
@@ -469,6 +526,9 @@ mod buddy_backend {
         let start_frame = (ram_base as usize) / FRAME_SIZE;
         let end_frame = (ram_end as usize) / FRAME_SIZE;
 
+        // ARM64 already has TTBR1 mapping all RAM, so physmap is
+        // effectively live from the start. We can register everything
+        // in stage 1.
         let mut z = ZONE.lock();
         z.add_free_region(start_frame, end_frame);
 
@@ -487,6 +547,8 @@ mod buddy_backend {
             free_mib
         );
     }
+
+    pub fn late_init_arm64(_ram_base: u64, _ram_size: u64) {}
 
     #[inline]
     fn frame_to_phys(frame: usize) -> PhysAddr {
@@ -592,9 +654,19 @@ pub fn init(boot_info: &BootInfo) {
     backend::init(boot_info);
 }
 
+#[cfg(target_arch = "x86_64")]
+pub fn late_init(boot_info: &BootInfo) {
+    backend::late_init(boot_info);
+}
+
 #[cfg(target_arch = "aarch64")]
 pub fn init_arm64(ram_base: u64, ram_size: u64) {
     backend::init_arm64(ram_base, ram_size);
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn late_init_arm64(ram_base: u64, ram_size: u64) {
+    backend::late_init_arm64(ram_base, ram_size);
 }
 
 #[inline]
