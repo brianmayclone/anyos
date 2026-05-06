@@ -802,7 +802,51 @@ mod buddy_backend {
 
     pub fn alloc_frame() -> Option<PhysAddr> {
         if BUDDY_LIVE.load(Ordering::Acquire) {
-            ZONE.lock().alloc_frame().map(frame_to_phys)
+            // Backward compatibility: every legacy caller of
+            // alloc_frame assumes the returned phys address is
+            // dereferenceable through the boot identity map (i.e.
+            // < 128 MiB on x86_64). AC97 BDL, audio buffers,
+            // hardware-virt structures, AHCI sub-allocations all
+            // do `*(phys as *mut u8)`. Until those callers migrate
+            // to physmap, alloc_frame must return low memory too.
+            //
+            // We don't bias the buddy zone; we just sample frames
+            // and reject high ones. In practice the zone hands out
+            // recently-freed leaves first, and once init is done
+            // those tend to be high (high memory was added later).
+            // We need an aggressive retry budget therefore.
+            //
+            // Long-term fix: separate ZONE_DMA / ZONE_NORMAL and
+            // route page-table allocations to ZONE_NORMAL.
+            #[cfg(target_arch = "x86_64")]
+            {
+                let mut z = ZONE.lock();
+                let mut rejected: [usize; 64] = [0usize; 64];
+                let mut n = 0usize;
+                let result = loop {
+                    let f = match z.alloc_frame() {
+                        Some(f) => f,
+                        None => break None,
+                    };
+                    if f < LOW_MAX_FRAME {
+                        break Some(f);
+                    }
+                    if n >= rejected.len() {
+                        z.free_pages(f, 0);
+                        break None;
+                    }
+                    rejected[n] = f;
+                    n += 1;
+                };
+                for i in 0..n {
+                    z.free_pages(rejected[i], 0);
+                }
+                return result.map(frame_to_phys);
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                ZONE.lock().alloc_frame().map(frame_to_phys)
+            }
         } else {
             bootmem_alloc_frame().map(frame_to_phys)
         }
@@ -850,7 +894,55 @@ mod buddy_backend {
             if order > MAX_ORDER {
                 return None;
             }
-            ZONE.lock().alloc_pages(order).map(frame_to_phys)
+            // alloc_contiguous historically returned low-memory
+            // frames (< 128 MiB on x86_64) because every caller —
+            // AHCI bounce/CLB/FB/CT, virtio queue rings, xHCI ERST,
+            // SVM IOPM/MSRPM, rtl8188eu DMA rings — does
+            // `*(phys as *mut u8)`, treating the physical address
+            // as a kernel-virtual one via the boot identity map.
+            // Buddy by default hands out the highest-address block
+            // it can find for contiguous requests; that yields a
+            // pointer the legacy callers can't dereference.
+            //
+            // Until those callers migrate to physmap-based access,
+            // we preserve the contract: try repeatedly, keeping
+            // the first block that lands below LOW_MAX_FRAME, and
+            // returning the rejected high blocks to the buddy.
+            // 32 retries is enough in practice — the buddy's
+            // allocation order is deterministic, so once we've
+            // pulled out the high blocks the next one is usually
+            // low.
+            #[cfg(target_arch = "x86_64")]
+            {
+                let mut z = ZONE.lock();
+                let mut rejected: [(usize, usize); 32] = [(0, 0); 32];
+                let mut n = 0usize;
+                let result = loop {
+                    let f = match z.alloc_pages(order) {
+                        Some(f) => f,
+                        None => break None,
+                    };
+                    // Block must fit entirely in low memory: start AND
+                    // start + count both below LOW_MAX_FRAME.
+                    if f + (1usize << order) <= LOW_MAX_FRAME {
+                        break Some(f);
+                    }
+                    if n >= rejected.len() {
+                        z.free_pages(f, order);
+                        break None;
+                    }
+                    rejected[n] = (f, order);
+                    n += 1;
+                };
+                for i in 0..n {
+                    z.free_pages(rejected[i].0, rejected[i].1);
+                }
+                return result.map(frame_to_phys);
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                ZONE.lock().alloc_pages(order).map(frame_to_phys)
+            }
         } else {
             bootmem_alloc_contiguous(count).map(frame_to_phys)
         }
