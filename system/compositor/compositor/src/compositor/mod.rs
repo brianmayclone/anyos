@@ -397,7 +397,8 @@ impl Compositor {
         // that changes orientation reaches the kernel but the compositor's
         // back buffer keeps its old shape — flush_region takes the fast
         // path and the screen never visibly rotates.
-        for o in self.outputs.iter_mut() {
+        let mut primary_rotation_changed = false;
+        for (idx, o) in self.outputs.iter_mut().enumerate() {
             let new_rot = anyos_std::display::get_rotation(o.id) as u8;
             if new_rot == o.rotation {
                 continue;
@@ -420,13 +421,24 @@ impl Compositor {
             o.back_buffer = alloc::vec![0u32; (logical_w * logical_h) as usize];
             o.damage.clear();
             o.rotation = new_rot;
+            if idx == 0 {
+                primary_rotation_changed = true;
+            }
         }
-        // The primary's inline fb_* fields mirror outputs[0]; keep them in
-        // sync so legacy paths (flush_region, damage_all, …) see the new
-        // logical extents. The hardware fb_ptr/fb_pitch don't change —
-        // only the logical-coordinate view does.
-        if let Some(primary) = self.outputs.first() {
-            if self.fb_width != primary.fb_width || self.fb_height != primary.fb_height {
+        // outputs[0] is supposed to mirror Compositor::fb_*. Two paths
+        // can desync them:
+        //   - Pass 0 above just rotated outputs[0]: its fb_width/height
+        //     are the new logical extents; the inline fields are stale
+        //     and must follow outputs[0].
+        //   - resize_fb() updated the inline fields after a resolution
+        //     change but never touched outputs[0] (legacy code path);
+        //     outputs[0] is stale and must follow inline.
+        // The compositor's compose path reads from the inline fields, so
+        // they are the authoritative source for everything *except* the
+        // rotation toggle that we handled in Pass 0.
+        if let Some(primary) = self.outputs.first_mut() {
+            if primary_rotation_changed {
+                // Rotation just kicked in — inline must follow outputs[0].
                 self.fb_width = primary.fb_width;
                 self.fb_height = primary.fb_height;
                 let pixel_count = (self.fb_width * self.fb_height) as usize;
@@ -434,6 +446,16 @@ impl Compositor {
                 self.damage.clear();
                 self.damage
                     .push(Rect::new(0, 0, self.fb_width, self.fb_height));
+            } else if primary.fb_width != self.fb_width
+                || primary.fb_height != self.fb_height
+                || primary.fb_pitch != self.fb_pitch
+            {
+                // resize_fb path: outputs[0] is stale, copy from inline.
+                primary.fb_width = self.fb_width;
+                primary.fb_height = self.fb_height;
+                primary.fb_pitch = self.fb_pitch;
+                primary.fb_ptr = self.fb_ptr;
+                primary.back_buffer = alloc::vec![0u32; (self.fb_width * self.fb_height) as usize];
             }
         }
 
