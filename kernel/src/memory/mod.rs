@@ -4,6 +4,7 @@
 //! and typed address wrappers for safe physical/virtual address manipulation.
 
 pub mod address;
+pub mod buddy;
 pub mod heap;
 pub mod physical;
 pub mod physmap;
