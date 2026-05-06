@@ -728,21 +728,28 @@ pub(crate) fn build(panel: &ui::View) {
     let apply_card = layout::build_auto_card(panel);
     let row = ui::View::new();
     row.set_dock(ui::DOCK_TOP);
-    row.set_size(552, 52);
+    row.set_size(0, 52);
     row.set_margin(24, 8, 24, 8);
-    let status = ui::Label::new(i18n::t("Changes are applied together."));
-    status.set_position(0, 16);
-    status.set_size(360, 20);
-    status.set_text_color(layout::text_dim());
-    status.set_font_size(12);
-    row.add(&status);
-    st().status_label_id = status.id();
+    // Apply button docks to the right edge of the row so it stays
+    // visible even when the panel is narrower than the original
+    // 552-px design (small viewports, e.g. 640×480). The status label
+    // takes the remaining width.
     let apply_btn = ui::Button::new(i18n::t("Apply"));
-    apply_btn.set_position(424, 10);
+    apply_btn.set_dock(ui::DOCK_RIGHT);
     apply_btn.set_size(120, 30);
+    apply_btn.set_margin(8, 11, 0, 11);
     apply_btn.on_click(|_| apply_pending_settings());
     row.add(&apply_btn);
     st().apply_btn_id = apply_btn.id();
+
+    let status = ui::Label::new(i18n::t("Changes are applied together."));
+    status.set_dock(ui::DOCK_FILL);
+    status.set_text_color(layout::text_dim());
+    status.set_font_size(12);
+    status.set_margin(0, 16, 0, 16);
+    row.add(&status);
+    st().status_label_id = status.id();
+
     apply_card.add(&row);
 }
 
