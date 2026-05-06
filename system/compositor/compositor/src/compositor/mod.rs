@@ -391,6 +391,52 @@ impl Compositor {
             .map(|i| i.id)
             .collect();
 
+        // Pass 0: re-read the kernel-cached rotation for every output we
+        // already track and adapt logical dimensions if the user just
+        // toggled portrait/landscape. Without this, a CMD_SET_OUTPUT_CONFIG
+        // that changes orientation reaches the kernel but the compositor's
+        // back buffer keeps its old shape — flush_region takes the fast
+        // path and the screen never visibly rotates.
+        for o in self.outputs.iter_mut() {
+            let new_rot = anyos_std::display::get_rotation(o.id) as u8;
+            if new_rot == o.rotation {
+                continue;
+            }
+            // Determine the panel's hardware (landscape) extents from the
+            // current logical extents and the *previous* rotation, then
+            // apply the new rotation on top.
+            let (hw_w, hw_h) = if o.rotation == 1 || o.rotation == 3 {
+                (o.fb_height, o.fb_width)
+            } else {
+                (o.fb_width, o.fb_height)
+            };
+            let (logical_w, logical_h) = if new_rot == 1 || new_rot == 3 {
+                (hw_h, hw_w)
+            } else {
+                (hw_w, hw_h)
+            };
+            o.fb_width = logical_w;
+            o.fb_height = logical_h;
+            o.back_buffer = alloc::vec![0u32; (logical_w * logical_h) as usize];
+            o.damage.clear();
+            o.rotation = new_rot;
+        }
+        // The primary's inline fb_* fields mirror outputs[0]; keep them in
+        // sync so legacy paths (flush_region, damage_all, …) see the new
+        // logical extents. The hardware fb_ptr/fb_pitch don't change —
+        // only the logical-coordinate view does.
+        if let Some(primary) = self.outputs.first() {
+            if self.fb_width != primary.fb_width || self.fb_height != primary.fb_height {
+                self.fb_width = primary.fb_width;
+                self.fb_height = primary.fb_height;
+                let pixel_count = (self.fb_width * self.fb_height) as usize;
+                self.back_buffer = alloc::vec![0u32; pixel_count];
+                self.damage.clear();
+                self.damage
+                    .push(Rect::new(0, 0, self.fb_width, self.fb_height));
+            }
+        }
+
         // Pass 1: mark vanished and drop their outputs entry. Skip
         // outputs[0] (primary, never removed at runtime).
         let mut i = 1;
