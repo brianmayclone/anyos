@@ -338,8 +338,47 @@ pub fn alloc_contiguous(count: usize) -> Option<PhysAddr> {
     }
     let mut alloc = ALLOCATOR.lock();
     let limit = alloc.address_frames.min(CONTIGUOUS_MAX_FRAME);
-    let mut run_start = 0usize;
+    if count > limit {
+        return None;
+    }
+
+    // Scan top-down. The single-page allocator (alloc_frame) scans
+    // bottom-up and tends to scatter small allocations across the
+    // first few MiB; big contiguous requests (a freshly-resized
+    // framebuffer) almost always fail when they too start scanning
+    // from 0 because by then the lower region is heavily fragmented.
+    // Walking from the top reserves the contiguous-friendly upper
+    // half of the identity-map for these large requests while small
+    // sub-page allocations keep nibbling from the bottom.
+    let mut run_end = limit; // exclusive; current run covers [run_end-run_len, run_end)
     let mut run_len = 0usize;
+    let mut i = limit;
+    while i > 0 {
+        i -= 1;
+        if !alloc.is_used(i) {
+            if run_len == 0 {
+                run_end = i + 1;
+            }
+            run_len += 1;
+            if run_len >= count {
+                let run_start = run_end - count;
+                for j in run_start..run_end {
+                    alloc.set_used(j);
+                    alloc.free_frames -= 1;
+                }
+                return Some(PhysAddr::new((run_start * FRAME_SIZE) as u64));
+            }
+        } else {
+            run_len = 0;
+        }
+    }
+
+    // Top-down didn't find a slot — fall back to the original
+    // bottom-up sweep so we still try every possible run before
+    // giving up. (Top-down can miss runs at the very bottom of the
+    // bitmap because we only look at one direction.)
+    let mut run_start = 0usize;
+    run_len = 0;
     for i in 0..limit {
         if !alloc.is_used(i) {
             if run_len == 0 {
