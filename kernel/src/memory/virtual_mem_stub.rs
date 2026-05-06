@@ -363,6 +363,15 @@ pub fn unmap_page(virt: VirtAddr) {
     }
 }
 
+/// Zero a physical frame through the kernel's direct RAM mapping.
+pub fn zero_frame(phys: PhysAddr) -> bool {
+    let ptr = phys_to_virt_ptr(phys.as_u64()) as *mut u8;
+    unsafe {
+        core::ptr::write_bytes(ptr, 0, FRAME_SIZE);
+    }
+    true
+}
+
 /// Read the raw page table entry for a virtual address.
 pub fn read_pte(virt: VirtAddr) -> u64 {
     let va = virt.as_u64();
@@ -420,6 +429,80 @@ pub fn unmap_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr) {
     unsafe {
         write_entry(l3_phys, l3_index(va), 0);
     }
+}
+
+fn table_is_zero(table_phys: u64) -> bool {
+    for i in 0..ENTRIES_PER_TABLE {
+        if unsafe { read_entry(table_phys, i) } != 0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Reclaim empty user page-table pages after a range has been unmapped.
+pub fn reclaim_empty_user_tables(start: VirtAddr, size: u64) {
+    if size == 0 {
+        return;
+    }
+
+    let ttbr0 = current_cr3();
+    if ttbr0 == 0 {
+        return;
+    }
+
+    let start_addr = start.as_u64();
+    let end_addr = start_addr.saturating_add(size);
+    let mut addr = start_addr & !((FRAME_SIZE as u64 * ENTRIES_PER_TABLE as u64) - 1);
+
+    while addr < end_addr {
+        let i0 = l0_index(addr);
+        let i1 = l1_index(addr);
+        let i2 = l2_index(addr);
+
+        let e0 = unsafe { read_entry(ttbr0, i0) };
+        if !is_valid(e0) || !is_table(e0) {
+            addr = addr.saturating_add(FRAME_SIZE as u64 * ENTRIES_PER_TABLE as u64);
+            continue;
+        }
+        let l1 = desc_addr(e0);
+
+        let e1 = unsafe { read_entry(l1, i1) };
+        if !is_valid(e1) || !is_table(e1) {
+            addr = addr.saturating_add(FRAME_SIZE as u64 * ENTRIES_PER_TABLE as u64);
+            continue;
+        }
+        let l2 = desc_addr(e1);
+
+        let e2 = unsafe { read_entry(l2, i2) };
+        if is_valid(e2) && is_table(e2) {
+            let l3 = desc_addr(e2);
+            if table_is_zero(l3) {
+                unsafe {
+                    write_entry(l2, i2, 0);
+                }
+                physical::free_frame(PhysAddr::new(l3));
+            }
+        }
+
+        if table_is_zero(l2) {
+            unsafe {
+                write_entry(l1, i1, 0);
+            }
+            physical::free_frame(PhysAddr::new(l2));
+        }
+
+        if table_is_zero(l1) {
+            unsafe {
+                write_entry(ttbr0, i0, 0);
+            }
+            physical::free_frame(PhysAddr::new(l1));
+        }
+
+        addr = addr.saturating_add(FRAME_SIZE as u64 * ENTRIES_PER_TABLE as u64);
+    }
+
+    crate::arch::arm64::mmu::flush_tlb_all();
 }
 
 /// Map `count` pages starting at `virt_start`, allocating physical frames.

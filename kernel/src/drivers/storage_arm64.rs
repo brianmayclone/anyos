@@ -5,6 +5,7 @@
 
 use crate::sync::spinlock::Spinlock;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "storage/blockdev.rs"]
 pub mod blockdev;
@@ -16,6 +17,9 @@ pub(crate) struct DeviceIoHandler {
 }
 
 pub(crate) static IO_OVERRIDES: Spinlock<Vec<DeviceIoHandler>> = Spinlock::new(Vec::new());
+
+const MAX_DISKS: usize = 16;
+static DISK_SECTORS: [AtomicU64; MAX_DISKS] = [const { AtomicU64::new(0) }; MAX_DISKS];
 
 pub fn register_device_io(
     disk_id: u8,
@@ -58,10 +62,10 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
 }
 
 pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
-    write_sectors_direct_on_disk(0, lba, count, buf)
+    write_sectors_on_disk(0, lba, count, buf)
 }
 
-pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
+pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
     if disk_id != 0 {
         let overrides = IO_OVERRIDES.lock();
         if let Some(handler) = overrides.iter().find(|h| h.disk_id == disk_id) {
@@ -71,6 +75,23 @@ pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8
         }
     }
     crate::drivers::arm::storage::write_sectors(lba, count, buf)
+}
+
+pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
+    write_sectors_on_disk(disk_id, lba, count, buf)
+}
+
+pub fn set_disk_sector_count(disk_id: u8, sector_count: u64) {
+    if (disk_id as usize) < MAX_DISKS {
+        DISK_SECTORS[disk_id as usize].store(sector_count, Ordering::Relaxed);
+    }
+}
+
+pub fn disk_sector_count(disk_id: u8) -> u64 {
+    if (disk_id as usize) >= MAX_DISKS {
+        return 0;
+    }
+    DISK_SECTORS[disk_id as usize].load(Ordering::Relaxed)
 }
 
 /// VirtIO-BLK currently has no explicit flush primitive beyond request

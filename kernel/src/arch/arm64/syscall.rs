@@ -9,7 +9,9 @@
 //! extracts the syscall number from X8, and calls `arm64_syscall_dispatch`.
 
 use crate::arch::arm64::exceptions::ExceptionFrame;
-use crate::syscall::{SYS_FORK, SYS_MAP_FRAMEBUFFER};
+use crate::syscall::{
+    SYS_FORK, SYS_MAP_FRAMEBUFFER, SYS_MMAP, SYS_MMAP64, SYS_MUNMAP, SYS_MUNMAP64, SYS_SBRK,
+};
 
 /// Dispatch a syscall from user space.
 ///
@@ -28,11 +30,19 @@ pub extern "C" fn arm64_syscall_dispatch(
     // Forward to the common syscall dispatcher (5 args max)
     let _ = arg5; // reserved for future use
 
-    // Pointer-bearing syscalls that must keep the full 64-bit argument
-    // (cannot go through the u32-truncating dispatch_inner path).
-    if nr as u32 == SYS_MAP_FRAMEBUFFER {
-        let r = crate::syscall::handlers::sys_map_framebuffer(arg0);
-        return if r == u32::MAX { u64::MAX } else { r as u64 };
+    // Pointer-bearing syscalls that must keep full 64-bit arguments/returns
+    // (cannot go through the u32-oriented dispatch_inner path).
+    match nr as u32 {
+        SYS_SBRK => return crate::syscall::handlers::sys_sbrk_u64(arg0 as i64),
+        SYS_MMAP => return crate::syscall::handlers::sys_mmap_u64(arg0),
+        SYS_MUNMAP => return crate::syscall::handlers::sys_munmap_u64(arg0, arg1),
+        SYS_MMAP64 => return crate::syscall::handlers::sys_mmap64(arg0),
+        SYS_MUNMAP64 => return crate::syscall::handlers::sys_munmap64(arg0, arg1),
+        SYS_MAP_FRAMEBUFFER => {
+            let r = crate::syscall::handlers::sys_map_framebuffer(arg0);
+            return if r == u32::MAX { u64::MAX } else { r as u64 };
+        }
+        _ => {}
     }
 
     let ret = crate::syscall::dispatch_inner(nr as u32, arg0, arg1, arg2, arg3, arg4);
