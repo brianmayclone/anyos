@@ -391,21 +391,19 @@ impl Compositor {
             .map(|i| i.id)
             .collect();
 
-        // Pass 0: re-read the kernel-cached rotation for every output we
-        // already track and adapt logical dimensions if the user just
-        // toggled portrait/landscape. Without this, a CMD_SET_OUTPUT_CONFIG
-        // that changes orientation reaches the kernel but the compositor's
-        // back buffer keeps its old shape — flush_region takes the fast
-        // path and the screen never visibly rotates.
-        let mut primary_rotation_changed = false;
-        for (idx, o) in self.outputs.iter_mut().enumerate() {
+        // Pass 0: re-read the kernel-cached rotation. For the *primary*
+        // output we only need to update a rotation flag and re-shape the
+        // inline Compositor::fb_* mirror — outputs[0]'s back_buffer/dims
+        // are intentionally aliased to the inline fields (see
+        // primary_view), so mutating them here would create a duplicate
+        // buffer the rest of the compositor never writes into. For
+        // secondary outputs, each owns its own back buffer and we do
+        // need to re-shape it on rotation.
+        for o in self.outputs.iter_mut().skip(1) {
             let new_rot = anyos_std::display::get_rotation(o.id) as u8;
             if new_rot == o.rotation {
                 continue;
             }
-            // Determine the panel's hardware (landscape) extents from the
-            // current logical extents and the *previous* rotation, then
-            // apply the new rotation on top.
             let (hw_w, hw_h) = if o.rotation == 1 || o.rotation == 3 {
                 (o.fb_height, o.fb_width)
             } else {
@@ -421,41 +419,46 @@ impl Compositor {
             o.back_buffer = alloc::vec![0u32; (logical_w * logical_h) as usize];
             o.damage.clear();
             o.rotation = new_rot;
-            if idx == 0 {
-                primary_rotation_changed = true;
-            }
         }
-        // outputs[0] is supposed to mirror Compositor::fb_*. Two paths
-        // can desync them:
-        //   - Pass 0 above just rotated outputs[0]: its fb_width/height
-        //     are the new logical extents; the inline fields are stale
-        //     and must follow outputs[0].
-        //   - resize_fb() updated the inline fields after a resolution
-        //     change but never touched outputs[0] (legacy code path);
-        //     outputs[0] is stale and must follow inline.
-        // The compositor's compose path reads from the inline fields, so
-        // they are the authoritative source for everything *except* the
-        // rotation toggle that we handled in Pass 0.
+
+        // Primary rotation: mutate the inline fields plus outputs[0]'s
+        // metadata (id, rotation, fb_*), but DON'T allocate a separate
+        // back buffer on outputs[0] — it must keep `back_buffer: Vec::new()`
+        // so the legacy primary blit path stays the single source of truth.
         if let Some(primary) = self.outputs.first_mut() {
-            if primary_rotation_changed {
-                // Rotation just kicked in — inline must follow outputs[0].
-                self.fb_width = primary.fb_width;
-                self.fb_height = primary.fb_height;
-                let pixel_count = (self.fb_width * self.fb_height) as usize;
-                self.back_buffer = alloc::vec![0u32; pixel_count];
+            let new_rot = anyos_std::display::get_rotation(primary.id) as u8;
+            if new_rot != primary.rotation {
+                let (hw_w, hw_h) = if primary.rotation == 1 || primary.rotation == 3 {
+                    (primary.fb_height, primary.fb_width)
+                } else {
+                    (primary.fb_width, primary.fb_height)
+                };
+                let (logical_w, logical_h) = if new_rot == 1 || new_rot == 3 {
+                    (hw_h, hw_w)
+                } else {
+                    (hw_w, hw_h)
+                };
+                primary.fb_width = logical_w;
+                primary.fb_height = logical_h;
+                primary.rotation = new_rot;
+                // Mirror into the inline fields so flush_region etc. see
+                // the new logical extents. fb_pitch and fb_ptr stay as-is
+                // (the hardware framebuffer's panel-native pitch).
+                self.fb_width = logical_w;
+                self.fb_height = logical_h;
+                self.back_buffer = alloc::vec![0u32; (logical_w * logical_h) as usize];
                 self.damage.clear();
                 self.damage
-                    .push(Rect::new(0, 0, self.fb_width, self.fb_height));
-            } else if primary.fb_width != self.fb_width
-                || primary.fb_height != self.fb_height
-                || primary.fb_pitch != self.fb_pitch
-            {
-                // resize_fb path: outputs[0] is stale, copy from inline.
+                    .push(Rect::new(0, 0, logical_w, logical_h));
+            } else {
+                // No rotation change: keep outputs[0]'s metadata in sync
+                // with whatever resize_fb / boot wrote into the inline
+                // fields. Critically we do NOT touch outputs[0].back_buffer
+                // — primary_view leaves it empty on purpose.
                 primary.fb_width = self.fb_width;
                 primary.fb_height = self.fb_height;
                 primary.fb_pitch = self.fb_pitch;
                 primary.fb_ptr = self.fb_ptr;
-                primary.back_buffer = alloc::vec![0u32; (self.fb_width * self.fb_height) as usize];
             }
         }
 
