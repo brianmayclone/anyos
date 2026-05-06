@@ -2411,7 +2411,13 @@ impl GpuDriver for VirtioGpu {
                     .push_back(crate::drivers::gpu::output::DisplayEvent::HotplugChanged);
             }
         }
-        self.pending_events.pop_front()
+        // Drain hotplug events first, then fall back to the kernel-global
+        // queue so layout-level events (LayoutApplied from apply_layout)
+        // also reach user-space when this override is active.
+        if let Some(ev) = self.pending_events.pop_front() {
+            return Some(ev);
+        }
+        crate::drivers::gpu::pop_display_event()
     }
 }
 

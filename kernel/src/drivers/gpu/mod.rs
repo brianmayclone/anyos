@@ -505,6 +505,12 @@ pub trait GpuDriver: Send {
             set_output_rotation(id, rot);
         }
 
+        // Wake the compositor: it polls SYS_DISPLAY_POLL_EVENT and
+        // refreshes per-output state (back buffer dimensions, etc.) when
+        // it sees a layout-level change. Without this the compositor
+        // never learns that an output just rotated.
+        push_display_event(output::DisplayEvent::LayoutApplied);
+
         Ok(())
     }
 
@@ -512,9 +518,12 @@ pub trait GpuDriver: Send {
     ///
     /// Polled by the compositor (via `SYS_DISPLAY_POLL_EVENT`) to discover
     /// connector changes. The kernel display subsystem also fans out a
-    /// `LayoutApplied` event after a successful `apply_layout`.
+    /// `LayoutApplied` event after a successful `apply_layout`. Drivers
+    /// that override this to surface their own (hotplug IRQ etc.) events
+    /// should also drain the global queue via `pop_display_event` so
+    /// kernel-emitted events aren't swallowed.
     fn poll_display_event(&mut self) -> Option<output::DisplayEvent> {
-        None
+        pop_display_event()
     }
 
     /// Move the hardware cursor on a specific output (multi-monitor
@@ -568,6 +577,40 @@ static OUTPUT_ROTATION: [AtomicU32; output::MAX_OUTPUTS] = [
     AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
     AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
 ];
+
+/// Global queue of layout-level display events, fanned out from
+/// `apply_layout` (and any other place that wants to wake the
+/// compositor's poll loop). The driver's own `poll_display_event`
+/// drains this queue first; only when it's empty does the driver
+/// surface its hardware-level events. Bounded to a small size — we
+/// only ever signal "something changed", repeats coalesce into one.
+static GLOBAL_DISPLAY_EVENTS: Mutex<alloc::collections::VecDeque<output::DisplayEvent>> =
+    Mutex::new(alloc::collections::VecDeque::new());
+
+/// Push a display event onto the kernel-global queue. Called from
+/// `apply_layout` after a successful commit so the compositor learns
+/// to re-derive its per-output state (back buffer dimensions when an
+/// orientation toggles, virtual rect on a layout change, etc.).
+pub fn push_display_event(ev: output::DisplayEvent) {
+    let mut q = GLOBAL_DISPLAY_EVENTS.lock();
+    // Coalesce: if the same event type is already pending, drop the
+    // duplicate. Compositor refreshes are idempotent so it doesn't
+    // matter whether one or three LayoutApplied events arrive.
+    if !q.iter().any(|existing| match (existing, &ev) {
+        (output::DisplayEvent::LayoutApplied, output::DisplayEvent::LayoutApplied) => true,
+        (output::DisplayEvent::HotplugChanged, output::DisplayEvent::HotplugChanged) => true,
+        _ => false,
+    }) {
+        q.push_back(ev);
+    }
+}
+
+/// Drain one event from the global queue. Drivers call this from
+/// their `poll_display_event` so user-space sees both kernel-emitted
+/// events (layout change) and driver-emitted ones (hotplug IRQ).
+pub fn pop_display_event() -> Option<output::DisplayEvent> {
+    GLOBAL_DISPLAY_EVENTS.lock().pop_front()
+}
 
 /// Read the rotation cached for `output_id`, or 0 if the id is out of
 /// range. Cheap atomic load; safe to call from any context.
