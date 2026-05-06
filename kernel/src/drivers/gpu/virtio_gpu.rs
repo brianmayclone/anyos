@@ -1606,15 +1606,42 @@ impl GpuDriver for VirtioGpu {
             return Some((self.width, self.height, self.pitch, self.fb_phys as u32));
         }
 
-        // Tear down old display if active
+        // Try to allocate the *new* framebuffer FIRST, before tearing
+        // down the old one. If allocation fails (fragmentation, OOM)
+        // the old scanout stays fully functional and we just report
+        // failure to the caller. The previous order (free → alloc)
+        // produced an unrecoverable state on failure: the old display
+        // was gone but the new one couldn't be created, leaving
+        // self.fb_phys = 0 while self.width/height advertised the new
+        // mode, so subsequent map_framebuffer calls handed user space
+        // a mapping at phys=0 → KVM emulation failure on the first
+        // access.
+        let fb_size = (width as usize) * (height as usize) * 4;
+        let num_pages = (fb_size + 4095) / 4096;
+        let new_fb_phys = match physical::alloc_contiguous(num_pages) {
+            Some(p) => p.as_u64(),
+            None => {
+                crate::serial_verbose_println!(
+                    "  VirtIO GPU: failed to allocate {} pages for framebuffer (current {}x{} stays active)",
+                    num_pages,
+                    self.width,
+                    self.height
+                );
+                return None;
+            }
+        };
+        // Zero the new framebuffer before announcing it to the device.
+        unsafe {
+            core::ptr::write_bytes(new_fb_phys as *mut u8, 0, num_pages * 4096);
+        }
+
+        // Allocation succeeded — now safely tear down the old scanout.
         if self.scanout_resource_id != 0 {
-            // Disable scanout
             self.cmd_set_scanout(0, 0, 0, 0);
             self.cmd_detach_backing(self.scanout_resource_id);
             self.cmd_resource_unref(self.scanout_resource_id);
             self.scanout_resource_id = 0;
 
-            // Free old framebuffer pages
             if self.fb_phys != 0 {
                 for i in 0..self.fb_pages {
                     physical::free_frame(crate::memory::address::PhysAddr::new(
@@ -1626,15 +1653,71 @@ impl GpuDriver for VirtioGpu {
             }
         }
 
-        if self.setup_display(width, height) {
-            // Do an initial full transfer + flush
-            self.cmd_transfer_to_host_2d(self.scanout_resource_id, 0, 0, width, height);
-            self.cmd_resource_flush(self.scanout_resource_id, 0, 0, width, height);
+        // Commit the new framebuffer state and bring up the device-side
+        // resource. setup_display will skip its own allocation because
+        // we hand it the pre-allocated phys via fb_phys.
+        self.fb_phys = new_fb_phys;
+        self.fb_pages = num_pages;
+        self.width = width;
+        self.height = height;
+        self.pitch = width * 4;
 
-            Some((self.width, self.height, self.pitch, self.fb_phys as u32))
-        } else {
-            None
+        let res_id = self.next_resource_id;
+        self.next_resource_id += 1;
+
+        let mut ok = true;
+        if !self.cmd_resource_create_2d(
+            res_id,
+            VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
+            width,
+            height,
+        ) {
+            crate::serial_verbose_println!("  VirtIO GPU: RESOURCE_CREATE_2D failed");
+            ok = false;
         }
+        if ok && !self.cmd_attach_backing(res_id, new_fb_phys, num_pages) {
+            crate::serial_verbose_println!("  VirtIO GPU: RESOURCE_ATTACH_BACKING failed");
+            self.cmd_resource_unref(res_id);
+            ok = false;
+        }
+        if ok && !self.cmd_set_scanout(0, res_id, width, height) {
+            crate::serial_verbose_println!("  VirtIO GPU: SET_SCANOUT failed");
+            self.cmd_resource_unref(res_id);
+            ok = false;
+        }
+
+        if !ok {
+            // Device-side bring-up failed. Free the new physical pages
+            // we just allocated; we have no working scanout, but at
+            // least we don't leak. Caller sees None and can decide what
+            // to do.
+            for i in 0..num_pages {
+                physical::free_frame(crate::memory::address::PhysAddr::new(
+                    new_fb_phys + (i as u64) * 4096,
+                ));
+            }
+            self.fb_phys = 0;
+            self.fb_pages = 0;
+            return None;
+        }
+
+        self.scanout_resource_id = res_id;
+
+        crate::serial_verbose_println!(
+            "  VirtIO GPU: display {}x{} resource={} fb={:#x} ({} pages)",
+            width,
+            height,
+            res_id,
+            new_fb_phys,
+            num_pages
+        );
+
+        // Initial full transfer + flush so the host sees the cleared
+        // buffer instead of whatever the previous scanout left there.
+        self.cmd_transfer_to_host_2d(self.scanout_resource_id, 0, 0, width, height);
+        self.cmd_resource_flush(self.scanout_resource_id, 0, 0, width, height);
+
+        Some((self.width, self.height, self.pitch, self.fb_phys as u32))
     }
 
     fn get_mode(&self) -> (u32, u32, u32, u32) {
