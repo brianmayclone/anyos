@@ -754,7 +754,21 @@ impl Scheduler {
             }
         }
 
-        let mut thread = Thread::new(idle_thread_entry, 0, wanted_name);
+        let mut thread = match Thread::new(idle_thread_entry, 0, wanted_name) {
+            Some(thread) => thread,
+            None => {
+                crate::serial_println!(
+                    "FATAL: failed to allocate idle thread '{}' kernel stack",
+                    wanted_name
+                );
+                if let Some(idx) = self.threads.iter().position(|t| t.is_idle) {
+                    return idx;
+                }
+                loop {
+                    crate::arch::hal::halt();
+                }
+            }
+        };
         thread.is_idle = true;
         thread.state = ThreadState::Ready;
         thread.last_cpu = cpu_id;
@@ -762,7 +776,22 @@ impl Scheduler {
 
         let tid = thread.tid;
         self.idle_tid[cpu_id] = tid;
-        let thread = alloc_thread_box(thread).expect("failed to allocate idle thread object");
+        let thread = match alloc_thread_box(thread) {
+            Some(thread) => thread,
+            None => {
+                self.idle_tid[cpu_id] = 0;
+                crate::serial_println!(
+                    "FATAL: failed to allocate idle thread '{}' object",
+                    wanted_name
+                );
+                if let Some(idx) = self.threads.iter().position(|t| t.is_idle) {
+                    return idx;
+                }
+                loop {
+                    crate::arch::hal::halt();
+                }
+            }
+        };
         self.threads.push(thread);
         self.invalidate_tid_cache();
         let idx = self.threads.len() - 1;
@@ -1277,8 +1306,9 @@ fn kunit_make_pinned_user_thread(
 ) -> ThreadBox {
     extern "C" fn never_run() {}
 
-    let mut thread = alloc_thread_box(Thread::new(never_run, 42, "kunit/pinned-cont"))
-        .expect("kunit thread object allocation failed");
+    let thread =
+        Thread::new(never_run, 42, "kunit/pinned-cont").expect("kunit thread allocation failed");
+    let mut thread = alloc_thread_box(thread).expect("kunit thread object allocation failed");
     thread.is_user = true;
     thread.state = state;
     thread.last_cpu = last_cpu;

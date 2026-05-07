@@ -10,7 +10,7 @@ pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
         // Allocate the Thread object BEFORE acquiring SCHEDULER. The object
         // comes from the task::Thread slab cache, keeping scheduler metadata
         // isolated from the general heap.
-        let thread = match alloc_thread_box(Thread::new(entry, priority, name)) {
+        let thread = match Thread::new(entry, priority, name).and_then(alloc_thread_box) {
             Some(thread) => thread,
             None => return 0,
         };
@@ -37,7 +37,7 @@ pub fn spawn_blocked(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
     let tid = {
         // Allocate the Thread object BEFORE acquiring SCHEDULER — same
         // reasoning as spawn().
-        let thread = match alloc_thread_box(Thread::new(entry, priority, name)) {
+        let thread = match Thread::new(entry, priority, name).and_then(alloc_thread_box) {
             Some(thread) => thread,
             None => return 0,
         };
@@ -146,6 +146,9 @@ pub fn create_thread_in_current_process(
         effective_pri,
         name,
     );
+    if tid == 0 {
+        return 0;
+    }
 
     {
         crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_CREATE_THREAD);

@@ -862,6 +862,12 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
 
     // 4. Spawn child thread in Blocked state (prevents SMP race)
     let child_tid = scheduler::spawn_blocked(fork_child_trampoline, snap.priority, parent_name);
+    if child_tid == 0 {
+        crate::memory::virtual_mem::destroy_user_page_directory(child_pd);
+        crate::memory::vma::destroy_process(child_pd);
+        crate::serial_verbose_println!("sys_fork: child thread allocation failed");
+        return u32::MAX;
+    }
 
     // 5. Copy thread metadata to child
     scheduler::set_thread_user_info(child_tid, child_pd, snap.brk);
@@ -1012,6 +1018,12 @@ pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
     let parent_name = core::str::from_utf8(&snap.name[..name_len]).unwrap_or("?");
 
     let child_tid = scheduler::spawn_blocked(fork_child_trampoline, snap.priority, parent_name);
+    if child_tid == 0 {
+        crate::memory::virtual_mem::destroy_user_page_directory(child_pd);
+        crate::memory::vma::destroy_process(child_pd);
+        crate::serial_verbose_println!("sys_fork: child thread allocation failed");
+        return u32::MAX;
+    }
 
     scheduler::set_thread_user_info(child_tid, child_pd, snap.brk);
 

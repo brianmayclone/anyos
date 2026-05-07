@@ -1448,6 +1448,11 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     // (including APs) until we explicitly wake it.  This prevents the SMP race
     // where an AP runs the trampoline before we store pending-program data.
     let tid = crate::task::scheduler::spawn_blocked(user_thread_trampoline, 100, name);
+    if tid == 0 {
+        crate::memory::virtual_mem::destroy_user_page_directory(pd_phys);
+        crate::memory::vma::destroy_process(pd_phys);
+        return Err("Failed to create thread");
+    }
     // ASLR: randomize mmap base for each new process so mmap allocations
     // land at a different address than the previous run.
     let mmap_rand = random_page_offset(ASLR_MMAP_MAX_PAGES);

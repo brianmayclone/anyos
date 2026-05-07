@@ -40,7 +40,7 @@ unsafe impl Sync for PageAlignedStack {}
 
 impl PageAlignedStack {
     /// Allocate a zero-filled, page-aligned stack of `size` usable bytes.
-    fn alloc(size: usize) -> Self {
+    fn alloc(size: usize) -> Option<Self> {
         use alloc::alloc::{alloc_zeroed, Layout};
         // Over-allocate by PAGE_SIZE so we can align the usable region upward even
         // in the worst case (raw pointer just 1 byte past a page boundary).
@@ -48,16 +48,18 @@ impl PageAlignedStack {
         let raw_layout =
             Layout::from_size_align(raw_size, 1).expect("kernel stack raw layout invalid");
         let raw_ptr = unsafe { alloc_zeroed(raw_layout) };
-        assert!(!raw_ptr.is_null(), "kernel stack allocation failed");
+        if raw_ptr.is_null() {
+            return None;
+        }
         // Round up to the next page boundary.
         let aligned = (raw_ptr as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let ptr = aligned as *mut u8;
-        PageAlignedStack {
+        Some(PageAlignedStack {
             raw_ptr,
             raw_layout,
             ptr,
             size,
-        }
+        })
     }
 
     fn as_ptr(&self) -> *mut u8 {
@@ -255,7 +257,7 @@ impl Thread {
     ///
     /// The thread is initialized in the `Ready` state with its own kernel stack
     /// and a CPU context pointing to the entry function.
-    pub fn new(entry: extern "C" fn(), priority: u8, name: &str) -> Self {
+    pub fn new(entry: extern "C" fn(), priority: u8, name: &str) -> Option<Self> {
         let mut tid = NEXT_TID.fetch_add(1, Ordering::Relaxed);
         // TID 0 is reserved as a sentinel ("no thread"). Skip it on wraparound.
         if tid == 0 {
@@ -264,7 +266,7 @@ impl Thread {
 
         // Allocate kernel stack with 4096-byte alignment so set_guard_page()
         // marks only the first page of the stack — not adjacent heap data.
-        let stack = PageAlignedStack::alloc(KERNEL_STACK_SIZE);
+        let stack = PageAlignedStack::alloc(KERNEL_STACK_SIZE)?;
         let stack_top = stack.as_ptr() as u64 + KERNEL_STACK_SIZE as u64;
 
         // Write canary at the first word ABOVE the guard page.
@@ -336,7 +338,7 @@ impl Thread {
         let len = bytes.len().min(31);
         name_buf[..len].copy_from_slice(&bytes[..len]);
 
-        Thread {
+        Some(Thread {
             tid,
             state: ThreadState::Ready,
             context,
@@ -386,7 +388,7 @@ impl Thread {
             debug_sw_bp_count: 0,
             debug_single_step: false,
             debug_event: None,
-        }
+        })
     }
 
     /// Return the top (highest address) of this thread's kernel stack.

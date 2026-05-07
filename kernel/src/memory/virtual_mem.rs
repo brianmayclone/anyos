@@ -928,7 +928,7 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
     let new_pd_phys = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)?; // PD for PML4[0]→PDPT[0]
 
     // Temp virtual addresses to write into the new page tables.
-    // MUST be outside the heap range (HEAP_START + 512 MiB max) to avoid
+    // MUST be outside the heap range (HEAP_START + 704 MiB max) to avoid
     // clobbering heap page mappings when unmapping these temp pages.
     let temp_pml4 = VirtAddr::new(0xFFFF_FFFF_BFF0_0000);
     let temp_pdpt = VirtAddr::new(0xFFFF_FFFF_BFF0_1000);

@@ -1,8 +1,8 @@
 //! Kernel heap allocator using a linked-list free list with demand paging.
 //!
-//! The heap reserves a 512 MiB virtual address range but only maps a small initial
-//! region at boot. Growth just advances a committed watermark — physical frames are
-//! allocated lazily by the page fault handler when memory is first accessed.
+//! The heap reserves a bounded virtual address range but only maps a small initial
+//! region at boot. Growth adds committed heap pages on demand as long as the
+//! reserved VA window and the physical frame allocator have enough space.
 //!
 //! The lock is IRQ-safe: interrupts are disabled while the heap lock is held.
 //! This prevents deadlock when `reap_terminated()` frees a kernel stack from
@@ -32,7 +32,17 @@ const HEAP_START: u64 = 0xFFFF_0000_8200_0000;
 const HEAP_INITIAL_MAPPED: usize = 4 * 1024 * 1024;
 /// Initial committed size (32 MiB — rest is demand-paged on first access).
 const HEAP_INITIAL_SIZE: usize = 32 * 1024 * 1024;
-/// Maximum heap size (512 MiB) — fits within the 1 GiB PML4[511]/PDPT[510] window.
+/// Maximum heap size.
+///
+/// x86_64: keep the heap below the KDRV load window at
+/// 0xFFFF_FFFF_B000_0000, with a 32 MiB guard gap for fixed temporary
+/// mappings and future kernel-reserved VA.
+#[cfg(target_arch = "x86_64")]
+const HEAP_MAX_SIZE: usize = 704 * 1024 * 1024;
+/// ARM64: the early TTBR1 block gives this region a fixed 1 GiB physical
+/// backing relationship; keep the historical cap until the ARM64 heap is moved
+/// onto explicit page-table mappings like x86_64.
+#[cfg(target_arch = "aarch64")]
 const HEAP_MAX_SIZE: usize = 512 * 1024 * 1024;
 /// Minimum growth increment when expanding the heap (4 MiB).
 const GROW_CHUNK: usize = 4 * 1024 * 1024;
@@ -643,8 +653,12 @@ unsafe fn alloc_inner(layout: Layout) -> *mut u8 {
     core::ptr::null_mut()
 }
 
-/// Grow the heap by advancing the committed watermark.
-/// Physical frames are NOT allocated here — they are demand-paged on first access.
+/// Grow the heap by adding a committed free-list block.
+///
+/// x86_64 pre-maps the newly committed pages immediately so allocation failure
+/// is reported here instead of later from a page fault while holding heap data.
+/// ARM64's early 1 GiB block already maps the VA range, so growth only reserves
+/// the corresponding backing frames.
 /// Called while the heap lock is held. Returns true if growth succeeded.
 unsafe fn grow_heap(min_bytes: usize) -> bool {
     // Compute growth amount: at least min_bytes, rounded up to GROW_CHUNK
@@ -678,7 +692,6 @@ unsafe fn grow_heap(min_bytes: usize) -> bool {
 }
 
 /// Advance the committed watermark by `growth` bytes and add a free block.
-/// No physical frame allocation happens here — pages are demand-faulted on access.
 unsafe fn grow_heap_exact(growth: usize) -> bool {
     let growth = align_up(growth, FRAME_SIZE);
     if growth == 0 {
