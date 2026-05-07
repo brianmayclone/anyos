@@ -1530,8 +1530,16 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
                 | crate::task::capabilities::CAP_MANAGE_PERMS
                 | crate::task::capabilities::CAP_FILESYSTEM
         } else {
-            // Non-.app binary: inherit parent's full capabilities
-            parent_caps
+            // Non-.app binary: inherit parent's caps PLUS the always-on
+            // auto-granted set (DLL, THREAD, SHM, EVENT, PIPE). Without
+            // this, a child spawned by an .app whose Info.conf doesn't
+            // declare every auto-granted cap (e.g. forgot to list `pipe`)
+            // can't open pipes, fire events, or use SHM — even though
+            // those caps are auto-granted to .app bundles themselves.
+            // Bringing the child up to the same baseline matches what
+            // .apps get and removes a class of "I forgot to declare
+            // pipe in Info.conf" silent breakage.
+            parent_caps | crate::task::capabilities::CAP_AUTO_GRANTED
         }
     };
     crate::task::scheduler::set_thread_capabilities(tid, caps);
