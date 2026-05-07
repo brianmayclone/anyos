@@ -3,7 +3,6 @@
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use anyos_std::display;
 use anyos_std::env;
 use anyos_std::fs;
 use anyos_std::ipc;
@@ -90,116 +89,6 @@ fn register_with_ami(width: u32, height: u32, setup_mode: bool) {
         }
     }
     println!("compositor: WARNING — AMID not reachable during bootstrap");
-}
-
-fn isqrt_u64(n: u64) -> u64 {
-    if n < 2 {
-        return n;
-    }
-    let mut x = n;
-    let mut y = (x + 1) / 2;
-    while y < x {
-        x = y;
-        y = (x + n / x) / 2;
-    }
-    x
-}
-
-fn auto_scale_for_dpi(dpi: u32) -> u32 {
-    match dpi {
-        280.. => 300,
-        240..=279 => 250,
-        200..=239 => 200,
-        160..=199 => 150,
-        130..=159 => 125,
-        _ => 100,
-    }
-}
-
-fn auto_scale_for_resolution(width: u32, height: u32) -> u32 {
-    let max_dim = width.max(height);
-    let min_dim = width.min(height);
-    if max_dim >= 7680 || min_dim >= 4320 {
-        200
-    } else if max_dim >= 3840 || min_dim >= 2160 {
-        150
-    } else if max_dim >= 3200 || min_dim >= 1800 {
-        150
-    } else if max_dim >= 2560 || min_dim >= 1440 {
-        125
-    } else {
-        100
-    }
-}
-
-fn auto_scale_from_display_info(info: &display::DisplayInfo) -> Option<u32> {
-    if !info.is_connected() {
-        return None;
-    }
-    let width = if info.current_w > 0 {
-        info.current_w
-    } else {
-        info.preferred_w
-    };
-    let height = if info.current_h > 0 {
-        info.current_h
-    } else {
-        info.preferred_h
-    };
-    if width == 0 || height == 0 {
-        return None;
-    }
-
-    let (phys_w_mm, phys_h_mm) = info.physical_mm_pair();
-    let diag_mm = isqrt_u64(
-        (phys_w_mm as u64) * (phys_w_mm as u64) + (phys_h_mm as u64) * (phys_h_mm as u64),
-    );
-    // EDID-derived DPI is only trustworthy when the physical size looks
-    // like a real panel. Sub-200 mm diagonals on a desktop-class
-    // resolution are almost always synthetic EDID stubs (QEMU
-    // virtio-gpu, missing EDID, etc.) and produce absurdly high "DPI"
-    // values that scale the UI 200–300 %. Require at least 200 mm
-    // diagonal (≈ 8"), and fall back to the resolution-based heuristic
-    // for anything that fails the sanity check or implies > 200 DPI on
-    // an HD-or-smaller mode (also a broken-EDID signature).
-    if (200..=2000).contains(&diag_mm) {
-        let diag_px =
-            isqrt_u64((width as u64) * (width as u64) + (height as u64) * (height as u64));
-        if diag_px > 0 {
-            let dpi = ((diag_px * 254) + diag_mm * 5) / (diag_mm * 10);
-            let max_dim = width.max(height);
-            let dpi_implausible = dpi > 200 && max_dim <= 1920;
-            if !dpi_implausible {
-                return Some(auto_scale_for_dpi(dpi as u32));
-            }
-        }
-    }
-
-    Some(auto_scale_for_resolution(width, height))
-}
-
-fn auto_scale_factor(fallback_width: u32, fallback_height: u32) -> u32 {
-    let infos = display::list(16);
-    let mut first_connected: Option<display::DisplayInfo> = None;
-    for info in &infos {
-        if !info.is_connected() {
-            continue;
-        }
-        if info.is_primary() || info.id == 0 {
-            if let Some(scale) = auto_scale_from_display_info(info) {
-                return scale;
-            }
-        }
-        if first_connected.is_none() {
-            first_connected = Some(*info);
-        }
-    }
-    if let Some(info) = first_connected {
-        if let Some(scale) = auto_scale_from_display_info(&info) {
-            return scale;
-        }
-    }
-    auto_scale_for_resolution(fallback_width, fallback_height)
 }
 
 pub fn is_init_done() -> bool {
@@ -355,22 +244,12 @@ pub fn run() {
             println!("compositor: restored font smoothing: {}", mode_name);
         }
 
-        let saved_scale = config::read_scale_factor().unwrap_or(100);
-        let use_auto_scale = config::read_scale_auto() && saved_scale == 100;
-        let scale = if use_auto_scale {
-            auto_scale_factor(width, height)
-        } else {
-            saved_scale
-        };
+        let scale = config::read_scale_factor().unwrap_or(100);
         desktop::theme::set_scale_factor(scale);
         if scale != 100 {
             desktop.handle_scale_change();
         }
-        if use_auto_scale {
-            println!("compositor: auto DPI scale: {}%", scale);
-        } else {
-            println!("compositor: restored DPI scale: {}%", scale);
-        }
+        println!("compositor: restored DPI scale: {}%", scale);
 
         // Prime the natural-scroll cell so the very first wheel event
         // already honours the saved setting (otherwise it would behave

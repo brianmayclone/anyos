@@ -8,9 +8,7 @@ mod resolution;
 mod shortcuts;
 mod theme;
 
-pub use display::{
-    read_font_smoothing, read_scale_auto, read_scale_factor, save_font_smoothing, save_scale_factor,
-};
+pub use display::{read_font_smoothing, read_scale_factor, save_font_smoothing, save_scale_factor};
 pub use input::{
     cursor_scale_percent, cursor_size_index, left_handed_enabled, natural_scroll_enabled,
     pointer_speed_percent, read_cursor_size, read_double_click_ms, read_left_handed,

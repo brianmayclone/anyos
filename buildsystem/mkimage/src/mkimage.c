@@ -8,7 +8,7 @@
  *
  * Usage:
  *   mkimage --stage1 s1.bin --stage2 s2.bin --kernel k.elf
- *           --output disk.img [--sysroot dir] [--image-size 64] [--fs-start 128]
+ *           --output disk.img [--sysroot dir] [--image-size 64M] [--fs-start 128]
  *   mkimage --uefi --bootloader boot.efi --kernel k.elf
  *           --output disk.img [--sysroot dir]
  *   mkimage --iso --stage1 s1.bin --stage2 s2.bin --kernel k.elf
@@ -1073,28 +1073,77 @@ static void usage(void) {
         "\n"
         "BIOS mode (default):\n"
         "  mkimage --stage1 FILE --stage2 FILE --kernel FILE\n"
-        "          --output FILE [--sysroot DIR] [--image-size N]\n"
+        "          --output FILE [--sysroot DIR] [--image-size SIZE]\n"
         "          [--fs-start SECTOR] [--reset]\n"
         "\n"
         "UEFI mode:\n"
         "  mkimage --uefi --bootloader FILE --kernel FILE\n"
-        "          --output FILE [--sysroot DIR] [--image-size N] [--reset]\n"
+        "          --output FILE [--sysroot DIR] [--image-size SIZE] [--reset]\n"
         "\n"
         "ARM64 mode:\n"
         "  mkimage --arm64 --output FILE [--sysroot DIR]\n"
-        "          [--image-size N] [--reset]\n"
+        "          [--image-size SIZE] [--reset]\n"
         "\n"
         "ISO mode:\n"
         "  mkimage --iso --stage1 FILE --stage2 FILE --kernel FILE\n"
         "          --output FILE [--sysroot DIR]\n"
         "\n"
         "Options:\n"
-        "  --reset   Force full image rebuild (default: incremental update)\n"
+        "  --image-size SIZE  Disk image size: bare/M/MiB = MiB, G/GiB = GiB\n"
+        "  --reset            Force full image rebuild (default: incremental update)\n"
     );
     exit(1);
 }
 
 /* ── Argument parsing ─────────────────────────────────────────────────── */
+
+static char ascii_lower(char c) {
+    if (c >= 'A' && c <= 'Z')
+        return (char)(c - 'A' + 'a');
+    return c;
+}
+
+static int suffix_eq(const char *a, const char *b) {
+    while (*a && *b) {
+        if (ascii_lower(*a) != ascii_lower(*b))
+            return 0;
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+static int parse_image_size_mib(const char *value, int *out_mib) {
+    const char *p = value;
+    unsigned long long n = 0;
+    unsigned long long multiplier = 1;
+
+    if (!p || !*p)
+        return 0;
+
+    while (*p >= '0' && *p <= '9') {
+        n = n * 10 + (unsigned long long)(*p - '0');
+        p++;
+    }
+
+    if (n == 0)
+        return 0;
+
+    if (*p == '\0' || suffix_eq(p, "m") || suffix_eq(p, "mb") || suffix_eq(p, "mib")) {
+        multiplier = 1;
+    } else if (suffix_eq(p, "g") || suffix_eq(p, "gb") || suffix_eq(p, "gib")) {
+        multiplier = 1024;
+    } else {
+        return 0;
+    }
+
+    n *= multiplier;
+    if (n > 2147483647ULL)
+        return 0;
+
+    *out_mib = (int)n;
+    return 1;
+}
 
 static int parse_args(int argc, char **argv, Args *args) {
     memset(args, 0, sizeof(*args));
@@ -1122,7 +1171,12 @@ static int parse_args(int argc, char **argv, Args *args) {
         } else if (strcmp(argv[i], "--sysroot") == 0 && i + 1 < argc) {
             args->sysroot = argv[++i];
         } else if (strcmp(argv[i], "--image-size") == 0 && i + 1 < argc) {
-            args->image_size = atoi(argv[++i]);
+            if (!parse_image_size_mib(argv[++i], &args->image_size))
+                fatal("invalid --image-size '%s' (use e.g. 512M, 1024M, 5G, or 10G)", argv[i]);
+        } else if (strncmp(argv[i], "--image-size=", 13) == 0) {
+            const char *value = argv[i] + 13;
+            if (!parse_image_size_mib(value, &args->image_size))
+                fatal("invalid --image-size '%s' (use e.g. 512M, 1024M, 5G, or 10G)", value);
         } else if (strcmp(argv[i], "--fs-start") == 0 && i + 1 < argc) {
             args->fs_start = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--boot-cfg") == 0 && i + 1 < argc) {

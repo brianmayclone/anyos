@@ -186,7 +186,11 @@ impl Desktop {
                             // coord space is post-rotation. Map hw → logical
                             // before translating to virtual desktop.
                             let (lx, ly) = rotate_hw_to_logical(
-                                raw_x, raw_y, o.fb_width, o.fb_height, o.rotation,
+                                raw_x,
+                                raw_y,
+                                o.fb_width,
+                                o.fb_height,
+                                o.rotation,
                             );
                             abs_x = o.virtual_x + lx;
                             abs_y = o.virtual_y + ly;
@@ -201,9 +205,7 @@ impl Desktop {
                         // for the primary output before downstream code
                         // treats this as a logical-coordinate position.
                         let (lx, ly) = if let Some(o) = self.compositor.outputs.first() {
-                            rotate_hw_to_logical(
-                                raw_x, raw_y, o.fb_width, o.fb_height, o.rotation,
-                            )
+                            rotate_hw_to_logical(raw_x, raw_y, o.fb_width, o.fb_height, o.rotation)
                         } else {
                             (raw_x, raw_y)
                         };

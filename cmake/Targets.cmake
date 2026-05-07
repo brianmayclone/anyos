@@ -115,7 +115,7 @@ if(ANYOS_DUAL_PARTITION)
       --stage2 ${CMAKE_BINARY_DIR}/stage2.bin
       --kernel ${KERNEL_ELF}
       --output ${DISK_IMAGE}
-      --image-size 512
+      --image-size ${ANYOS_IMAGE_SIZE_MIB}
       --sysroot ${SYSROOT_DIR}
       --fs-start 128
       --boot-cfg ${BOOT_CFG}
@@ -127,9 +127,9 @@ if(ANYOS_DUAL_PARTITION)
       ${MKIMAGE_RESET_FLAG})
   set(IMAGE_BUILD_DEP ${MKIMAGE_EXECUTABLE})
   if(ANYOS_SYSTEM_FS STREQUAL "corefs")
-    set(IMAGE_COMMENT "Creating dual-partition image (/boot ${ANYOS_BOOT_PARTITION_SIZE_MIB} MiB exFAT + / CoreFS)")
+    set(IMAGE_COMMENT "Creating dual-partition image (${ANYOS_IMAGE_SIZE_MIB} MiB, /boot ${ANYOS_BOOT_PARTITION_SIZE_MIB} MiB exFAT + / CoreFS)")
   else()
-    set(IMAGE_COMMENT "Creating dual-partition disk image (/boot ${ANYOS_BOOT_PARTITION_SIZE_MIB} MiB + /)")
+    set(IMAGE_COMMENT "Creating dual-partition disk image (${ANYOS_IMAGE_SIZE_MIB} MiB, /boot ${ANYOS_BOOT_PARTITION_SIZE_MIB} MiB + /)")
   endif()
 else()
   set(IMAGE_BUILD_CMD
@@ -138,7 +138,7 @@ else()
       --stage2 ${CMAKE_BINARY_DIR}/stage2.bin
       --kernel ${KERNEL_ELF}
       --output ${DISK_IMAGE}
-      --image-size 512
+      --image-size ${ANYOS_IMAGE_SIZE_MIB}
       --sysroot ${SYSROOT_DIR}
       --fs-start 128
       --boot-cfg ${BOOT_CFG}
@@ -146,7 +146,7 @@ else()
       --boot-font ${BOOT_FONT_BIN}
       ${MKIMAGE_RESET_FLAG})
   set(IMAGE_BUILD_DEP ${MKIMAGE_EXECUTABLE})
-  set(IMAGE_COMMENT "Creating bootable disk image (512 MiB, exFAT filesystem)")
+  set(IMAGE_COMMENT "Creating bootable disk image (${ANYOS_IMAGE_SIZE_MIB} MiB, exFAT filesystem)")
 endif()
 
 add_custom_command(
@@ -387,7 +387,7 @@ add_custom_command(
     --bootloader ${UEFI_BOOTLOADER_EFI}
     --kernel ${KERNEL_ELF}
     --output ${UEFI_DISK_IMAGE}
-    --image-size 512
+    --image-size ${ANYOS_IMAGE_SIZE_MIB}
     --sysroot ${SYSROOT_DIR}
     ${MKIMAGE_RESET_FLAG}
   DEPENDS
@@ -400,7 +400,7 @@ add_custom_command(
     ${SELFHOST_SYSROOT_DEPS}
     ${C_TOOLCHAIN_DEPS}
     ${MKIMAGE_EXECUTABLE}
-  COMMENT "Creating UEFI bootable disk image (512 MiB, GPT + ESP + exFAT)"
+  COMMENT "Creating UEFI bootable disk image (${ANYOS_IMAGE_SIZE_MIB} MiB, GPT + ESP + exFAT)"
 )
 
 add_custom_target(uefi-bootloader DEPENDS ${UEFI_BOOTLOADER_EFI})
@@ -530,7 +530,7 @@ add_custom_command(
   OUTPUT ${ARM64_DISK_IMAGE}
   COMMAND ${MKIMAGE_EXECUTABLE} --arm64
     --output ${ARM64_DISK_IMAGE}
-    --image-size 512
+    --image-size ${ANYOS_IMAGE_SIZE_MIB}
     --sysroot ${SYSROOT_DIR}
     ${MKIMAGE_RESET_FLAG}
   DEPENDS
@@ -541,7 +541,7 @@ add_custom_command(
     ${SYSROOT_DIR}/.stamp
     ${SELFHOST_SYSROOT_DEPS}
     ${MKIMAGE_EXECUTABLE}
-  COMMENT "Creating ARM64 disk image (512 MiB, GPT + exFAT)"
+  COMMENT "Creating ARM64 disk image (${ANYOS_IMAGE_SIZE_MIB} MiB, GPT + exFAT)"
 )
 
 add_custom_target(arm64-image DEPENDS ${ARM64_DISK_IMAGE} programs)

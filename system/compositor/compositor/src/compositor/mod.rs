@@ -158,11 +158,7 @@ pub unsafe fn copy_rotated_to_fb(
         0 => {
             // Identity: row-by-row copy honouring dst stride.
             for y in 0..lh.min(hh) {
-                core::ptr::copy_nonoverlapping(
-                    src.add(y * lw),
-                    dst.add(y * stride),
-                    lw.min(hw),
-                );
+                core::ptr::copy_nonoverlapping(src.add(y * lw), dst.add(y * stride), lw.min(hw));
             }
         }
         1 => {
@@ -448,8 +444,7 @@ impl Compositor {
                 self.fb_height = logical_h;
                 self.back_buffer = alloc::vec![0u32; (logical_w * logical_h) as usize];
                 self.damage.clear();
-                self.damage
-                    .push(Rect::new(0, 0, logical_w, logical_h));
+                self.damage.push(Rect::new(0, 0, logical_w, logical_h));
             } else {
                 // No rotation change: keep outputs[0]'s metadata in sync
                 // with whatever resize_fb / boot wrote into the inline
@@ -1412,11 +1407,7 @@ impl Compositor {
         // and the savings are small versus a full rotated blit. Fall
         // back to whole-screen rotation when this primary output is
         // rotated; rotation is rare and the back-to-fb cost dominates.
-        let primary_rotation = self
-            .outputs
-            .first()
-            .map(|o| o.rotation)
-            .unwrap_or(0);
+        let primary_rotation = self.outputs.first().map(|o| o.rotation).unwrap_or(0);
         if primary_rotation != 0 {
             let logical_w = self.fb_width;
             let logical_h = self.fb_height;
@@ -1430,7 +1421,8 @@ impl Compositor {
                     self.back_buffer.as_ptr(),
                     logical_w,
                     logical_h,
-                    self.fb_ptr.add((y_offset as usize) * (self.fb_pitch as usize / 4)),
+                    self.fb_ptr
+                        .add((y_offset as usize) * (self.fb_pitch as usize / 4)),
                     hw_w,
                     hw_h,
                     self.fb_pitch / 4,

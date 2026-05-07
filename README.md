@@ -269,7 +269,7 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
   - **VESA VBE** graphics mode setup with fallback chain (1024x768 → 800x600 → 640x480)
   - **exFAT reader** in the bootloader for HDD boot path
   - Editable from the running OS via `bcedit` tool
-- **UEFI** — modern firmware boot via Rust EFI application (64 MiB GPT disk, exFAT)
+- **UEFI** — modern firmware boot via Rust EFI application (GPT disk, exFAT)
 - **ISO 9660** — CD-ROM/USB boot (El Torito, Rock Ridge extensions, OverlayFS for writable root)
 
 ### Installer
@@ -329,6 +329,19 @@ ninja
 # Run in QEMU
 ninja run
 ```
+
+The default disk image size is **512 MiB**. When using the helper script,
+choose a larger image with `--image-size`:
+
+```bash
+./scripts/build.sh --image-size 1024M
+./scripts/build.sh --image-size 5G
+./scripts/build.sh --image-size 10G --reset
+```
+
+Accepted units are bare numbers or `M`/`MiB` for MiB, and `G`/`GiB` for GiB.
+The value is passed through to `mkimage`, so BIOS, UEFI, and ARM64 disk images
+use the configured size.
 
 ### Prerequisites
 
@@ -412,8 +425,19 @@ Or run QEMU directly inside WSL2 (requires an X server like WSLg or VcXsrv).
 | Target | Description |
 |--------|-------------|
 | `ninja` | Build the complete OS (bootloader + kernel + programs + BIOS disk image) |
-| `ninja uefi-image` | Build UEFI GPT disk image (64 MiB, exFAT) |
+| `ninja uefi-image` | Build UEFI GPT disk image (exFAT) |
 | `ninja iso` | Build ISO 9660 CD-ROM image (El Torito bootable) |
+
+Disk images default to 512 MiB. To change the size when invoking CMake
+directly, configure `ANYOS_IMAGE_SIZE_MIB`:
+
+```bash
+cmake -B build -G Ninja -DANYOS_IMAGE_SIZE_MIB=5120
+ninja -C build
+```
+
+The `scripts/build.sh --image-size 5G` shorthand performs the same conversion
+to MiB before configuring CMake.
 
 #### BIOS Boot
 

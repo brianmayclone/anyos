@@ -161,11 +161,7 @@ impl Compositor {
             // flush_region, so just issue a single full-screen update
             // covering the panel's hardware extents instead. Identity
             // rotation keeps the cheap per-rect path.
-            let primary_rotation = self
-                .outputs
-                .first()
-                .map(|o| o.rotation)
-                .unwrap_or(0);
+            let primary_rotation = self.outputs.first().map(|o| o.rotation).unwrap_or(0);
             if primary_rotation != 0 {
                 let logical_w = self.fb_width;
                 let logical_h = self.fb_height;

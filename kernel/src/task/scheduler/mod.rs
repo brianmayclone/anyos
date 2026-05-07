@@ -263,183 +263,6 @@ static mut SCRATCH_FPU: [AlignedFpuBuf; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
-#[cfg(target_arch = "x86_64")]
-static SLEEP_SWITCH_DIAG_LOCK: AtomicBool = AtomicBool::new(false);
-#[cfg(target_arch = "x86_64")]
-static SLEEP_SWITCH_DIAG_COUNT: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_arch = "x86_64")]
-const SLEEP_SWITCH_DIAG_MAX: u32 = 4;
-
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-fn sched_diag_putc(b: u8) {
-    unsafe {
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") 0x3F8u16,
-            in("al") b,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-fn sched_diag_puts(s: &str) {
-    for &b in s.as_bytes() {
-        sched_diag_putc(b);
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-fn sched_diag_hex(mut n: u64) {
-    let mut buf = [0u8; 16];
-    let mut i = 0usize;
-    if n == 0 {
-        sched_diag_putc(b'0');
-        return;
-    }
-    while n > 0 && i < buf.len() {
-        let d = (n & 0xF) as u8;
-        buf[i] = if d < 10 { b'0' + d } else { b'a' + (d - 10) };
-        n >>= 4;
-        i += 1;
-    }
-    while i > 0 {
-        i -= 1;
-        sched_diag_putc(buf[i]);
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-fn sched_diag_dec(mut n: u64) {
-    let mut buf = [0u8; 20];
-    let mut i = 0usize;
-    if n == 0 {
-        sched_diag_putc(b'0');
-        return;
-    }
-    while n > 0 && i < buf.len() {
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-        i += 1;
-    }
-    while i > 0 {
-        i -= 1;
-        sched_diag_putc(buf[i]);
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[derive(Clone, Copy)]
-struct SleepSwitchDiag {
-    cpu: u64,
-    out_tid: u64,
-    next_tid: u64,
-    old_ctx: u64,
-    new_ctx: u64,
-    old_stack_bottom: u64,
-    old_stack_top: u64,
-    new_rsp: u64,
-    new_rip: u64,
-    wake_at: u64,
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-fn sched_diag_dump_sleep_switch(diag: SleepSwitchDiag) {
-    let seen = SLEEP_SWITCH_DIAG_COUNT.load(Ordering::Relaxed);
-    if seen >= SLEEP_SWITCH_DIAG_MAX {
-        return;
-    }
-    let mut acquired = false;
-    for _ in 0..1024u32 {
-        if SLEEP_SWITCH_DIAG_LOCK
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
-        {
-            acquired = true;
-            break;
-        }
-        core::hint::spin_loop();
-    }
-    if !acquired {
-        return;
-    }
-    let ticket = SLEEP_SWITCH_DIAG_COUNT.fetch_add(1, Ordering::Relaxed);
-    if ticket >= SLEEP_SWITCH_DIAG_MAX {
-        SLEEP_SWITCH_DIAG_LOCK.store(false, Ordering::Release);
-        return;
-    }
-
-    let cur_rsp: u64;
-    unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) cur_rsp, options(nomem, nostack, preserves_flags));
-    }
-    let w0 = unsafe { *(cur_rsp as *const u64) };
-    let w1 = unsafe { *((cur_rsp + 8) as *const u64) };
-    let w2 = unsafe { *((cur_rsp + 16) as *const u64) };
-    let w3 = unsafe { *((cur_rsp + 24) as *const u64) };
-
-    let cur_rsp_in_old_stack = cur_rsp >= diag.old_stack_bottom && cur_rsp <= diag.old_stack_top;
-    let old_stack_bounds_valid =
-        diag.old_stack_bottom >= KERNEL_ADDR_MIN && diag.old_stack_bottom < diag.old_stack_top;
-    let new_rsp_kernel = diag.new_rsp >= KERNEL_ADDR_MIN;
-    let new_rip_kernel = diag.new_rip >= KERNEL_PC_MIN && diag.new_rip < KERNEL_PC_MAX;
-    let old_stack_margin = if cur_rsp_in_old_stack {
-        let from_bottom = cur_rsp.saturating_sub(diag.old_stack_bottom);
-        let from_top = diag.old_stack_top.saturating_sub(cur_rsp);
-        core::cmp::min(from_bottom, from_top)
-    } else {
-        0
-    };
-    let severity =
-        if !old_stack_bounds_valid || !cur_rsp_in_old_stack || !new_rsp_kernel || !new_rip_kernel {
-            "RED"
-        } else if old_stack_margin < 4096 {
-            "YELLOW"
-        } else {
-            "GREEN"
-        };
-
-    sched_diag_puts("+slp-sw[");
-    sched_diag_puts(severity);
-    sched_diag_puts("] cpu=");
-    sched_diag_dec(diag.cpu);
-    sched_diag_puts(" out=");
-    sched_diag_dec(diag.out_tid);
-    sched_diag_puts(" next=");
-    sched_diag_dec(diag.next_tid);
-    sched_diag_puts(" old_ctx=0x");
-    sched_diag_hex(diag.old_ctx);
-    sched_diag_puts(" new_ctx=0x");
-    sched_diag_hex(diag.new_ctx);
-    sched_diag_puts(" cur_rsp=0x");
-    sched_diag_hex(cur_rsp);
-    sched_diag_puts(" old_bottom=0x");
-    sched_diag_hex(diag.old_stack_bottom);
-    sched_diag_puts(" old_top=0x");
-    sched_diag_hex(diag.old_stack_top);
-    sched_diag_puts(" new_rsp=0x");
-    sched_diag_hex(diag.new_rsp);
-    sched_diag_puts(" new_rip=0x");
-    sched_diag_hex(diag.new_rip);
-    sched_diag_puts(" wake=");
-    sched_diag_dec(diag.wake_at);
-    sched_diag_puts(" stk=[0x");
-    sched_diag_hex(w0);
-    sched_diag_puts(",0x");
-    sched_diag_hex(w1);
-    sched_diag_puts(",0x");
-    sched_diag_hex(w2);
-    sched_diag_puts(",0x");
-    sched_diag_hex(w3);
-    sched_diag_puts("]\n");
-    SLEEP_SWITCH_DIAG_LOCK.store(false, Ordering::Release);
-}
-
 // --- Deferred wake queue (IRQ-safe, lock-free) ---
 // IRQ handlers that need to wake a thread store TIDs here (via atomic swap).
 // The timer handler drains these every tick and calls wake_thread_inner under
@@ -2166,8 +1989,6 @@ fn schedule_inner(from_timer: bool) {
         u32,
     )>;
     let mut corrupt_diag: Option<(&'static str, u32, *const CpuContext)> = None;
-    #[cfg(target_arch = "x86_64")]
-    let mut sleep_switch_diag: Option<SleepSwitchDiag> = None;
     {
         let sched = match guard.as_mut() {
             Some(s) => s,
@@ -2319,21 +2140,6 @@ fn schedule_inner(from_timer: bool) {
                         let new_ctx = &sched.threads[next_idx].context as *const CpuContext;
                         let old_fpu = sched.threads[prev_idx].fpu_state.data.as_mut_ptr();
                         let new_fpu = sched.threads[next_idx].fpu_state.data.as_ptr();
-                        #[cfg(target_arch = "x86_64")]
-                        if !from_timer && sched.threads[prev_idx].state == ThreadState::Blocked {
-                            sleep_switch_diag = Some(SleepSwitchDiag {
-                                cpu: cpu_id as u64,
-                                out_tid: prev_tid as u64,
-                                next_tid: next_tid as u64,
-                                old_ctx: old_ctx as u64,
-                                new_ctx: new_ctx as u64,
-                                old_stack_bottom: sched.threads[prev_idx].kernel_stack_bottom(),
-                                old_stack_top: sched.threads[prev_idx].kernel_stack_top(),
-                                new_rsp: sched.threads[next_idx].context.get_sp(),
-                                new_rip: sched.threads[next_idx].context.get_pc(),
-                                wake_at: sched.threads[prev_idx].wake_at_tick.unwrap_or(0) as u64,
-                            });
-                        }
                         Some((old_ctx, new_ctx, old_fpu, new_fpu, prev_tid, next_tid))
                     } else {
                         #[cfg(target_arch = "aarch64")]
@@ -2614,10 +2420,6 @@ fn schedule_inner(from_timer: bool) {
 
     // Context switch with lock released, interrupts still disabled
     if let Some((old_ctx, new_ctx, old_fpu, _new_fpu, outgoing_tid, _next_tid)) = switch_info {
-        #[cfg(target_arch = "x86_64")]
-        if let Some(diag) = sleep_switch_diag {
-            sched_diag_dump_sleep_switch(diag);
-        }
         // --- Lazy FPU: save outgoing thread's state if this CPU owns it ---
         let fpu_owner = PER_CPU_FPU_OWNER[cpu_id].load(Ordering::Relaxed);
         if fpu_owner != 0 && fpu_owner == outgoing_tid {

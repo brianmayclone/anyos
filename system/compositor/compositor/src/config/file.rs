@@ -3,9 +3,7 @@
 use alloc::format;
 use alloc::string::String;
 
-use libconf_schema::{
-    default_bool, default_int, default_string, manifest, RegistryScope, ServiceSchema,
-};
+use libconf_schema::{default_int, default_string, manifest, RegistryScope, ServiceSchema};
 
 const DEFAULT_LOGIN_PROGRAMS: &str = "/System/inputmon\n";
 const DEFAULT_AUTOSTART_PROGRAMS: &str = "/System/notifyd\n/System/netmon\n/System/audiomon\n";
@@ -17,7 +15,6 @@ const COMPOSITOR_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
     default_string("shortcuts/mappings_blob", DEFAULT_SHORTCUTS),
     default_int("display/font_smoothing", 1),
     default_int("display/scale", 100),
-    default_bool("display/scale_auto", true),
     default_int("resolution/width", 0),
     default_int("resolution/height", 0),
     default_string("theme/mode", "dark"),
@@ -90,16 +87,6 @@ pub(super) fn write_i64(rel_path: &str, value: i64) -> bool {
     schema().write_i64(rel_path, value).is_ok()
 }
 
-pub(super) fn read_bool(rel_path: &str) -> Option<bool> {
-    register_manifest();
-    schema().read_bool(rel_path)
-}
-
-pub(super) fn write_bool(rel_path: &str, value: bool) -> bool {
-    register_manifest();
-    schema().write_bool(rel_path, value).is_ok()
-}
-
 #[allow(dead_code)]
 pub(super) fn read_conf() -> Option<String> {
     register_manifest();
@@ -110,20 +97,18 @@ pub(super) fn read_conf() -> Option<String> {
     let shortcuts = read_string("shortcuts/mappings_blob").unwrap_or_default();
     let font_smoothing = read_i64("display/font_smoothing").unwrap_or(1);
     let scale = read_i64("display/scale").unwrap_or(100);
-    let scale_auto = read_bool("display/scale_auto").unwrap_or(true);
     let width = read_i64("resolution/width").unwrap_or(0);
     let height = read_i64("resolution/height").unwrap_or(0);
     let mode = read_string("theme/mode").unwrap_or_else(|| String::from("dark"));
     let style = read_string("theme/style").unwrap_or_default();
 
     Some(format!(
-        "[login]\n{}\n\n[autostart]\n{}\n\n[shortcuts]\n{}\n\n[display]\nfont_smoothing={}\nscale={}\nscale_auto={}\n\n[resolution]\nwidth={}\nheight={}\n\n[theme]\nmode={}\nstyle={}\n",
+        "[login]\n{}\n\n[autostart]\n{}\n\n[shortcuts]\n{}\n\n[display]\nfont_smoothing={}\nscale={}\n\n[resolution]\nwidth={}\nheight={}\n\n[theme]\nmode={}\nstyle={}\n",
         login.trim_end(),
         autostart.trim_end(),
         shortcuts.trim_end(),
         font_smoothing,
         scale,
-        scale_auto,
         width,
         height,
         mode,

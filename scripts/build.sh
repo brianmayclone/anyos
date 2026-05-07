@@ -9,7 +9,7 @@
 
 # Build anyOS
 # Usage: ./build.sh [--clean] [--reset] [--uefi] [--iso] [--all] [--debug] [--no-cross]
-#                   [--iminor] [--imajor] [--nover] [--arm64]
+#                   [--iminor] [--imajor] [--nover] [--arm64] [--image-size SIZE]
 
 BUILD_START=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,11 +26,40 @@ DEBUG_SURF=0
 NO_CROSS=0
 VER_MODE="patch"
 ANYOS_ARCH="x86_64"
+IMAGE_SIZE_MIB="512"
 # Empty unless --system-fs / --system-fs-size is explicitly given.
 # Forwarded to CMake as -DANYOS_SYSTEM_FS / -DANYOS_SYSTEM_FS_SIZE_MIB.
 SYSTEM_FS=""
 SYSTEM_FS_SIZE_MIB=""
 CMAKE_PASSTHROUGH=()
+
+parse_image_size_mib() {
+    local raw="$1"
+    local num unit unit_lc
+
+    if [[ ! "$raw" =~ ^([0-9]+)([mMgG]([iI]?[bB])?)?$ ]]; then
+        return 1
+    fi
+
+    num=$((10#${BASH_REMATCH[1]}))
+    unit="${BASH_REMATCH[2]}"
+    unit_lc="${unit,,}"
+    if [ "$num" -le 0 ]; then
+        return 1
+    fi
+
+    case "$unit_lc" in
+        ""|m|mb|mib)
+            echo "$num"
+            ;;
+        g|gb|gib)
+            echo $((num * 1024))
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 i=0
 argv=("$@")
@@ -72,6 +101,25 @@ while [ $i -lt ${#argv[@]} ]; do
             ;;
         --arm64)
             ANYOS_ARCH="arm64"
+            ;;
+        --image-size)
+            i=$((i + 1))
+            next="${argv[$i]:-}"
+            if IMAGE_SIZE_PARSED=$(parse_image_size_mib "$next"); then
+                IMAGE_SIZE_MIB="$IMAGE_SIZE_PARSED"
+            else
+                echo "Error: --image-size expects a positive size like 512M, 1024M, 5G, or 10G; got '$next'"
+                exit 1
+            fi
+            ;;
+        --image-size=*)
+            val="${arg#--image-size=}"
+            if IMAGE_SIZE_PARSED=$(parse_image_size_mib "$val"); then
+                IMAGE_SIZE_MIB="$IMAGE_SIZE_PARSED"
+            else
+                echo "Error: --image-size expects a positive size like 512M, 1024M, 5G, or 10G; got '$val'"
+                exit 1
+            fi
             ;;
         --system-fs)
             i=$((i + 1))
@@ -125,7 +173,7 @@ while [ $i -lt ${#argv[@]} ]; do
             ;;
         *)
             echo "Usage: $0 [--clean] [--reset] [--uefi] [--iso] [--all] [--debug] [--debug-surf] [--no-cross]"
-            echo "       [--iminor] [--imajor] [--nover] [--arm64]"
+            echo "       [--iminor] [--imajor] [--nover] [--arm64] [--image-size SIZE]"
             echo "       [--system-fs {exfat|corefs}] [--system-fs-size <MiB>]"
             echo "       [-D<VAR>=<VAL> ...]"
             echo ""
@@ -141,6 +189,7 @@ while [ $i -lt ${#argv[@]} ]; do
             echo "  --imajor      Increment major version (reset minor and patch to 0)"
             echo "  --nover       Skip version increment"
             echo "  --arm64       Build for AArch64 (ARM64) instead of x86_64"
+            echo "  --image-size  Disk image size: bare/M/MiB = MiB, G/GiB = GiB (default 512M)"
             echo "  --system-fs   System filesystem: exfat (default) or corefs"
             echo "                (adds CoreFS partition at the end of the disk image)"
             echo "  --system-fs-size  Size of the CoreFS partition in MiB (default 128)"
@@ -210,7 +259,7 @@ fi
 echo "Version: ${ANYOS_VERSION}"
 
 # CMake flags
-CMAKE_EXTRA_FLAGS="-DANYOS_DEBUG_VERBOSE=$([ "$DEBUG_VERBOSE" -eq 1 ] && echo ON || echo OFF) -DANYOS_DEBUG_SURF=$([ "$DEBUG_SURF" -eq 1 ] && echo ON || echo OFF) -DANYOS_RESET=$([ "$RESET" -eq 1 ] && echo ON || echo OFF) -DANYOS_VERSION=${ANYOS_VERSION} -DANYOS_ARCH=${ANYOS_ARCH}"
+CMAKE_EXTRA_FLAGS="-DANYOS_DEBUG_VERBOSE=$([ "$DEBUG_VERBOSE" -eq 1 ] && echo ON || echo OFF) -DANYOS_DEBUG_SURF=$([ "$DEBUG_SURF" -eq 1 ] && echo ON || echo OFF) -DANYOS_RESET=$([ "$RESET" -eq 1 ] && echo ON || echo OFF) -DANYOS_VERSION=${ANYOS_VERSION} -DANYOS_ARCH=${ANYOS_ARCH} -DANYOS_IMAGE_SIZE_MIB=${IMAGE_SIZE_MIB}"
 
 # System-filesystem switches — only appended when the user opted in, so
 # existing builds without the flag keep using whatever value is currently
