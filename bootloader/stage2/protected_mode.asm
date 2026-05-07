@@ -127,10 +127,14 @@ pm_entry:
     mov dword [PDPT_LOW_ADDR + 3*8],     PD_FB_ADDR | PT_BASE_FLAGS
     mov dword [PDPT_LOW_ADDR + 3*8 + 4], 0
 
-    ; --- PD_LOW: identity map first 16 MiB with 2 MiB pages ---
+    ; --- PD_LOW: identity map first 128 MiB with 2 MiB pages ---
+    ; Higher-half (PDPT_HIGH[510]) reuses this PD, so this also bounds the
+    ; kernel's higher-half window. Must cover _kernel_end (BSS + boot stack);
+    ; 16 MiB was too tight once the kernel grew past ~16 MiB and BSS-zeroing
+    ; in higher_half_entry faulted on unmapped pages.
     xor eax, eax                    ; Starting physical address = 0
     mov edi, PD_LOW_ADDR
-    mov ecx, 8                      ; 8 entries x 2 MiB = 16 MiB
+    mov ecx, 64                     ; 64 entries x 2 MiB = 128 MiB
 .pd_low_loop:
     mov ebx, eax
     or ebx, PT_PAGE_FLAGS
