@@ -336,6 +336,8 @@ pub struct ExFatFs {
     fat_dirty: Vec<u8>,
     /// Cached allocation bitmap.
     bitmap: Vec<u8>,
+    /// Cached number of free clusters, kept in sync with `bitmap`.
+    free_clusters: u32,
     /// Bitset of dirty bitmap sectors (1 bit per 512-byte sector).
     bitmap_dirty: Vec<u8>,
     /// Cluster where the bitmap starts.
@@ -401,15 +403,7 @@ impl ExFatFs {
     pub fn fs_stats(&self) -> (u64, u64) {
         let cluster_size = 1u64 << (self.bytes_per_sector_shift + self.sectors_per_cluster_shift);
         let total = self.cluster_count as u64 * cluster_size;
-        let mut free_clusters = 0u64;
-        for i in 0..self.cluster_count as usize {
-            let byte_idx = i / 8;
-            let bit_idx = i % 8;
-            if byte_idx < self.bitmap.len() && self.bitmap[byte_idx] & (1 << bit_idx) == 0 {
-                free_clusters += 1;
-            }
-        }
-        (total, free_clusters * cluster_size)
+        (total, self.free_clusters as u64 * cluster_size)
     }
 
     // =================================================================
@@ -507,6 +501,7 @@ impl ExFatFs {
             fat_cache,
             fat_dirty: vec![0u8; fat_dirty_bytes],
             bitmap: Vec::new(),
+            free_clusters: 0,
             bitmap_dirty: Vec::new(),
             bitmap_cluster: 0,
             bitmap_contiguous: true,
@@ -517,6 +512,7 @@ impl ExFatFs {
 
         // Scan root directory for the allocation bitmap entry
         fs.load_bitmap()?;
+        fs.free_clusters = fs.count_free_clusters();
         // Initialize bitmap dirty tracking now that bitmap is loaded
         let bm_sectors = (fs.bitmap.len() + 511) / 512;
         fs.bitmap_dirty = vec![0u8; (bm_sectors + 7) / 8];
@@ -897,6 +893,51 @@ impl ExFatFs {
         }
     }
 
+    fn count_free_clusters(&self) -> u32 {
+        let mut used = 0u32;
+        let full_bytes = self.cluster_count as usize / 8;
+        for &byte in self.bitmap.iter().take(full_bytes) {
+            used += byte.count_ones();
+        }
+        let rem = self.cluster_count as usize % 8;
+        if rem != 0 && full_bytes < self.bitmap.len() {
+            let mask = (1u8 << rem) - 1;
+            used += (self.bitmap[full_bytes] & mask).count_ones();
+        }
+        self.cluster_count.saturating_sub(used)
+    }
+
+    fn mark_cluster_allocated(&mut self, idx: u32) {
+        let byte_idx = idx as usize / 8;
+        let bit_idx = idx as usize % 8;
+        if byte_idx >= self.bitmap.len() {
+            return;
+        }
+        let mask = 1 << bit_idx;
+        if self.bitmap[byte_idx] & mask == 0 {
+            self.bitmap[byte_idx] |= mask;
+            self.free_clusters = self.free_clusters.saturating_sub(1);
+            self.mark_bitmap_dirty(byte_idx);
+        }
+    }
+
+    fn mark_cluster_free(&mut self, idx: u32) {
+        if idx >= self.cluster_count {
+            return;
+        }
+        let byte_idx = idx as usize / 8;
+        let bit_idx = idx as usize % 8;
+        if byte_idx >= self.bitmap.len() {
+            return;
+        }
+        let mask = 1 << bit_idx;
+        if self.bitmap[byte_idx] & mask != 0 {
+            self.bitmap[byte_idx] &= !mask;
+            self.free_clusters = self.free_clusters.saturating_add(1).min(self.cluster_count);
+            self.mark_bitmap_dirty(byte_idx);
+        }
+    }
+
     /// Allocate a single cluster. Marks bitmap + writes EOC to FAT (deferred flush).
     fn alloc_cluster(&mut self) -> Result<u32, FsError> {
         let count = self.cluster_count;
@@ -909,10 +950,9 @@ impl ExFatFs {
                 continue;
             }
             if self.bitmap[byte_idx] & (1 << bit_idx) == 0 {
-                self.bitmap[byte_idx] |= 1 << bit_idx;
-                self.mark_bitmap_dirty(byte_idx);
                 let cluster = i + 2;
                 self.write_fat_entry(cluster, EXFAT_EOC)?;
+                self.mark_cluster_allocated(i);
                 self.alloc_hint = (i + 1) % count;
                 return Ok(cluster);
             }
@@ -949,13 +989,10 @@ impl ExFatFs {
             // Found contiguous run — allocate all at once
             for k in 0..n {
                 let i = base + k;
-                let byte_idx = i as usize / 8;
-                let bit_idx = i as usize % 8;
-                self.bitmap[byte_idx] |= 1 << bit_idx;
-                self.mark_bitmap_dirty(byte_idx);
                 let cluster = i + 2;
                 let next = if k + 1 < n { cluster + 1 } else { EXFAT_EOC };
                 self.write_fat_entry(cluster, next)?;
+                self.mark_cluster_allocated(i);
             }
             self.alloc_hint = (base + n) % count;
             return Ok(base + 2);
@@ -987,25 +1024,15 @@ impl ExFatFs {
             let n = ((data_length + cs - 1) / cs) as u32;
             for j in 0..n {
                 let idx = (start - 2 + j) as usize;
-                let byte = idx / 8;
-                let bit = idx % 8;
-                if byte < self.bitmap.len() {
-                    self.bitmap[byte] &= !(1 << bit);
-                    self.mark_bitmap_dirty(byte);
-                }
+                self.mark_cluster_free(idx as u32);
             }
         } else {
             let mut c = start;
             loop {
                 let next = self.next_cluster(c);
                 let idx = (c - 2) as usize;
-                let byte = idx / 8;
-                let bit = idx % 8;
-                if byte < self.bitmap.len() {
-                    self.bitmap[byte] &= !(1 << bit);
-                    self.mark_bitmap_dirty(byte);
-                }
                 self.write_fat_entry(c, EXFAT_FREE)?;
+                self.mark_cluster_free(idx as u32);
                 match next {
                     Some(n) => c = n,
                     None => break,
