@@ -52,6 +52,10 @@ pub static SUITE: TestSuite = TestSuite {
             run: test_alloc_contiguous_correct_order,
         },
         TestCase {
+            name: "alloc_contiguous_frees_as_frames",
+            run: test_alloc_contiguous_frees_as_frames,
+        },
+        TestCase {
             name: "alloc_until_oom",
             run: test_alloc_until_oom,
         },
@@ -162,7 +166,11 @@ fn test_order_for(ctx: &mut TestContext) {
     ctx.expect_eq(order_for(9), 4, "order_for(9)");
     ctx.expect_eq(order_for(1024), 10, "order_for(1024)");
     ctx.expect_eq(order_for(1025), 11, "order_for(1025)");
-    ctx.expect_eq(order_for(1 << MAX_ORDER), MAX_ORDER, "order_for(2^MAX_ORDER)");
+    ctx.expect_eq(
+        order_for(1 << MAX_ORDER),
+        MAX_ORDER,
+        "order_for(2^MAX_ORDER)",
+    );
     ctx.expect_eq(
         order_for((1 << MAX_ORDER) + 1),
         MAX_ORDER,
@@ -269,9 +277,47 @@ fn test_alloc_contiguous_correct_order(ctx: &mut TestContext) {
     audit_ok(&z, ctx, "post-alloc");
     // Block must be 8-aligned.
     ctx.expect_eq((f - start) & 7, 0, "8-frame block 8-aligned");
-    // Free at the order chosen.
-    z.free_pages(f, 3);
+    // Public alloc_contiguous preserves the legacy physical allocator
+    // contract: callers may free each returned frame separately.
+    for i in 0..5 {
+        z.free_frame(f + i);
+    }
     audit_ok(&z, ctx, "post-free");
+    release_run(start, n);
+}
+
+fn test_alloc_contiguous_frees_as_frames(ctx: &mut TestContext) {
+    let (start, n) = match acquire_run(32) {
+        Some(v) => v,
+        None => {
+            ctx.expect_true(false, "acquire_run(32)");
+            return;
+        }
+    };
+    let mut z = build_zone(start, n);
+    let f = z.alloc_contiguous(5).expect("alloc_contiguous(5)");
+    audit_ok(&z, ctx, "post-alloc");
+
+    // The regression: freeing an interior frame first used to create an
+    // overlapping free-list entry when the block head was later freed.
+    for offset in [2usize, 0, 4, 1, 3] {
+        z.free_frame(f + offset);
+        audit_ok(&z, ctx, "after frame free");
+    }
+
+    let mut seen = alloc::vec::Vec::with_capacity(n);
+    for _ in 0..n {
+        let frame = z.alloc_frame().expect("alloc after contiguous free");
+        for &prev in &seen {
+            ctx.expect_ne(frame, prev, "no duplicate frames after contiguous free");
+        }
+        seen.push(frame);
+    }
+    audit_ok(&z, ctx, "after reallocating full zone");
+    for frame in seen {
+        z.free_frame(frame);
+    }
+    audit_ok(&z, ctx, "post-cleanup");
     release_run(start, n);
 }
 
@@ -446,7 +492,9 @@ fn test_many_iterations_consistent(ctx: &mut TestContext) {
     let mut held: alloc::vec::Vec<(usize, usize)> = alloc::vec::Vec::new();
     let mut counter: u64 = 1;
     let next = |c: &mut u64| -> u64 {
-        *c = c.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *c = c
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         *c >> 33
     };
     for _ in 0..5000 {

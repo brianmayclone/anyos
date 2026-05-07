@@ -32,17 +32,15 @@ pub(super) fn init_cpu() {
 
 pub(super) fn init_memory(boot_info: &BootInfo) {
     arch::x86::pat::init();
-    // physical::init only registers low-memory frames (< 128 MiB)
-    // for now: the buddy backend writes intrusive link words into
-    // every free page via physmap, but physmap isn't up yet. The
-    // bitmap backend doesn't have this restriction but uses the
-    // same staged init for symmetry.
+    // physical::init records usable RAM in the bootmem bitmap only.
+    // The buddy backend writes intrusive link words into free pages,
+    // which requires physmap, so the real buddy migration happens
+    // below after physmap is established.
     memory::physical::init(boot_info);
     memory::virtual_mem::init(boot_info);
     memory::physmap::init(boot_info);
-    // late_init brings in the rest of usable RAM now that physmap
-    // is live and the buddy can safely write link words into any
-    // frame. Bitmap-backend's late_init is a no-op.
+    // late_init migrates bootmem's free frames into the buddy zones now
+    // that physmap can safely address every free page.
     memory::physical::late_init(boot_info);
     memory::heap::init();
     serial_println!("[OK] Heap allocator initialized");

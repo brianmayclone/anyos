@@ -9,10 +9,8 @@
 //! The legacy x86_64 boot path identity-maps only the first 128 MiB,
 //! which limits both:
 //!
-//! * **Contiguous allocations** — the buddy / contiguous allocator
-//!   has to live entirely below the 128 MiB ceiling so that physical
-//!   addresses returned to drivers are dereferenceable from the
-//!   kernel. Real systems easily exceed that.
+//! * **Allocator metadata** — the buddy allocator must manage RAM above the
+//!   low identity window without using raw physical pointers.
 //! * **Free-list link words** — a buddy allocator with intrusive free
 //!   lists needs to read and write the head bytes of every free
 //!   page. Without physmap that is only safe for low-memory pages.
@@ -227,16 +225,13 @@ static PHYSMAP_PT_POOL_NEXT: core::sync::atomic::AtomicUsize =
 /// aliased; we use the physical address derived from the linker
 /// layout). Returns 0 if the pool is exhausted.
 fn alloc_pt_page_from_pool() -> u64 {
-    let next = PHYSMAP_PT_POOL_NEXT
-        .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let next = PHYSMAP_PT_POOL_NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     if next >= PHYSMAP_PT_POOL_PAGES {
         return 0;
     }
     // SAFETY: each pool entry is exclusively assigned via the atomic
     // counter, so no two callers ever see the same `next`.
-    let page_va = unsafe {
-        (&PHYSMAP_PT_POOL.pages[next] as *const _) as u64
-    };
+    let page_va = unsafe { (&PHYSMAP_PT_POOL.pages[next] as *const _) as u64 };
     // Convert kernel-virtual to physical: the kernel image is mapped
     // both at its physical load address (low identity-map) and at
     // KERNEL_VIRT_BASE in the higher half. The linker places statics
@@ -343,16 +338,10 @@ pub fn init(boot_info: &BootInfo) {
             } else {
                 let new_pd = alloc_pt_page_from_pool();
                 if new_pd == 0 {
-                    crate::serial_verbose_println!(
-                        "[physmap] PT pool exhausted at GiB {}",
-                        pdpt_i
-                    );
+                    crate::serial_verbose_println!("[physmap] PT pool exhausted at GiB {}", pdpt_i);
                     return;
                 }
-                core::ptr::write_volatile(
-                    pdpt.add(pdpt_i),
-                    new_pd | PAGE_PRESENT | PAGE_WRITABLE,
-                );
+                core::ptr::write_volatile(pdpt.add(pdpt_i), new_pd | PAGE_PRESENT | PAGE_WRITABLE);
                 new_pd
             }
         };
@@ -365,11 +354,7 @@ pub fn init(boot_info: &BootInfo) {
         let entries_in_this_pd = huge_pages_left.min(512);
         for pd_i in 0..entries_in_this_pd {
             let phys_addr = pd_base_phys + (pd_i as u64) * HUGE_PAGE_SIZE;
-            let entry = phys_addr
-                | PAGE_PRESENT
-                | PAGE_WRITABLE
-                | PAGE_HUGE
-                | PAGE_GLOBAL;
+            let entry = phys_addr | PAGE_PRESENT | PAGE_WRITABLE | PAGE_HUGE | PAGE_GLOBAL;
             unsafe {
                 core::ptr::write_volatile(pd.add(pd_i), entry);
             }

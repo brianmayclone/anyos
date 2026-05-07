@@ -66,12 +66,12 @@ pub fn sys_screen_size(buf_ptr: u64) -> u32 {
 
 /// sys_set_resolution - Change display resolution via GPU driver.
 ///
-/// IMPORTANT: set_mode() allocates new framebuffer pages via alloc_contiguous()
-/// and zeroes them using identity-mapped access (fb_phys as *mut u8). During a
-/// syscall, the CPU uses the user process's CR3 which only identity-maps 64 MiB
-/// (PD[0..31]). If the physical allocator returns pages above 64 MiB, the zero
-/// write would page-fault. We switch to the kernel CR3 (128 MiB identity-mapped)
-/// for the duration of set_mode() to prevent this.
+/// IMPORTANT: set_mode() allocates low-identity framebuffer pages via
+/// alloc_contiguous() and zeroes them using identity-mapped access
+/// (fb_phys as *mut u8). During a syscall, the CPU uses the user process's CR3,
+/// which only identity-maps the first 64 MiB (PD[0..31]). We switch to the
+/// kernel CR3 for the duration of set_mode() so legacy GPU code uses the
+/// kernel's identity window consistently.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_set_resolution(width: u32, height: u32) -> u32 {
     if width == 0 || height == 0 || width > 4096 || height > 4096 {

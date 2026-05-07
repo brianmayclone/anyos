@@ -456,8 +456,8 @@ pub struct VirtioGpu {
     // Pre-allocated cursor backing store (64x64x4 = 16 KiB = 4 pages).
     // Allocated during init (under kernel CR3 with full identity mapping).
     // CRITICAL: user CR3 only identity-maps 64 MiB (PD[0..31]).
-    // Runtime alloc_contiguous() may return frames above 64 MiB → page fault
-    // when the kernel writes to them during a syscall under user CR3.
+    // Runtime low-memory allocation can fail after boot if the identity window
+    // is exhausted, so keep this permanent buffer here.
     cursor_buf_phys: u64,
 
     // Supported display modes (native first, then filtered COMMON_MODES)
@@ -779,12 +779,7 @@ impl VirtioGpu {
     /// the existing callers (cursor buffer, 3D context buffer, etc.)
     /// that already had a contiguous allocation. New scatter-gather
     /// callers should use [`cmd_attach_backing_pages`] directly.
-    fn cmd_attach_backing(
-        &mut self,
-        resource_id: u32,
-        pages_phys: u64,
-        num_pages: usize,
-    ) -> bool {
+    fn cmd_attach_backing(&mut self, resource_id: u32, pages_phys: u64, num_pages: usize) -> bool {
         let pages: alloc::vec::Vec<u64> = (0..num_pages as u64)
             .map(|i| pages_phys + i * 4096)
             .collect();
@@ -1696,12 +1691,7 @@ impl GpuDriver for VirtioGpu {
         self.next_resource_id += 1;
 
         let mut ok = true;
-        if !self.cmd_resource_create_2d(
-            res_id,
-            VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
-            width,
-            height,
-        ) {
+        if !self.cmd_resource_create_2d(res_id, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, width, height) {
             crate::serial_verbose_println!("  VirtIO GPU: RESOURCE_CREATE_2D failed");
             ok = false;
         }
@@ -2678,9 +2668,8 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     crate::serial_verbose_println!("  VirtIO GPU: device ready (DRIVER_OK)");
 
     // Pre-allocate cursor backing store (64x64x4 = 16 KiB = 4 pages).
-    // MUST be allocated here during boot (kernel CR3 active, full 128 MiB identity map).
-    // Runtime allocation during syscalls may land above 64 MiB — user CR3 only
-    // identity-maps PD[0..31] (64 MiB), so writing to higher frames page-faults.
+    // MUST be allocated here during boot. Runtime low-memory allocation can
+    // fail after the identity window has been consumed by DMA/permanent buffers.
     let cursor_buf_phys = match physical::alloc_contiguous(4) {
         Some(p) => {
             unsafe {
@@ -2843,12 +2832,9 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     );
 
     // Activate any additional advertised scanouts at their EDID-preferred
-    // mode while we're still on the kernel CR3 (which has the full 128 MiB
-    // identity map). Doing this lazily later from a SYS_DISPLAY_MAP_FB
-    // syscall would run under user CR3 — that only identity-maps 64 MiB,
-    // so allocating multi-MiB framebuffer pages and zeroing them faults
-    // when alloc_contiguous returns physmem above 64 MiB. (Same constraint
-    // as the cursor_buf_phys allocation comment higher up.)
+    // mode while low identity memory is still plentiful. Doing this lazily
+    // later from SYS_DISPLAY_MAP_FB can fail once permanent DMA buffers have
+    // consumed the low window. Same constraint as cursor_buf_phys above.
     if gpu.num_scanouts_advertised > 1 {
         for output_id in 1..gpu.num_scanouts_advertised {
             // Pick preferred mode: from cached GET_DISPLAY_INFO if set,

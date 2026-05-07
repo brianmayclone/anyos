@@ -99,7 +99,7 @@ pub fn create(size: usize, owner_tid: u32) -> Option<u32> {
 
     let mut frames = Vec::new();
     for _ in 0..pages {
-        match physical::alloc_frame() {
+        match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
             Some(frame) => frames.push(frame),
             None => {
                 for f in &frames {

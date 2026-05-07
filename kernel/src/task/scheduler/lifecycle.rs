@@ -12,6 +12,19 @@ use crate::task::context::CpuContext;
 use crate::task::thread::ThreadState;
 use core::sync::atomic::Ordering;
 
+#[inline]
+fn safe_cpu_id(cpu_id: usize) -> usize {
+    if cpu_id < super::MAX_CPUS {
+        cpu_id
+    } else {
+        crate::serial_verbose_println!(
+            "  WARN: scheduler lifecycle saw invalid CPU{}; using CPU0 recovery path",
+            cpu_id
+        );
+        0
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
 #[inline(never)]
 fn try_exit_diag_putc(c: u8) {
@@ -45,6 +58,7 @@ fn prepare_idle_recovery_context<F>(
 where
     F: FnMut(&mut super::Scheduler),
 {
+    let cpu_id = safe_cpu_id(cpu_id);
     let mut idle_stack_top: u64 = 0;
     let mut idle_ctx: Option<*const CpuContext> = None;
 
@@ -52,26 +66,25 @@ where
         if let Some(ref mut sched) = *guard {
             update_sched(sched);
 
+            let idx = sched.ensure_idle_thread(cpu_id);
             let idle_tid = sched.idle_tid[cpu_id];
-            if let Some(idx) = sched.find_idx(idle_tid) {
-                let kstack_top = sched.threads[idx].kernel_stack_top();
-                let kstack_bottom = sched.threads[idx].kernel_stack_bottom();
-                crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
-                idle_stack_top = kstack_top;
-                sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
-                sched.per_cpu[cpu_id].current_idx = Some(idx);
-                sched.threads[idx].state = ThreadState::Running;
-                PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
-                PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
-                PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
-                PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
-                PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
-                PER_CPU_FPU_PTR[cpu_id].store(
-                    sched.threads[idx].fpu_state.data.as_ptr() as u64,
-                    Ordering::Relaxed,
-                );
-                idle_ctx = Some(&sched.threads[idx].context as *const CpuContext);
-            }
+            let kstack_top = sched.threads[idx].kernel_stack_top();
+            let kstack_bottom = sched.threads[idx].kernel_stack_bottom();
+            crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
+            idle_stack_top = kstack_top;
+            sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
+            sched.per_cpu[cpu_id].current_idx = Some(idx);
+            sched.threads[idx].state = ThreadState::Running;
+            PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
+            PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
+            PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
+            PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
+            PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
+            PER_CPU_FPU_PTR[cpu_id].store(
+                sched.threads[idx].fpu_state.data.as_ptr() as u64,
+                Ordering::Relaxed,
+            );
+            idle_ctx = Some(&sched.threads[idx].context as *const CpuContext);
         }
     } else {
         let idle_st = PER_CPU_IDLE_STACK_TOP[cpu_id].load(Ordering::Relaxed);
@@ -89,6 +102,7 @@ fn enter_idle_recovery(
     idle_stack_top: u64,
     idle_ctx: Option<*const CpuContext>,
 ) -> ! {
+    let cpu_id = safe_cpu_id(cpu_id);
     try_exit_diag_mark(b'S');
     if idle_ctx.is_none() {
         PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
@@ -255,7 +269,7 @@ fn defer_fault_pd_destroy(pd: PhysAddr, tid: u32) {
 /// Also terminates all child threads (cascade kill) and frees the page directory
 /// once no live threads remain in the address space.
 pub fn exit_current(code: u32) {
-    let my_cpu = get_cpu_id();
+    let my_cpu = safe_cpu_id(get_cpu_id());
     let mut tid = 0u32;
     let mut pd_to_destroy: Option<PhysAddr> = None;
     let mut killed_children: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
@@ -263,7 +277,7 @@ pub fn exit_current(code: u32) {
 
     {
         let mut guard = SCHEDULER.lock();
-        let cpu_id = get_cpu_id();
+        let cpu_id = safe_cpu_id(get_cpu_id());
         let sched = match guard.as_mut() {
             Some(s) => s,
             None => return,
@@ -355,7 +369,7 @@ pub fn exit_current(code: u32) {
 /// This path is used by fault handlers. On success it does NOT re-enter the
 /// generic scheduler; instead it switches directly to the per-CPU idle thread.
 pub fn try_exit_current(code: u32) -> bool {
-    let my_cpu = get_cpu_id();
+    let my_cpu = safe_cpu_id(get_cpu_id());
     let mut tid = 0u32;
     let mut idle_stack_top: u64 = 0;
     let mut idle_ctx: Option<*const CpuContext> = None;
@@ -369,7 +383,7 @@ pub fn try_exit_current(code: u32) -> bool {
             None => return false,
         };
         try_exit_diag_mark(b'C');
-        let cpu_id = get_cpu_id();
+        let cpu_id = safe_cpu_id(get_cpu_id());
         try_exit_diag_mark(b'D');
         let sched = match guard.as_mut() {
             Some(s) => s,
@@ -409,39 +423,29 @@ pub fn try_exit_current(code: u32) -> bool {
         sched.threads[idx].retain_exit_status = true;
         try_exit_diag_mark(b'J');
 
-        let idle_tid = sched.idle_tid[cpu_id];
         try_exit_diag_mark(b'K');
-        if let Some(idle_idx) = sched.find_idx(idle_tid) {
-            try_exit_diag_mark(b'L');
-            let kstack_top = sched.threads[idle_idx].kernel_stack_top();
-            let kstack_bottom = sched.threads[idle_idx].kernel_stack_bottom();
-            crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
-            idle_stack_top = kstack_top;
-            sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
-            sched.per_cpu[cpu_id].current_idx = Some(idle_idx);
-            sched.threads[idle_idx].state = ThreadState::Running;
-            PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
-            PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
-            PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
-            PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
-            PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
-            PER_CPU_FPU_PTR[cpu_id].store(
-                sched.threads[idle_idx].fpu_state.data.as_ptr() as u64,
-                Ordering::Relaxed,
-            );
-            update_per_cpu_name(cpu_id, &sched.threads[idle_idx].name);
-            idle_ctx = Some(&sched.threads[idle_idx].context as *const CpuContext);
-            try_exit_diag_mark(b'M');
-        } else {
-            try_exit_diag_mark(b'N');
-            sched.per_cpu[cpu_id].current_tid = None;
-            sched.per_cpu[cpu_id].current_idx = None;
-            PER_CPU_CURRENT_TID[cpu_id].store(0, Ordering::Relaxed);
-            PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
-            PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
-            clear_per_cpu_name(cpu_id);
-            try_exit_diag_mark(b'O');
-        }
+        let idle_idx = sched.ensure_idle_thread(cpu_id);
+        let idle_tid = sched.idle_tid[cpu_id];
+        try_exit_diag_mark(b'L');
+        let kstack_top = sched.threads[idle_idx].kernel_stack_top();
+        let kstack_bottom = sched.threads[idle_idx].kernel_stack_bottom();
+        crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
+        idle_stack_top = kstack_top;
+        sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
+        sched.per_cpu[cpu_id].current_idx = Some(idle_idx);
+        sched.threads[idle_idx].state = ThreadState::Running;
+        PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
+        PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
+        PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
+        PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
+        PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
+        PER_CPU_FPU_PTR[cpu_id].store(
+            sched.threads[idle_idx].fpu_state.data.as_ptr() as u64,
+            Ordering::Relaxed,
+        );
+        update_per_cpu_name(cpu_id, &sched.threads[idle_idx].name);
+        idle_ctx = Some(&sched.threads[idle_idx].context as *const CpuContext);
+        try_exit_diag_mark(b'M');
     } // Lock released
     try_exit_diag_mark(b'P');
 
@@ -463,7 +467,7 @@ pub static mut BAD_RSP_SAVED: u64 = 0;
 /// This function never returns.
 #[no_mangle]
 pub extern "C" fn bad_rsp_recovery() -> ! {
-    let cpu_id = crate::arch::hal::cpu_id();
+    let cpu_id = safe_cpu_id(crate::arch::hal::cpu_id());
     let tid = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed);
     crate::serial_verbose_println!(
         "!RSP RECOVERY on CPU {} — killing TID={}, entering idle",
@@ -512,7 +516,7 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
 
 /// Fallback recovery when try_exit_current fails. Kills thread and enters idle.
 pub fn fault_kill_and_idle(signal: u32) -> ! {
-    let cpu_id = crate::arch::hal::cpu_id();
+    let cpu_id = safe_cpu_id(crate::arch::hal::cpu_id());
     let tid = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed);
     fault_kill_tid_and_idle(tid, signal)
 }
@@ -520,7 +524,7 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
 /// Fallback recovery for a known faulting thread. Kills `tid` and parks this CPU
 /// on its idle stack, even if per-CPU current TID metadata has already drifted.
 pub fn fault_kill_tid_and_idle(tid: u32, signal: u32) -> ! {
-    let cpu_id = crate::arch::hal::cpu_id();
+    let cpu_id = safe_cpu_id(crate::arch::hal::cpu_id());
     crate::serial_verbose_println!(
         "  FALLBACK: manual kill TID={} signal={} on CPU {}",
         tid,
@@ -582,10 +586,13 @@ pub fn kill_thread(tid: u32) -> u32 {
     let running_on_other_cpu;
     let mut killed_children: alloc::vec::Vec<u32>;
 
-    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_KILL_THREAD);
+    crate::sched_diag::set(
+        safe_cpu_id(get_cpu_id()),
+        crate::sched_diag::PHASE_KILL_THREAD,
+    );
     let mut guard = SCHEDULER.lock();
     {
-        let cpu_id = get_cpu_id();
+        let cpu_id = safe_cpu_id(get_cpu_id());
         let sched = match guard.as_mut() {
             Some(s) => s,
             None => return u32::MAX,

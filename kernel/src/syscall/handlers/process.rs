@@ -267,7 +267,7 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
             // Skip pages already mapped (another thread sharing this PD
             // may have mapped them).
             if !virtual_mem::is_page_mapped(VirtAddr::new(addr)) {
-                if let Some(phys) = physical::alloc_frame() {
+                if let Some(phys) = physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
                     if !virtual_mem::zero_frame(phys) {
                         physical::free_frame(phys);
                         return u64::MAX;
@@ -439,7 +439,7 @@ fn sys_mmap_impl(size: u64, high: bool) -> u64 {
     // Allocate and map physical pages.
     let mut addr = base;
     for _ in 0..num_pages {
-        if let Some(phys) = physical::alloc_frame() {
+        if let Some(phys) = physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
             if !virtual_mem::zero_frame(phys) {
                 physical::free_frame(phys);
                 let mut cleanup = base;

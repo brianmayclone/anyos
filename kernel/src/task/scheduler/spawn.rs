@@ -1,17 +1,19 @@
 //! Thread creation: spawn, spawn_blocked, create_thread_in_current_process.
 
-use super::{clamp_priority, get_cpu_id, SCHEDULER};
+use super::{alloc_thread_box, clamp_priority, get_cpu_id, SCHEDULER};
 use crate::task::thread::Thread;
-use alloc::boxed::Box;
 
 /// Create a new kernel thread and add it to the ready queue.
 pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
     let priority = clamp_priority(priority, name);
     let tid = {
-        // Box the thread BEFORE acquiring SCHEDULER — prevents ALLOCATOR
-        // contention (from concurrent clone_pd) from holding SCHEDULER for
-        // 100-400 ms and causing SPIN TIMEOUT on other CPUs.
-        let thread = Box::new(Thread::new(entry, priority, name));
+        // Allocate the Thread object BEFORE acquiring SCHEDULER. The object
+        // comes from the task::Thread slab cache, keeping scheduler metadata
+        // isolated from the general heap.
+        let thread = match alloc_thread_box(Thread::new(entry, priority, name)) {
+            Some(thread) => thread,
+            None => return 0,
+        };
         crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SPAWN);
         let mut sched = SCHEDULER.lock();
         let sched = match sched.as_mut() {
@@ -33,8 +35,12 @@ pub fn spawn(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
 pub fn spawn_blocked(entry: extern "C" fn(), priority: u8, name: &str) -> u32 {
     let priority = clamp_priority(priority, name);
     let tid = {
-        // Box the thread BEFORE acquiring SCHEDULER — same reasoning as spawn().
-        let thread = Box::new(Thread::new(entry, priority, name));
+        // Allocate the Thread object BEFORE acquiring SCHEDULER — same
+        // reasoning as spawn().
+        let thread = match alloc_thread_box(Thread::new(entry, priority, name)) {
+            Some(thread) => thread,
+            None => return 0,
+        };
         crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SPAWN_BLOCKED);
         let mut sched = SCHEDULER.lock();
         let sched = match sched.as_mut() {

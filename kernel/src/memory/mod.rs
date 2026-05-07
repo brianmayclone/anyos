@@ -8,6 +8,7 @@ pub mod buddy;
 pub mod heap;
 pub mod physical;
 pub mod physmap;
+pub mod slab;
 #[cfg(target_arch = "x86_64")]
 pub mod virtual_mem;
 #[cfg(target_arch = "aarch64")]

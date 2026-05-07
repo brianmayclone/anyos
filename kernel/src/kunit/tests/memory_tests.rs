@@ -10,6 +10,8 @@
 use crate::kunit::{TestCase, TestContext, TestSuite};
 use crate::memory::heap::{heap_stats, validate_heap, HEAP_COMMITTED};
 use crate::memory::physical::{alloc_frame, free_frame, free_frame_count};
+use crate::memory::slab::{KBox, KmemCache};
+use crate::sync::spinlock::Spinlock;
 use core::sync::atomic::Ordering;
 
 pub static SUITE: TestSuite = TestSuite {
@@ -50,6 +52,10 @@ pub static SUITE: TestSuite = TestSuite {
         TestCase {
             name: "physical_multiple_frames",
             run: test_physical_multiple_frames,
+        },
+        TestCase {
+            name: "slab_cache_reuses_object_slot",
+            run: test_slab_cache_reuses_object_slot,
         },
     ],
 };
@@ -206,4 +212,42 @@ fn test_physical_multiple_frames(ctx: &mut TestContext) {
 
         ctx.expect_true(true, "all 8 frames freed successfully");
     }
+}
+
+// ── Slab / object cache ──────────────────────────────────────────────────────
+
+#[repr(C, align(64))]
+struct SlabTestObj {
+    bytes: [u8; 96],
+}
+
+static SLAB_TEST_CACHE: Spinlock<KmemCache> = Spinlock::new(KmemCache::new(
+    "kunit::SlabTestObj",
+    core::mem::size_of::<SlabTestObj>(),
+    core::mem::align_of::<SlabTestObj>(),
+));
+
+fn test_slab_cache_reuses_object_slot(ctx: &mut TestContext) {
+    let first_addr = {
+        let obj = match KBox::new_in(SlabTestObj { bytes: [0xAB; 96] }, &SLAB_TEST_CACHE) {
+            Some(obj) => obj,
+            None => {
+                ctx.expect_true(false, "slab object allocation failed");
+                return;
+            }
+        };
+        let addr = (&*obj as *const SlabTestObj) as usize;
+        ctx.expect_eq(addr % 64, 0usize, "slab object alignment");
+        addr
+    };
+
+    let second = match KBox::new_in(SlabTestObj { bytes: [0xCD; 96] }, &SLAB_TEST_CACHE) {
+        Some(obj) => obj,
+        None => {
+            ctx.expect_true(false, "second slab object allocation failed");
+            return;
+        }
+    };
+    let second_addr = (&*second as *const SlabTestObj) as usize;
+    ctx.expect_eq(second_addr, first_addr, "slab reused freed object slot");
 }

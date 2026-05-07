@@ -19,9 +19,8 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u64) {
         #[cfg(target_arch = "x86_64")]
         {
             thread.pcid = crate::memory::virtual_mem::allocate_pcid();
-            thread
-                .context
-                .set_page_table(pd.as_u64() | thread.pcid as u64);
+            let pcid = thread.pcid as u64;
+            thread.context.set_page_table(pd.as_u64() | pcid);
         }
         #[cfg(target_arch = "aarch64")]
         thread.context.set_page_table(pd.as_u64());

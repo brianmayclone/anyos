@@ -34,10 +34,13 @@ impl RunQueue {
     }
 
     /// Enqueue a TID at the given priority level (back of FIFO).
-    /// Caller must ensure no duplicates (the scheduler guarantees this via
-    /// state transitions: only Ready threads are enqueued, and they transition
-    /// to Running immediately on pick).
+    /// Defensive against duplicate wakeups: if the TID is already queued, move
+    /// it to the new priority instead of inserting a second copy.
     pub(super) fn enqueue(&mut self, tid: u32, priority: u8) {
+        if tid == 0 {
+            return;
+        }
+        self.remove(tid);
         let p = (priority as usize).min(NUM_PRIORITIES - 1);
         self.levels[p].push_back(tid);
         self.bits[p / 64] |= 1u64 << (p % 64);
@@ -66,9 +69,12 @@ impl RunQueue {
         Some(tid)
     }
 
-    /// Remove a specific TID from the run queue.
+    /// Remove all copies of a specific TID from the run queue.
     /// Uses the bitmap to skip empty priority levels — O(popcount) instead of O(128).
     pub(super) fn remove(&mut self, tid: u32) {
+        if tid == 0 {
+            return;
+        }
         // Only scan non-empty levels (bitmap-guided)
         let mut remaining = self.bits;
         for word_idx in 0..2 {
@@ -77,13 +83,12 @@ impl RunQueue {
                 let bit = word.trailing_zeros() as usize;
                 let p = word_idx * 64 + bit;
                 word &= word - 1; // clear lowest set bit
-                if let Some(pos) = self.levels[p].iter().position(|&t| t == tid) {
+                while let Some(pos) = self.levels[p].iter().position(|&t| t == tid) {
                     self.levels[p].remove(pos);
-                    if self.levels[p].is_empty() {
-                        self.bits[p / 64] &= !(1u64 << (p % 64));
-                    }
-                    self.count -= 1;
-                    return;
+                    self.count = self.count.saturating_sub(1);
+                }
+                if self.levels[p].is_empty() {
+                    self.bits[p / 64] &= !(1u64 << (p % 64));
                 }
             }
         }

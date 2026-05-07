@@ -72,8 +72,9 @@ use crate::memory::FRAME_SIZE;
 /// Maximum supported physical memory. Two BuddyZone instances live
 /// in `static` storage (ZONE_DMA + ZONE_NORMAL in physical.rs);
 /// each carries a `[u8; MAX_FRAMES]` order map (16 MiB at the
-/// 16 GiB cap) and a `[u8; MAX_FRAMES/8]` used bitmap (2 MiB).
-/// Two zones total ~36 MiB of `.data`, accommodated by the 64 MiB
+/// 16 GiB cap), a `[u8; MAX_FRAMES/8]` used bitmap (2 MiB), and a
+/// matching managed-frame bitmap (2 MiB).
+/// Two zones total ~40 MiB of `.data`, accommodated by the 64 MiB
 /// higher-half kernel mapping in `virtual_mem::init`.
 ///
 /// Lifting this further (to 64 GiB or unbounded) requires moving
@@ -137,6 +138,11 @@ pub struct BuddyZone {
     /// 1 bit per frame: `1` = currently allocated/reserved, `0` =
     /// free or never registered.
     used_bitmap: [u8; BITMAP_BYTES],
+    /// 1 bit per frame: `1` = this zone owns/manages the frame.
+    /// Needed because a zone may start at an arbitrary physical frame;
+    /// unregistered gaps must not be treated as free RAM by audit or
+    /// defensive free paths.
+    managed_bitmap: [u8; BITMAP_BYTES],
     /// `order_of_alloc[frame]` is the order at which `frame` was
     /// last returned from `alloc_pages` — only valid for the head
     /// frame of a current allocation, garbage otherwise.
@@ -168,6 +174,7 @@ impl BuddyZone {
             free_frames: 0,
             total_frames: 0,
             used_bitmap: [0u8; BITMAP_BYTES],
+            managed_bitmap: [0u8; BITMAP_BYTES],
             order_of_alloc: [0u8; MAX_FRAMES],
             free_list_heads: [LINK_NIL; NUM_ORDERS],
             free_list_tails: [LINK_NIL; NUM_ORDERS],
@@ -202,6 +209,42 @@ impl BuddyZone {
             return true;
         }
         self.used_bitmap[frame >> 3] & (1u8 << (frame & 7)) != 0
+    }
+
+    #[inline]
+    fn mark_managed_one(&mut self, frame: usize) {
+        if frame >= MAX_FRAMES {
+            return;
+        }
+        self.managed_bitmap[frame >> 3] |= 1u8 << (frame & 7);
+    }
+
+    #[inline]
+    fn is_managed(&self, frame: usize) -> bool {
+        if frame >= MAX_FRAMES {
+            return false;
+        }
+        self.managed_bitmap[frame >> 3] & (1u8 << (frame & 7)) != 0
+    }
+
+    fn mark_range_managed(&mut self, frame: usize, count: usize) {
+        let end = frame + count;
+        if end > MAX_FRAMES {
+            return;
+        }
+        let mut f = frame;
+        while f < end && (f & 7) != 0 {
+            self.mark_managed_one(f);
+            f += 1;
+        }
+        while f + 8 <= end {
+            self.managed_bitmap[f >> 3] = 0xFF;
+            f += 8;
+        }
+        while f < end {
+            self.mark_managed_one(f);
+            f += 1;
+        }
     }
 
     /// Bulk mark a range used. Whole-byte writes when possible — the
@@ -252,7 +295,7 @@ impl BuddyZone {
     // Free blocks are not heap allocations — they're physical pages
     // we're keeping track of. Their first 4 bytes hold a u32 link
     // word. Reading and writing it goes through physmap so we work
-    // for every RAM page, not just the lower 128 MiB identity map.
+    // for every RAM page, not just the low identity-map window.
     //
     // SAFETY notes for callers:
     //   - frame must be currently free (sole owner of the page).
@@ -304,9 +347,9 @@ impl BuddyZone {
     /// `add_free_region` so that consecutive low→high inserts produce
     /// an ascending-by-address free list — the head is the lowest
     /// block, so subsequent allocations consistently return low
-    /// memory until the list drains. Critical for backward
-    /// compatibility with phys-as-virt callers that rely on the
-    /// boot identity map (lower 128 MiB on x86_64).
+    /// memory until the list drains. Low-identity callers are handled at the
+    /// physical allocator's zone-policy layer; keeping each zone internally
+    /// address-ordered makes that behaviour deterministic.
     fn push_free_to_tail(&mut self, frame: usize, order: usize) {
         debug_assert!(order < NUM_ORDERS);
         let count = 1usize << order;
@@ -454,6 +497,7 @@ impl BuddyZone {
             self.address_frames = end_frame;
         }
         self.total_frames += end_frame - start_frame;
+        self.mark_range_managed(start_frame, end_frame - start_frame);
         // Walk the region low→high and append each natural
         // power-of-two block to the TAIL of its order's free list.
         // Tail-append preserves ascending-address order, so the
@@ -461,13 +505,10 @@ impl BuddyZone {
         // order — and `pop_free` (which always pops the head) hands
         // out low addresses until the list drains.
         //
-        // Critical for backward compatibility: anyOS's legacy
-        // callers (AHCI, AC97, virtio rings, page tables, heap
-        // pages, hardware-virt structures) dereference the
-        // returned phys address through the boot identity map,
-        // which only covers the lower 128 MiB on x86_64. Without
-        // ascending-order free lists those callers would get
-        // multi-GiB addresses and page-fault on first touch.
+        // Keep allocation order deterministic inside each zone. The physical
+        // allocator decides whether a caller needs low identity memory or may
+        // use any RAM frame; the buddy should then hand out the lowest suitable
+        // block in that zone.
         let mut f = start_frame;
         while f < end_frame {
             let mut order = MAX_ORDER;
@@ -500,7 +541,7 @@ impl BuddyZone {
 
     /// Reserve a single frame.
     pub fn reserve_frame(&mut self, frame: usize) {
-        if frame >= MAX_FRAMES || self.is_used(frame) {
+        if frame >= MAX_FRAMES || !self.is_managed(frame) || self.is_used(frame) {
             return;
         }
         for o in 0..NUM_ORDERS {
@@ -548,7 +589,7 @@ impl BuddyZone {
         if o >= NUM_ORDERS {
             return None;
         }
-        let mut frame = self.pop_free(o)?;
+        let frame = self.pop_free(o)?;
         while o > want_order {
             o -= 1;
             let half = 1usize << o;
@@ -565,16 +606,32 @@ impl BuddyZone {
         self.alloc_pages(0)
     }
 
-    /// Allocate `count` physically-contiguous frames at the smallest
-    /// order whose block fits `count`. Up to nearly half the block
-    /// is wasted as internal fragmentation but stays inside the
-    /// allocation and is recovered on free.
-    #[inline]
+    /// Allocate exactly `count` physically-contiguous frames.
+    ///
+    /// Internally the buddy must grab a power-of-two block, but the public
+    /// physical allocator has historically allowed callers to release a
+    /// contiguous allocation one frame at a time via `free_frame()`. Preserve
+    /// that contract by returning unused tail frames immediately and recording
+    /// each returned frame as an order-0 allocation.
     pub fn alloc_contiguous(&mut self, count: usize) -> Option<usize> {
         if count == 0 {
             return None;
         }
-        self.alloc_pages(order_for(count))
+        if count > (1usize << MAX_ORDER) {
+            return None;
+        }
+        let order = order_for(count);
+        let block_count = 1usize << order;
+        let frame = self.alloc_pages(order)?;
+
+        for i in 0..count {
+            self.order_of_alloc[frame + i] = 0;
+        }
+        for i in count..block_count {
+            self.free_pages(frame + i, 0);
+        }
+
+        Some(frame)
     }
 
     // ── Free ────────────────────────────────────────────────────────
@@ -585,6 +642,15 @@ impl BuddyZone {
     pub fn free_pages(&mut self, frame: usize, order: usize) {
         if order >= NUM_ORDERS || frame >= MAX_FRAMES {
             return;
+        }
+        let count = 1usize << order;
+        if frame + count > MAX_FRAMES {
+            return;
+        }
+        for f in frame..(frame + count) {
+            if !self.is_managed(f) {
+                return;
+            }
         }
         if !self.is_used(frame) {
             // Defensive: double-free or never-allocated frame.
@@ -620,7 +686,7 @@ impl BuddyZone {
     /// Wraps `free_pages`. Drops silently for double-free or
     /// out-of-range — same as the legacy bitmap allocator.
     pub fn free_frame(&mut self, frame: usize) {
-        if frame >= MAX_FRAMES || !self.is_used(frame) {
+        if frame >= MAX_FRAMES || !self.is_managed(frame) || !self.is_used(frame) {
             return;
         }
         let order = self.order_of_alloc[frame] as usize;
@@ -676,6 +742,15 @@ impl BuddyZone {
         }
         if total_free_frames != self.free_frames {
             return Err("sum of free-list block sizes != free_frames");
+        }
+        let mut bitmap_free_frames = 0usize;
+        for frame in 0..self.address_frames {
+            if self.is_managed(frame) && !self.is_used(frame) {
+                bitmap_free_frames += 1;
+            }
+        }
+        if bitmap_free_frames != self.free_frames {
+            return Err("bitmap free count != free_frames");
         }
         Ok(())
     }

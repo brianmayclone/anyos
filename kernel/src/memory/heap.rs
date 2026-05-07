@@ -714,7 +714,7 @@ unsafe fn grow_heap_exact(growth: usize) -> bool {
             let va = (base + offset) as u64;
             let page_va = crate::memory::address::VirtAddr::new(va & !0xFFF);
             if !virtual_mem::is_page_mapped(page_va) {
-                let frame = match physical::alloc_frame() {
+                let frame = match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
                     Some(f) => f,
                     None => return false,
                 };
@@ -968,7 +968,8 @@ pub fn init() {
         let mapped_pages = HEAP_INITIAL_MAPPED / FRAME_SIZE;
         for i in 0..mapped_pages {
             let virt = VirtAddr::new(HEAP_START + (i * FRAME_SIZE) as u64);
-            let phys = physical::alloc_frame().expect("Failed to allocate heap frame");
+            let phys = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)
+                .expect("Failed to allocate heap frame");
             virtual_mem::map_page(virt, phys, 0x03); // Present + Writable
         }
     }

@@ -103,9 +103,8 @@ pub fn exec_update_thread(tid: u32, new_pd: PhysAddr, brk: u64, user_pages: u32)
         #[cfg(target_arch = "x86_64")]
         {
             thread.pcid = crate::memory::virtual_mem::allocate_pcid();
-            thread
-                .context
-                .set_page_table(new_pd.as_u64() | thread.pcid as u64);
+            let pcid = thread.pcid as u64;
+            thread.context.set_page_table(new_pd.as_u64() | pcid);
         }
         #[cfg(target_arch = "aarch64")]
         thread.context.set_page_table(new_pd.as_u64());

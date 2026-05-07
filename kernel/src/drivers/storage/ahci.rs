@@ -1086,7 +1086,7 @@ pub fn init_and_register(pci: &PciDevice) {
         // Stop port before configuring
         stop_port(mmio_base, active_port);
 
-        // ── Allocate DMA structures (identity-mapped, phys < 128 MiB) ──
+        // ── Allocate DMA structures (identity-mapped, phys < 64 MiB) ──
 
         // Command List: 1 KiB (1 frame)
         let clb_phys = match physical::alloc_frame() {

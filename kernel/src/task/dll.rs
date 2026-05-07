@@ -289,7 +289,8 @@ fn alloc_and_copy_pages(
 ) -> Result<Vec<PhysAddr>, &'static str> {
     let mut pages = Vec::with_capacity(count);
     for i in 0..count {
-        let frame = physical::alloc_frame().ok_or("Out of memory allocating DLIB frame")?;
+        let frame = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)
+            .ok_or("Out of memory allocating DLIB frame")?;
         let offset = file_offset + i * PAGE_SIZE as usize;
         with_frame_mut(frame, temp_virt, |dest| unsafe {
             core::ptr::copy_nonoverlapping(data.as_ptr().add(offset), dest, PAGE_SIZE as usize);
@@ -758,7 +759,8 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     let mut ro_pages = Vec::with_capacity(ro_page_count as usize);
 
     for i in 0..ro_page_count as usize {
-        let frame = physical::alloc_frame().expect("OOM in .so RO page");
+        let frame = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)
+            .expect("OOM in .so RO page");
         let file_off = ro_offset as usize + i * PAGE_SIZE as usize;
         let byte_offset = i * PAGE_SIZE as usize;
         let copy_len = if byte_offset >= ro_filesz as usize {
@@ -780,7 +782,8 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     let mut data_template_pages = Vec::with_capacity(data_page_count as usize);
 
     for i in 0..data_page_count as usize {
-        let frame = physical::alloc_frame().expect("OOM in .so data template page");
+        let frame = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)
+            .expect("OOM in .so data template page");
         let file_off = rw_offset as usize + i * PAGE_SIZE as usize;
         let copy_len = core::cmp::min(
             PAGE_SIZE as usize,
@@ -998,7 +1001,8 @@ pub fn map_all_dlls_into(pd_phys: PhysAddr) {
         let writable_base = plan.base_vaddr + (plan.ro_pages.len() as u64) * PAGE_SIZE;
 
         for (i, &template_phys) in plan.data_template_pages.iter().enumerate() {
-            let new_frame = physical::alloc_frame().expect("OOM mapping DLL .data page");
+            let new_frame = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)
+                .expect("OOM mapping DLL .data page");
             with_frame_read(template_phys, src, |src_ptr| {
                 with_frame_mut(new_frame, dst, |dst_ptr| unsafe {
                     core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, PAGE_SIZE as usize);
@@ -1019,7 +1023,8 @@ pub fn map_all_dlls_into(pd_phys: PhysAddr) {
 
         let bss_base = writable_base + (plan.data_template_pages.len() as u64) * PAGE_SIZE;
         for i in 0..plan.bss_page_count as usize {
-            let new_frame = physical::alloc_frame().expect("OOM mapping DLL .bss page");
+            let new_frame = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)
+                .expect("OOM mapping DLL .bss page");
             with_frame_mut(new_frame, dst, |ptr| unsafe {
                 core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
             });
@@ -1073,7 +1078,8 @@ pub fn handle_dll_demand_page(vaddr: u64) -> bool {
                 // Per-process .data page — copy from template
                 let template_idx = page_idx - ro_count;
                 let template_phys = dll.data_template_pages[template_idx];
-                let new_frame = physical::alloc_frame().expect("OOM in DLIB .data demand page");
+                let new_frame = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)
+                    .expect("OOM in DLIB .data demand page");
 
                 let src = VirtAddr::new(TEMP_COPY_SRC);
                 let dst = VirtAddr::new(TEMP_COPY_DST);
@@ -1090,7 +1096,8 @@ pub fn handle_dll_demand_page(vaddr: u64) -> bool {
                 );
             } else {
                 // Per-process .bss page — zero-fill
-                let new_frame = physical::alloc_frame().expect("OOM in DLIB .bss demand page");
+                let new_frame = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)
+                    .expect("OOM in DLIB .bss demand page");
 
                 let tmp = VirtAddr::new(TEMP_COPY_SRC);
                 with_frame_mut(new_frame, tmp, |ptr| unsafe {
@@ -1317,7 +1324,7 @@ pub fn ensure_dll_mapped_current(path: &str) -> Option<u64> {
             continue;
         }
 
-        let new_frame = physical::alloc_frame()?;
+        let new_frame = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)?;
         with_frame_read(template_phys, src, |src_ptr| {
             with_frame_mut(new_frame, dst, |dst_ptr| unsafe {
                 core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, PAGE_SIZE as usize);
@@ -1336,7 +1343,7 @@ pub fn ensure_dll_mapped_current(path: &str) -> Option<u64> {
             continue;
         }
 
-        let new_frame = physical::alloc_frame()?;
+        let new_frame = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)?;
         with_frame_mut(new_frame, dst, |ptr| unsafe {
             core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
         });

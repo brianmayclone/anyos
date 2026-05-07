@@ -103,7 +103,10 @@ fn test_round_trip_byte(ctx: &mut TestContext) {
         Some(v) => v,
         None => {
             free_frame(frame);
-            ctx.expect_true(false, "phys_to_virt for freshly-allocated frame returned None");
+            ctx.expect_true(
+                false,
+                "phys_to_virt for freshly-allocated frame returned None",
+            );
             return;
         }
     };
@@ -130,7 +133,10 @@ fn test_round_trip_word(ctx: &mut TestContext) {
         Some(v) => v as *mut u32,
         None => {
             free_frame(frame);
-            ctx.expect_true(false, "phys_to_virt for freshly-allocated frame returned None");
+            ctx.expect_true(
+                false,
+                "phys_to_virt for freshly-allocated frame returned None",
+            );
             return;
         }
     };

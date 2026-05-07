@@ -259,8 +259,9 @@ static mut PML4_PHYS: u64 = 0;
 pub fn init(boot_info: &BootInfo) {
     // Allocate new PML4
     let pml4_phys = physical::alloc_frame().expect("Failed to allocate PML4");
-    // We're running with the bootloader's page tables which identity-map low memory,
-    // so we can access physical addresses directly (they're < 16 MiB).
+    // We're running with the bootloader's page tables, so boot-time page-table
+    // frames must come from the low identity window while we touch them as raw
+    // physical pointers.
     let pml4 = pml4_phys.as_u64() as *mut u64;
 
     // Zero the PML4
@@ -492,7 +493,7 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
         // Ensure PDPT exists
         let pml4e = pml4_ptr.add(pml4i).read_volatile();
         if pml4e & PAGE_PRESENT == 0 {
-            let new_frame = match physical::alloc_frame() {
+            let new_frame = match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
                 Some(f) => f,
                 None => {
                     unlock_page_table_mutation(saved_flags);
@@ -514,7 +515,7 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
         let pdpt_ptr = recursive_pdpt_base(virt) as *mut u64;
         let pdpte = pdpt_ptr.add(pdpti).read_volatile();
         if pdpte & PAGE_PRESENT == 0 {
-            let new_frame = match physical::alloc_frame() {
+            let new_frame = match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
                 Some(f) => f,
                 None => {
                     unlock_page_table_mutation(saved_flags);
@@ -536,7 +537,7 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
         let pd_ptr = recursive_pd_base(virt) as *mut u64;
         let pde = pd_ptr.add(pdi).read_volatile();
         if pde & PAGE_PRESENT == 0 {
-            let new_frame = match physical::alloc_frame() {
+            let new_frame = match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
                 Some(f) => f,
                 None => {
                     unlock_page_table_mutation(saved_flags);
@@ -922,9 +923,9 @@ static CREATE_USER_PD_LOCK: core::sync::atomic::AtomicBool =
 /// PML4[510] is set to the NEW PML4's own address for recursive mapping.
 /// Returns the physical address of the new PML4.
 pub fn create_user_page_directory() -> Option<PhysAddr> {
-    let new_pml4_phys = physical::alloc_frame()?;
-    let new_pdpt_phys = physical::alloc_frame()?; // PDPT for PML4[0]
-    let new_pd_phys = physical::alloc_frame()?; // PD for PML4[0]→PDPT[0]
+    let new_pml4_phys = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)?;
+    let new_pdpt_phys = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)?; // PDPT for PML4[0]
+    let new_pd_phys = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)?; // PD for PML4[0]→PDPT[0]
 
     // Temp virtual addresses to write into the new page tables.
     // MUST be outside the heap range (HEAP_START + 512 MiB max) to avoid
@@ -1177,7 +1178,7 @@ pub fn clone_user_page_directory(parent_pd: PhysAddr) -> Option<PhysAddr> {
             );
         } else {
             // Allocate new frame for child
-            let child_phys = match physical::alloc_frame() {
+            let child_phys = match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
                 Some(f) => f,
                 None => {
                     // OOM — clean up child PD and release lock
@@ -1295,7 +1296,7 @@ pub fn map_pages_range_in_pd(
             let mut err = false;
             for j in i..chunk_end {
                 let virt = VirtAddr::new(start_virt.as_u64() + j * FRAME_SIZE as u64);
-                match physical::alloc_frame() {
+                match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
                     Some(phys) => {
                         if !map_page(virt, phys, flags) {
                             physical::free_frame(phys);
@@ -1553,7 +1554,7 @@ pub fn handle_heap_demand_page(vaddr: u64) -> bool {
     }
 
     // Allocate a physical frame
-    let phys = match physical::alloc_frame() {
+    let phys = match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
         Some(p) => p,
         None => {
             DEMAND_PAGE_LOCK.store(false, Ordering::Release);
@@ -1616,7 +1617,7 @@ pub fn handle_user_mmap_demand_page(vaddr: u64) -> bool {
         return true;
     }
 
-    let phys = match physical::alloc_frame() {
+    let phys = match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
         Some(phys) => phys,
         None => {
             DEMAND_PAGE_LOCK.store(false, Ordering::Release);

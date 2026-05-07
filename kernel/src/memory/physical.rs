@@ -11,8 +11,8 @@
 //!
 //! * **Stage 2 — buddy live**: after physmap is up, `late_init`
 //!   migrates every still-free bootmem frame into one of two
-//!   `BuddyZone`s. ZONE_DMA covers `[0, 128 MiB)` (the boot
-//!   identity-map region, used by phys-as-virt callers); ZONE_NORMAL
+//!   `BuddyZone`s. ZONE_DMA covers `[0, 64 MiB)` (the identity-map
+//!   region present in both kernel and user CR3s); ZONE_NORMAL
 //!   covers everything above. Every subsequent alloc/free goes
 //!   through the buddy: O(MAX_ORDER), auto-coalescing, no
 //!   fragmentation drift.
@@ -20,8 +20,11 @@
 //! Public API:
 //!
 //! ```ignore
+//! pub enum FrameAllocPolicy { LowIdentity, Any }
 //! pub fn alloc_frame() -> Option<PhysAddr>
+//! pub fn alloc_frame_with(policy: FrameAllocPolicy) -> Option<PhysAddr>
 //! pub fn alloc_contiguous(count: usize) -> Option<PhysAddr>
+//! pub fn alloc_contiguous_with(count: usize, policy: FrameAllocPolicy) -> Option<PhysAddr>
 //! pub fn alloc_frame_low() -> Option<PhysAddr>     // x86 only
 //! pub fn free_frame(addr: PhysAddr)
 //! pub fn reserve_frame(addr: PhysAddr)
@@ -41,6 +44,20 @@ use crate::boot_info::BootInfo;
 use crate::memory::address::PhysAddr;
 use crate::memory::FRAME_SIZE;
 
+/// Contract requested from the physical allocator.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FrameAllocPolicy {
+    /// Return a frame that legacy code may safely touch as `phys as *mut`.
+    ///
+    /// On x86_64 this means the frame must live below the identity range that
+    /// every CR3 carries. Kernel CR3 maps more, but user page directories keep
+    /// only the first 64 MiB identity-mapped because 64-128 MiB is user/DLL
+    /// virtual address space.
+    LowIdentity,
+    /// Return any RAM frame. Callers using this must access it through an
+    /// explicit mapping, physmap, or a temporary alias.
+    Any,
+}
 
 // ──────────────────────────────────────────────────────────────────
 // Backend implementation
@@ -49,7 +66,7 @@ use crate::memory::FRAME_SIZE;
 mod backend {
     use super::*;
     use crate::boot_info::E820_TYPE_USABLE;
-    use crate::memory::buddy::{order_for, BuddyZone, MAX_ORDER};
+    use crate::memory::buddy::{BuddyZone, MAX_ORDER};
     use crate::sync::spinlock::Spinlock;
     use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -135,33 +152,25 @@ mod backend {
     });
 
     /// Two buddy zones, split by physical address. ZONE_DMA covers
-    /// the lower 128 MiB on x86_64 (the boot identity-map region —
-    /// required by legacy "phys as *mut" callers). ZONE_NORMAL
+    /// the lower 64 MiB on x86_64 (the identity-map range present in every
+    /// CR3 — required by legacy "phys as *mut" callers). ZONE_NORMAL
     /// covers everything above. On ARM64 there's only ZONE_NORMAL
     /// because TTBR1 maps all RAM uniformly.
     ///
-    /// Allocation tries ZONE_DMA first when callers need
-    /// identity-map dereferenceable memory (alloc_frame,
-    /// alloc_contiguous, alloc_frame_low all default to this).
-    /// ZONE_NORMAL is used when ZONE_DMA is exhausted; the legacy
-    /// callers will fault on high frames and we'll need to migrate
-    /// them to physmap, but that's a separate per-driver task.
-    ///
-    /// New code that goes through physmap should call alloc_frame_any
-    /// to skip ZONE_DMA and avoid wasting the precious low region on
-    /// allocations that don't need it.
+    /// `FrameAllocPolicy::LowIdentity` allocates only from ZONE_DMA and fails
+    /// when that low window is exhausted. `FrameAllocPolicy::Any` prefers
+    /// ZONE_NORMAL and falls back to ZONE_DMA, which preserves low memory for
+    /// device buffers and legacy raw physical pointer users.
     static ZONE_DMA: Spinlock<BuddyZone> = Spinlock::new(BuddyZone::new());
     static ZONE_NORMAL: Spinlock<BuddyZone> = Spinlock::new(BuddyZone::new());
 
-    /// On x86_64 the legacy `alloc_contiguous` path required the
-    /// returned phys to live within the lower 128 MiB identity-map.
-    /// physmap removes that restriction, but until every caller has
-    /// migrated to dereferencing through physmap we keep the same
-    /// guarantee for `alloc_frame_low()`. Callers that genuinely need
-    /// low memory (legacy DMA, real-mode trampolines) use that
-    /// function explicitly.
+    /// Legacy phys-as-virt callers must stay below the identity range that every
+    /// CR3 carries. Kernel CR3 maps 128 MiB, but user page directories copy only
+    /// the first 64 MiB because 64-128 MiB is reserved for DLL/user mappings.
+    /// Syscalls and IRQs can run under a user CR3, so raw physical pointers are
+    /// only universally safe below 64 MiB.
     #[cfg(target_arch = "x86_64")]
-    const LOW_MAX_FRAME: usize = (128 * 1024 * 1024) / FRAME_SIZE;
+    const LOW_MAX_FRAME: usize = (64 * 1024 * 1024) / FRAME_SIZE;
     #[cfg(target_arch = "aarch64")]
     const LOW_MAX_FRAME: usize = usize::MAX;
 
@@ -244,8 +253,12 @@ mod backend {
         } else {
             boot_info.kernel_phys_end as u64
         };
-        let ks = PhysAddr::new(kernel_start_phys).frame_align_down().frame_index();
-        let ke = PhysAddr::new(kernel_end_phys).frame_align_up().frame_index();
+        let ks = PhysAddr::new(kernel_start_phys)
+            .frame_align_down()
+            .frame_index();
+        let ke = PhysAddr::new(kernel_end_phys)
+            .frame_align_up()
+            .frame_index();
         for frame in ks..ke {
             if frame < STAGE1_MAX_FRAMES && !bm.is_used(frame) {
                 bm.set_used(frame);
@@ -437,16 +450,26 @@ mod backend {
         PhysAddr::new((frame * FRAME_SIZE) as u64)
     }
 
-    /// Bootmem alloc_frame: simple next-fit linear scan over the
-    /// stage-1 bitmap. Used until BUDDY_LIVE flips.
-    fn bootmem_alloc_frame() -> Option<usize> {
+    #[inline]
+    fn bootmem_limit_for(policy: FrameAllocPolicy, address_frames: usize) -> usize {
+        match policy {
+            FrameAllocPolicy::LowIdentity => address_frames.min(LOW_MAX_FRAME),
+            FrameAllocPolicy::Any => address_frames,
+        }
+        .min(STAGE1_MAX_FRAMES)
+    }
+
+    /// Bootmem alloc_frame: simple next-fit linear scan over the stage-1
+    /// bitmap. Used until BUDDY_LIVE flips. The policy is still honoured here
+    /// so the public low-memory contract does not change during boot.
+    fn bootmem_alloc_frame_with(policy: FrameAllocPolicy) -> Option<usize> {
         let mut bm = BOOTMEM.lock();
-        let total = bm.address_frames;
+        let limit = bootmem_limit_for(policy, bm.address_frames);
         if bm.free_frames == 0 {
             return None;
         }
-        let start = bm.next_search;
-        for i in start..total {
+        let start = bm.next_search.min(limit);
+        for i in start..limit {
             if !bm.is_used(i) {
                 bm.set_used(i);
                 bm.free_frames -= 1;
@@ -465,12 +488,12 @@ mod backend {
         None
     }
 
-    fn bootmem_alloc_contiguous(count: usize) -> Option<usize> {
+    fn bootmem_alloc_contiguous_with(count: usize, policy: FrameAllocPolicy) -> Option<usize> {
         if count == 0 {
             return None;
         }
         let mut bm = BOOTMEM.lock();
-        let limit = bm.address_frames.min(STAGE1_MAX_FRAMES);
+        let limit = bootmem_limit_for(policy, bm.address_frames);
         let mut run_start = 0usize;
         let mut run_len = 0usize;
         for i in 0..limit {
@@ -504,64 +527,78 @@ mod backend {
         }
     }
 
-    pub fn alloc_frame() -> Option<PhysAddr> {
+    pub fn alloc_frame_with(policy: FrameAllocPolicy) -> Option<PhysAddr> {
         if BUDDY_LIVE.load(Ordering::Acquire) {
-            // Try ZONE_DMA first (low memory, < 128 MiB). Legacy
-            // callers do `*(phys as *mut)` and depend on identity
-            // map, so we must hand out low frames first. Fall back
-            // to ZONE_NORMAL when DMA is exhausted; callers that
-            // can't dereference high memory will fault and need
-            // migration to physmap.
-            let dma = ZONE_DMA.lock().alloc_frame().map(frame_to_phys);
-            if dma.is_some() {
-                return dma;
+            match policy {
+                FrameAllocPolicy::LowIdentity => {
+                    // Legacy default: callers may dereference `phys as *mut`
+                    // under a user CR3, so never silently fall back above
+                    // LOW_MAX_FRAME.
+                    ZONE_DMA.lock().alloc_frame().map(frame_to_phys)
+                }
+                FrameAllocPolicy::Any => {
+                    let normal = ZONE_NORMAL.lock().alloc_frame().map(frame_to_phys);
+                    if normal.is_some() {
+                        return normal;
+                    }
+                    ZONE_DMA.lock().alloc_frame().map(frame_to_phys)
+                }
             }
-            ZONE_NORMAL.lock().alloc_frame().map(frame_to_phys)
         } else {
-            bootmem_alloc_frame().map(frame_to_phys)
+            bootmem_alloc_frame_with(policy).map(frame_to_phys)
         }
+    }
+
+    pub fn alloc_frame() -> Option<PhysAddr> {
+        alloc_frame_with(FrameAllocPolicy::LowIdentity)
     }
 
     pub fn alloc_frame_low() -> Option<PhysAddr> {
-        // alloc_frame_low has the same contract as alloc_frame in
-        // the dual-zone world: ZONE_DMA returns < LOW_MAX_FRAME by
-        // construction. No retry needed — alloc_frame already tries
-        // ZONE_DMA first and falls back to ZONE_NORMAL only if DMA
-        // is empty. We refuse the fallback here so callers get a
-        // hard "no low memory" answer instead of a silent high-mem
-        // pointer that will fault on first deref.
-        if !BUDDY_LIVE.load(Ordering::Acquire) {
-            return alloc_frame();
-        }
-        ZONE_DMA.lock().alloc_frame().map(frame_to_phys)
+        alloc_frame_with(FrameAllocPolicy::LowIdentity)
     }
 
-    pub fn alloc_contiguous(count: usize) -> Option<PhysAddr> {
+    pub fn alloc_contiguous_with(count: usize, policy: FrameAllocPolicy) -> Option<PhysAddr> {
         if count == 0 {
             return None;
         }
         if BUDDY_LIVE.load(Ordering::Acquire) {
-            let order = order_for(count);
-            if order > MAX_ORDER {
+            if count > (1usize << MAX_ORDER) {
                 return None;
             }
-            // Same DMA-first policy as alloc_frame: every legacy
-            // caller of alloc_contiguous (AHCI CLB/FB/CT/bounce,
-            // virtio rings, xHCI ERST, SVM structures,
-            // rtl8188eu rings, AC97 BDL) does identity-map
-            // dereferences, so we must hand out low memory until
-            // those callers migrate to physmap.
-            let dma = ZONE_DMA.lock().alloc_pages(order).map(frame_to_phys);
-            if dma.is_some() {
-                return dma;
+            match policy {
+                FrameAllocPolicy::LowIdentity => {
+                    // Legacy default: contiguous callers are mostly DMA rings,
+                    // bounce buffers, and raw phys pointers.
+                    ZONE_DMA.lock().alloc_contiguous(count).map(frame_to_phys)
+                }
+                FrameAllocPolicy::Any => {
+                    let normal = ZONE_NORMAL
+                        .lock()
+                        .alloc_contiguous(count)
+                        .map(frame_to_phys);
+                    if normal.is_some() {
+                        return normal;
+                    }
+                    ZONE_DMA.lock().alloc_contiguous(count).map(frame_to_phys)
+                }
             }
-            ZONE_NORMAL.lock().alloc_pages(order).map(frame_to_phys)
         } else {
-            bootmem_alloc_contiguous(count).map(frame_to_phys)
+            bootmem_alloc_contiguous_with(count, policy).map(frame_to_phys)
         }
     }
 
+    pub fn alloc_contiguous(count: usize) -> Option<PhysAddr> {
+        alloc_contiguous_with(count, FrameAllocPolicy::LowIdentity)
+    }
+
     pub fn free_frame(addr: PhysAddr) {
+        if !addr.is_frame_aligned() {
+            crate::serial_verbose_println!(
+                "  WARN: free_frame ignored unaligned phys={:#x}",
+                addr.as_u64()
+            );
+            return;
+        }
         let frame = addr.frame_index();
         if BUDDY_LIVE.load(Ordering::Acquire) {
             // Route to the zone that owns this frame. ZONE_DMA owns
@@ -577,6 +614,13 @@ mod backend {
     }
 
     pub fn reserve_frame(addr: PhysAddr) {
+        if !addr.is_frame_aligned() {
+            crate::serial_verbose_println!(
+                "  WARN: reserve_frame ignored unaligned phys={:#x}",
+                addr.as_u64()
+            );
+            return;
+        }
         let frame = addr.frame_index();
         if BUDDY_LIVE.load(Ordering::Acquire) {
             if frame < LOW_MAX_FRAME {
@@ -663,13 +707,23 @@ pub fn alloc_frame() -> Option<PhysAddr> {
 }
 
 #[inline]
+pub fn alloc_frame_with(policy: FrameAllocPolicy) -> Option<PhysAddr> {
+    backend::alloc_frame_with(policy)
+}
+
+#[inline]
 pub fn alloc_frame_low() -> Option<PhysAddr> {
-    backend::alloc_frame_low()
+    alloc_frame_with(FrameAllocPolicy::LowIdentity)
 }
 
 #[inline]
 pub fn alloc_contiguous(count: usize) -> Option<PhysAddr> {
     backend::alloc_contiguous(count)
+}
+
+#[inline]
+pub fn alloc_contiguous_with(count: usize, policy: FrameAllocPolicy) -> Option<PhysAddr> {
+    backend::alloc_contiguous_with(count, policy)
 }
 
 #[inline]

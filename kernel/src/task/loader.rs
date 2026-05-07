@@ -791,8 +791,8 @@ fn load_elf64(
         for p in 0..num_pages {
             let page_virt = VirtAddr::new(page_start + p * PAGE_SIZE);
             if !virtual_mem::is_mapped_in_pd(pd_phys, page_virt) {
-                let phys =
-                    physical::alloc_frame().ok_or("Failed to allocate frame for ELF64 segment")?;
+                let phys = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)
+                    .ok_or("Failed to allocate frame for ELF64 segment")?;
                 if !virtual_mem::map_page_in_pd(pd_phys, page_virt, phys, pte_flags) {
                     physical::free_frame(phys);
                     return Err("Failed to map frame for ELF64 segment");

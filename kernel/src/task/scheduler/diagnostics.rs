@@ -66,12 +66,19 @@ pub fn list_threads() -> Vec<ThreadInfo> {
     {
         let guard = SCHEDULER.lock();
         if let Some(sched) = guard.as_ref() {
-            let online_cpus = crate::arch::hal::cpu_count();
+            let online_cpus = crate::arch::hal::cpu_count().min(super::MAX_CPUS);
             for thread in &sched.threads {
+                if thread.tid == 0 {
+                    continue;
+                }
                 if thread.state == ThreadState::Terminated {
                     continue;
                 }
                 if thread.is_idle && !sched.idle_tid[..online_cpus].contains(&thread.tid) {
+                    continue;
+                }
+                let name_str = thread.name_str();
+                if name_str.is_empty() {
                     continue;
                 }
                 if count >= MAX_SNAP {
@@ -84,7 +91,6 @@ pub fn list_threads() -> Vec<ThreadInfo> {
                     ThreadState::Terminated => unreachable!(),
                     ThreadState::Stopped => 4,
                 };
-                let name_str = thread.name_str();
                 let len = name_str.len().min(32);
                 let mut name_buf = [0u8; 32];
                 name_buf[..len].copy_from_slice(&name_str.as_bytes()[..len]);
