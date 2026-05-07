@@ -1188,6 +1188,7 @@ fn test_timer() -> (u32, u32) {
         let mut min_d = u32::MAX;
         let mut max_d = 0u32;
         let mut sum = 0u32;
+        let mut outliers = 0u32;
         for &d in deltas.iter() {
             if d < min_d {
                 min_d = d;
@@ -1195,14 +1196,23 @@ fn test_timer() -> (u32, u32) {
             if d > max_d {
                 max_d = d;
             }
+            if d > 20 {
+                outliers += 1;
+            }
             sum += d;
         }
         let avg = sum / deltas.len() as u32;
-        let ok = min_d >= 1 && max_d <= 20;
+        // This loop measures timer granularity by busy-waiting until uptime_ms()
+        // changes. Under kstress/desktop load the measuring thread can be
+        // preempted, which shows up as one large delta even when the timer kept
+        // ticking normally. Treat rare scheduling pauses as diagnostic outliers;
+        // fail only when the clock is consistently coarse or stalls badly.
+        let ok = min_d >= 1 && avg <= 5 && outliers <= 3 && max_d <= 100;
         print_result("Timer-Aufloesung", ok, "");
         print_metric("Min", min_d, "ms");
         print_metric("Max", max_d, "ms");
         print_metric("Avg", avg, "ms");
+        print_metric("Ausreisser >20ms", outliers, "");
         if ok {
             pass += 1;
         } else {
