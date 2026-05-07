@@ -94,6 +94,14 @@ struct BrokerState {
     control_packets: u64,
     nat_packets: u64,
     dropped_packets: u64,
+    /// `config/dns_broker_enabled` from the confd schema (default true).
+    /// When false, guest DNS queries are not answered by the broker —
+    /// the guest must use a different resolver (e.g. resolv.conf pointing
+    /// elsewhere). Toggleable at runtime via `SET_DNS_BROKER 0|1`.
+    dns_broker_enabled: bool,
+    /// Counter exposed in the status file for observability — how many
+    /// guest DNS queries were dropped because the broker was disabled.
+    dns_disabled_drops: u64,
 }
 
 impl BrokerState {
@@ -113,6 +121,8 @@ impl BrokerState {
             control_packets: 0,
             nat_packets: 0,
             dropped_packets: 0,
+            dns_broker_enabled: true, // matches default_bool("config/dns_broker_enabled", true)
+            dns_disabled_drops: 0,
         }
     }
 }
@@ -243,8 +253,23 @@ fn dispatch(state: &mut BrokerState, cmd: &str) -> String {
         "TX" | "tx" => tx_frame(state, rest),
         "RX_POLL" | "rx_poll" => rx_poll(state, rest),
         "INJECT" | "inject" => inject_frame(state, rest),
+        "SET_DNS_BROKER" | "set_dns_broker" => set_dns_broker(state, rest),
         _ => err("unknown_command"),
     }
+}
+
+/// Toggle the DNS broker at runtime. Argument: `0` or `1`. Mirrors the
+/// `config/dns_broker_enabled` schema default. Returns the new state.
+fn set_dns_broker(state: &mut BrokerState, rest: &str) -> String {
+    let arg = rest.trim();
+    let new_value = match arg {
+        "1" | "true" | "on" | "enable" | "enabled" => true,
+        "0" | "false" | "off" | "disable" | "disabled" => false,
+        _ => return err("invalid_dns_broker_arg"),
+    };
+    state.dns_broker_enabled = new_value;
+    write_status(state, "ready");
+    ok_lines(alloc::vec![format!("dns_broker_enabled\t{}", new_value)])
 }
 
 fn apply_rule(state: &mut BrokerState, rest: &str) -> String {
@@ -408,8 +433,16 @@ fn handle_guest_frame(state: &mut BrokerState, distro: &str, frame: &[u8]) -> us
     if let Some(reply) = dhcp_reply(frame) {
         generated += enqueue_control_frame(state, distro, reply) as usize;
     }
-    if let Some(reply) = dns_reply(frame) {
-        generated += enqueue_control_frame(state, distro, reply) as usize;
+    // ADR-0003 / config/dns_broker_enabled: only answer DNS when the
+    // broker is enabled. When disabled we count the drop so operators
+    // can see it in the status file, and the guest gets no reply
+    // (resolv.conf-driven fallback can take over).
+    if state.dns_broker_enabled {
+        if let Some(reply) = dns_reply(frame) {
+            generated += enqueue_control_frame(state, distro, reply) as usize;
+        }
+    } else if is_dns_query(frame) {
+        state.dns_disabled_drops = state.dns_disabled_drops.wrapping_add(1);
     }
     if let Some(reply) = icmp_echo_reply(frame) {
         generated += enqueue_control_frame(state, distro, reply) as usize;
@@ -549,6 +582,29 @@ fn dhcp_reply(frame: &[u8]) -> Option<Vec<u8>> {
         68,
         &payload,
     ))
+}
+
+/// True if `frame` looks like a DNS query (UDP/53 with non-empty
+/// question section). Lightweight check — does not do full parse.
+/// Used by the disabled-DNS drop counter so we don't count unrelated
+/// UDP traffic.
+fn is_dns_query(frame: &[u8]) -> bool {
+    let Some(ipv4) = parse_ipv4(frame) else {
+        return false;
+    };
+    if ipv4.protocol != 17 {
+        return false;
+    }
+    let Some(udp) = parse_udp(frame, ipv4.payload_offset, ipv4.payload_len) else {
+        return false;
+    };
+    if udp.dst_port != 53 {
+        return false;
+    }
+    let Some(query) = frame.get(udp.payload_offset..udp.payload_offset + udp.payload_len) else {
+        return false;
+    };
+    query.len() >= 12 && read_be16(query, 4) != 0
 }
 
 fn dns_reply(frame: &[u8]) -> Option<Vec<u8>> {
@@ -1059,7 +1115,16 @@ fn is_control_ipv4(ip: [u8; 4]) -> bool {
 fn status_response(state: &BrokerState) -> String {
     let mut lines = alloc::vec![
         String::from("mode\tnat"),
-        String::from("dns\thost-broker"),
+        format!(
+            "dns\t{}",
+            if state.dns_broker_enabled {
+                "host-broker"
+            } else {
+                "disabled"
+            }
+        ),
+        format!("dns_broker_enabled\t{}", state.dns_broker_enabled),
+        format!("dns_disabled_drops\t{}", state.dns_disabled_drops),
         format!("rules\t{}", state.rules.len()),
         format!("rx_queue\t{}", state.rx_queue.len()),
         format!("tx_packets\t{}", state.tx_packets),
@@ -1520,9 +1585,17 @@ fn valid_id_byte(b: u8) -> bool {
 fn write_status(state: &BrokerState, health: &str) {
     let _ = fs::mkdir("/System/var");
     let _ = fs::mkdir("/System/var/asl");
+    let dns_label = if state.dns_broker_enabled {
+        "host-broker"
+    } else {
+        "disabled"
+    };
     let mut text = format!(
-        "health={}\nmode=nat\ndns=host-broker\nrules={}\nrx_queue={}\ntx_packets={}\ntx_bytes={}\nrx_packets={}\nrx_bytes={}\ncontrol_packets={}\nnat_packets={}\ntcp_nat={}\nudp_nat={}\ndropped_packets={}\napply_count={}\nrejected_count={}\nlast_apply_ms={}\n",
+        "health={}\nmode=nat\ndns={}\ndns_broker_enabled={}\ndns_disabled_drops={}\nrules={}\nrx_queue={}\ntx_packets={}\ntx_bytes={}\nrx_packets={}\nrx_bytes={}\ncontrol_packets={}\nnat_packets={}\ntcp_nat={}\nudp_nat={}\ndropped_packets={}\napply_count={}\nrejected_count={}\nlast_apply_ms={}\n",
         health,
+        dns_label,
+        state.dns_broker_enabled,
+        state.dns_disabled_drops,
         state.rules.len(),
         state.rx_queue.len(),
         state.tx_packets,
@@ -1725,6 +1798,109 @@ mod tests {
         assert_eq!(read_be16(dns, 2), 0x8180);
         assert_eq!(read_be16(dns, 6), 1);
         assert!(dns.windows(4).any(|window| window == ASL_GATEWAY_IP));
+    }
+
+    #[test]
+    fn dns_broker_default_state_is_enabled() {
+        let state = BrokerState::new();
+        assert!(state.dns_broker_enabled);
+        assert_eq!(state.dns_disabled_drops, 0);
+    }
+
+    #[test]
+    fn set_dns_broker_disables_and_reenables() {
+        let mut state = BrokerState::new();
+
+        let off = dispatch(&mut state, "SET_DNS_BROKER 0");
+        assert!(off.starts_with("OK\t"), "off response: {off:?}");
+        assert!(off.contains("dns_broker_enabled\tfalse"));
+        assert!(!state.dns_broker_enabled);
+
+        let on = dispatch(&mut state, "SET_DNS_BROKER 1");
+        assert!(on.contains("dns_broker_enabled\ttrue"));
+        assert!(state.dns_broker_enabled);
+
+        // Word aliases keep operator UX consistent with the rest of the
+        // CLI surface (matches asld bool-arg parsing).
+        let off_word = dispatch(&mut state, "SET_DNS_BROKER off");
+        assert!(off_word.contains("dns_broker_enabled\tfalse"));
+        let on_word = dispatch(&mut state, "SET_DNS_BROKER enable");
+        assert!(on_word.contains("dns_broker_enabled\ttrue"));
+    }
+
+    #[test]
+    fn set_dns_broker_rejects_garbage() {
+        let mut state = BrokerState::new();
+        let resp = dispatch(&mut state, "SET_DNS_BROKER yes-please");
+        assert!(resp.starts_with("ERR"), "expected ERR got: {resp:?}");
+        // State must not be touched when the arg is rejected.
+        assert!(state.dns_broker_enabled);
+    }
+
+    #[test]
+    fn dns_query_is_dropped_when_broker_disabled() {
+        let mut state = BrokerState::new();
+        // Disable the broker.
+        let _ = dispatch(&mut state, "SET_DNS_BROKER 0");
+
+        let frame = dns_query("gateway.asl");
+        let tx = dispatch(
+            &mut state,
+            &format!("TX ubuntu-dev\t{}", encode_hex(&frame)),
+        );
+        // No reply was generated for this DNS query.
+        assert!(
+            tx.contains("rx_generated\t0"),
+            "expected rx_generated\t0 got: {tx:?}"
+        );
+
+        // Drop counter advanced — observable in status.
+        assert_eq!(state.dns_disabled_drops, 1);
+
+        // Status response surfaces the disabled state and drop count.
+        let status = dispatch(&mut state, "STATUS");
+        assert!(status.contains("dns_broker_enabled\tfalse"));
+        assert!(status.contains("dns\tdisabled"));
+        assert!(status.contains("dns_disabled_drops\t1"));
+    }
+
+    #[test]
+    fn dns_query_works_again_after_re_enabling_broker() {
+        let mut state = BrokerState::new();
+        // Off, query dropped.
+        let _ = dispatch(&mut state, "SET_DNS_BROKER 0");
+        let frame = dns_query("gateway.asl");
+        let _ = dispatch(
+            &mut state,
+            &format!("TX ubuntu-dev\t{}", encode_hex(&frame)),
+        );
+        assert_eq!(state.dns_disabled_drops, 1);
+
+        // On, query answered.
+        let _ = dispatch(&mut state, "SET_DNS_BROKER 1");
+        let tx = dispatch(
+            &mut state,
+            &format!("TX ubuntu-dev\t{}", encode_hex(&frame)),
+        );
+        assert!(tx.contains("rx_generated\t1"));
+        // Drop count is sticky — does not reset on re-enable. Operators
+        // see the cumulative number until the daemon restarts.
+        assert_eq!(state.dns_disabled_drops, 1);
+    }
+
+    #[test]
+    fn is_dns_query_recognises_only_real_dns_traffic() {
+        // Real DNS query.
+        let dns = dns_query("gateway.asl");
+        assert!(is_dns_query(&dns));
+
+        // DHCP frame: UDP/67 — not DNS.
+        let dhcp = dhcp_discover();
+        assert!(!is_dns_query(&dhcp));
+
+        // ARP request: not even IPv4.
+        let arp = arp_request();
+        assert!(!is_dns_query(&arp));
     }
 
     #[test]
