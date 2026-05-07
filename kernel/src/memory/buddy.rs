@@ -335,7 +335,25 @@ impl BuddyZone {
         if head == LINK_NIL {
             return None;
         }
-        let frame = head as usize;
+        // Defense in depth: if the head got clobbered by an outside
+        // writer (the buddy zone's static occasionally takes a stray
+        // write — see todos for the open chase), refuse to walk the
+        // bogus pointer. Returning None here turns into a clean
+        // alloc failure at the caller instead of a page fault deep
+        // inside read_link's deref.
+        let frame_idx = head as usize;
+        if frame_idx >= MAX_FRAMES {
+            crate::serial_println!(
+                "[buddy] pop_free order={} head={:#x} out of range — dropping list",
+                order,
+                head
+            );
+            self.free_list_heads[order] = LINK_NIL;
+            self.free_list_tails[order] = LINK_NIL;
+            self.free_count[order] = 0;
+            return None;
+        }
+        let frame = frame_idx;
         let next = self.read_link(frame);
         self.free_list_heads[order] = next;
         if next == LINK_NIL {
