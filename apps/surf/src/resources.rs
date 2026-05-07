@@ -791,8 +791,12 @@ pub(crate) fn queue_images(
 
                 if src.starts_with("data:") {
                     // Decode inline — no network fetch needed.
+                    if image_already_queued_or_decoded(tab_index, &src) {
+                        continue;
+                    }
                     if let Some((bytes, is_svg)) = decode_data_uri(&src) {
                         let key = src.clone();
+                        mark_image_requested(tab_index, &key);
                         if is_svg {
                             decode_svg_no_relayout(&bytes, &key, tab_index);
                         } else {
@@ -906,6 +910,7 @@ pub(crate) fn queue_images(
         }
     }
 
+    let mut bg_data_uri_decodes: Vec<String> = Vec::new();
     {
         let st = crate::state();
         if tab_index < st.tabs.len() {
@@ -919,13 +924,16 @@ pub(crate) fn queue_images(
                     _ => continue,
                 };
                 if bg_src.starts_with("data:") {
-                    if let Some((bytes, is_svg)) = decode_data_uri(bg_src) {
-                        if is_svg {
-                            decode_svg_no_relayout(&bytes, bg_src, tab_index);
-                        } else {
-                            decode_raster_no_relayout(&bytes, bg_src, tab_index);
-                        }
+                    if webview.has_decoded_image(bg_src)
+                        || st.tabs[tab_index]
+                            .requested_image_urls
+                            .iter()
+                            .any(|existing| existing == bg_src)
+                        || bg_data_uri_decodes.iter().any(|k| k == bg_src)
+                    {
+                        continue;
                     }
+                    bg_data_uri_decodes.push(bg_src.clone());
                     continue;
                 }
                 if image_already_queued_or_decoded(tab_index, bg_src)
@@ -986,6 +994,17 @@ pub(crate) fn queue_images(
         }
     }
 
+    for key in bg_data_uri_decodes {
+        if let Some((bytes, is_svg)) = decode_data_uri(&key) {
+            mark_image_requested(tab_index, &key);
+            if is_svg {
+                decode_svg_no_relayout(&bytes, &key, tab_index);
+            } else {
+                decode_raster_no_relayout(&bytes, &key, tab_index);
+            }
+        }
+    }
+
     deferred.sort_by(|a, b| b.0.cmp(&a.0));
 
     let st = crate::state();
@@ -1016,6 +1035,7 @@ pub(crate) fn queue_background_images(
 ) -> usize {
     let generation = crate::net_worker::current_generation();
     let mut candidates: Vec<(i32, crate::tab::DeferredImageRequest)> = Vec::new();
+    let mut data_uri_decodes: Vec<String> = Vec::new();
 
     {
         let st = crate::state();
@@ -1035,13 +1055,16 @@ pub(crate) fn queue_background_images(
                 _ => continue,
             };
             if bg_src.starts_with("data:") {
-                if let Some((bytes, is_svg)) = decode_data_uri(bg_src) {
-                    if is_svg {
-                        decode_svg_no_relayout(&bytes, bg_src, tab_index);
-                    } else {
-                        decode_raster_no_relayout(&bytes, bg_src, tab_index);
-                    }
+                if webview.has_decoded_image(bg_src)
+                    || st.tabs[tab_index]
+                        .requested_image_urls
+                        .iter()
+                        .any(|existing| existing == bg_src)
+                    || data_uri_decodes.iter().any(|k| k == bg_src)
+                {
+                    continue;
                 }
+                data_uri_decodes.push(bg_src.clone());
                 continue;
             }
             if webview.has_decoded_image(bg_src)
@@ -1077,6 +1100,17 @@ pub(crate) fn queue_background_images(
                     generation,
                 },
             ));
+        }
+    }
+
+    for key in data_uri_decodes {
+        if let Some((bytes, is_svg)) = decode_data_uri(&key) {
+            mark_image_requested(tab_index, &key);
+            if is_svg {
+                decode_svg_no_relayout(&bytes, &key, tab_index);
+            } else {
+                decode_raster_no_relayout(&bytes, &key, tab_index);
+            }
         }
     }
 
