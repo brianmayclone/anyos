@@ -112,6 +112,13 @@ enum MutationImpact {
     LayoutRestyle,
 }
 
+#[derive(Clone)]
+struct ImageUsageCacheEntry {
+    src: String,
+    requires_layout_refresh: bool,
+    lazy_node_ids: Vec<usize>,
+}
+
 #[derive(Clone, Copy)]
 struct PendingSmoothScroll {
     node_id: usize,
@@ -379,6 +386,10 @@ pub struct WebView {
     /// Last fully resolved styles used for layout. Reused for safe local DOM
     /// mutations that do not require a global restyle pass.
     resolved_styles_cache: Vec<style::ComputedStyle>,
+    /// Per-document index of image src usage in the DOM. Built lazily so image
+    /// completions do not scan every node repeatedly on media-heavy pages.
+    image_usage_cache: Vec<ImageUsageCacheEntry>,
+    image_usage_cache_valid: bool,
     /// Viewport width used when `resolved_styles_cache` was built.
     resolved_styles_viewport_width: i32,
     /// Viewport height used when `resolved_styles_cache` was built.
@@ -457,6 +468,8 @@ impl WebView {
             web_fonts: Vec::new(),
             prev_styles: Vec::new(),
             resolved_styles_cache: Vec::new(),
+            image_usage_cache: Vec::new(),
+            image_usage_cache_valid: false,
             resolved_styles_viewport_width: 0,
             resolved_styles_viewport_height: 0,
             resolved_pseudo_styles: style::PseudoStyles::empty(0),
@@ -630,6 +643,7 @@ impl WebView {
         self.total_height_val = 0;
         self.last_render_scroll_y = 0;
         self.pending_tiles = false;
+        self.invalidate_image_usage_cache();
         self.clear_deferred_layout_state();
         self.selector_state = style::SelectorState::default();
         self.content_view
@@ -643,6 +657,7 @@ impl WebView {
         self.inline_style_cache.clear();
         self.prepared_stylesheets = None;
         self.resolved_styles_cache.clear();
+        self.invalidate_image_usage_cache();
         self.resolved_styles_viewport_width = 0;
         self.resolved_styles_viewport_height = 0;
         self.resolved_pseudo_styles = style::PseudoStyles::empty(0);
@@ -681,8 +696,21 @@ impl WebView {
 
     /// Add a decoded image to the cache. Will be displayed on next render.
     pub fn add_image(&mut self, src: &str, pixels: Vec<u32>, w: u32, h: u32) {
+        let _ = self.add_image_and_get_layout_effect(src, pixels, w, h);
+    }
+
+    /// Add a decoded image and return whether its arrival can affect layout.
+    pub fn add_image_and_get_layout_effect(
+        &mut self,
+        src: &str,
+        pixels: Vec<u32>,
+        w: u32,
+        h: u32,
+    ) -> bool {
         self.images.add(String::from(src), pixels, w, h);
-        self.mark_loaded_lazy_images(src);
+        let (requires_layout_refresh, lazy_node_ids) = self.image_usage_for_src(src);
+        self.mark_loaded_lazy_images_by_id(&lazy_node_ids);
+        requires_layout_refresh
     }
 
     pub fn has_decoded_image(&self, src: &str) -> bool {
@@ -732,11 +760,20 @@ impl WebView {
         false
     }
 
-    fn mark_loaded_lazy_images(&mut self, src: &str) {
-        let Some(dom) = self.dom_val.as_mut() else {
+    fn invalidate_image_usage_cache(&mut self) {
+        self.image_usage_cache.clear();
+        self.image_usage_cache_valid = false;
+    }
+
+    fn ensure_image_usage_cache(&mut self) {
+        if self.image_usage_cache_valid {
+            return;
+        }
+        self.image_usage_cache.clear();
+        let Some(dom) = self.dom_val.as_ref() else {
+            self.image_usage_cache_valid = true;
             return;
         };
-        let mut matches = Vec::new();
         for (node_id, node) in dom.nodes.iter().enumerate() {
             let is_image_like = matches!(
                 &node.node_type,
@@ -748,11 +785,55 @@ impl WebView {
             if !is_image_like {
                 continue;
             }
-            if dom.image_url(node_id).as_deref() == Some(src) {
-                matches.push(node_id);
+            let Some(src) = dom.image_url(node_id) else {
+                continue;
+            };
+            let class_attr = dom.attr(node_id, "class").unwrap_or("");
+            let is_lazy = class_attr
+                .split_ascii_whitespace()
+                .any(|class| class == "Lazy");
+            let has_width = dom.attr(node_id, "width").is_some();
+            let has_height = dom.attr(node_id, "height").is_some();
+            let requires_layout_refresh = is_lazy || !(has_width && has_height);
+
+            if let Some(entry) = self
+                .image_usage_cache
+                .iter_mut()
+                .find(|entry| entry.src == src)
+            {
+                entry.requires_layout_refresh |= requires_layout_refresh;
+                if is_lazy {
+                    entry.lazy_node_ids.push(node_id);
+                }
+            } else {
+                let mut lazy_node_ids = Vec::new();
+                if is_lazy {
+                    lazy_node_ids.push(node_id);
+                }
+                self.image_usage_cache.push(ImageUsageCacheEntry {
+                    src,
+                    requires_layout_refresh,
+                    lazy_node_ids,
+                });
             }
         }
-        for node_id in matches {
+        self.image_usage_cache_valid = true;
+    }
+
+    fn image_usage_for_src(&mut self, src: &str) -> (bool, Vec<usize>) {
+        self.ensure_image_usage_cache();
+        self.image_usage_cache
+            .iter()
+            .find(|entry| entry.src == src)
+            .map(|entry| (entry.requires_layout_refresh, entry.lazy_node_ids.clone()))
+            .unwrap_or((false, Vec::new()))
+    }
+
+    fn mark_loaded_lazy_images_by_id(&mut self, node_ids: &[usize]) {
+        let Some(dom) = self.dom_val.as_mut() else {
+            return;
+        };
+        for &node_id in node_ids {
             let class_attr = dom.attr(node_id, "class").unwrap_or("");
             if !class_attr
                 .split_ascii_whitespace()
@@ -809,6 +890,7 @@ impl WebView {
         self.inline_sheets_dirty = true;
         self.inline_style_cache.clear();
         self.prepared_stylesheets = None;
+        self.invalidate_image_usage_cache();
 
         // Collect stylesheets and resolve + layout + render.
         self.do_layout_and_render(&parsed_dom, None);
@@ -858,6 +940,7 @@ impl WebView {
         self.inline_sheets_dirty = true;
         self.inline_style_cache.clear();
         self.prepared_stylesheets = None;
+        self.invalidate_image_usage_cache();
         self.dom_only_initial_render_pending = false;
 
         // Layout and render (no JS).
@@ -884,6 +967,7 @@ impl WebView {
         self.inline_sheets.clear();
         self.inline_sheets_dirty = true;
         self.inline_style_cache.clear();
+        self.invalidate_image_usage_cache();
         self.layout_root = None;
         self.total_height_val = 0;
         self.last_render_scroll_y = 0;
@@ -4326,6 +4410,7 @@ impl WebView {
             return MutationImpact::None;
         }
 
+        self.invalidate_image_usage_cache();
         self.extract_scroll_offsets();
         let id_map = self.js_runtime.apply_mutations(dom);
         Self::repair_detached_iframes(dom, &pending_mutations, &id_map);
