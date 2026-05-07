@@ -1,0 +1,20 @@
+[package]
+name = "aslmanager_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "aslmanager_core"
+path = "src/lib.rs"
+
+# Pure-logic crate for aslmanager:
+# - URL whitelist
+# - path safety
+# - artifact validation primitives
+# - HTTP fallback policy
+# - SHA-512 hex helpers (ADR-0011 stage 2 image-trust)
+#
+# Stays std-friendly so `cargo +stable test` works without anyOS-specific
+# feature gates. The aslmanager binary depends on this crate.
+[dependencies]
+libtls = { path = "../../../libs/libtls" }

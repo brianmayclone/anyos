@@ -250,9 +250,17 @@ name = "aslmanager"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "aslmanager_core",
  "dynlink",
  "libanyui_client",
  "libhttp_client",
+]
+
+[[package]]
+name = "aslmanager_core"
+version = "0.1.0"
+dependencies = [
+ "libtls",
 ]
 
 [[package]]

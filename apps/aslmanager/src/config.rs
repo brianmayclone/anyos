@@ -70,38 +70,5 @@ pub(crate) fn load() -> ManagerConfig {
     cfg
 }
 
-pub(crate) fn is_allowed_debian_url(url: &str) -> bool {
-    (url.starts_with(DEBIAN_URL_PREFIX)
-        || url.starts_with(DEBIAN_CLOUD_URL_PREFIX)
-        || url.starts_with(DEBIAN_CLOUD_HTTP_URL_PREFIX))
-        && !url.contains('\0')
-        && !url.contains("/../")
-}
-
-pub(crate) fn is_safe_absolute_dir(path: &str) -> bool {
-    path.starts_with('/')
-        && path.len() > 1
-        && !path.contains('\0')
-        && !path.contains("/../")
-        && !path.ends_with("/..")
-        && !path.ends_with('/')
-}
-
-fn split_key_value(line: &str) -> Option<(&str, &str)> {
-    let pos = line.find('=')?;
-    let key = line[..pos].trim();
-    let value = line[pos + 1..].trim();
-    if key.is_empty() || value.is_empty() {
-        None
-    } else {
-        Some((key, value))
-    }
-}
-
-fn join_path(parent: &str, child: &str) -> String {
-    if parent.ends_with('/') {
-        format!("{}{}", parent, child)
-    } else {
-        format!("{}/{}", parent, child)
-    }
-}
+pub(crate) use aslmanager_core::{is_allowed_debian_url, is_safe_absolute_dir};
+use aslmanager_core::{join_path, split_key_value};

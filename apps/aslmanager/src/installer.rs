@@ -1,6 +1,11 @@
 use alloc::format;
 use alloc::string::String;
 use anyos_std::{fs, process};
+use aslmanager_core::{
+    artifact_size_ok, const_time_eq, hex_encode, is_safe_artifact_path as core_is_safe_artifact_path,
+    official_http_fallback, parse_sha512_hex, parse_u64, raw_disk_header_ok, should_try_http_fallback,
+    Sha512,
+};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use libanyui_client as anyui;
 
@@ -246,7 +251,9 @@ fn install_worker() {
         &cfg.base_image_tmp,
         &cfg.debian_raw_url,
         &cfg,
-        ArtifactKind::RawDisk,
+        ArtifactKind::RawDisk {
+            expected_sha512_hex: Some(DEBIAN_RAW_SHA512_HEX),
+        },
         "Debian VM disk",
         10,
         68,
@@ -329,7 +336,12 @@ fn install_worker() {
 
 #[derive(Clone, Copy)]
 enum ArtifactKind {
-    RawDisk,
+    /// Raw bootable disk image. `expected_sha512_hex`, when `Some`, is
+    /// the pinned SHA-512 from `constants.rs` (ADR-0011 stage 2). When
+    /// `None`, only stage-1 size + MBR validation runs.
+    RawDisk {
+        expected_sha512_hex: Option<&'static str>,
+    },
 }
 
 fn ensure_artifact(
@@ -379,6 +391,24 @@ fn ensure_artifact(
         let _ = fs::unlink(tmp);
         return false;
     }
+    // ADR-0011 stage 2: SHA-512 hash pin. If the artifact specifies an
+    // expected hash, run a second read-pass and compare. On mismatch,
+    // refuse the download and unlink. Mismatch likely means: stale pin
+    // after Debian rotated `latest`, mirror corruption, or active
+    // tampering — all require operator attention.
+    if let Some(verdict) = verify_artifact_hash(tmp, kind, label) {
+        if !verdict {
+            let _ = fs::unlink(tmp);
+            return false;
+        }
+    } else {
+        // No hash pinned for this artifact — fall back to stage-1
+        // language so operators don't think it was hash-verified.
+        log_line(&format!(
+            "WARN: {} verified by size + MBR signature only (ADR-0011 stage 1).",
+            label
+        ));
+    }
 
     let _ = fs::unlink(path);
     if fs::rename(tmp, path) != 0 {
@@ -387,6 +417,88 @@ fn ensure_artifact(
     }
     log_line(&format!("{} ready.", label));
     true
+}
+
+/// Run ADR-0011 stage-2 hash verification against the pinned hex digest
+/// associated with `kind`.
+///
+/// Returns:
+/// - `None` if no hash is pinned for this artifact kind (caller should
+///   fall back to stage-1 language).
+/// - `Some(true)` on successful match.
+/// - `Some(false)` on read failure, parse failure, or hash mismatch.
+fn verify_artifact_hash(path: &str, kind: ArtifactKind, label: &str) -> Option<bool> {
+    let expected_hex = match kind {
+        ArtifactKind::RawDisk { expected_sha512_hex } => expected_sha512_hex?,
+    };
+    let Some(expected) = parse_sha512_hex(expected_hex) else {
+        log_line(&format!(
+            "ERROR: pinned SHA-512 for {} is not 128 hex chars; refusing artifact.",
+            label
+        ));
+        return Some(false);
+    };
+
+    set_phase(&format!("Verifying {} (SHA-512)", label));
+    log_line(&format!(
+        "Computing SHA-512 of {} for stage-2 image-trust check.",
+        label
+    ));
+    let actual = match compute_file_sha512(path) {
+        Some(digest) => digest,
+        None => {
+            log_line(&format!(
+                "ERROR: could not read back {} for hash verification.",
+                label
+            ));
+            return Some(false);
+        }
+    };
+
+    if !const_time_eq(&actual, &expected) {
+        log_line(&format!(
+            "ERROR: {} SHA-512 mismatch (ADR-0011 stage 2).",
+            label
+        ));
+        log_line(&format!("  expected: {}", expected_hex));
+        log_line(&format!("  actual:   {}", hex_encode(&actual)));
+        log_line(
+            "  Pinned hash may be stale after a Debian release rotation. \
+             Verify against https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS \
+             and update DEBIAN_RAW_SHA512_HEX if appropriate.",
+        );
+        return Some(false);
+    }
+
+    log_line(&format!(
+        "OK: {} SHA-512 matches pinned digest (ADR-0011 stage 2).",
+        label
+    ));
+    Some(true)
+}
+
+/// Stream-read `path` and return its SHA-512 digest. 64 KiB buffer keeps
+/// the stack small. Returns `None` if open fails or any read errors.
+fn compute_file_sha512(path: &str) -> Option<[u8; 64]> {
+    let fd = fs::open(path, 0);
+    if fd == u32::MAX {
+        return None;
+    }
+    let mut hasher = Sha512::new();
+    let mut buf = alloc::vec![0u8; 64 * 1024];
+    loop {
+        let n = fs::read(fd, &mut buf);
+        if n == u32::MAX {
+            let _ = fs::close(fd);
+            return None;
+        }
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n as usize]);
+    }
+    let _ = fs::close(fd);
+    Some(hasher.finalize())
 }
 
 fn preflight_tmp_path(tmp: &str, label: &str) -> bool {
@@ -448,21 +560,6 @@ fn attempt_download(url: &str, tmp: &str, label: &str, userdata: u64, mode: &str
     false
 }
 
-fn should_try_http_fallback(status: u32, error: u32) -> bool {
-    if status >= 400 {
-        return false;
-    }
-    matches!(error, 2 | 3 | 4 | 5 | 7) || status == 0
-}
-
-fn official_http_fallback(url: &str) -> Option<String> {
-    if !url.starts_with(DEBIAN_CLOUD_URL_PREFIX) {
-        return None;
-    }
-    let suffix = &url[DEBIAN_CLOUD_URL_PREFIX.len()..];
-    Some(format!("{}{}", DEBIAN_CLOUD_HTTP_URL_PREFIX, suffix))
-}
-
 fn http_error_name(error: u32) -> &'static str {
     match error {
         0 => "none",
@@ -517,7 +614,13 @@ fn ensure_dirs(cfg: &ManagerConfig) -> bool {
 
 fn artifacts_ready() -> bool {
     let cfg = &crate::app().config;
-    verified_artifact(&cfg.base_image_path, cfg, ArtifactKind::RawDisk)
+    verified_artifact(
+        &cfg.base_image_path,
+        cfg,
+        ArtifactKind::RawDisk {
+            expected_sha512_hex: Some(DEBIAN_RAW_SHA512_HEX),
+        },
+    )
 }
 
 fn verified_artifact(path: &str, cfg: &ManagerConfig, kind: ArtifactKind) -> bool {
@@ -525,16 +628,19 @@ fn verified_artifact(path: &str, cfg: &ManagerConfig, kind: ArtifactKind) -> boo
         return false;
     }
     let min_size = match kind {
-        ArtifactKind::RawDisk => RAW_DISK_MIN_BYTES,
+        ArtifactKind::RawDisk { .. } => RAW_DISK_MIN_BYTES,
     };
     let mut stat_buf = [0u32; 7];
-    if fs::stat(path, &mut stat_buf) != 0 || stat_buf[1] < min_size {
+    if fs::stat(path, &mut stat_buf) != 0 {
+        return false;
+    }
+    if !artifact_size_ok(stat_buf[1], min_size) {
         return false;
     }
     let mut header = [0u8; 520];
     let read = read_prefix(path, &mut header);
     match kind {
-        ArtifactKind::RawDisk => read >= 512 && header[510] == 0x55 && header[511] == 0xaa,
+        ArtifactKind::RawDisk { .. } => raw_disk_header_ok(&header, read),
     }
 }
 
@@ -553,10 +659,7 @@ fn read_prefix(path: &str, buf: &mut [u8]) -> usize {
 }
 
 fn is_safe_artifact_path(path: &str, cfg: &ManagerConfig) -> bool {
-    let in_images = path.len() > cfg.images_dir.len()
-        && path.starts_with(&cfg.images_dir)
-        && path.as_bytes()[cfg.images_dir.len()] == b'/';
-    in_images && !path.contains('\0') && !path.contains("/../") && !path.ends_with("/..")
+    core_is_safe_artifact_path(path, &cfg.images_dir)
 }
 
 fn ensure_seabios_config() -> bool {
@@ -674,17 +777,6 @@ fn show_runtime_unavailable(message: &str, vcpus: &str) {
     crate::app().exit_label.set_text("-");
     crate::app().activity_bar.set_state(0);
     crate::app().activity_label.set_text(message);
-}
-
-fn parse_u64(text: &str) -> u64 {
-    let mut n = 0u64;
-    for b in text.bytes() {
-        if !b.is_ascii_digit() {
-            return 0;
-        }
-        n = n.saturating_mul(10).saturating_add((b - b'0') as u64);
-    }
-    n
 }
 
 enum VmHealthCheck {
