@@ -124,62 +124,15 @@ impl DeferredThreadCleanupQueue {
 pub(super) static DEFERRED_THREAD_CLEANUP: Spinlock<DeferredThreadCleanupQueue> =
     Spinlock::new(DeferredThreadCleanupQueue::new());
 
-/// Deferred cleanup for resources released by ordinary sys_close()/dup2()
-/// paths. The local FD table entry is removed synchronously; only the global
-/// resource release is moved onto the deferred reaper so VFS close/writeback
-/// never runs on a fragile syscall return path.
-pub(super) struct DeferredFdCleanupQueue {
-    entries: [Option<FdKind>; 512],
-    next_overwrite: usize,
-}
-
-impl DeferredFdCleanupQueue {
-    pub(super) const fn new() -> Self {
-        Self {
-            entries: [None; 512],
-            next_overwrite: 0,
-        }
-    }
-
-    pub(super) fn push(&mut self, kind: FdKind) {
-        for slot in self.entries.iter_mut() {
-            if slot.is_none() {
-                *slot = Some(kind);
-                return;
-            }
-        }
-        crate::serial_verbose_println!(
-            "WARNING: deferred FD cleanup queue full, overwriting oldest entry"
-        );
-        self.entries[self.next_overwrite] = Some(kind);
-        self.next_overwrite = (self.next_overwrite + 1) % self.entries.len();
-    }
-
-    pub(super) fn drain(&mut self) -> [Option<FdKind>; 512] {
-        let result = self.entries;
-        self.entries = [None; 512];
-        self.next_overwrite = 0;
-        result
-    }
-}
-
-pub(super) static DEFERRED_FD_CLEANUP: Spinlock<DeferredFdCleanupQueue> =
-    Spinlock::new(DeferredFdCleanupQueue::new());
-
-#[inline]
-pub(super) fn process_deferred_fd_cleanup(kind: FdKind) {
-    match kind {
-        FdKind::File { global_id } => crate::fs::vfs::decref(global_id),
-        FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::decref_read(pipe_id),
-        FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::decref_write(pipe_id),
-        FdKind::Tty | FdKind::None => {}
-    }
-}
-
 pub(super) fn process_deferred_thread_cleanup(entry: DeferredThreadCleanup) {
     let closed = super::close_all_fds_for_thread(entry.tid);
     for kind in closed.iter() {
-        process_deferred_fd_cleanup(*kind);
+        match kind {
+            FdKind::File { global_id } => crate::fs::vfs::decref(*global_id),
+            FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::decref_read(*pipe_id),
+            FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::decref_write(*pipe_id),
+            FdKind::Tty | FdKind::None => {}
+        }
     }
 
     crate::net::tcp::cleanup_for_thread(entry.tid);
