@@ -238,7 +238,8 @@ vdagent[DEBUG]: received clipboard data (42 bytes) ← host
 - **Display-Resolution-Sync** (`MONITORS_CONFIG`) noch nicht angebunden.
 - **Datei-Transfer (Drag&Drop)** noch nicht implementiert.
 
-Siehe `CLAUDE.md` Abschnitt „Phase 5 — Erweiterungen" für die Roadmap.
+Die offenen Punkte sind in `todos/github-issue-import.md` als SPICE-/virtio-
+input-Folgeaufgaben zusammengefasst.
 
 ## Referenzen
 

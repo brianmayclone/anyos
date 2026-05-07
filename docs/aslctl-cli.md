@@ -5,6 +5,11 @@
 `aslctl` ist die primäre Kommandozeilenschnittstelle fuer Verwaltung, Diagnose
 und Benutzung von ASL-Distributionen.
 
+Aktueller Implementierungsstand 2026-05-06: die CLI existiert unter
+`bin/aslctl/` und spricht lokal mit `asld` ueber Pipe-IPC. Dieses Dokument ist
+weiterhin das Zielbild fuer Bedienbarkeit und stabile Semantik; einzelne
+Syntaxdetails muessen gegen `bin/aslctl/src/lib.rs` abgeglichen werden.
+
 Die CLI soll:
 
 - fuer Endnutzer einfach genug sein

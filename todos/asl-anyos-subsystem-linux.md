@@ -179,7 +179,7 @@ CLI fuer Verwaltung und Benutzung:
 
 Empfohlener Pfad:
 
-- Source: `system/utilities/aslctl/`
+- Source: `bin/aslctl/`
 - Binary: `/System/bin/aslctl`
 
 #### 3. `asl-agent` - Gastagent in Linux

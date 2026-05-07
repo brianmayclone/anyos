@@ -1,6 +1,8 @@
 # Multi-Monitor Architecture
 
-Status: **In Arbeit (Branch `worktree-multimonitor`)**
+Status 2026-05-06: **groesstenteils in `main` gelandet**. Die frueheren
+Branch-Phasen sind als Historie erhalten; groesser offen bleibt vor allem der
+DPI-aware widget pipeline Refactor.
 
 This document fixes the architectural decisions for anyOS multi-monitor
 support so that the implementation, which spans the kernel, the

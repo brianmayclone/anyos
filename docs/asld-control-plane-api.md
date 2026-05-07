@@ -11,9 +11,11 @@ Ziele:
 - Trennung zwischen gewollter Konfiguration und volatilem Runtime-Status
 - klare Fehler- und Zustandssemantik
 
-Dieses Dokument ist absichtlich transportneutral. Ob `asld` spaeter ueber IPC,
-Socket-RPC oder einen anderen lokalen Mechanismus angesprochen wird, ist hier
-noch nicht festgelegt.
+Aktueller Implementierungsstand: `asld` wird lokal ueber Pipe-IPC
+angesprochen (`system/daemons/asld/src/ipc.rs`), `aslctl` lebt unter
+`bin/aslctl/` und nutzt diesen Pfad. Dieses Dokument beschreibt weiterhin das
+fachliche Objekt- und Fehlermodell; Details des Wire-Formats koennen sich noch
+entwickeln.
 
 ## Designprinzipien
 

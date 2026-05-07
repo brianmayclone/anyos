@@ -1,5 +1,12 @@
 # `asld` Scaffolding Plan v1
 
+Status 2026-05-06: historisches Scaffolding-Dokument. Das Geruest existiert
+inzwischen unter `system/daemons/asld/` und ist deutlich ueber diesen Plan
+hinausgewachsen, inklusive VM-, Storage-, Network-, Agent-, Mount-,
+Diagnostics- und IPC-Modulen. Neue Aufgaben gehoeren in
+`todos/github-issue-import.md`; dieses Dokument bleibt als Architektur- und
+Entstehungsreferenz erhalten.
+
 ## Ziel
 
 Dieses Dokument beschreibt die erste konkrete Repo-Struktur fuer `asld`.

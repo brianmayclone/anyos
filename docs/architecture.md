@@ -220,7 +220,7 @@ anyOS has an in-progress ARM64 (AArch64) port targeting QEMU `virt` (with planne
 
 ### Current Status
 
-The ARM64 port boots to kernel_main with working MMU, GICv3 interrupts, Generic Timer, SMP, and syscall dispatch. Userspace loading, storage drivers, and framebuffer are planned (see Raspberry Pi roadmap in CLAUDE.md).
+The ARM64 port boots to kernel_main with working MMU, GICv3 interrupts, Generic Timer, SMP, and syscall dispatch. Userspace loading, storage drivers, and framebuffer are still planned; current follow-up work is tracked in `todos/github-issue-import.md`.
 
 ---
 
