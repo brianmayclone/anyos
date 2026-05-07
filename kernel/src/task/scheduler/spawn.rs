@@ -1,6 +1,7 @@
 //! Thread creation: spawn, spawn_blocked, create_thread_in_current_process.
 
 use super::{alloc_thread_box, clamp_priority, get_cpu_id, SCHEDULER};
+use crate::fs::fd_table::{FdKind, FdTable};
 use crate::task::thread::Thread;
 
 /// Create a new kernel thread and add it to the ready queue.
@@ -105,6 +106,7 @@ pub fn create_thread_in_current_process(
         parent_gid,
         parent_pcid,
         parent_mmap_next,
+        parent_fd_table,
     ) = {
         crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_CREATE_THREAD);
         let guard = SCHEDULER.lock();
@@ -136,6 +138,7 @@ pub fn create_thread_in_current_process(
             thread.gid,
             thread.pcid,
             thread.mmap_next,
+            thread.fd_table.clone(),
         )
     };
 
@@ -150,7 +153,7 @@ pub fn create_thread_in_current_process(
         return 0;
     }
 
-    {
+    let fd_table_installed = {
         crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_CREATE_THREAD);
         let mut guard = SCHEDULER.lock();
         let sched = match guard.as_mut() {
@@ -175,8 +178,17 @@ pub fn create_thread_in_current_process(
             thread.uid = parent_uid;
             thread.gid = parent_gid;
             thread.mmap_next = parent_mmap_next;
+            thread.fd_table = parent_fd_table.clone();
+            true
+        } else {
+            false
         }
+    };
+    if !fd_table_installed {
+        super::kill_thread(tid);
+        return 0;
     }
+    incref_fd_table(&parent_fd_table);
 
     if !crate::task::loader::store_pending_thread(tid, entry_rip, user_rsp, user_lr) {
         crate::serial_println!(
@@ -188,4 +200,15 @@ pub fn create_thread_in_current_process(
     }
     super::wake_thread(tid);
     tid
+}
+
+fn incref_fd_table(table: &FdTable) {
+    for entry in table.iter_open() {
+        match entry.kind {
+            FdKind::File { global_id } => crate::fs::vfs::incref(global_id),
+            FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::incref_read(pipe_id),
+            FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::incref_write(pipe_id),
+            FdKind::Tty | FdKind::None => {}
+        }
+    }
 }
