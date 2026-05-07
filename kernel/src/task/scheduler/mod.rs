@@ -711,7 +711,29 @@ extern "C" fn idle_thread_entry() {
 }
 
 impl Scheduler {
-    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn idle_thread_name(cpu: usize) -> &'static str {
+        match cpu {
+            0 => "idle/0",
+            1 => "idle/1",
+            2 => "idle/2",
+            3 => "idle/3",
+            4 => "idle/4",
+            5 => "idle/5",
+            6 => "idle/6",
+            7 => "idle/7",
+            8 => "idle/8",
+            9 => "idle/9",
+            10 => "idle/10",
+            11 => "idle/11",
+            12 => "idle/12",
+            13 => "idle/13",
+            14 => "idle/14",
+            15 => "idle/15",
+            _ => "idle/?",
+        }
+    }
+
     #[inline]
     fn has_pinned_kernel_continuation(&self, idx: usize) -> bool {
         let t = &self.threads[idx];
@@ -734,7 +756,6 @@ impl Scheduler {
         true
     }
 
-    #[cfg(target_arch = "aarch64")]
     #[inline]
     fn needs_inflight_continuation_pin(&self, idx: usize) -> bool {
         let t = &self.threads[idx];
@@ -759,26 +780,7 @@ impl Scheduler {
 
         // Create per-CPU idle threads (priority 0 = lowest).
         for cpu in 0..MAX_CPUS {
-            let name: &str = match cpu {
-                0 => "idle/0",
-                1 => "idle/1",
-                2 => "idle/2",
-                3 => "idle/3",
-                4 => "idle/4",
-                5 => "idle/5",
-                6 => "idle/6",
-                7 => "idle/7",
-                8 => "idle/8",
-                9 => "idle/9",
-                10 => "idle/10",
-                11 => "idle/11",
-                12 => "idle/12",
-                13 => "idle/13",
-                14 => "idle/14",
-                15 => "idle/15",
-                _ => "idle/?",
-            };
-            let mut thread = Thread::new(idle_thread_entry, 0, name);
+            let mut thread = Thread::new(idle_thread_entry, 0, Self::idle_thread_name(cpu));
             thread.is_idle = true;
             let tid = thread.tid;
             sched.idle_tid[cpu] = tid;
@@ -857,6 +859,92 @@ impl Scheduler {
         crate::arch::hal::cpu_count()
     }
 
+    /// True if `tid` is one of the permanent per-CPU idle thread IDs.
+    ///
+    /// Treat this table as the source of truth in destructive paths. If the
+    /// Thread metadata is damaged, `is_idle` may be false even though the TID
+    /// is still reserved as an idle thread.
+    #[inline]
+    pub(super) fn is_idle_tid(&self, tid: u32) -> bool {
+        tid != 0 && self.idle_tid.iter().any(|&idle_tid| idle_tid == tid)
+    }
+
+    fn audit_idle_threads(&self, tag: &str, cpu_id: usize) {
+        let online = self.num_cpus().min(MAX_CPUS);
+        crate::serial_println!(
+            "[idle-audit:{}] cpu={} threads={} online={} idle=[{},{},{},{}]",
+            tag,
+            cpu_id,
+            self.threads.len(),
+            online,
+            self.idle_tid[0],
+            self.idle_tid[1],
+            self.idle_tid[2],
+            self.idle_tid[3],
+        );
+
+        for cpu in 0..online {
+            let tid = self.idle_tid[cpu];
+            let found = self.find_idx(tid);
+            crate::serial_println!(
+                "[idle-audit:{}] cpu{} idle_tid={} idx={}",
+                tag,
+                cpu,
+                tid,
+                found.map(|idx| idx as isize).unwrap_or(-1),
+            );
+        }
+
+        let limit = self.threads.len().min(24);
+        for idx in 0..limit {
+            let thread = &self.threads[idx];
+            crate::serial_println!(
+                "[idle-audit:{}] t[{}] tid={} idle={} state={:?} name='{}'",
+                tag,
+                idx,
+                thread.tid,
+                thread.is_idle,
+                thread.state,
+                thread.name_str(),
+            );
+        }
+    }
+
+    /// Recreate a missing per-CPU idle thread in-place.
+    ///
+    /// This is a last-resort repair path. Idle threads are permanent scheduler
+    /// anchors; if one disappears, continuing without it traps the CPU in a
+    /// timer-FATAL loop. Replacing it lets the system continue far enough to
+    /// expose the original corruption source.
+    fn repair_missing_idle_thread(&mut self, cpu_id: usize, old_tid: u32) -> usize {
+        self.audit_idle_threads("before-repair", cpu_id);
+        self.remove_from_all_queues(old_tid);
+
+        let mut thread = Thread::new(idle_thread_entry, 0, Self::idle_thread_name(cpu_id));
+        thread.is_idle = true;
+        thread.state = ThreadState::Ready;
+        thread.last_cpu = cpu_id;
+        thread.affinity_cpu = cpu_id;
+
+        let tid = thread.tid;
+        self.idle_tid[cpu_id] = tid;
+        self.threads.push(Box::new(thread));
+        self.invalidate_tid_cache();
+        let idx = self.threads.len() - 1;
+
+        crate::serial_println!(
+            "RECOVERED: recreated missing idle thread CPU{} old_tid={} new_tid={} idx={}",
+            cpu_id,
+            old_tid,
+            tid,
+            idx
+        );
+
+        self.audit_idle_threads("after-repair", cpu_id);
+
+        idx
+    }
+
     /// Scan saved contexts for canary/checksum damage.
     ///
     /// This is deliberately called by deferred maintenance instead of
@@ -916,7 +1004,7 @@ impl Scheduler {
 
         let mut aff_count = [0u32; MAX_CPUS];
         for t in self.threads.iter() {
-            if t.is_idle {
+            if t.is_idle || self.is_idle_tid(t.tid) {
                 continue;
             }
             match t.state {
@@ -952,7 +1040,7 @@ impl Scheduler {
         let mut victim_idx: Option<usize> = None;
         let mut victim_pri = 128u8;
         for (idx, t) in self.threads.iter().enumerate() {
-            if t.is_idle || t.critical || t.affinity_cpu != busiest_cpu {
+            if t.is_idle || self.is_idle_tid(t.tid) || t.critical || t.affinity_cpu != busiest_cpu {
                 continue;
             }
             match t.state {
@@ -998,13 +1086,10 @@ impl Scheduler {
                 let tid = self.threads[idx].tid;
                 let pri = self.threads[idx].priority;
                 let mut cpu = self.threads[idx].affinity_cpu;
-                #[cfg(target_arch = "aarch64")]
-                {
-                    if self.has_pinned_kernel_continuation(idx) {
-                        cpu = self.threads[idx].last_cpu;
-                    } else if self.needs_inflight_continuation_pin(idx) {
-                        cpu = self.threads[idx].last_cpu;
-                    }
+                if self.has_pinned_kernel_continuation(idx) {
+                    cpu = self.threads[idx].last_cpu;
+                } else if self.needs_inflight_continuation_pin(idx) {
+                    cpu = self.threads[idx].last_cpu;
                 }
                 let target_cpu = if cpu < n_cpus { cpu } else { 0 };
                 self.threads[idx].state = ThreadState::Ready;
@@ -1104,6 +1189,9 @@ impl Scheduler {
             if self.per_cpu[cpu].current_tid == Some(tid) {
                 return true;
             }
+            if PER_CPU_CURRENT_TID[cpu].load(Ordering::Acquire) == tid {
+                return true;
+            }
 
             let cached_bottom = PER_CPU_STACK_BOTTOM[cpu].load(Ordering::Relaxed);
             let cached_top = PER_CPU_STACK_TOP[cpu].load(Ordering::Relaxed);
@@ -1129,14 +1217,14 @@ impl Scheduler {
     ///
     /// Returns up to 8 reaped `Box<Thread>` objects so the reaper can drop
     /// them **outside** the SCHEDULER lock and outside IRQ/scheduler context.
-    /// Dropping `Box<Thread>` calls `dealloc` on the ~68 KiB kernel stack.
+    /// Dropping `Box<Thread>` calls `dealloc` on the kernel stack.
     fn reap_terminated(&mut self) -> [Option<Box<Thread>>; 8] {
         let mut reaped: [Option<Box<Thread>>; 8] = Default::default();
         let mut reap_count = 0usize;
         let current_tick = crate::arch::hal::timer_current_ticks();
         let mut i = 0;
         while i < self.threads.len() {
-            if self.threads[i].is_idle {
+            if self.threads[i].is_idle || self.is_idle_tid(self.threads[i].tid) {
                 i += 1;
                 continue;
             }
@@ -1146,10 +1234,14 @@ impl Scheduler {
                     i += 1;
                     continue;
                 }
-                // Grace period: 50ms for any in-flight context_switch
+                // Grace period for any in-flight context_switch. User threads
+                // can still be unwinding a syscall/IRQ frame on another CPU
+                // after their exit status was consumed, so keep their stack
+                // around longer than kernel helper threads.
+                let min_reap_delay_ms = if self.threads[i].is_user { 1_000 } else { 250 };
                 let min_elapsed = self.threads[i]
                     .terminated_at_tick
-                    .map(|t| current_tick.wrapping_sub(t) > 50)
+                    .map(|t| current_tick.wrapping_sub(t) > min_reap_delay_ms)
                     .unwrap_or(false);
                 if !min_elapsed {
                     i += 1;
@@ -1233,12 +1325,12 @@ impl Scheduler {
                 }
             }
         }
-        // Steal as soon as another CPU has any queued work. The victim still
-        // keeps its currently running thread; we only consume pending ready
-        // work that would otherwise wait for future timer ticks or rebalancing.
+        // Steal as soon as another CPU has movable queued work. Saved kernel
+        // continuations stay on their last CPU because the previous switcher
+        // may have marked the context saved before it has fully left that
+        // thread's kernel stack.
         if max_count >= 1 {
             let tid = self.pick_eligible(victim)?;
-            #[cfg(target_arch = "aarch64")]
             if let Some(idx) = self.find_idx(tid) {
                 if self.has_pinned_kernel_continuation(idx) {
                     let pri = self.threads[idx].priority;
@@ -1266,21 +1358,18 @@ impl Scheduler {
                 None => return None,
             };
             if let Some(idx) = self.find_idx(tid) {
-                #[cfg(target_arch = "aarch64")]
-                {
-                    let mut pinned_cpu: Option<usize> = None;
-                    if self.has_pinned_kernel_continuation(idx) {
-                        pinned_cpu = Some(self.threads[idx].last_cpu);
-                    } else if self.needs_inflight_continuation_pin(idx) {
-                        pinned_cpu = Some(self.threads[idx].last_cpu);
-                    }
-                    if let Some(cpu) = pinned_cpu {
-                        let target_cpu = if cpu < self.num_cpus() { cpu } else { 0 };
-                        if target_cpu != queue_cpu {
-                            let pri = self.threads[idx].priority;
-                            self.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
-                            continue;
-                        }
+                let mut pinned_cpu: Option<usize> = None;
+                if self.has_pinned_kernel_continuation(idx) {
+                    pinned_cpu = Some(self.threads[idx].last_cpu);
+                } else if self.needs_inflight_continuation_pin(idx) {
+                    pinned_cpu = Some(self.threads[idx].last_cpu);
+                }
+                if let Some(cpu) = pinned_cpu {
+                    let target_cpu = if cpu < self.num_cpus() { cpu } else { 0 };
+                    if target_cpu != queue_cpu {
+                        let pri = self.threads[idx].priority;
+                        self.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
+                        continue;
                     }
                 }
                 if self.threads[idx].state == ThreadState::Ready
@@ -1313,13 +1402,10 @@ impl Scheduler {
                 self.threads[idx].state = ThreadState::Ready;
                 self.threads[idx].wake_at_tick = None;
                 let mut cpu = self.threads[idx].affinity_cpu;
-                #[cfg(target_arch = "aarch64")]
-                {
-                    if self.has_pinned_kernel_continuation(idx) {
-                        cpu = self.threads[idx].last_cpu;
-                    } else if self.needs_inflight_continuation_pin(idx) {
-                        cpu = self.threads[idx].last_cpu;
-                    }
+                if self.has_pinned_kernel_continuation(idx) {
+                    cpu = self.threads[idx].last_cpu;
+                } else if self.needs_inflight_continuation_pin(idx) {
+                    cpu = self.threads[idx].last_cpu;
                 }
                 let n = self.num_cpus();
                 let target = if cpu < n { cpu } else { 0 };
@@ -1492,7 +1578,7 @@ pub fn kunit_reaper_keeps_referenced_kernel_stack() -> bool {
 
     let mut thread = kunit_make_pinned_user_thread(ThreadState::Terminated, 0, 0);
     thread.exit_code = None;
-    thread.terminated_at_tick = Some(current_tick.wrapping_sub(1_000));
+    thread.terminated_at_tick = Some(current_tick.wrapping_sub(2_000));
     thread.context.save_complete = 1;
 
     let tid = thread.tid;
@@ -1513,6 +1599,30 @@ pub fn kunit_reaper_keeps_referenced_kernel_stack() -> bool {
     still_present && !any_reaped
 }
 
+#[cfg(feature = "kunit")]
+pub fn kunit_reaper_keeps_atomic_current_tid() -> bool {
+    let mut sched = Scheduler::new();
+    let current_tick = crate::arch::hal::timer_current_ticks();
+
+    let mut thread = kunit_make_pinned_user_thread(ThreadState::Terminated, 0, 0);
+    thread.exit_code = None;
+    thread.terminated_at_tick = Some(current_tick.wrapping_sub(2_000));
+    thread.context.save_complete = 1;
+
+    let tid = thread.tid;
+    sched.threads.push(thread);
+
+    let old_current = PER_CPU_CURRENT_TID[0].swap(tid, Ordering::SeqCst);
+
+    let reaped = sched.reap_terminated();
+    let still_present = sched.find_idx(tid).is_some();
+    let any_reaped = reaped.iter().any(|slot| slot.is_some());
+
+    PER_CPU_CURRENT_TID[0].store(old_current, Ordering::SeqCst);
+
+    still_present && !any_reaped
+}
+
 // =============================================================================
 // Public API — Init
 // =============================================================================
@@ -1527,6 +1637,7 @@ pub fn init() {
         if let Some(idx) = s.find_idx(idle_tid) {
             s.threads[idx].state = ThreadState::Running;
         }
+        s.audit_idle_threads("init", 0);
     }
     crate::serial_verbose_println!(
         "[OK] Mach scheduler initialized ({} priority levels, {} CPUs max, lazy FPU)",
@@ -1679,11 +1790,9 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
         let idle_tid = sched.idle_tid[cpu_id];
         let idle_idx = match sched.find_idx(idle_tid) {
             Some(i) => i,
-            None => {
-                PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
-                return;
-            }
+            None => sched.repair_missing_idle_thread(cpu_id, idle_tid),
         };
+        let idle_tid = sched.idle_tid[cpu_id];
         let outgoing_tid = sched.per_cpu[cpu_id].current_tid;
         let outgoing_idx = outgoing_tid.and_then(|t| sched.find_idx(t));
         let outgoing_is_idle = outgoing_tid == Some(idle_tid);
@@ -2065,16 +2174,10 @@ fn schedule_inner(from_timer: bool) {
         let idle_idx = match sched.find_idx(idle_tid) {
             Some(i) => i,
             None => {
-                crate::serial_verbose_println!(
-                    "FATAL: idle thread TID {} missing on CPU {}",
-                    idle_tid,
-                    cpu_id
-                );
-                drop(guard);
-                PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
-                return;
+                sched.repair_missing_idle_thread(cpu_id, idle_tid)
             }
         };
+        let idle_tid = sched.idle_tid[cpu_id];
         let outgoing_tid = sched.per_cpu[cpu_id].current_tid;
         let outgoing_is_idle = outgoing_tid == Some(idle_tid);
         let outgoing_idx = if outgoing_is_idle {
@@ -2217,7 +2320,7 @@ fn schedule_inner(from_timer: bool) {
                             && !ARM64_FIRST_USER_SWITCH_LOGGED.swap(true, Ordering::Relaxed)
                         {
                             crate::serial_verbose_println!(
-                                "[ARM64] switch idle -> {}:{} pc={:#x} sp={:#x} ttbr0={:#x}",
+                                "[ARM64] switch idle/scratch -> {}:{} pc={:#x} sp={:#x} ttbr0={:#x}",
                                 sched.threads[next_idx].tid,
                                 sched.threads[next_idx].name_str(),
                                 sched.threads[next_idx].context.get_pc(),
@@ -2225,12 +2328,32 @@ fn schedule_inner(from_timer: bool) {
                                 sched.threads[next_idx].context.get_page_table(),
                             );
                         }
-                        // Previous thread reaped or no previous — switch from idle
-                        let old_ctx = &mut sched.threads[idle_idx].context as *mut CpuContext;
                         let new_ctx = &sched.threads[next_idx].context as *const CpuContext;
-                        let old_fpu = sched.threads[idle_idx].fpu_state.data.as_mut_ptr();
                         let new_fpu = sched.threads[next_idx].fpu_state.data.as_ptr();
-                        Some((old_ctx, new_ctx, old_fpu, new_fpu, idle_tid, next_tid))
+                        if outgoing_tid.is_some() && !outgoing_is_idle {
+                            crate::serial_verbose_println!(
+                                "!REAPED-CURRENT: CPU{} tid={} -> {} while ready work exists",
+                                cpu_id,
+                                outgoing_tid.unwrap_or(0),
+                                next_tid,
+                            );
+                            let scratch_ctx =
+                                unsafe { &mut SCRATCH_CTX[cpu_id] as *mut CpuContext };
+                            let scratch_fpu = unsafe { SCRATCH_FPU[cpu_id].0.as_mut_ptr() };
+                            Some((
+                                scratch_ctx,
+                                new_ctx,
+                                scratch_fpu,
+                                new_fpu,
+                                idle_tid,
+                                next_tid,
+                            ))
+                        } else {
+                            // No previous non-idle thread: switch from the idle context.
+                            let old_ctx = &mut sched.threads[idle_idx].context as *mut CpuContext;
+                            let old_fpu = sched.threads[idle_idx].fpu_state.data.as_mut_ptr();
+                            Some((old_ctx, new_ctx, old_fpu, new_fpu, idle_tid, next_tid))
+                        }
                     }
                 }
             } else {
@@ -2564,38 +2687,36 @@ pub fn register_ap_idle(cpu_id: usize) {
     let mut guard = SCHEDULER.lock();
     crate::debug_println!("  [Sched] register_ap_idle: cpu={} lock acquired", cpu_id);
     if let Some(sched) = guard.as_mut() {
+        sched.audit_idle_threads("register-ap-before", cpu_id);
         let idle_tid = sched.idle_tid[cpu_id];
         crate::debug_println!(
             "  [Sched] register_ap_idle: cpu={} idle_tid={}",
             cpu_id,
             idle_tid
         );
+        let idx = sched
+            .find_idx(idle_tid)
+            .unwrap_or_else(|| sched.repair_missing_idle_thread(cpu_id, idle_tid));
+        let idle_tid = sched.idle_tid[cpu_id];
         sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
-        if let Some(idx) = sched.find_idx(idle_tid) {
-            sched.per_cpu[cpu_id].current_idx = Some(idx);
-            sched.threads[idx].state = ThreadState::Running;
-            let kstack_top = sched.threads[idx].kernel_stack_top();
-            let kstack_bottom = sched.threads[idx].kernel_stack_bottom();
-            crate::debug_println!(
-                "  [Sched] register_ap_idle: cpu={} kstack=[{:#x}..{:#x}]",
-                cpu_id,
-                kstack_bottom,
-                kstack_top
-            );
-            crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
-            PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
-            PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
-            PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
-            PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
-            PER_CPU_IDLE_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
-            update_per_cpu_name(cpu_id, &sched.threads[idx].name);
-        } else {
-            crate::debug_println!(
-                "  [Sched] register_ap_idle: cpu={} ERROR: idle_tid={} not found!",
-                cpu_id,
-                idle_tid
-            );
-        }
+        sched.per_cpu[cpu_id].current_idx = Some(idx);
+        sched.threads[idx].state = ThreadState::Running;
+        let kstack_top = sched.threads[idx].kernel_stack_top();
+        let kstack_bottom = sched.threads[idx].kernel_stack_bottom();
+        crate::debug_println!(
+            "  [Sched] register_ap_idle: cpu={} kstack=[{:#x}..{:#x}]",
+            cpu_id,
+            kstack_bottom,
+            kstack_top
+        );
+        crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
+        PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
+        PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
+        PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
+        PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
+        PER_CPU_IDLE_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
+        update_per_cpu_name(cpu_id, &sched.threads[idx].name);
+        sched.audit_idle_threads("register-ap-after", cpu_id);
     } else {
         crate::debug_println!(
             "  [Sched] register_ap_idle: cpu={} ERROR: scheduler not initialized!",

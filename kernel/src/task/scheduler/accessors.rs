@@ -141,6 +141,9 @@ pub fn check_current_stack_canary(syscall_num: u32) {
         Some(i) => i,
         None => return,
     };
+    if sched.threads[idx].is_idle || sched.is_idle_tid(tid) {
+        return;
+    }
     if !sched.threads[idx].check_stack_canary() {
         crate::serial_verbose_println!(
             "STACK OVERFLOW after syscall {} in '{}' (TID={}) — killing",

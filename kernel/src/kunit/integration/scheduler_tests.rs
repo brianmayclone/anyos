@@ -66,6 +66,10 @@ pub static SUITE: TestSuite = TestSuite {
             name: "reaper_keeps_referenced_kernel_stack",
             run: test_reaper_keeps_referenced_stack,
         },
+        TestCase {
+            name: "reaper_keeps_atomic_current_tid",
+            run: test_reaper_keeps_atomic_current_tid,
+        },
     ],
 };
 
@@ -196,5 +200,12 @@ fn test_reaper_keeps_referenced_stack(ctx: &mut TestContext) {
     ctx.expect_true(
         scheduler::kunit_reaper_keeps_referenced_kernel_stack(),
         "terminated thread is not reaped while any CPU still references its kernel stack",
+    );
+}
+
+fn test_reaper_keeps_atomic_current_tid(ctx: &mut TestContext) {
+    ctx.expect_true(
+        scheduler::kunit_reaper_keeps_atomic_current_tid(),
+        "terminated thread is not reaped while any CPU still has it as atomic current TID",
     );
 }

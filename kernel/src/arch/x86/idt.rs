@@ -570,7 +570,7 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
                 crate::serial_println!("  CR2={:#018x} (faulting address)", cr2);
             }
             FAULT_HANDLER_ACTIVE[cpu_id].store(false, Ordering::Relaxed);
-            crate::task::scheduler::fault_kill_and_idle(signal);
+            crate::task::scheduler::fault_kill_tid_and_idle(tid, signal);
             return true; // never reached, but satisfies return type
         }
     }
@@ -804,7 +804,7 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         if cpu_id < crate::arch::x86::smp::MAX_CPUS {
             FAULT_HANDLER_ACTIVE[cpu_id].store(false, Ordering::Relaxed);
         }
-        crate::task::scheduler::fault_kill_and_idle(signal);
+        crate::task::scheduler::fault_kill_tid_and_idle(tid, signal);
     }
     // Clear re-entrancy guard on the normal return path
     if cpu_id < crate::arch::x86::smp::MAX_CPUS {
@@ -977,7 +977,9 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 );
                 crate::serial_println!("  User process fault — terminating thread");
                 crate::task::crash_info::store_crash(dbg_tid, 136, frame);
-                crate::task::scheduler::exit_current(136);
+                if try_kill_faulting_thread(136, frame) {
+                    return;
+                }
             }
             if try_kill_faulting_thread(136, frame) {
                 return;
@@ -1143,7 +1145,9 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                     crate::task::scheduler::schedule();
                     return;
                 }
-                crate::task::scheduler::exit_current(129);
+                if try_kill_faulting_thread(129, frame) {
+                    return;
+                }
                 return;
             }
             // Clear DR6 and continue (single-step or breakpoint)
@@ -1182,7 +1186,9 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                     frame.rip,
                     dbg_tid
                 );
-                crate::task::scheduler::exit_current(133);
+                if try_kill_faulting_thread(133, frame) {
+                    return;
+                }
                 return;
             }
             // Kernel breakpoint — ignore (shouldn't normally happen)
@@ -1200,7 +1206,9 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 crate::serial_println!("  User RSP={:#018x}", frame.rsp);
                 crate::serial_println!("  User process fault — terminating thread");
                 crate::task::crash_info::store_crash(dbg_tid, 132, frame);
-                crate::task::scheduler::exit_current(132);
+                if try_kill_faulting_thread(132, frame) {
+                    return;
+                }
             }
             if try_kill_faulting_thread(132, frame) {
                 return;
@@ -1410,7 +1418,9 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 crate::serial_println!("  User process fault — terminating thread");
                 let gpf_tid = crate::task::scheduler::debug_current_tid();
                 crate::task::crash_info::store_crash(gpf_tid, 139, frame);
-                crate::task::scheduler::exit_current(139);
+                if try_kill_faulting_thread(139, frame) {
+                    return;
+                }
             }
             if try_kill_faulting_thread(139, frame) {
                 return;
@@ -1557,7 +1567,9 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 crate::serial_println!("  User RSP={:#018x} SS={:#x}", frame.rsp, frame.ss);
                 crate::serial_println!("  User process fault — terminating thread (TID={})", tid);
                 crate::task::crash_info::store_crash(tid, 139, frame);
-                crate::task::scheduler::exit_current(139);
+                if try_kill_faulting_thread(139, frame) {
+                    return;
+                }
             }
             if try_kill_faulting_thread(139, frame) {
                 return;
@@ -1718,7 +1730,9 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 crate::serial_println!("  User process fault — terminating thread");
                 let mf_tid = crate::task::scheduler::debug_current_tid();
                 crate::task::crash_info::store_crash(mf_tid, 136, frame);
-                crate::task::scheduler::exit_current(136);
+                if try_kill_faulting_thread(136, frame) {
+                    return;
+                }
             }
             if try_kill_faulting_thread(136, frame) {
                 return;
@@ -1755,7 +1769,9 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 crate::serial_println!("  User process fault — terminating thread");
                 let xm_tid = crate::task::scheduler::debug_current_tid();
                 crate::task::crash_info::store_crash(xm_tid, 136, frame);
-                crate::task::scheduler::exit_current(136);
+                if try_kill_faulting_thread(136, frame) {
+                    return;
+                }
             }
             if try_kill_faulting_thread(136, frame) {
                 return;

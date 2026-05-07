@@ -63,6 +63,15 @@ const AP_COMM_ENTRY: u64 = AP_COMM_BASE + 16;
 const AP_COMM_READY: u64 = AP_COMM_BASE + 24;
 const AP_COMM_CPUID: u64 = AP_COMM_BASE + 28;
 
+/// Temporary per-AP boot stack used until `ap_entry()` switches to the
+/// scheduler-owned idle thread stack.
+///
+/// AP initialization runs a fair amount of Rust code before that switch:
+/// GDT/IDT/TSS/LAPIC setup, feature init, serial/debug formatting, and finally
+/// `register_ap_idle()`. The previous 16 KiB stack was too close to the edge
+/// and could underflow into nearby heap allocations during verbose boot paths.
+const AP_BOOT_STACK_SIZE: usize = 256 * 1024;
+
 /// Initialize BSP's per-CPU data.
 pub fn init_bsp() {
     let bsp_id = crate::arch::x86::apic::lapic_id();
@@ -127,7 +136,7 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
 
         crate::serial_verbose_println!("  SMP: Starting AP (APIC_ID={})...", proc_info.apic_id);
 
-        // Allocate stack for this AP (16 KiB) — returns virtual stack top
+        // Allocate the temporary AP boot stack — returns virtual stack top.
         let stack_top = alloc_ap_stack_top();
         if stack_top == 0 {
             crate::serial_verbose_println!("  SMP: Failed to allocate AP stack");
@@ -150,7 +159,13 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
             core::ptr::write_volatile(AP_COMM_READY as *mut u8, 0);
         }
 
-        crate::serial_verbose_println!("  SMP: stack_top={:#018x}, CR3={:#018x}", stack_top, cr3);
+        crate::serial_verbose_println!(
+            "  SMP: stack=[{:#018x}..{:#018x}] ({} KiB), CR3={:#018x}",
+            stack_top - AP_BOOT_STACK_SIZE as u64,
+            stack_top,
+            AP_BOOT_STACK_SIZE / 1024,
+            cr3
+        );
 
         // Send INIT IPI
         crate::arch::x86::apic::send_init(proc_info.apic_id);
@@ -325,11 +340,12 @@ extern "C" fn ap_entry() -> ! {
     crate::task::scheduler::register_ap_idle(cpu_id);
     crate::debug_println!("  [SMP] AP#{}: register_ap_idle done", cpu_id);
 
-    // Switch from the small 16 KiB AP boot stack to the idle thread's
-    // 512 KiB kernel stack. All interrupt handling (scheduler, serial output,
+    // Switch from the temporary AP boot stack to the idle thread's kernel
+    // stack. All interrupt handling (scheduler, serial output,
     // panic handler) runs on this stack, so it needs adequate headroom.
-    // The 16 KiB boot stack is sufficient for init but marginal for nested
-    // interrupt + scheduler + serial formatting under load.
+    // The boot stack is intentionally larger than the architectural minimum
+    // because AP init executes Rust code and verbose formatting before this
+    // point, and an underflow here corrupts adjacent heap allocations.
     let idle_kstack = crate::task::scheduler::idle_stack_top(cpu_id);
     if idle_kstack >= 0xFFFF_FFFF_8000_0000 {
         crate::debug_println!(
@@ -368,11 +384,11 @@ fn install_trampoline() {
     }
 }
 
-/// Allocate a 16 KiB stack for an AP. Returns the virtual address of the stack TOP.
+/// Allocate a temporary stack for an AP. Returns the virtual address of the stack TOP.
 /// Uses the kernel heap so the returned address is a valid higher-half virtual address,
 /// accessible in any context that uses the kernel page directory.
 fn alloc_ap_stack_top() -> u64 {
-    let stack = alloc::vec![0u8; 16 * 1024];
+    let stack = alloc::vec![0u8; AP_BOOT_STACK_SIZE];
     let top = stack.as_ptr() as u64 + stack.len() as u64;
     core::mem::forget(stack); // intentional leak — AP stack lives forever
     top

@@ -158,6 +158,7 @@ fn collect_and_terminate_children(
                 && t.tid != parent_tid
                 && t.state != ThreadState::Terminated
                 && !t.is_idle
+                && !sched.is_idle_tid(t.tid)
             {
                 let child_tid = t.tid;
                 if !to_kill.contains(&child_tid) {
@@ -276,6 +277,9 @@ pub fn exit_current(code: u32) {
             Some(i) => i,
             None => return,
         };
+        if sched.threads[idx].is_idle || sched.is_idle_tid(current_tid) {
+            return;
+        }
 
         let parent_tid = sched.threads[idx].parent_tid;
         let tick = crate::arch::hal::timer_current_ticks();
@@ -382,6 +386,9 @@ pub fn try_exit_current(code: u32) -> bool {
             Some(i) => i,
             None => return false,
         };
+        if sched.threads[idx].is_idle || sched.is_idle_tid(current_tid) {
+            return false;
+        }
         try_exit_diag_mark(b'G');
 
         let tick = crate::arch::hal::timer_current_ticks();
@@ -483,7 +490,7 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
                     sched.threads[idx].context.save_complete = 1;
                     let pri = sched.threads[idx].priority;
                     sched.per_cpu[cpu_id].run_queue.enqueue(current_tid, pri);
-                } else if !sched.threads[idx].is_idle {
+                } else if !sched.threads[idx].is_idle && !sched.is_idle_tid(current_tid) {
                     sched.threads[idx].state = ThreadState::Terminated;
                     sched.threads[idx].exit_code = Some(139);
                     sched.threads[idx].terminated_at_tick =
@@ -507,6 +514,13 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
 pub fn fault_kill_and_idle(signal: u32) -> ! {
     let cpu_id = crate::arch::hal::cpu_id();
     let tid = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed);
+    fault_kill_tid_and_idle(tid, signal)
+}
+
+/// Fallback recovery for a known faulting thread. Kills `tid` and parks this CPU
+/// on its idle stack, even if per-CPU current TID metadata has already drifted.
+pub fn fault_kill_tid_and_idle(tid: u32, signal: u32) -> ! {
+    let cpu_id = crate::arch::hal::cpu_id();
     crate::serial_verbose_println!(
         "  FALLBACK: manual kill TID={} signal={} on CPU {}",
         tid,
@@ -535,14 +549,16 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
 
     let (idle_stack_top, idle_ctx) = prepare_idle_recovery_context(cpu_id, |sched| {
         if let Some(idx) = sched.find_idx(tid) {
-            let tick = crate::arch::hal::timer_current_ticks();
-            sched.remove_from_all_queues(tid);
-            sched.threads[idx].state = ThreadState::Terminated;
-            sched.threads[idx].exit_code = Some(signal);
-            sched.threads[idx].terminated_at_tick = Some(tick);
-            sched.threads[idx].page_directory = None;
-            sched.threads[idx].exit_waiter_tid = None;
-            sched.threads[idx].retain_exit_status = true;
+            if !sched.threads[idx].is_idle && !sched.is_idle_tid(tid) {
+                let tick = crate::arch::hal::timer_current_ticks();
+                sched.remove_from_all_queues(tid);
+                sched.threads[idx].state = ThreadState::Terminated;
+                sched.threads[idx].exit_code = Some(signal);
+                sched.threads[idx].terminated_at_tick = Some(tick);
+                sched.threads[idx].page_directory = None;
+                sched.threads[idx].exit_waiter_tid = None;
+                sched.threads[idx].retain_exit_status = true;
+            }
         }
         sched.per_cpu[cpu_id].current_tid = None;
         sched.per_cpu[cpu_id].current_idx = None;
@@ -579,7 +595,7 @@ pub fn kill_thread(tid: u32) -> u32 {
             Some(idx) => idx,
             None => return u32::MAX,
         };
-        if sched.threads[target_idx].is_idle {
+        if sched.threads[target_idx].is_idle || sched.is_idle_tid(tid) {
             return u32::MAX;
         }
 
