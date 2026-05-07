@@ -32,15 +32,30 @@ aslctl [global-options] <command> [subcommand] [arguments]
 
 ## Globale Optionen
 
-- `--json`
-  Gibt strukturierte JSON-Ausgabe aus.
-- `--quiet`
-  Reduziert Ausgabe auf Fehler oder angeforderte Daten.
-- `--verbose`
-  Zeigt erweiterte Diagnoseinformationen.
-- `--timeout <ms>`
+Globale Flags muessen **vor** dem Subcommand stehen. Unbekannte Flags
+nach dem ersten erkannten Token werden nicht konsumiert, damit
+Subcommand-spezifische Flags wie `--cwd` oder `--env` nicht
+versehentlich geschluckt werden.
+
+- `--json` (umgesetzt 2026-05-07)
+  Gibt strukturierte JSON-Ausgabe aus. Schema:
+  - Erfolg: `{"ok":true,"command":"<name>","lines":[...]}`
+  - Fehler: `{"ok":false,"command":"<name>","code":"...","message":"..."}`
+  String-Werte sind RFC-8259-konform escaped (Quotes, Backslashes,
+  Control-Chars als `\u00XX`). Eine Zeile pro Response, terminiert
+  mit `\n` — direkt fuer Tools wie `jq` verwendbar.
+- `--quiet` / `-q` (umgesetzt 2026-05-07)
+  Unterdrueckt Section-Header-Zeilen wie `distros: 5` oder
+  `mounts: 2`. Nuetzlich beim Pipen in `grep` oder fuer
+  Skripte im Text-Modus. Wirkt nur im Text-Modus; im JSON-Modus
+  ist die Schemashape immer dieselbe.
+- `--verbose` / `-v` (geparst 2026-05-07, heute no-op)
+  Reserviert fuer per-Command Detail-Output. Wird heute akzeptiert,
+  ohne das Verhalten zu aendern, damit Skripte das Flag schon setzen
+  koennen, wenn die Detail-Ausgabe nachgereicht wird.
+- `--timeout <ms>` *(noch nicht implementiert)*
   Setzt ein Client-Timeout fuer RPCs an `asld`.
-- `--user <name>`
+- `--user <name>` *(noch nicht implementiert)*
   Fuehrt den Befehl im Kontext eines bestimmten Benutzers aus.
 
 ## Kommandogruppen
@@ -95,6 +110,8 @@ Ziel:
 aslctl shell <name>
 aslctl shell <name> --fallback-console
 aslctl shell <name> --session <session-name>
+aslctl [--json] [--quiet|-q] [--verbose|-v] <subcommand> [args...]
+
 aslctl exec <name> [--fallback-console] [--cwd <path>] [--env KEY=VALUE]... -- <command> [args...]
 aslctl run  <name> [--fallback-console] [--cwd <path>] [--env KEY=VALUE]... -- <command> [args...]
 ```

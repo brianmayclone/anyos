@@ -95,9 +95,17 @@ Audit-Quellen:
   Port-Forwards gemeinsam prueft. `network validate` und `port validate` sind
   CLI-Aliase fuer denselben Wire-Command. Akzeptabel als UX.
 
-### Globale Flags fehlen komplett
-Doc Z.35-44: `--json`, `--quiet`, `--verbose`, `--timeout`, `--user` werden
-nicht geparst. `--json` ist Voraussetzung fuer aslmanager-Backend und Skripte.
+### Globale Flags (Stand 2026-05-07)
+- `--json` IMPLEMENTED — strukturierte JSON-Antworten,
+  RFC-8259-string-escapes, eine Zeile pro Response, kompatibel mit
+  `jq`. Schema-Pin: `{"ok":bool,"command":"...","lines":[...]}` bzw.
+  `{"ok":false,"command":"...","code":"...","message":"..."}`.
+- `--quiet` / `-q` IMPLEMENTED — unterdrueckt Section-Header-Zeilen
+  im Text-Modus.
+- `--verbose` / `-v` PARSED-NOOP — wird akzeptiert, heute keine
+  Verhaltensaenderung. Vorbereitung auf zukuenftige
+  per-Command-Detail-Ausgaben.
+- `--timeout <ms>`, `--user <name>` — noch nicht implementiert.
 
 ### Korrekt als reserved
 - `suspend` / `resume` (Doc Z.76).

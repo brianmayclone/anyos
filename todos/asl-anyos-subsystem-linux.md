@@ -1187,8 +1187,18 @@ Detail-Audit der bestehenden Implementierung gegen die Spezifikationen siehe
 - [ ] **Echter Lifecycle-Event-Trail** — aslobsd haelt heute nur Counter
       + last_event. Ein ringbuffered Trail (analog VM-Exits in asld)
       ist eigene Aufgabe. Bleibt offen.
-- [ ] `aslctl --json` global einfuehren — Voraussetzung fuer aslmanager-Backend
-      (Block D) und Skripting.
+- [x] `aslctl --json` global eingefuehrt — Strukturierte JSON-Ausgabe
+      mit stabilem Schema (`{"ok":bool,"command":..,"lines":..}` bzw.
+      `{"ok":false,..,"code":..,"message":..}`). RFC-8259-konformes
+      String-Escaping (Quotes, Backslashes, Control-Chars als
+      `\u00XX`, UTF-8 raw durchgereicht). Plus `--quiet`/`-q`
+      (suppress Section-Headers) und `--verbose`/`-v`
+      (parsed-noop, forward-compat). Globale Flags muessen vor dem
+      Subcommand stehen, der Stripper konsumiert nichts danach.
+      **20 neue Tests gruen** (Flag-Stripping fuer alle Formen +
+      Kombinationen + Pathological-Cases, JSON-Encoder gegen alle
+      Escape-Klassen + UTF-8-Roundtrip, Schema-Pinning fuer Ok und
+      Err, Command-Name-Tabelle). 2026-05-07.
 
 ### Block B — Distro-Bringup fuer Devs
 
