@@ -29,6 +29,7 @@ pub(crate) struct AppState {
     pub(crate) logs_panel: anyui::View,
     pub(crate) status_label: anyui::Label,
     pub(crate) phase_label: anyui::Label,
+    pub(crate) transfer_label: anyui::Label,
     pub(crate) progress_bar: anyui::ProgressBar,
     pub(crate) run_state_label: anyui::Label,
     pub(crate) backend_label: anyui::Label,
@@ -46,7 +47,10 @@ pub(crate) struct AppState {
 
 pub(crate) struct NavItem {
     row: anyui::View,
+    surface: anyui::Label,
     indicator: anyui::View,
+    icon_button: anyui::PlainButton,
+    title: anyui::Label,
     button: anyui::PlainButton,
     icon: &'static str,
 }
@@ -126,7 +130,7 @@ fn build_ui() -> AppState {
 
     let (nav_overview, nav_performance, nav_logs) = build_sidebar(&root, tc);
     let panels = build_content_panels(&root);
-    let (install_btn, terminal_btn, status_label, phase_label, progress_bar) =
+    let (install_btn, terminal_btn, status_label, phase_label, transfer_label, progress_bar) =
         build_overview_panel(&panels.overview, tc, &manager_config);
     let runtime = build_performance_panel(&panels.performance, tc);
     let log_area = build_logs_panel(&panels.logs, tc);
@@ -134,6 +138,7 @@ fn build_ui() -> AppState {
     installer::register_controls(
         Widget::id(&phase_label),
         Widget::id(&status_label),
+        Widget::id(&transfer_label),
         Widget::id(&progress_bar),
     );
 
@@ -149,6 +154,7 @@ fn build_ui() -> AppState {
         logs_panel: panels.logs,
         status_label,
         phase_label,
+        transfer_label,
         progress_bar,
         run_state_label: runtime.run_state_label,
         backend_label: runtime.backend_label,
@@ -172,36 +178,40 @@ fn build_sidebar(
     let sidebar = anyui::View::new();
     sidebar.set_position(0, 0);
     sidebar.set_size(SIDEBAR_W, WIN_H - 40);
-    sidebar.set_color(anyui::theme::darken(tc.window_bg, 4));
+    sidebar.set_color(tc.sidebar_bg);
     root.add(&sidebar);
+
+    let separator = anyui::View::new();
+    separator.set_position((SIDEBAR_W - 1) as i32, 0);
+    separator.set_size(1, WIN_H - 40);
+    separator.set_color(tc.separator);
+    sidebar.add(&separator);
 
     let brand = anyui::View::new();
     brand.set_position(0, 0);
     brand.set_size(SIDEBAR_W, 72);
-    brand.set_color(anyui::theme::darken(tc.window_bg, 4));
+    brand.set_color(tc.sidebar_bg);
     sidebar.add(&brand);
 
     let accent = anyui::View::new();
-    accent.set_position(0, 0);
-    accent.set_size(3, 72);
+    accent.set_position(18, 18);
+    accent.set_size(3, 28);
     accent.set_color(tc.accent);
     brand.add(&accent);
 
     let side_title = anyui::Label::new("ASL Manager");
-    side_title.set_position(18, 15);
-    side_title.set_size(SIDEBAR_W - 36, 22);
+    side_title.set_position(30, 15);
+    side_title.set_size(SIDEBAR_W - 48, 22);
     side_title.set_font(1);
     side_title.set_font_size(15);
     side_title.set_text_color(tc.text);
-    side_title.set_color(anyui::theme::darken(tc.window_bg, 4));
     brand.add(&side_title);
 
     let side_sub = anyui::Label::new("Debian on anyOS");
-    side_sub.set_position(18, 40);
-    side_sub.set_size(SIDEBAR_W - 36, 18);
+    side_sub.set_position(30, 40);
+    side_sub.set_size(SIDEBAR_W - 48, 18);
     side_sub.set_font_size(11);
     side_sub.set_text_color(tc.text_secondary);
-    side_sub.set_color(anyui::theme::darken(tc.window_bg, 4));
     brand.add(&side_sub);
 
     let distro_title = anyui::Label::new("DISTRIBUTION");
@@ -209,56 +219,57 @@ fn build_sidebar(
     distro_title.set_size(SIDEBAR_W - 36, 18);
     distro_title.set_font_size(10);
     distro_title.set_text_color(tc.text_secondary);
-    distro_title.set_color(anyui::theme::darken(tc.window_bg, 4));
     sidebar.add(&distro_title);
 
     let debian_row = anyui::View::new();
-    debian_row.set_position(0, 118);
-    debian_row.set_size(SIDEBAR_W, 62);
-    debian_row.set_color(anyui::theme::darken(tc.window_bg, 2));
+    debian_row.set_position(0, 116);
+    debian_row.set_size(SIDEBAR_W, 72);
+    debian_row.set_color(tc.sidebar_bg);
     sidebar.add(&debian_row);
 
+    let debian_surface = anyui::Label::new("");
+    debian_surface.set_position(12, 4);
+    debian_surface.set_size(SIDEBAR_W - 24, 64);
+    debian_surface.set_color(anyui::theme::darken(tc.sidebar_bg, 6));
+    debian_row.add(&debian_surface);
+
     let debian_accent = anyui::View::new();
-    debian_accent.set_position(0, 0);
-    debian_accent.set_size(3, 62);
+    debian_accent.set_position(22, 20);
+    debian_accent.set_size(3, 32);
     debian_accent.set_color(0xFF00A8A8);
     debian_row.add(&debian_accent);
 
     let debian_icon = anyui::PlainButton::new("");
-    debian_icon.set_position(16, 15);
+    debian_icon.set_position(34, 22);
     debian_icon.set_size(28, 28);
-    debian_icon.set_enabled(false);
     debian_icon.set_system_icon("server", anyui::IconType::Outline, tc.text, 22);
     debian_row.add(&debian_icon);
 
     let debian_name = anyui::Label::new("Debian");
-    debian_name.set_position(54, 10);
-    debian_name.set_size(SIDEBAR_W - 72, 22);
+    debian_name.set_position(72, 16);
+    debian_name.set_size(SIDEBAR_W - 96, 22);
     debian_name.set_font_size(15);
     debian_name.set_font(1);
     debian_name.set_text_color(tc.text);
-    debian_name.set_color(anyui::theme::darken(tc.window_bg, 2));
     debian_row.add(&debian_name);
 
     let debian_sub = anyui::Label::new("Trixie amd64, headless VM");
-    debian_sub.set_position(54, 35);
-    debian_sub.set_size(SIDEBAR_W - 72, 18);
+    debian_sub.set_position(72, 40);
+    debian_sub.set_size(SIDEBAR_W - 96, 18);
     debian_sub.set_font_size(11);
     debian_sub.set_text_color(tc.text_secondary);
-    debian_sub.set_color(anyui::theme::darken(tc.window_bg, 2));
     debian_row.add(&debian_sub);
 
     let nav_title = anyui::Label::new("SECTIONS");
-    nav_title.set_position(18, 214);
+    nav_title.set_position(18, 220);
     nav_title.set_size(SIDEBAR_W - 36, 18);
     nav_title.set_font_size(10);
     nav_title.set_text_color(tc.text_secondary);
-    nav_title.set_color(anyui::theme::darken(tc.window_bg, 4));
     sidebar.add(&nav_title);
 
-    let nav_overview = nav_button(&sidebar, 0, 240, "Overview", "layout-dashboard", tc);
-    let nav_performance = nav_button(&sidebar, 0, 278, "Performance", "activity", tc);
-    let nav_logs = nav_button(&sidebar, 0, 316, "Logs", "terminal", tc);
+    let nav_overview = nav_button(&sidebar, 0, 248, "Overview", "layout-dashboard", tc);
+    let nav_performance = nav_button(&sidebar, 0, 292, "Performance", "activity", tc);
+    let nav_logs = nav_button(&sidebar, 0, 336, "Logs", "terminal", tc);
     (nav_overview, nav_performance, nav_logs)
 }
 
@@ -307,6 +318,7 @@ fn build_overview_panel(
 ) -> (
     anyui::Button,
     anyui::Button,
+    anyui::Label,
     anyui::Label,
     anyui::Label,
     anyui::ProgressBar,
@@ -383,8 +395,16 @@ fn build_overview_panel(
     progress_bar.set_size(content_w - 48, 18);
     root.add(&progress_bar);
 
+    let transfer_label = anyui::Label::new("Download: not started");
+    transfer_label.set_position(content_x + 24, 298);
+    transfer_label.set_size(content_w - 48, 20);
+    transfer_label.set_font_size(11);
+    transfer_label.set_text_color(tc.text_secondary);
+    transfer_label.set_color(tc.window_bg);
+    root.add(&transfer_label);
+
     let hint = anyui::Label::new("Performance and install logs are available from the left tabs.");
-    hint.set_position(content_x + 24, 318);
+    hint.set_position(content_x + 24, 330);
     hint.set_size(content_w - 48, 20);
     hint.set_font_size(12);
     hint.set_text_color(tc.text_secondary);
@@ -392,7 +412,7 @@ fn build_overview_panel(
     root.add(&hint);
 
     let config_hint = anyui::Label::new("Central config: /System/etc/asl/manager.conf");
-    config_hint.set_position(content_x + 24, 344);
+    config_hint.set_position(content_x + 24, 356);
     config_hint.set_size(content_w - 48, 20);
     config_hint.set_font_size(11);
     config_hint.set_text_color(tc.text_secondary);
@@ -404,6 +424,7 @@ fn build_overview_panel(
         terminal_btn,
         status_label,
         phase_label,
+        transfer_label,
         progress_bar,
     )
 }
@@ -563,28 +584,60 @@ fn nav_button(
     icon: &'static str,
     tc: &anyui::theme::ThemeColors,
 ) -> NavItem {
+    const NAV_ITEM_H: u32 = 40;
+    const NAV_SURFACE_X: i32 = 12;
+    const NAV_SURFACE_Y: i32 = 2;
+    const NAV_SURFACE_H: u32 = NAV_ITEM_H - 4;
+
     let row = anyui::View::new();
     row.set_position(x, y);
-    row.set_size(SIDEBAR_W, 34);
-    row.set_color(anyui::theme::darken(tc.window_bg, 4));
+    row.set_size(SIDEBAR_W, NAV_ITEM_H);
+    row.set_color(tc.sidebar_bg);
     parent.add(&row);
 
+    let surface = anyui::Label::new("");
+    surface.set_position(NAV_SURFACE_X, NAV_SURFACE_Y);
+    surface.set_size(SIDEBAR_W - 24, NAV_SURFACE_H);
+    surface.set_color(0);
+    row.add(&surface);
+
     let indicator = anyui::View::new();
-    indicator.set_position(0, 0);
-    indicator.set_size(3, 34);
+    indicator.set_position(22, 12);
+    indicator.set_size(3, 16);
     indicator.set_color(0x00000000);
     row.add(&indicator);
 
+    let icon_button = anyui::PlainButton::new("");
+    icon_button.set_position(34, 9);
+    icon_button.set_size(22, 22);
+    icon_button.set_system_icon(icon, anyui::IconType::Outline, tc.text_secondary, 18);
+    row.add(&icon_button);
+
+    let title = anyui::Label::new(text);
+    title.set_position(64, 10);
+    title.set_size(SIDEBAR_W - 86, 20);
+    title.set_font_size(12);
+    title.set_text_color(tc.text_secondary);
+    row.add(&title);
+
     let btn = anyui::PlainButton::new(text);
-    btn.set_position(14, 0);
-    btn.set_size(SIDEBAR_W - 22, 34);
-    btn.set_text_color(tc.text_secondary);
-    btn.set_system_icon(icon, anyui::IconType::Outline, tc.text_secondary, 18);
+    btn.set_position(NAV_SURFACE_X, NAV_SURFACE_Y);
+    btn.set_size(SIDEBAR_W - 24, NAV_SURFACE_H);
+    btn.set_text("");
+    btn.set_style(anyui::STYLE_RADIUS, NAV_SURFACE_H / 2);
+    btn.set_style(anyui::STYLE_HOVER_BG, anyui::theme::with_alpha(tc.text, 18));
+    btn.set_style(
+        anyui::STYLE_ACTIVE_BG,
+        anyui::theme::with_alpha(tc.text, 26),
+    );
     row.add(&btn);
 
     NavItem {
         row,
+        surface,
         indicator,
+        icon_button,
+        title,
         button: btn,
         icon,
     }
@@ -615,16 +668,18 @@ fn show_section(section: Section) {
 }
 
 fn style_nav(item: &NavItem, active: bool, tc: &anyui::theme::ThemeColors) {
-    let row_color = if active {
-        anyui::theme::darken(tc.window_bg, 1)
+    let active_bg = if anyui::theme::is_light() {
+        anyui::theme::with_alpha(tc.accent, 28)
     } else {
-        anyui::theme::darken(tc.window_bg, 4)
+        anyui::theme::with_alpha(tc.accent, 34)
     };
     let text_color = if active { tc.text } else { tc.text_secondary };
-    item.row.set_color(row_color);
+    item.row.set_color(tc.sidebar_bg);
+    item.surface.set_color(if active { active_bg } else { 0 });
     item.indicator
         .set_color(if active { tc.accent } else { 0x00000000 });
-    item.button.set_text_color(text_color);
-    item.button
+    item.title.set_text_color(text_color);
+    item.title.set_font(if active { 1 } else { 0 });
+    item.icon_button
         .set_system_icon(item.icon, anyui::IconType::Outline, text_color, 18);
 }

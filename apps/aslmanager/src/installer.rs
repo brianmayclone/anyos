@@ -1,10 +1,10 @@
 use alloc::format;
 use alloc::string::String;
-use anyos_std::{fs, process};
+use anyos_std::{fs, process, sys};
 use aslmanager_core::{
-    artifact_size_ok, const_time_eq, hex_encode, is_safe_artifact_path as core_is_safe_artifact_path,
-    official_http_fallback, parse_sha512_hex, parse_u64, raw_disk_header_ok, should_try_http_fallback,
-    Sha512,
+    artifact_size_ok, const_time_eq, hex_encode,
+    is_safe_artifact_path as core_is_safe_artifact_path, official_http_fallback, parse_sha512_hex,
+    parse_u64, raw_disk_header_ok, should_try_http_fallback, Sha512,
 };
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use libanyui_client as anyui;
@@ -22,12 +22,23 @@ static LOG_LINE_LEN: [AtomicU32; LOG_SLOT_COUNT] = [const { AtomicU32::new(0) };
 static mut LOG_LINE_BUF: [[u8; 512]; LOG_SLOT_COUNT] = [[0u8; 512]; LOG_SLOT_COUNT];
 static mut PHASE_LABEL_ID: u32 = 0;
 static mut STATUS_LABEL_ID: u32 = 0;
+static mut TRANSFER_LABEL_ID: u32 = 0;
 static mut PROGRESS_BAR_ID: u32 = 0;
+static DOWNLOAD_LAST_SAMPLE_MS: AtomicU32 = AtomicU32::new(0);
+static DOWNLOAD_LAST_SAMPLE_BYTES: AtomicU32 = AtomicU32::new(0);
+static DOWNLOAD_LAST_UI_MS: AtomicU32 = AtomicU32::new(0);
+static DOWNLOAD_RATE_BPS: AtomicU32 = AtomicU32::new(0);
 
-pub fn register_controls(phase_label_id: u32, status_label_id: u32, progress_bar_id: u32) {
+pub fn register_controls(
+    phase_label_id: u32,
+    status_label_id: u32,
+    transfer_label_id: u32,
+    progress_bar_id: u32,
+) {
     unsafe {
         PHASE_LABEL_ID = phase_label_id;
         STATUS_LABEL_ID = status_label_id;
+        TRANSFER_LABEL_ID = transfer_label_id;
         PROGRESS_BAR_ID = progress_bar_id;
     }
 }
@@ -120,6 +131,9 @@ pub fn start_install() {
     crate::app().install_btn.set_enabled(false);
     crate::app().terminal_btn.set_enabled(false);
     crate::app().progress_bar.set_state(0);
+    crate::app()
+        .transfer_label
+        .set_text("Download: waiting to start");
     crate::app()
         .phase_label
         .set_text("Starting Debian setup...");
@@ -215,6 +229,7 @@ extern "C" fn download_progress_cb(received: u32, total: u32, userdata: u64) {
         base + (((received as u64 * span as u64) / total as u64) as u32)
     };
     set_progress(pct.min(100));
+    update_transfer_status(received, total);
 }
 
 fn install_worker() {
@@ -365,6 +380,7 @@ fn ensure_artifact(
 
     if verified_artifact(path, cfg, kind) {
         log_line(&format!("{} already present and verified.", label));
+        set_transfer_status(&format!("Download: {} already present.", label));
         return true;
     }
     if file_exists(path) {
@@ -429,7 +445,9 @@ fn ensure_artifact(
 /// - `Some(false)` on read failure, parse failure, or hash mismatch.
 fn verify_artifact_hash(path: &str, kind: ArtifactKind, label: &str) -> Option<bool> {
     let expected_hex = match kind {
-        ArtifactKind::RawDisk { expected_sha512_hex } => expected_sha512_hex?,
+        ArtifactKind::RawDisk {
+            expected_sha512_hex,
+        } => expected_sha512_hex?,
     };
     let Some(expected) = parse_sha512_hex(expected_hex) else {
         log_line(&format!(
@@ -543,7 +561,9 @@ fn download_with_retries(url: &str, tmp: &str, label: &str, userdata: u64) -> bo
 }
 
 fn attempt_download(url: &str, tmp: &str, label: &str, userdata: u64, mode: &str) -> bool {
+    reset_transfer_metrics(label, mode);
     if libhttp_client::download_progress(url, tmp, download_progress_cb, userdata) {
+        set_transfer_status(&format!("Download: {} complete.", label));
         return true;
     }
 
@@ -573,6 +593,98 @@ fn http_error_name(error: u32) -> &'static str {
         8 => "output buffer too small",
         9 => "file write error",
         _ => "unknown",
+    }
+}
+
+fn reset_transfer_metrics(label: &str, mode: &str) {
+    let now = sys::uptime_ms();
+    DOWNLOAD_LAST_SAMPLE_MS.store(now, Ordering::Release);
+    DOWNLOAD_LAST_SAMPLE_BYTES.store(0, Ordering::Release);
+    DOWNLOAD_LAST_UI_MS.store(0, Ordering::Release);
+    DOWNLOAD_RATE_BPS.store(0, Ordering::Release);
+    set_transfer_status(&format!(
+        "Download: connecting for {} via {}...",
+        label, mode
+    ));
+}
+
+fn update_transfer_status(received: u32, total: u32) {
+    let now = sys::uptime_ms();
+    let done = total != 0 && received >= total;
+    let last_ui = DOWNLOAD_LAST_UI_MS.load(Ordering::Acquire);
+    if !done && now.wrapping_sub(last_ui) < 500 {
+        return;
+    }
+    DOWNLOAD_LAST_UI_MS.store(now, Ordering::Release);
+
+    let last_ms = DOWNLOAD_LAST_SAMPLE_MS.load(Ordering::Acquire);
+    let last_bytes = DOWNLOAD_LAST_SAMPLE_BYTES.load(Ordering::Acquire);
+    let elapsed_ms = now.wrapping_sub(last_ms).max(1);
+    let delta_bytes = received.saturating_sub(last_bytes);
+    let measured_bps = ((delta_bytes as u64 * 1000) / elapsed_ms as u64) as u32;
+    if measured_bps > 0 {
+        DOWNLOAD_RATE_BPS.store(measured_bps, Ordering::Release);
+    }
+    DOWNLOAD_LAST_SAMPLE_MS.store(now, Ordering::Release);
+    DOWNLOAD_LAST_SAMPLE_BYTES.store(received, Ordering::Release);
+
+    let rate_bps = DOWNLOAD_RATE_BPS.load(Ordering::Acquire);
+    let rate = if rate_bps == 0 {
+        String::from("measuring speed")
+    } else {
+        format!("{}/s", format_bytes(rate_bps as u64))
+    };
+
+    let text = if total == 0 {
+        format!(
+            "Download: {} received - {} - ETA unknown",
+            format_bytes(received as u64),
+            rate
+        )
+    } else {
+        let pct = ((received as u64 * 100) / total.max(1) as u64) as u32;
+        let eta = if rate_bps == 0 || received >= total {
+            String::from("ETA --:--")
+        } else {
+            let remaining = total.saturating_sub(received) as u64;
+            let secs = ((remaining + rate_bps as u64 - 1) / rate_bps as u64) as u32;
+            format!("{} left", format_duration(secs))
+        };
+        format!(
+            "Download: {} / {} ({}%) - {} - {}",
+            format_bytes(received as u64),
+            format_bytes(total as u64),
+            pct.min(100),
+            rate,
+            eta
+        )
+    };
+    set_transfer_status(&text);
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+
+    if bytes >= GIB {
+        format!("{}.{} GiB", bytes / GIB, ((bytes % GIB) * 10) / GIB)
+    } else if bytes >= MIB {
+        format!("{}.{} MiB", bytes / MIB, ((bytes % MIB) * 10) / MIB)
+    } else if bytes >= KIB {
+        format!("{} KiB", bytes / KIB)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+fn format_duration(seconds: u32) -> String {
+    if seconds >= 3600 {
+        let hours = seconds / 3600;
+        let minutes = (seconds % 3600) / 60;
+        format!("{}h {:02}m", hours, minutes)
+    } else {
+        format!("{}:{:02}", seconds / 60, seconds % 60)
     }
 }
 
@@ -738,6 +850,12 @@ fn set_status(text: &str) {
     }
 }
 
+fn set_transfer_status(text: &str) {
+    unsafe {
+        anyui::marshal_set_text(TRANSFER_LABEL_ID, text);
+    }
+}
+
 fn set_progress(pct: u32) {
     unsafe {
         anyui::marshal_set_state(PROGRESS_BAR_ID, pct.min(100));
@@ -747,6 +865,7 @@ fn set_progress(pct: u32) {
 fn finish_error(message: &str) {
     set_phase("Setup failed");
     set_status(message);
+    set_transfer_status("Download: stopped.");
     log_line(&format!("ERROR: {}", message));
     WORKER_ERROR.store(true, Ordering::Release);
     WORKER_DONE.store(true, Ordering::Release);

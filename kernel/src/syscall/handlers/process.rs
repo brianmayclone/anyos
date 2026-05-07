@@ -32,7 +32,9 @@ pub fn sys_exit(status: u32) -> u32 {
         for kind in closed.iter() {
             match kind {
                 FdKind::File { global_id } => {
-                    crate::fs::vfs::decref(*global_id);
+                    crate::task::scheduler::defer_fd_cleanup(FdKind::File {
+                        global_id: *global_id,
+                    });
                 }
                 FdKind::PipeRead { pipe_id } => {
                     crate::ipc::anon_pipe::decref_read(*pipe_id);

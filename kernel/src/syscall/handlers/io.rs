@@ -237,7 +237,7 @@ pub fn sys_open(path_ptr: u64, flags: u32, _arg3: u32) -> u32 {
         Some(fd) => fd,
         None => {
             // No local FD available — close the global slot
-            crate::fs::vfs::decref(global_id);
+            crate::task::scheduler::defer_fd_cleanup(FdKind::File { global_id });
             return u32::MAX;
         }
     };
@@ -268,7 +268,7 @@ pub fn sys_close(fd: u32) -> u32 {
     // Close the local FD entry — returns the old FdKind for resource cleanup
     match crate::task::scheduler::current_fd_close(fd) {
         Some(FdKind::File { global_id }) => {
-            crate::fs::vfs::decref(global_id);
+            crate::task::scheduler::defer_fd_cleanup(FdKind::File { global_id });
             0
         }
         Some(FdKind::PipeRead { pipe_id }) => {
@@ -631,7 +631,9 @@ fn incref_fd_kind(kind: crate::fs::fd_table::FdKind) {
 fn decref_fd_kind(kind: crate::fs::fd_table::FdKind) {
     use crate::fs::fd_table::FdKind;
     match kind {
-        FdKind::File { global_id } => crate::fs::vfs::decref(global_id),
+        FdKind::File { global_id } => {
+            crate::task::scheduler::defer_fd_cleanup(FdKind::File { global_id })
+        }
         FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::decref_read(pipe_id),
         FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::decref_write(pipe_id),
         FdKind::Tty | FdKind::None => {}

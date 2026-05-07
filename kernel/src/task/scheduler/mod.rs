@@ -11,11 +11,12 @@
 //! 1. `SCHEDULER`           — global scheduler state, thread list, run queues
 //! 2. `DEFERRED_PD_DESTROY` — deferred page directory destruction queue
 //! 3. `DEFERRED_THREAD_CLEANUP` — deferred fault-exit resource cleanup
-//! 4. `SHARED_REGIONS`      — IPC shared memory regions (ipc/shared_memory.rs)
-//! 5. `VMA_REGISTRY`        — per-process virtual memory area tracking
-//! 6. `VFS`                 — virtual filesystem layer
-//! 7. `ALLOCATOR`           — physical frame allocator
-//! 8. `HEAP_ALLOCATOR`      — kernel heap (acquired implicitly by alloc/dealloc)
+//! 4. `DEFERRED_FD_CLEANUP` — deferred file-resource cleanup
+//! 5. `SHARED_REGIONS`      — IPC shared memory regions (ipc/shared_memory.rs)
+//! 6. `VMA_REGISTRY`        — per-process virtual memory area tracking
+//! 7. `VFS`                 — virtual filesystem layer
+//! 8. `ALLOCATOR`           — physical frame allocator
+//! 9. `HEAP_ALLOCATOR`      — kernel heap (acquired implicitly by alloc/dealloc)
 //!
 //! **Rules:**
 //! - NEVER allocate (Box, Vec, etc.) while holding SCHEDULER — this acquires
@@ -65,7 +66,10 @@ use crate::task::context::CpuContext;
 use crate::task::thread::{Thread, ThreadState};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use deferred::{process_deferred_thread_cleanup, DEFERRED_PD_DESTROY, DEFERRED_THREAD_CLEANUP};
+use deferred::{
+    process_deferred_fd_cleanup, process_deferred_thread_cleanup, DEFERRED_FD_CLEANUP,
+    DEFERRED_PD_DESTROY, DEFERRED_THREAD_CLEANUP,
+};
 use run_queue::RunQueue;
 
 pub(super) static THREAD_CACHE: Spinlock<KmemCache> = Spinlock::new(KmemCache::new(
@@ -1778,6 +1782,15 @@ pub fn schedule() {
     schedule_inner(false);
 }
 
+/// Queue a closed FD resource for cleanup by `deferred_reaper_thread`.
+///
+/// Callers must already have removed the local FD table entry. This keeps
+/// close()/dup2() semantics for FD reuse while moving VFS release/writeback off
+/// the syscall return path.
+pub fn defer_fd_cleanup(kind: crate::fs::fd_table::FdKind) {
+    DEFERRED_FD_CLEANUP.lock().push(kind);
+}
+
 fn drain_deferred_scheduler_work() {
     let pds = DEFERRED_PD_DESTROY.lock().drain();
     for entry in pds.iter().flatten() {
@@ -1797,6 +1810,11 @@ fn drain_deferred_scheduler_work() {
     let deferred_cleanup = DEFERRED_THREAD_CLEANUP.lock().drain();
     for entry in deferred_cleanup.iter().flatten() {
         process_deferred_thread_cleanup(*entry);
+    }
+
+    let deferred_fds = DEFERRED_FD_CLEANUP.lock().drain();
+    for kind in deferred_fds.iter().flatten() {
+        process_deferred_fd_cleanup(*kind);
     }
 }
 

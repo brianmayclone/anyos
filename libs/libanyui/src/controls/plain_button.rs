@@ -64,12 +64,23 @@ impl Control for PlainButton {
         let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let disabled = b.disabled;
         let hovered = b.hovered;
-        let corner = 6u32; // subtle rounded corners on hover
+        let style = b.style;
+        let corner = if style.radius != 0 {
+            crate::theme::scale(style.radius)
+        } else {
+            6u32
+        };
 
         // ── Background: ONLY on hover or pressed (otherwise invisible) ──
         if !disabled && (hovered || self.pressed) {
             let bg = if self.pressed {
-                0x30FFFFFF // pressed: slightly brighter
+                if style.active_bg != 0 {
+                    style.active_bg
+                } else {
+                    0x30FFFFFF // pressed: slightly brighter
+                }
+            } else if style.hover_bg != 0 {
+                style.hover_bg
             } else {
                 0x18FFFFFF // hover: very subtle white overlay
             };
