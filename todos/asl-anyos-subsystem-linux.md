@@ -1081,3 +1081,233 @@ Die richtige Produktthese lautet:
 - die technische Basis ist eine kontrollierte Utility-VM
 
 Damit bleibt die Architektur ehrlich, lieferbar und erweiterbar.
+
+---
+
+## Dev-Plattform Implementierungsplan (2026-05-07)
+
+Zielbild: ASL muss am Ende fuer einen Entwickler nutzbar sein, um unter ASL
+Programme zu entwickeln. Sprachen-Scope: **Java, C/C++, Rust, Node.js**.
+Editor-Modell: **1c** — Editor laeuft sowohl auf anyOS (anycode, ueber Shared
+Mount + `aslctl run`) als auch spaeter in der Distro (Block F, GUI-Forwarding).
+Aussenanbindung: **Inbound Port-Forward, Host↔Distro File-Sharing, Git/HTTPS
+outbound**.
+
+Detail-Audit der bestehenden Implementierung gegen die Spezifikationen siehe
+[../docs/asl-implementation-audit.md](../docs/asl-implementation-audit.md).
+
+### Block A — Workflow-Grundlage (nicht verhandelbar)
+
+#### A1. Outbound-Netzwerk verlaesslich
+- [x] DNS-Broker in `aslnetd` ist implementiert (war beim Audit unklar).
+      `dns_reply()` in `system/daemons/aslnetd/src/main.rs` nutzt
+      `net::dns()` als Resolver, `gateway.asl`/`host.asl`/`dns.asl` werden
+      special-mapped.
+- [x] `dns_broker_enabled` Config-Flag respektieren: neuer
+      `BrokerState.dns_broker_enabled` (Default `true` aus Schema), neuer
+      `SET_DNS_BROKER 0|1` IPC-Command, Drop-Counter
+      `dns_disabled_drops` im Status. **6 neue Tests gruen** (Toggle,
+      garbage args, drop-counter sticky, status surface,
+      `is_dns_query`-Heuristik). 2026-05-07.
+- [ ] End-zu-End-Test outbound: `aslctl exec <distro> -- curl https://github.com`,
+      `apt update`, `git clone https://...`, `cargo fetch` mit ~20 Crates.
+      **Blockiert** auf laufende Distro-VM (haengt damit auch an
+      Test-Harness-Bringup).
+- [ ] TLS-Stack: pruefen dass die Linux-Gast-CA-Bundle-Pfade funktionieren.
+
+#### A2. Inbound Port-Forward
+- [ ] `aslctl port add` end-zu-end testen (TCP + UDP).
+- [x] ~~Bug fixen: `aslctl port validate` sendet `NETWORK_VALIDATE`~~ — geklaert
+      2026-05-07: `port validate` und `network validate` sind CLI-Aliase fuer
+      denselben kombinierten Validator in asld. Kein Bug.
+- [ ] Live-Workflow: `npm run dev` in Distro auf :3000, von Surf auf anyOS
+      `http://127.0.0.1:3000` oeffnen (zurueckgestellt fuer E2E nach B1/B2).
+- [ ] Persistenz: Port-Forwards ueberleben Distro-Stop/Start und asld-Restart
+      (zurueckgestellt fuer E2E nach B1/B2).
+
+#### A3. Shared-Mounts (Host↔Distro File-Sharing)
+- [x] Policy-Validierung in `aslfsd` getestet — `test = false` entfernt,
+      `validate_export_fields` mit Length-Guard gegen Panic, **28 Tests
+      gruen** (Path-Safety, ID-Format, alle Mode-/Policy-Werte aus
+      ADR-0004, Apply/Replace/Clear/Validate-IPC, Status-Counter).
+      2026-05-07.
+- [ ] Verifizieren dass `aslfsd`-Mounts in der Gast-VM tatsaechlich ankommen
+      — virtio-fs / 9P-Anbindung in `system/daemons/asld/src/vm.rs` pruefen.
+      **Blockiert** auf laufende Distro-VM.
+- [ ] Bidirektionalitaet: anyOS schreibt → Gast `cat` sieht es ohne Remount.
+      Umgekehrt genauso. **Blockiert** auf laufende Distro-VM.
+- [ ] Permissions/UID-Mapping: `chmod +x build.sh` im Gast bearbeitbar; Builds
+      schreiben Artefakte zurueck die anyOS lesen kann.
+- [ ] Performance-Smoke: `cargo build` eines mittelgrossen Crates auf
+      shared-mounted Source.
+- [ ] Watch-Policy: `case_mode`, `exec_policy`, `metadata_mode` aus dem Schema
+      in der Gast-VM durchexerzieren (Pure-Validation gruen, Wirkung im
+      Gast steht aus).
+
+#### A4. `aslctl run` mit Stdio + Exit-Code
+- [x] Subcommand `run --cwd <path> --env KEY=VALUE -- <cmd>...` ergaenzt
+      (`bin/aslctl/src/lib.rs`, 2026-05-07). `run` ist Alias zu `exec`,
+      identisches Wire-Format (`EXEC ...`). 7 neue Tests, alle gruen.
+- [ ] Stdin-Pipe (Backend-seitig — `exec_command` liefert bereits
+      `stdin_pipe_name`, Aufrufer-Anbindung in anycode steht aus).
+- [ ] Stdout/Stderr getrennt bis zum Aufrufer (heute nur ein
+      `stdout_pipe_name` — `stderr` ggf. ueber separate Pipe ergaenzen).
+- [ ] Exit-Code propagieren — `ExecInvocation` hat heute `attached_pid` aber
+      kein `exit_code`-Feld. Erweitern fuer IDE-Build-Tasks.
+- [ ] Backend in `system/daemons/asld/src/runtime.rs` pruefen: `exec_command`
+      ist heute Setup + Spawn ohne Wait. Fuer `run` braucht es entweder einen
+      synchronen Wait-Pfad oder einen `EXEC_WAIT <exec-id>` Wire-Command.
+
+#### A5. `aslctl logs` + Diagnose-Endpunkte
+- [ ] `GetLogs` API in asld (`system/daemons/asld/src/ipc.rs`) — fehlt komplett.
+- [ ] Log-Quellen: asld-eigenes Log + Agent-Output + Konsole
+      (aslconsoled-Buffer).
+- [ ] `aslctl logs <distro> [--follow]` Subcommand.
+- [ ] `ListEvents` API + `aslctl events` an aslobsd-Quelle koppeln (CLI heisst
+      aktuell `vm-events` — umbenennen oder Alias).
+- [ ] `aslctl --json` global einfuehren — Voraussetzung fuer aslmanager-Backend
+      (Block D) und Skripting.
+
+### Block B — Distro-Bringup fuer Devs
+
+#### B1. ImportBaseImage und Image-Trust
+- [x] Linux-Stub `runtime.rs:1135` ist beabsichtigt (asld auf Linux nur
+      fuer Host-Tests, produktiv laeuft auf anyOS — dort funktioniert der
+      Import). Geklaert 2026-05-07.
+- [x] `RAW_DISK_MIN_BYTES` von `u32` auf `u64` umgestellt mit
+      `STAT_SIZE_OVERFLOW_SENTINEL`-Detection — schuetzt vor stillem
+      32-bit-stat-Truncation bei >4 GiB Images. ADR-0011 verweist darauf.
+- [x] ADR-0011 angelegt: gestaffelte Image-Trust-Strategie.
+      Stufe 1 (TLS + URL-Whitelist + Size + MBR) ist heute aktiv und im
+      Installer-Log als `WARN: ... ADR-0011 stage 1` sichtbar.
+- [ ] **Stufe 2** (TODO, separater Block): SHA512-Hash-Pinning gegen
+      versionsgebundene Konstante. Hash-Berechnung in zweitem Read-Pass
+      nach Download. Erfordert Streaming-Hash oder einfaches `read_loop`
+      ueber bestehende Datei.
+- [ ] **Stufe 3** (TODO, blockiert auf GPG in anyOS): SHA512SUMS+sig
+      auto-laden, GPG-verify. Eigener Roadmap-Punkt — nicht in dieser
+      Auslieferung.
+
+#### B2. Tests fuer aslmanager-Logik
+- [x] `aslmanager_core` Library angelegt (`apps/aslmanager/core/`).
+      Pure-Funktionen extrahiert: `is_allowed_debian_url`,
+      `is_safe_absolute_dir`, `is_safe_artifact_path`, `split_key_value`,
+      `join_path`, `artifact_size_ok`, `raw_disk_header_ok`,
+      `should_try_http_fallback`, `official_http_fallback`, `parse_u64`.
+      `#![cfg_attr(not(test), no_std)]` — gleiche Quelle fuer anyOS-Build
+      und Host-Tests.
+- [x] **32 Tests gruen** (`cargo +stable test -p aslmanager_core`):
+      URL-Whitelist (5), Path-Safety (5), Config-Parsing (4),
+      Artifact-Size (4), MBR-Header (4), HTTP-Fallback-Policy (5),
+      `parse_u64` (3), Pfad-Beispiele (2).
+- [x] aslmanager-App auf das Core-Crate umgestellt — keine
+      Code-Duplikation mehr.
+
+#### B3. Toolchain-Profile (separater Schritt nach erstem Boot)
+- [x] Skripte angelegt unter `defaults/System/etc/asl/toolchains/`
+      mit CMake-Install-Regel in `cmake/UserPrograms.cmake`:
+      - `dev-c.sh` — gcc, g++, clang, gdb, make, cmake, ninja, pkg-config
+      - `dev-rust.sh` — rustup + stable toolchain (TLS 1.2 enforced)
+      - `dev-node.sh` — nvm v0.40.1 + Node.js LTS
+      - `dev-java.sh` — OpenJDK 21 + Maven + Gradle
+      Alle Skripte: `set -euo pipefail`, idempotent (re-run ist no-op),
+      strukturiertes Logging mit `[asl-toolchain:<profil>]` Tag.
+      `README.md` daneben dokumentiert Aufruf und Konventionen.
+      Permissions: 755 fuer .sh, 644 fuer README. 2026-05-07.
+- [ ] **Live-Verifikation** in einer Distro: ueber `aslctl run` aufrufen
+      und sehen dass die Toolchain wirklich installiert wird. **Blockiert**
+      auf laufende Distro-VM (haengt mit A1-E2E zusammen).
+- [ ] Optional: aslmanager-UI bekommt "Install toolchain"-Buttons die
+      diese Skripte triggern und Output ins Logs-Tab streamen.
+
+#### B4. Snapshot / Clone (war frueher B3)
+- [ ] `aslctl clone` ist laut Audit IMPLEMENTED — testen mit "Base Dev"-Distro
+      als Quelle.
+- [ ] Use-Case: `clone base-dev → projektX-dev`, experimentieren, wegwerfen
+      kostet nichts.
+
+### Block C — Dev-Komfort und IDE-Integration (1a-Pfad)
+
+#### C1. anycode Build-Task-Profil
+- [ ] Build-Task-Definition in anycode die
+      `aslctl run --distro <name> --cwd /workspace -- cargo build` aufruft.
+- [ ] Output-Parser fuer gcc/cargo/tsc Fehlerformate → klickbare Zeilen.
+- [ ] Run-Konfiguration: Programm in Distro starten + Port-Forward.
+
+#### C2. TTY-Qualitaet fuer `aslctl shell`
+- [ ] aslconsoled ANSI-Vollstaendigkeit pruefen — reicht fuer tmux/htop/vim?
+- [ ] Resize-Forwarding vom anyOS-Terminal-Fenster bis zum PTY in der Distro.
+- [ ] UTF-8 + Wide-Chars durchtesten.
+
+#### C3. Language-Server (faellt aus A4)
+- [ ] Wenn Stdio sauber durchgeht, kann anycode `rust-analyzer`/`clangd` ueber
+      `aslctl run --distro X -- rust-analyzer` als Sub-Prozess starten. Kein
+      eigener Block — Validierung in C1.
+
+### Block D — Performance + Robustheit + Manager-Backend
+
+#### D1. FS-Performance-Messung
+- [ ] Benchmark-Skript: `cargo build` Cold/Warm, `npm install` mit ~500 Deps,
+      `gradle build`. Vergleich shared-mount vs. nativ in Distro-FS.
+- [ ] Wenn shared-mount > 2× langsamer: Bottleneck identifizieren
+      (virtio-fs vs. 9P-Latenz, Caching-Strategie).
+
+#### D2. aslmanager Performance-Tab mit Daten fuellen
+- [ ] Stats-Endpoint in asld: vCPU-Last, RSS, Disk-IO,
+      Netzwerk-Throughput pro Distro.
+- [ ] aslmanager-Frontend an Endpoint haengen (`apps/aslmanager/src/main.rs`).
+- [ ] Logs-Tab an `GetLogs` (aus A5) anbinden.
+
+#### D3. Crash-Recovery
+- [ ] asld-Restart-Test mit ≥2 laufenden Distros: Runtime-States rekonstruiert?
+      Port-Forwards aktiv? Mounts live?
+- [ ] Concurrency: parallele `start`/`stop` aus zwei Shells.
+
+#### D4. Globale CLI-Flags (Rest)
+- [ ] `--quiet`, `--verbose`, `--timeout` ergaenzen (aus Audit).
+- [ ] `--user` falls Mehrbenutzerkontext relevant wird.
+
+### Block E — Doku- und Aufraeumarbeiten (parallel)
+- [ ] `docs/asld-scaffolding-plan.md` archivieren (ueberholt).
+- [ ] `seed_image_path` in `docs/asl-config-schema.md` ergaenzen oder als
+      intern markieren.
+- [ ] Audit-Lueckenliste in den Spec-Doks nachpflegen wenn beim Implementieren
+      Spec-Drift auffaellt.
+- [ ] Dev-Quickstart-Doku schreiben: "Wie richtest du eine
+      C++/Rust/Node/Java-Distro ein?"
+- [ ] CLI-Naming: `vm-events` → `events` (Alias), `storage import` ↔
+      `import` aus Doc abgleichen.
+
+### Block F — Editor in der Distro (1c-Teil, separater Brocken, spaeter)
+
+Nicht Teil der ersten Auslieferung. Optionen:
+- **F1: Wayland-Proxy** — `WAYLAND_DISPLAY` in der Distro,
+      Socket-Forwarding zum anyOS-Compositor. Mittlere Komplexitaet, modern.
+- **F2: X11-Server in anyOS** — minimaler Xwayland-artiger Server, Distro-Apps
+      nutzen `DISPLAY=:0`. Hoher Aufwand, kompatibel mit allem.
+- **F3: VNC/RDP-artig** — Distro startet VNC-Server, anyOS hat Client.
+      Pragmatisch, schwaechere UX.
+
+Eigenes Roadmap-Item nachdem A-D produktiv ist.
+
+### Reihenfolge
+
+```
+A1 (DNS+Outbound) ──┐
+A2 (Port-Forward)   ├─→  Workflow-MVP
+A3 (Shared-Mount)   │    (Distro manuell entwickelbar)
+A4 (aslctl run) ────┘
+        ↓
+A5 (Logs/Events/--json)  — Debugging-Hilfen, parallel zu B moeglich
+        ↓
+B1 (ImportBase) → B2 (Bootstrap) → B3 (Clone)
+        ↓
+C1 (anycode) ── parallel ── C2 (TTY)
+        ↓
+D1-D4 (Perf, Manager-Backend, Robustheit)
+        ↓
+F (Editor in Distro)  — separat, spaeter
+```
+
+Erstes konkretes Arbeitspaket: **A1 — DNS-Broker in aslnetd**. Ohne das
+funktionieren `apt update`/`git clone` nicht.
