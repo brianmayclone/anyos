@@ -109,6 +109,20 @@ fn prng_next() -> u64 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+fn fill_virtio_random(buf: &mut [u8]) -> usize {
+    if crate::drivers::virtio::rng::is_available() {
+        crate::drivers::virtio::rng::fill_random(buf)
+    } else {
+        0
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn fill_virtio_random(_buf: &mut [u8]) -> usize {
+    0
+}
+
 // ── Öffentliche API ──────────────────────────────────────────────────────────
 
 /// Füllt `buf` mit zufälligen Bytes.
@@ -122,9 +136,7 @@ pub fn fill_random(buf: &mut [u8]) {
     let mut filled = 0;
 
     // 1. VirtIO RNG (beste Qualität, nur im echten Betrieb verfügbar)
-    if crate::drivers::virtio::rng::is_available() {
-        filled = crate::drivers::virtio::rng::fill_random(buf);
-    }
+    filled = fill_virtio_random(buf);
 
     // 2. RDRAND für den Rest (oder den ganzen Puffer, falls kein VirtIO)
     if filled < buf.len() {
@@ -159,7 +171,7 @@ pub fn next_u64() -> u64 {
     }
     // VirtIO RNG für genau 8 Bytes
     let mut buf = [0u8; 8];
-    if crate::drivers::virtio::rng::fill_random(&mut buf) == 8 {
+    if fill_virtio_random(&mut buf) == 8 {
         return u64::from_le_bytes(buf);
     }
     prng_next()

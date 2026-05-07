@@ -232,6 +232,7 @@ fn spawn_compositor(setup_mode: bool) {
 }
 
 fn start_textmode_console() {
+    #[cfg(target_arch = "x86_64")]
     drivers::textcon::init();
     serial_println!("[OK] Text mode: skipping compositor/init");
     match task::loader::load_and_run("/System/bin/textmode_console", "textmode_console") {

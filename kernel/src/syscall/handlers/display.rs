@@ -347,7 +347,10 @@ pub fn sys_register_compositor() -> u32 {
         // drift to the bottom-right corner that we observed in the
         // [mouse-diag] traces under both `-display sdl` multi-window
         // and `-display gtk`.
+        #[cfg(target_arch = "x86_64")]
         let advertised = crate::drivers::gpu::with_gpu(|g| g.display_count()).unwrap_or(1);
+        #[cfg(target_arch = "aarch64")]
+        let advertised = 1;
         if advertised > 1 {
             crate::serial_println!(
                 "[OK] multi-monitor ({}): vmmouse stays enabled (delta-derivation in compositor)",
