@@ -140,17 +140,106 @@ pub enum WireResponse {
     Err { code: String, message: String },
 }
 
+/// Output format selected by the global `--json` flag. Default is the
+/// human-readable text renderer that has been the only mode prior to
+/// 2026-05-07; `Json` emits one JSON object per response so callers
+/// (aslmanager, scripts, monitoring agents) get a stable machine
+/// surface that does not depend on parsing decorated text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputFormat {
+    Text,
+    Json,
+}
+
+/// Verbosity selected by the global `--quiet` / `--verbose` flags.
+/// `Quiet` suppresses the per-section header lines (`distros: N`,
+/// `mounts: N`, ...) — useful for piping into grep or for scripted
+/// callers in `--text` mode that don't want the framing. `Verbose`
+/// is reserved for future per-command extra detail; today it behaves
+/// like `Normal`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verbosity {
+    Quiet,
+    Normal,
+    Verbose,
+}
+
+/// Parsed global flags + the residual argv-style string with the
+/// flags stripped. The stripped string is then handed to
+/// `parse_cli_command` exactly as before, so existing subcommand
+/// parsers stay untouched.
+#[derive(Debug, Clone)]
+pub struct GlobalFlags {
+    pub format: OutputFormat,
+    pub verbosity: Verbosity,
+}
+
+impl GlobalFlags {
+    pub fn defaults() -> Self {
+        Self {
+            format: OutputFormat::Text,
+            verbosity: Verbosity::Normal,
+        }
+    }
+}
+
+/// Strip leading global flags from `raw` and return the parsed flags
+/// plus the remainder string. Recognised flags:
+///
+/// - `--json`             switch to JSON output
+/// - `--quiet` / `-q`     drop framing/header lines
+/// - `--verbose` / `-v`   reserved (no-op today, pinned for forward-compat)
+///
+/// Flags must come **before** the subcommand. This matches the
+/// convention documented in `docs/aslctl-cli.md`. Unknown leading
+/// flags are passed through unchanged so subcommand-specific flags
+/// (e.g. `--cwd`) are not stolen by the global parser.
+pub fn strip_global_flags(raw: &str) -> (GlobalFlags, String) {
+    let mut flags = GlobalFlags::defaults();
+    let mut tokens: Vec<&str> = raw.split_whitespace().collect();
+    while let Some(first) = tokens.first().copied() {
+        match first {
+            "--json" => {
+                flags.format = OutputFormat::Json;
+                tokens.remove(0);
+            }
+            "--quiet" | "-q" => {
+                flags.verbosity = Verbosity::Quiet;
+                tokens.remove(0);
+            }
+            "--verbose" | "-v" => {
+                flags.verbosity = Verbosity::Verbose;
+                tokens.remove(0);
+            }
+            _ => break,
+        }
+    }
+    // `join` returns String; no further conversion needed.
+    (flags, tokens.join(" "))
+}
+
 pub fn run() {
     let mut args_buf = [0u8; 256];
     let raw = process::args(&mut args_buf);
-    let Some(command) = parse_cli_command(raw) else {
+    let (flags, remainder) = strip_global_flags(raw);
+    let Some(command) = parse_cli_command(&remainder) else {
         print_usage();
         return;
     };
 
     match send_command(&command) {
-        Ok(response) => print_response(&command, &response),
-        Err(message) => println!("aslctl: {}", message),
+        Ok(response) => print_response_with(&command, &response, flags.format, flags.verbosity),
+        Err(message) => match flags.format {
+            OutputFormat::Json => {
+                // Keep the error shape identical to a daemon ERR so
+                // callers have one parser to write.
+                println!(
+                    "{}",
+                    json_error_response(&command, "transport_error", &message)
+                );
+            }
+            OutputFormat::Text => println!("aslctl: {}", message),
+        },
     }
 }
 
@@ -613,6 +702,33 @@ pub fn parse_response(raw: &str) -> Result<WireResponse, &'static str> {
 }
 
 fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
+    print_response_with(command, response, OutputFormat::Text, Verbosity::Normal);
+}
+
+/// Print a section header (e.g. "distros: 5") only when the verbosity
+/// level allows it. In `--quiet` mode header lines are suppressed so
+/// scripts can pipe the body lines straight into grep without having
+/// to skip the count line.
+fn print_header(verbosity: Verbosity, label: &str, count: usize) {
+    if !matches!(verbosity, Verbosity::Quiet) {
+        println!("{}: {}", label, count);
+    }
+}
+
+fn print_response_with(
+    command: &ClientCommand<'_>,
+    response: &WireResponse,
+    format: OutputFormat,
+    verbosity: Verbosity,
+) {
+    if matches!(format, OutputFormat::Json) {
+        // JSON mode bypasses the per-command renderer entirely — one
+        // line, one stable shape, machine-readable. Verbosity is not
+        // applied because JSON consumers don't want a different
+        // schema based on a flag.
+        println!("{}", format_json_response(command, response));
+        return;
+    }
     match response {
         WireResponse::Err { code, message } => {
             if message.is_empty() {
@@ -623,7 +739,7 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
         }
         WireResponse::Ok { count, lines } => match command {
             ClientCommand::List => {
-                println!("distros: {}", count);
+                print_header(verbosity, "distros", *count);
                 for line in lines {
                     let mut parts = line.split('\t');
                     let name = parts.next().unwrap_or("-");
@@ -636,7 +752,7 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
             | ClientCommand::MountShow { .. }
             | ClientCommand::MountAdd { .. }
             | ClientCommand::MountRemove { .. } => {
-                println!("mounts: {}", count);
+                print_header(verbosity, "mounts", *count);
                 for line in lines {
                     let mut parts = line.split('\t');
                     println!(
@@ -654,7 +770,7 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                 }
             }
             ClientCommand::MountValidate(_) => {
-                println!("mount-validation: {}", count);
+                print_header(verbosity, "mount-validation", *count);
                 for line in lines {
                     let mut parts = line.split('\t');
                     println!(
@@ -667,7 +783,7 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                 }
             }
             ClientCommand::NetworkValidate(_) | ClientCommand::PortValidate(_) => {
-                println!("network-validation: {}", count);
+                print_header(verbosity, "network-validation", *count);
                 for line in lines {
                     let mut parts = line.split('\t');
                     println!(
@@ -681,7 +797,7 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                 }
             }
             ClientCommand::StorageValidate(_) => {
-                println!("storage-validation: {}", count);
+                print_header(verbosity, "storage-validation", *count);
                 for line in lines {
                     let mut parts = line.split('\t');
                     println!(
@@ -696,7 +812,7 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
             ClientCommand::PortList(_)
             | ClientCommand::PortAdd { .. }
             | ClientCommand::PortRemove { .. } => {
-                println!("ports: {}", count);
+                print_header(verbosity, "ports", *count);
                 for line in lines {
                     let mut parts = line.split('\t');
                     println!(
@@ -731,7 +847,7 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                 }
             }
             ClientCommand::VmEvents(_) | ClientCommand::VmEventsTail { .. } => {
-                println!("vm-events: {}", count);
+                print_header(verbosity, "vm-events", *count);
                 for line in lines {
                     let mut parts = line.split('\t');
                     println!(
@@ -774,7 +890,7 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                 }
             }
             ClientCommand::ShellList(_) | ClientCommand::ShellClose { .. } => {
-                println!("shell-sessions: {}", count);
+                print_header(verbosity, "shell-sessions", *count);
                 for line in lines {
                     let mut parts = line.split('\t');
                     println!(
@@ -822,7 +938,7 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                 }
             }
             ClientCommand::ExecList(_) => {
-                println!("execs: {}", count);
+                print_header(verbosity, "execs", *count);
                 for line in lines {
                     let mut parts = line.split('\t');
                     println!(
@@ -1015,8 +1131,154 @@ fn encode_key(key: u32, buf: &mut [u8; 4]) -> &[u8] {
     ch.encode_utf8(buf).as_bytes()
 }
 
+// ---------------------------------------------------------------------------
+//  JSON output (--json)
+// ---------------------------------------------------------------------------
+//
+// aslctl is no_std with only `anyos_std` available — no serde. The JSON
+// shape is small and stable, so a hand-rolled encoder with proper string
+// escaping is sufficient and stays testable.
+//
+// Response shape:
+//   { "ok": true,  "command": "<verb>", "lines": ["...", "..."] }
+//   { "ok": false, "command": "<verb>", "code": "...", "message": "..." }
+
+/// Escape a Rust `&str` into a JSON string body (no surrounding quotes).
+/// Handles the JSON-mandatory escapes (\\, \", \b, \f, \n, \r, \t) and
+/// escapes any remaining control character (< 0x20) as \u00XX. UTF-8
+/// multi-byte sequences pass through unchanged — JSON allows raw UTF-8
+/// in strings, only ASCII control characters and the two reserved
+/// characters need escaping.
+pub fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{0008}' => out.push_str("\\b"),
+            '\u{000c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let code = c as u32;
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                out.push_str("\\u00");
+                out.push(HEX[((code >> 4) & 0xf) as usize] as char);
+                out.push(HEX[(code & 0xf) as usize] as char);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Stable verb name for a command, used as the `command` field in JSON
+/// output so consumers don't have to parse the wire command back from
+/// `as_wire`. Names mirror the CLI subcommand spelling where one exists.
+pub fn json_command_name(command: &ClientCommand<'_>) -> &'static str {
+    match command {
+        ClientCommand::List => "list",
+        ClientCommand::Status(_) => "status",
+        ClientCommand::Create { .. } => "create",
+        ClientCommand::Delete { .. } => "delete",
+        ClientCommand::Clone { .. } => "clone",
+        ClientCommand::Export(_) => "export",
+        ClientCommand::Config(_) => "config",
+        ClientCommand::ConfigSetResources { .. } => "config-set-resources",
+        ClientCommand::StorageImport { .. } => "storage-import",
+        ClientCommand::StorageValidate(_) => "storage-validate",
+        ClientCommand::NetworkShow(_) => "network-show",
+        ClientCommand::NetworkSet { .. } => "network-set",
+        ClientCommand::NetworkValidate(_) => "network-validate",
+        ClientCommand::Start(_) => "start",
+        ClientCommand::Restart(_) => "restart",
+        ClientCommand::Stop(_) => "stop",
+        ClientCommand::AgentStatus(_) => "agent-status",
+        ClientCommand::AgentRestart(_) => "agent-restart",
+        ClientCommand::VmStatus(_) => "vm-status",
+        ClientCommand::VmEvents(_) => "events",
+        ClientCommand::VmEventsTail { .. } => "events-tail",
+        ClientCommand::VmEventsClear(_) => "events-clear",
+        ClientCommand::Diagnose(_) => "diagnose",
+        ClientCommand::Doctor(_) => "doctor",
+        ClientCommand::Logs { .. } => "logs",
+        ClientCommand::SelfCheck => "self-check",
+        ClientCommand::ConsoleCanvas(_) => "console-canvas",
+        ClientCommand::ShellList(_) => "shell-list",
+        ClientCommand::ShellShow { .. } => "shell-show",
+        ClientCommand::ShellClose { .. } => "shell-close",
+        ClientCommand::Shell { .. } => "shell",
+        ClientCommand::ExecList(_) => "exec-list",
+        ClientCommand::ExecShow { .. } => "exec-show",
+        ClientCommand::ExecClear(_) => "exec-clear",
+        ClientCommand::Exec { .. } => "exec",
+        ClientCommand::MountList(_) => "mount-list",
+        ClientCommand::MountShow { .. } => "mount-show",
+        ClientCommand::MountAdd { .. } => "mount-add",
+        ClientCommand::MountRemove { .. } => "mount-remove",
+        ClientCommand::MountValidate(_) => "mount-validate",
+        ClientCommand::PortList(_) => "port-list",
+        ClientCommand::PortAdd { .. } => "port-add",
+        ClientCommand::PortRemove { .. } => "port-remove",
+        ClientCommand::PortValidate(_) => "port-validate",
+    }
+}
+
+/// Render a successful response as JSON. `lines` go through string
+/// escaping so embedded tabs and newlines round-trip cleanly.
+pub fn format_json_ok(command: &ClientCommand<'_>, lines: &[String]) -> String {
+    let mut out = String::with_capacity(64 + lines.iter().map(|l| l.len() + 4).sum::<usize>());
+    out.push_str("{\"ok\":true,\"command\":\"");
+    out.push_str(json_command_name(command));
+    out.push_str("\",\"lines\":[");
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('"');
+        out.push_str(&json_escape(line));
+        out.push('"');
+    }
+    out.push_str("]}");
+    out
+}
+
+/// Render an error response as JSON. Used for both daemon-side ERR
+/// responses and aslctl-internal transport errors.
+pub fn format_json_err(command: &ClientCommand<'_>, code: &str, message: &str) -> String {
+    let mut out = String::with_capacity(96);
+    out.push_str("{\"ok\":false,\"command\":\"");
+    out.push_str(json_command_name(command));
+    out.push_str("\",\"code\":\"");
+    out.push_str(&json_escape(code));
+    out.push_str("\",\"message\":\"");
+    out.push_str(&json_escape(message));
+    out.push_str("\"}");
+    out
+}
+
+/// Wrap any `WireResponse` for JSON output.
+pub fn format_json_response(command: &ClientCommand<'_>, response: &WireResponse) -> String {
+    match response {
+        WireResponse::Ok { lines, .. } => format_json_ok(command, lines),
+        WireResponse::Err { code, message } => format_json_err(command, code, message),
+    }
+}
+
+/// Convenience: emit a transport-error JSON object when send_command
+/// fails outright (no daemon response). Same shape as a daemon ERR.
+pub fn json_error_response(command: &ClientCommand<'_>, code: &str, message: &str) -> String {
+    format_json_err(command, code, message)
+}
+
 fn print_usage() {
     println!("aslctl - control ASL distros");
+    println!();
+    println!("Global flags (must come before the subcommand):");
+    println!("  --json                machine-readable JSON output");
+    println!("  --quiet | -q          suppress section headers");
+    println!("  --verbose | -v        reserved for future per-command detail");
     println!();
     println!("Usage:");
     println!("  aslctl list");
@@ -1309,7 +1571,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_cli_command, parse_command, parse_response, ClientCommand, WireResponse};
+    use super::{
+        format_json_err, format_json_ok, format_json_response, json_command_name, json_escape,
+        parse_cli_command, parse_command, parse_response, strip_global_flags, ClientCommand,
+        OutputFormat, Vec, Verbosity, WireResponse,
+    };
+    use anyos_std::String;
 
     #[test]
     fn parses_list_command() {
@@ -1832,5 +2099,200 @@ mod tests {
             }
             _ => panic!("expected run command"),
         }
+    }
+
+    // ========================================================================
+    //  Global flags (--json / --quiet / --verbose)
+    // ========================================================================
+
+    #[test]
+    fn strip_global_flags_default_on_no_flags() {
+        let (flags, rest) = strip_global_flags("list");
+        assert_eq!(flags.format, OutputFormat::Text);
+        assert_eq!(flags.verbosity, Verbosity::Normal);
+        assert_eq!(rest, "list");
+    }
+
+    #[test]
+    fn strip_global_flags_recognises_json() {
+        let (flags, rest) = strip_global_flags("--json list");
+        assert_eq!(flags.format, OutputFormat::Json);
+        assert_eq!(rest, "list");
+    }
+
+    #[test]
+    fn strip_global_flags_recognises_quiet_short_and_long() {
+        let (flags, _) = strip_global_flags("--quiet list");
+        assert_eq!(flags.verbosity, Verbosity::Quiet);
+        let (flags, _) = strip_global_flags("-q list");
+        assert_eq!(flags.verbosity, Verbosity::Quiet);
+    }
+
+    #[test]
+    fn strip_global_flags_recognises_verbose_short_and_long() {
+        let (flags, _) = strip_global_flags("--verbose list");
+        assert_eq!(flags.verbosity, Verbosity::Verbose);
+        let (flags, _) = strip_global_flags("-v list");
+        assert_eq!(flags.verbosity, Verbosity::Verbose);
+    }
+
+    #[test]
+    fn strip_global_flags_combines_in_any_order() {
+        let (flags, rest) = strip_global_flags("--json --quiet status ubuntu-dev");
+        assert_eq!(flags.format, OutputFormat::Json);
+        assert_eq!(flags.verbosity, Verbosity::Quiet);
+        assert_eq!(rest, "status ubuntu-dev");
+
+        let (flags, rest) = strip_global_flags("-q --json mount list ubuntu-dev");
+        assert_eq!(flags.format, OutputFormat::Json);
+        assert_eq!(flags.verbosity, Verbosity::Quiet);
+        assert_eq!(rest, "mount list ubuntu-dev");
+    }
+
+    #[test]
+    fn strip_global_flags_does_not_steal_subcommand_flags() {
+        // `--cwd` belongs to the `exec` subcommand, not the global
+        // parser. The stripper must stop as soon as it sees something
+        // it doesn't recognise.
+        let (flags, rest) = strip_global_flags(
+            "exec ubuntu-dev --cwd /workspace --env A=1 -- cargo test",
+        );
+        assert_eq!(flags.format, OutputFormat::Text);
+        assert_eq!(rest, "exec ubuntu-dev --cwd /workspace --env A=1 -- cargo test");
+    }
+
+    #[test]
+    fn strip_global_flags_stops_at_first_non_global() {
+        // A global flag *after* the subcommand is left in place — the
+        // stripper only consumes leading globals. This keeps the
+        // contract one-directional and predictable.
+        let (flags, rest) = strip_global_flags("list --json");
+        assert_eq!(flags.format, OutputFormat::Text);
+        assert_eq!(rest, "list --json");
+    }
+
+    #[test]
+    fn strip_global_flags_handles_empty_input() {
+        let (flags, rest) = strip_global_flags("");
+        assert_eq!(flags.format, OutputFormat::Text);
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn strip_global_flags_handles_only_global_flags() {
+        // Pathological case: user runs `aslctl --json` with no
+        // subcommand. Strip the flags, return an empty remainder so
+        // print_usage() fires.
+        let (flags, rest) = strip_global_flags("--json");
+        assert_eq!(flags.format, OutputFormat::Json);
+        assert_eq!(rest, "");
+    }
+
+    // ========================================================================
+    //  JSON encoder
+    // ========================================================================
+
+    #[test]
+    fn json_escape_basic_chars() {
+        assert_eq!(json_escape(""), "");
+        assert_eq!(json_escape("hello"), "hello");
+        assert_eq!(json_escape("a/b"), "a/b"); // forward slash is not escaped
+    }
+
+    #[test]
+    fn json_escape_handles_quotes_and_backslash() {
+        assert_eq!(json_escape("\""), "\\\"");
+        assert_eq!(json_escape("\\"), "\\\\");
+        assert_eq!(json_escape("path\\to\"file"), "path\\\\to\\\"file");
+    }
+
+    #[test]
+    fn json_escape_handles_whitespace_controls() {
+        assert_eq!(json_escape("\n"), "\\n");
+        assert_eq!(json_escape("\r"), "\\r");
+        assert_eq!(json_escape("\t"), "\\t");
+        assert_eq!(json_escape("\u{0008}"), "\\b");
+        assert_eq!(json_escape("\u{000c}"), "\\f");
+    }
+
+    #[test]
+    fn json_escape_emits_unicode_escape_for_other_controls() {
+        // 0x01 (SOH) is not one of the named escapes — must use \u00XX.
+        assert_eq!(json_escape("\u{0001}"), "\\u0001");
+        assert_eq!(json_escape("\u{001f}"), "\\u001f");
+    }
+
+    #[test]
+    fn json_escape_passes_utf8_through_unchanged() {
+        // JSON allows raw UTF-8 in strings — only ASCII controls and
+        // the two reserved chars need escaping. Avoids ballooning
+        // sizes for log lines containing Unicode.
+        assert_eq!(json_escape("Grüße"), "Grüße");
+        assert_eq!(json_escape("日本語"), "日本語");
+    }
+
+    #[test]
+    fn json_ok_response_has_expected_shape() {
+        let lines = Vec::from([String::from("alpha"), String::from("beta\twith\ttab")]);
+        let s = format_json_ok(&ClientCommand::List, &lines);
+        assert_eq!(
+            s,
+            "{\"ok\":true,\"command\":\"list\",\"lines\":[\"alpha\",\"beta\\twith\\ttab\"]}"
+        );
+    }
+
+    #[test]
+    fn json_err_response_has_expected_shape() {
+        let s = format_json_err(&ClientCommand::Status("ubuntu-dev"), "not_found", "no such distro");
+        assert_eq!(
+            s,
+            "{\"ok\":false,\"command\":\"status\",\"code\":\"not_found\",\"message\":\"no such distro\"}"
+        );
+    }
+
+    #[test]
+    fn json_response_dispatches_on_variant() {
+        let ok = WireResponse::Ok {
+            count: 0,
+            lines: Vec::new(),
+        };
+        let err = WireResponse::Err {
+            code: String::from("oops"),
+            message: String::from("bad"),
+        };
+        let s_ok = format_json_response(&ClientCommand::List, &ok);
+        let s_err = format_json_response(&ClientCommand::List, &err);
+        assert!(s_ok.contains("\"ok\":true"));
+        assert!(s_err.contains("\"ok\":false"));
+    }
+
+    #[test]
+    fn json_command_names_cover_recent_additions() {
+        // Spot-check the command names introduced in this round so
+        // the JSON consumer surface stays stable.
+        assert_eq!(
+            json_command_name(&ClientCommand::Logs {
+                distro: "*",
+                limit: 200,
+            }),
+            "logs"
+        );
+        assert_eq!(json_command_name(&ClientCommand::Doctor("x")), "doctor");
+        // `events` is the spec-aligned name for the VmEvents variant.
+        assert_eq!(json_command_name(&ClientCommand::VmEvents("x")), "events");
+    }
+
+    #[test]
+    fn json_ok_with_empty_lines_emits_empty_array() {
+        let s = format_json_ok(&ClientCommand::List, &[]);
+        assert_eq!(s, "{\"ok\":true,\"command\":\"list\",\"lines\":[]}");
+    }
+
+    #[test]
+    fn json_err_with_empty_message_still_valid() {
+        // The text renderer omits the message when empty; the JSON
+        // shape always emits the field — consumers can rely on it.
+        let s = format_json_err(&ClientCommand::List, "code_only", "");
+        assert!(s.contains("\"message\":\"\""));
     }
 }
