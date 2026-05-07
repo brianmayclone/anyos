@@ -436,7 +436,11 @@ mod buddy_backend {
     /// PML4/PT setup uses it), so we don't bother with a fancy
     /// scan — the existing bitmap-backend implementation is forked
     /// inline here.
-    const STAGE1_MAX_MEMORY: usize = 4 * 1024 * 1024 * 1024;
+    /// Bootmem stage-1 covers the same physmem ceiling as the buddy.
+    /// Lifting one without the other would mean the bitmap can't
+    /// represent every frame the buddy will eventually own — late_init
+    /// would silently drop frames above the bootmem cap.
+    const STAGE1_MAX_MEMORY: usize = 16 * 1024 * 1024 * 1024;
     const STAGE1_MAX_FRAMES: usize = STAGE1_MAX_MEMORY / FRAME_SIZE;
     const STAGE1_BITMAP_BYTES: usize = STAGE1_MAX_FRAMES / 8;
 

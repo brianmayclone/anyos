@@ -69,18 +69,18 @@ use crate::memory::address::PhysAddr;
 use crate::memory::physmap;
 use crate::memory::FRAME_SIZE;
 
-/// Maximum supported physical memory. Two BuddyZone instances are
-/// instantiated as `static` (ZONE_DMA + ZONE_NORMAL in physical.rs);
-/// each carries a `[u8; MAX_FRAMES]` order map (1 MiB at the 4 GiB
-/// cap) and a `[u8; MAX_FRAMES/8]` used bitmap (128 KiB). Two zones
-/// total ~2.3 MiB of `.data`, fitting within the kernel image's
-/// 16 MiB higher-half mapping in `virtual_mem::init`.
+/// Maximum supported physical memory. Two BuddyZone instances live
+/// in `static` storage (ZONE_DMA + ZONE_NORMAL in physical.rs);
+/// each carries a `[u8; MAX_FRAMES]` order map (16 MiB at the
+/// 16 GiB cap) and a `[u8; MAX_FRAMES/8]` used bitmap (2 MiB).
+/// Two zones total ~36 MiB of `.data`, accommodated by the 64 MiB
+/// higher-half kernel mapping in `virtual_mem::init`.
 ///
-/// Lifting this beyond 4 GiB requires:
-///   1. Expanding the higher-half kernel mapping (currently 16 MiB,
-///      see virtual_mem::init `for mb in 0..8u64`).
-///   2. Sizing the BSS bitmap and order map accordingly.
-pub const MAX_MEMORY: usize = 4 * 1024 * 1024 * 1024;
+/// Lifting this further (to 64 GiB or unbounded) requires moving
+/// the order map and bitmap off the static `.data` segment into
+/// heap-allocated arrays sized at runtime from the actual E820 /
+/// DTB extents. See `todos/buddy-no-cap.md` for the full plan.
+pub const MAX_MEMORY: usize = 16 * 1024 * 1024 * 1024;
 pub const MAX_FRAMES: usize = MAX_MEMORY / FRAME_SIZE;
 const BITMAP_BYTES: usize = MAX_FRAMES / 8;
 

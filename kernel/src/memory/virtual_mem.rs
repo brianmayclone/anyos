@@ -316,9 +316,18 @@ pub fn init(boot_info: &BootInfo) {
             .expect("OOM: failed to allocate kernel PD during init");
         let pd = pd_phys as *mut u64;
 
-        // Map 16 MiB of kernel (8 PD entries, each covering 2 MiB via a page table)
-        // Extra room for large BSS (e.g. 2 MiB physical allocator bitmap)
-        for mb in 0..8u64 {
+        // Map 64 MiB of kernel (32 PD entries, each covering 2 MiB via a page table).
+        // The buddy allocator reserves a per-frame `order_of_alloc` byte plus a
+        // 1-bit-per-frame used bitmap, doubled for ZONE_DMA + ZONE_NORMAL. At the
+        // 16 GiB physical-memory cap that's:
+        //
+        //   order_of_alloc:  16M × 1 byte × 2 zones = 32 MiB BSS
+        //   used_bitmap:     2 MiB × 2 zones        =  4 MiB BSS
+        //
+        // Plus existing kernel text/data (~7 MiB) and the bootmem bitmap
+        // (~512 KiB at the 16 GiB cap) → ~44 MiB. 64 MiB leaves headroom for
+        // future statics without requiring another mapping bump.
+        for mb in 0..32u64 {
             let pt_phys_alloc = physical::alloc_frame().expect("Failed to allocate kernel PT");
             let pt = pt_phys_alloc.as_u64() as *mut u64;
 
