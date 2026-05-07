@@ -9,11 +9,6 @@ debug_verbose = []
 # Enable in-kernel KUnit self-tests.  Tests run during boot after heap init
 # and report results via serial output.  Never enable in production builds.
 kunit = []
-# Use the buddy allocator (memory::buddy) as the backend for
-# memory::physical::alloc_frame / alloc_contiguous / free_frame.
-# Default is the legacy bitmap allocator; flip this on to validate
-# the new backend before retiring the bitmap.
-buddy_alloc = []
 
 [dependencies]
 # Plattformneutraler CoreFS-Kern als Path-Dependency. `default-features = false`
