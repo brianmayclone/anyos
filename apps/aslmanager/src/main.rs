@@ -21,6 +21,8 @@ pub(crate) struct AppState {
     pub(crate) config: config::ManagerConfig,
     pub(crate) install_btn: anyui::Button,
     pub(crate) terminal_btn: anyui::Button,
+    pub(crate) skip_verify_btn: anyui::Button,
+    pub(crate) skip_verify_btn_enabled: bool,
     pub(crate) nav_overview: NavItem,
     pub(crate) nav_performance: NavItem,
     pub(crate) nav_logs: NavItem,
@@ -76,6 +78,7 @@ fn main() {
 
     app().install_btn.on_click(|_| installer::start_install());
     app().terminal_btn.on_click(|_| installer::open_terminal());
+    app().skip_verify_btn.on_click(|_| installer::skip_verify());
     app()
         .nav_overview
         .button
@@ -130,8 +133,15 @@ fn build_ui() -> AppState {
 
     let (nav_overview, nav_performance, nav_logs) = build_sidebar(&root, tc);
     let panels = build_content_panels(&root);
-    let (install_btn, terminal_btn, status_label, phase_label, transfer_label, progress_bar) =
-        build_overview_panel(&panels.overview, tc, &manager_config);
+    let (
+        install_btn,
+        terminal_btn,
+        skip_verify_btn,
+        status_label,
+        phase_label,
+        transfer_label,
+        progress_bar,
+    ) = build_overview_panel(&panels.overview, tc, &manager_config);
     let runtime = build_performance_panel(&panels.performance, tc);
     let log_area = build_logs_panel(&panels.logs, tc);
 
@@ -146,6 +156,8 @@ fn build_ui() -> AppState {
         config: manager_config,
         install_btn,
         terminal_btn,
+        skip_verify_btn,
+        skip_verify_btn_enabled: false,
         nav_overview,
         nav_performance,
         nav_logs,
@@ -318,6 +330,7 @@ fn build_overview_panel(
 ) -> (
     anyui::Button,
     anyui::Button,
+    anyui::Button,
     anyui::Label,
     anyui::Label,
     anyui::Label,
@@ -374,6 +387,12 @@ fn build_overview_panel(
     terminal_btn.set_enabled(false);
     root.add(&terminal_btn);
 
+    let skip_verify_btn = anyui::Button::new("Skip Verify");
+    skip_verify_btn.set_position(content_x + 322, 156);
+    skip_verify_btn.set_size(110, 34);
+    skip_verify_btn.set_enabled(false);
+    root.add(&skip_verify_btn);
+
     let status_label = anyui::Label::new("Ready.");
     status_label.set_position(content_x + 24, 212);
     status_label.set_size(content_w - 48, 20);
@@ -422,6 +441,7 @@ fn build_overview_panel(
     (
         install_btn,
         terminal_btn,
+        skip_verify_btn,
         status_label,
         phase_label,
         transfer_label,

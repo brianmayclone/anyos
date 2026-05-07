@@ -16,6 +16,8 @@ use crate::constants::*;
 static WORKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static WORKER_DONE: AtomicBool = AtomicBool::new(false);
 static WORKER_ERROR: AtomicBool = AtomicBool::new(false);
+static SKIP_VERIFY_REQUESTED: AtomicBool = AtomicBool::new(false);
+static SKIP_VERIFY_BTN_VISIBLE: AtomicBool = AtomicBool::new(false);
 const LOG_SLOT_COUNT: usize = 32;
 static LOG_SEQ: AtomicU32 = AtomicU32::new(0);
 static LOG_LINE_LEN: [AtomicU32; LOG_SLOT_COUNT] = [const { AtomicU32::new(0) }; LOG_SLOT_COUNT];
@@ -27,6 +29,8 @@ static mut PROGRESS_BAR_ID: u32 = 0;
 static DOWNLOAD_LAST_SAMPLE_MS: AtomicU32 = AtomicU32::new(0);
 static DOWNLOAD_LAST_SAMPLE_BYTES: AtomicU32 = AtomicU32::new(0);
 static DOWNLOAD_LAST_UI_MS: AtomicU32 = AtomicU32::new(0);
+static DOWNLOAD_LAST_PROGRESS_MS: AtomicU32 = AtomicU32::new(0);
+static DOWNLOAD_LAST_PROGRESS_PCT: AtomicU32 = AtomicU32::new(0);
 static DOWNLOAD_RATE_BPS: AtomicU32 = AtomicU32::new(0);
 
 pub fn register_controls(
@@ -128,8 +132,11 @@ pub fn start_install() {
 
     WORKER_DONE.store(false, Ordering::Release);
     WORKER_ERROR.store(false, Ordering::Release);
+    SKIP_VERIFY_REQUESTED.store(false, Ordering::Release);
     crate::app().install_btn.set_enabled(false);
     crate::app().terminal_btn.set_enabled(false);
+    crate::app().skip_verify_btn.set_enabled(false);
+    crate::app().skip_verify_btn_enabled = false;
     crate::app().progress_bar.set_state(0);
     crate::app()
         .transfer_label
@@ -157,6 +164,12 @@ pub fn start_install() {
 }
 
 pub fn on_timer() {
+    let want_skip_btn = SKIP_VERIFY_BTN_VISIBLE.load(Ordering::Acquire)
+        && !SKIP_VERIFY_REQUESTED.load(Ordering::Acquire);
+    if crate::app().skip_verify_btn_enabled != want_skip_btn {
+        crate::app().skip_verify_btn.set_enabled(want_skip_btn);
+        crate::app().skip_verify_btn_enabled = want_skip_btn;
+    }
     let seq = LOG_SEQ.load(Ordering::Acquire);
     let mut had_logs = false;
     if seq > crate::app().last_log_seq {
@@ -191,6 +204,8 @@ pub fn on_timer() {
         WORKER_ACTIVE.store(false, Ordering::Release);
         crate::app().install_btn.set_enabled(true);
         crate::app().terminal_btn.set_enabled(artifacts_ready());
+        crate::app().skip_verify_btn.set_enabled(false);
+        crate::app().skip_verify_btn_enabled = false;
         if WORKER_ERROR.load(Ordering::Acquire) {
             crate::app().status_label.set_text("Debian setup failed.");
         } else {
@@ -199,6 +214,15 @@ pub fn on_timer() {
                 .set_text("Debian is installed and starting.");
             crate::app().progress_bar.set_state(100);
         }
+    }
+}
+
+pub fn skip_verify() {
+    if SKIP_VERIFY_REQUESTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        log_line("User requested to skip SHA-512 verification.");
     }
 }
 
@@ -228,7 +252,7 @@ extern "C" fn download_progress_cb(received: u32, total: u32, userdata: u64) {
     } else {
         base + (((received as u64 * span as u64) / total as u64) as u32)
     };
-    set_progress(pct.min(100));
+    update_progress_status(pct.min(100));
     update_transfer_status(received, total);
 }
 
@@ -359,6 +383,16 @@ enum ArtifactKind {
     },
 }
 
+impl ArtifactKind {
+    fn has_pinned_hash(self) -> bool {
+        match self {
+            ArtifactKind::RawDisk {
+                expected_sha512_hex,
+            } => expected_sha512_hex.is_some(),
+        }
+    }
+}
+
 fn ensure_artifact(
     path: &str,
     tmp: &str,
@@ -391,16 +425,22 @@ fn ensure_artifact(
         let _ = fs::unlink(path);
     }
 
-    let _ = fs::unlink(tmp);
     log_line(&format!("Download target: {}", tmp));
-    if !preflight_tmp_path(tmp, label) {
-        return false;
-    }
-    set_phase(&format!("Downloading {}", label));
-    log_line(&format!("Downloading {} from Debian mirror.", label));
-    let userdata = ((base as u64) << 32) | span as u64;
-    if !download_with_retries(url, tmp, label, userdata) {
-        return false;
+    if verified_artifact(tmp, cfg, kind) {
+        log_line(&format!(
+            "Temporary {} download is already complete; verifying it.",
+            label
+        ));
+    } else {
+        if !preflight_tmp_path(tmp, label, file_exists(tmp)) {
+            return false;
+        }
+        set_phase(&format!("Downloading {}", label));
+        log_line(&format!("Downloading {} from Debian mirror.", label));
+        let userdata = ((base as u64) << 32) | span as u64;
+        if !download_with_retries(url, tmp, label, userdata, kind.has_pinned_hash()) {
+            return false;
+        }
     }
     if !verified_artifact(tmp, cfg, kind) {
         log_line(&format!("Downloaded {} failed validation.", label));
@@ -462,9 +502,26 @@ fn verify_artifact_hash(path: &str, kind: ArtifactKind, label: &str) -> Option<b
         "Computing SHA-512 of {} for stage-2 image-trust check.",
         label
     ));
-    let actual = match compute_file_sha512(path) {
-        Some(digest) => digest,
-        None => {
+    SKIP_VERIFY_BTN_VISIBLE.store(true, Ordering::Release);
+    let total_bytes = partial_file_size(path);
+    set_transfer_status(&format!(
+        "Verify: hashing {} ({})",
+        label,
+        format_bytes(total_bytes as u64)
+    ));
+    let result = compute_file_sha512(path, label, total_bytes);
+    SKIP_VERIFY_BTN_VISIBLE.store(false, Ordering::Release);
+    let actual = match result {
+        HashResult::Done(digest) => digest,
+        HashResult::Skipped => {
+            log_line(&format!(
+                "WARN: SHA-512 verification of {} skipped by user (ADR-0011 stage 2 bypassed).",
+                label
+            ));
+            set_transfer_status("Verify: skipped by user.");
+            return None;
+        }
+        HashResult::Failed => {
             log_line(&format!(
                 "ERROR: could not read back {} for hash verification.",
                 label
@@ -495,32 +552,121 @@ fn verify_artifact_hash(path: &str, kind: ArtifactKind, label: &str) -> Option<b
     Some(true)
 }
 
+enum HashResult {
+    Done([u8; 64]),
+    Skipped,
+    Failed,
+}
+
 /// Stream-read `path` and return its SHA-512 digest. 64 KiB buffer keeps
-/// the stack small. Returns `None` if open fails or any read errors.
-fn compute_file_sha512(path: &str) -> Option<[u8; 64]> {
+/// the stack small. Returns `Failed` if open fails or any read errors,
+/// or `Skipped` if the user clicked the Skip Verify button mid-hash.
+/// Posts periodic transfer-status updates so the UI shows the verify is
+/// progressing — hashing a multi-GiB image otherwise looks like a hang.
+fn compute_file_sha512(path: &str, label: &str, total_bytes: u32) -> HashResult {
     let fd = fs::open(path, 0);
     if fd == u32::MAX {
-        return None;
+        return HashResult::Failed;
     }
     let mut hasher = Sha512::new();
-    let mut buf = alloc::vec![0u8; 64 * 1024];
+    // 1 MiB buffer: reduces syscall count by ~16x vs 64 KiB on multi-GiB
+    // images. SHA-512 in pure software is the limit on most disks anyway,
+    // so larger reads mainly amortize syscall + FS-block-walk overhead.
+    let mut buf = alloc::vec![0u8; 1024 * 1024];
+    let mut hashed: u64 = 0;
+    let mut read_ms: u64 = 0;
+    let mut hash_ms: u64 = 0;
+    let start_ms = sys::uptime_ms();
+    let mut last_ui_ms = start_ms;
     loop {
+        if SKIP_VERIFY_REQUESTED.load(Ordering::Acquire) {
+            let _ = fs::close(fd);
+            return HashResult::Skipped;
+        }
+        let t0 = sys::uptime_ms();
         let n = fs::read(fd, &mut buf);
+        let t1 = sys::uptime_ms();
+        read_ms = read_ms.saturating_add(t1.wrapping_sub(t0) as u64);
         if n == u32::MAX {
             let _ = fs::close(fd);
-            return None;
+            return HashResult::Failed;
         }
         if n == 0 {
             break;
         }
         hasher.update(&buf[..n as usize]);
+        let t2 = sys::uptime_ms();
+        hash_ms = hash_ms.saturating_add(t2.wrapping_sub(t1) as u64);
+        hashed = hashed.saturating_add(n as u64);
+
+        let now = sys::uptime_ms();
+        if now.wrapping_sub(last_ui_ms) >= 500 {
+            last_ui_ms = now;
+            let elapsed_ms = now.wrapping_sub(start_ms).max(1) as u64;
+            let rate_bps = (hashed * 1000) / elapsed_ms;
+            let rate = if rate_bps == 0 {
+                String::from("measuring speed")
+            } else {
+                format!("{}/s", format_bytes(rate_bps))
+            };
+            let text = if total_bytes == 0 {
+                format!(
+                    "Verify: {} hashed ({}) - {}",
+                    format_bytes(hashed),
+                    label,
+                    rate
+                )
+            } else {
+                let total = total_bytes as u64;
+                let pct = ((hashed * 100) / total.max(1)).min(100) as u32;
+                let eta = if rate_bps == 0 || hashed >= total {
+                    String::from("ETA --:--")
+                } else {
+                    let remaining = total.saturating_sub(hashed);
+                    let secs = ((remaining + rate_bps - 1) / rate_bps) as u32;
+                    format!("{} left", format_duration(secs))
+                };
+                format!(
+                    "Verify: {} / {} ({}%) - {} - {}",
+                    format_bytes(hashed),
+                    format_bytes(total),
+                    pct,
+                    rate,
+                    eta
+                )
+            };
+            set_transfer_status(&text);
+        }
     }
     let _ = fs::close(fd);
-    Some(hasher.finalize())
+    set_transfer_status(&format!(
+        "Verify: {} hashed ({})",
+        label,
+        format_bytes(hashed)
+    ));
+    let total_ms = sys::uptime_ms().wrapping_sub(start_ms) as u64;
+    let avg_bps = if total_ms == 0 {
+        0
+    } else {
+        (hashed * 1000) / total_ms
+    };
+    log_line(&format!(
+        "SHA-512 timing: total {} ms, read {} ms, hash {} ms, throughput {}/s",
+        total_ms,
+        read_ms,
+        hash_ms,
+        format_bytes(avg_bps)
+    ));
+    HashResult::Done(hasher.finalize())
 }
 
-fn preflight_tmp_path(tmp: &str, label: &str) -> bool {
-    let fd = fs::open(tmp, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+fn preflight_tmp_path(tmp: &str, label: &str, keep_existing: bool) -> bool {
+    let flags = if keep_existing {
+        fs::O_WRITE | fs::O_APPEND
+    } else {
+        fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC
+    };
+    let fd = fs::open(tmp, flags);
     if fd == u32::MAX {
         log_line(&format!(
             "{} download target is not writable: {}.",
@@ -529,11 +675,33 @@ fn preflight_tmp_path(tmp: &str, label: &str) -> bool {
         return false;
     }
     let _ = fs::close(fd);
-    let _ = fs::unlink(tmp);
+    if !keep_existing {
+        let _ = fs::unlink(tmp);
+    }
     true
 }
 
-fn download_with_retries(url: &str, tmp: &str, label: &str, userdata: u64) -> bool {
+fn download_with_retries(
+    url: &str,
+    tmp: &str,
+    label: &str,
+    userdata: u64,
+    prefer_http_for_pinned_artifact: bool,
+) -> bool {
+    let fallback_url = official_http_fallback(url);
+    if prefer_http_for_pinned_artifact {
+        if let Some(ref http_url) = fallback_url {
+            log_line(
+                "Using Debian's HTTP cloud mirror transport for hash-pinned artifact; \
+                 SHA-512 verification remains mandatory after download.",
+            );
+            if attempt_download(http_url, tmp, label, userdata, "HTTP verified") {
+                return true;
+            }
+            log_line("HTTP verified transport failed; retrying HTTPS endpoint.");
+        }
+    }
+
     if attempt_download(url, tmp, label, userdata, "HTTPS") {
         return true;
     }
@@ -541,28 +709,39 @@ fn download_with_retries(url: &str, tmp: &str, label: &str, userdata: u64) -> bo
     let status = libhttp_client::last_status();
     let error = libhttp_client::last_error();
     if !should_try_http_fallback(status, error) {
-        let _ = fs::unlink(tmp);
         return false;
     }
 
-    let Some(fallback_url) = official_http_fallback(url) else {
-        let _ = fs::unlink(tmp);
+    let Some(fallback_url) = fallback_url else {
         return false;
     };
 
-    let _ = fs::unlink(tmp);
     log_line("Retrying through Debian's HTTP cloud mirror endpoint.");
     if attempt_download(&fallback_url, tmp, label, userdata, "HTTP fallback") {
         return true;
     }
 
-    let _ = fs::unlink(tmp);
     false
 }
 
 fn attempt_download(url: &str, tmp: &str, label: &str, userdata: u64, mode: &str) -> bool {
     reset_transfer_metrics(label, mode);
-    if libhttp_client::download_progress(url, tmp, download_progress_cb, userdata) {
+    let resume_from = partial_file_size(tmp);
+    if resume_from > 0 {
+        log_line(&format!(
+            "Resuming {} download via {} from {}.",
+            label,
+            mode,
+            format_bytes(resume_from as u64)
+        ));
+    }
+    if libhttp_client::download_progress_resume(
+        url,
+        tmp,
+        download_progress_cb,
+        userdata,
+        resume_from,
+    ) {
         set_transfer_status(&format!("Download: {} complete.", label));
         return true;
     }
@@ -601,11 +780,29 @@ fn reset_transfer_metrics(label: &str, mode: &str) {
     DOWNLOAD_LAST_SAMPLE_MS.store(now, Ordering::Release);
     DOWNLOAD_LAST_SAMPLE_BYTES.store(0, Ordering::Release);
     DOWNLOAD_LAST_UI_MS.store(0, Ordering::Release);
+    DOWNLOAD_LAST_PROGRESS_MS.store(0, Ordering::Release);
+    DOWNLOAD_LAST_PROGRESS_PCT.store(0, Ordering::Release);
     DOWNLOAD_RATE_BPS.store(0, Ordering::Release);
     set_transfer_status(&format!(
         "Download: connecting for {} via {}...",
         label, mode
     ));
+}
+
+fn update_progress_status(pct: u32) {
+    let pct = pct.min(100);
+    let now = sys::uptime_ms();
+    let last_pct = DOWNLOAD_LAST_PROGRESS_PCT.load(Ordering::Acquire);
+    let last_ms = DOWNLOAD_LAST_PROGRESS_MS.load(Ordering::Acquire);
+    let changed_enough = pct >= last_pct.saturating_add(1);
+    let stale = now.wrapping_sub(last_ms) >= 500;
+    let done = pct >= 100;
+    if !done && !changed_enough && !stale {
+        return;
+    }
+    DOWNLOAD_LAST_PROGRESS_PCT.store(pct, Ordering::Release);
+    DOWNLOAD_LAST_PROGRESS_MS.store(now, Ordering::Release);
+    set_progress(pct);
 }
 
 fn update_transfer_status(received: u32, total: u32) {
@@ -830,6 +1027,15 @@ fn ensure_seabios_config() -> bool {
 fn file_exists(path: &str) -> bool {
     let mut stat_buf = [0u32; 7];
     fs::stat(path, &mut stat_buf) == 0 && stat_buf[1] > 0
+}
+
+fn partial_file_size(path: &str) -> u32 {
+    let mut stat_buf = [0u32; 7];
+    if fs::stat(path, &mut stat_buf) == 0 {
+        stat_buf[1]
+    } else {
+        0
+    }
 }
 
 fn dir_exists(path: &str) -> bool {

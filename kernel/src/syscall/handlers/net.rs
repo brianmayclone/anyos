@@ -356,7 +356,7 @@ pub fn sys_tcp_recv(socket_id: u32, buf_ptr: u64, len: u32) -> u32 {
         return u32::MAX;
     }
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
-    let result = crate::net::tcp::recv(socket_id, buf, 3000); // 30s timeout
+    let result = crate::net::tcp::recv(socket_id, buf, 3000); // 3s timeout (3000 ticks @ 1 kHz)
     if result != u32::MAX && result > 0 {
         crate::task::scheduler::record_net_rx(result as u64);
     }

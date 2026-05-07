@@ -5,6 +5,7 @@ EXPORTS
     libhttp_download
     libhttp_drain_progress
     libhttp_download_progress
+    libhttp_download_progress_resume
     libhttp_post
     libhttp_post_with_headers
     libhttp_request_with_headers

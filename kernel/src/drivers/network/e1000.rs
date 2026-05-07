@@ -574,6 +574,25 @@ pub fn recv_all_packets(out: &mut Vec<Vec<u8>>) {
     }
 }
 
+/// Poll the hardware RX ring and drain all queued packets in one lock hold.
+///
+/// The network stack handles frames after this returns, so ACK generation and
+/// possible TX paths never run while the E1000 lock is held.
+pub fn poll_rx_into(out: &mut Vec<Vec<u8>>) {
+    let mut state = E1000_STATE.lock();
+    let e1000 = match state.as_mut() {
+        Some(e) => e,
+        None => return,
+    };
+    while let Some(pkt) = e1000.rx_queue.pop_front() {
+        out.push(pkt);
+    }
+    process_rx_ring(e1000);
+    while let Some(pkt) = e1000.rx_queue.pop_front() {
+        out.push(pkt);
+    }
+}
+
 /// Get the MAC address of the NIC.
 pub fn get_mac() -> Option<[u8; 6]> {
     let state = E1000_STATE.lock();

@@ -34,7 +34,10 @@ pub const ERR_FILE_WRITE: u32 = 9;
 const MAX_REDIRECTS: usize = 10;
 const CONNECT_TIMEOUT_MS: u32 = 10_000;
 const MAX_HEADER_SIZE: usize = 16384;
-const RECV_BUF_SIZE: usize = 16384;
+const RECV_BUF_SIZE: usize = 64 * 1024;
+const FILE_WRITE_BUF_SIZE: usize = 256 * 1024;
+const FILE_PROGRESS_STEP: u32 = FILE_WRITE_BUF_SIZE as u32;
+const DRAIN_PROGRESS_STEP: u32 = 256 * 1024;
 
 struct Connection {
     sock: u32,
@@ -130,6 +133,18 @@ pub fn download_to_file(
     callback: Option<extern "C" fn(u32, u32, u64)>,
     userdata: u64,
 ) -> bool {
+    download_to_file_resume(url_str, path, callback, userdata, 0)
+}
+
+/// Download a URL to a file, resuming from `resume_from` bytes when possible.
+/// If the server ignores the Range request, the file is safely replaced.
+pub fn download_to_file_resume(
+    url_str: &str,
+    path: &str,
+    callback: Option<extern "C" fn(u32, u32, u64)>,
+    userdata: u64,
+    resume_from: u32,
+) -> bool {
     set_status(0);
     set_error(ERR_NONE);
 
@@ -147,7 +162,7 @@ pub fn download_to_file(
         PROGRESS_UD = userdata;
     }
 
-    let result = fetch_get_to_file(&url, path);
+    let result = fetch_get_to_file(&url, path, resume_from);
 
     // Clear callback
     unsafe {
@@ -310,7 +325,7 @@ fn fetch_get(url: &Url, raw: bool) -> Result<(u16, Vec<u8>), u32> {
 
 /// Core GET download implementation with redirect following.
 /// Streams the body directly to disk to avoid large heap copies during downloads.
-fn fetch_get_to_file(url: &Url, path: &str) -> Result<u16, u32> {
+fn fetch_get_to_file(url: &Url, path: &str, resume_from: u32) -> Result<u16, u32> {
     let mut current = clone_url(url);
 
     for _redirect_n in 0..MAX_REDIRECTS {
@@ -318,13 +333,13 @@ fn fetch_get_to_file(url: &Url, path: &str) -> Result<u16, u32> {
 
         let conn = connect_to(&current.host, current.port, is_https)?;
 
-        let request = build_get_request(&current, true);
+        let request = build_get_request_range(&current, true, resume_from);
         if !send_data(&conn, request.as_bytes(), is_https) {
             close_conn(conn);
             return Err(ERR_SEND_FAILURE);
         }
 
-        match receive_response_to_file(&conn, is_https, path) {
+        match receive_response_to_file(&conn, is_https, path, resume_from) {
             Ok(ResponseFileAction::Redirect(_status, location)) => {
                 close_conn(conn);
                 current = resolve_url(&current, &location);
@@ -683,6 +698,7 @@ fn receive_response_to_file(
     conn: &Connection,
     is_https: bool,
     path: &str,
+    resume_from: u32,
 ) -> Result<ResponseFileAction, u32> {
     let mut response_buf: Vec<u8> = Vec::new();
     let mut recv_buf = [0u8; RECV_BUF_SIZE];
@@ -729,18 +745,22 @@ fn receive_response_to_file(
         trailing.extend_from_slice(&response_buf[header_end..]);
     }
 
-    let fd = syscall::open(
-        path,
-        syscall::O_WRITE | syscall::O_CREATE | syscall::O_TRUNC,
-    );
+    let resuming = status == 206 && resume_from > 0;
+    let fd_flags = if resuming {
+        syscall::O_WRITE | syscall::O_APPEND
+    } else {
+        syscall::O_WRITE | syscall::O_CREATE | syscall::O_TRUNC
+    };
+    let fd = syscall::open(path, fd_flags);
     if fd == u32::MAX {
         return Err(ERR_FILE_WRITE);
     }
 
+    let initial_received = if resuming { resume_from } else { 0 };
     let read_result = if is_chunked {
-        read_chunked_body_to_file(conn, fd, &trailing, is_https)
+        read_chunked_body_to_file(conn, fd, &trailing, is_https, initial_received)
     } else {
-        read_body_to_file(conn, fd, &trailing, content_length, is_https)
+        read_body_to_file(conn, fd, &trailing, content_length, is_https, initial_received)
     };
 
     syscall::close(fd);
@@ -814,6 +834,10 @@ fn receive_response_drain(conn: &Connection, is_https: bool) -> Result<ResponseD
 /// When `raw` is true, Accept-Encoding is omitted so the server sends
 /// uncompressed bytes (important for file downloads).
 fn build_get_request(url: &Url, raw: bool) -> String {
+    build_get_request_range(url, raw, 0)
+}
+
+fn build_get_request_range(url: &Url, raw: bool, range_start: u32) -> String {
     let mut req = String::new();
     req.push_str("GET ");
     req.push_str(&url.path);
@@ -827,6 +851,11 @@ fn build_get_request(url: &Url, raw: bool) -> String {
     req.push_str("\r\nAccept: */*");
     if !raw {
         req.push_str("\r\nAccept-Encoding: gzip, deflate");
+    }
+    if range_start > 0 {
+        req.push_str("\r\nRange: bytes=");
+        push_u32(&mut req, range_start);
+        req.push('-');
     }
     req.push_str("\r\nConnection: close");
     req.push_str("\r\n\r\n");
@@ -1131,36 +1160,43 @@ fn read_body_to_file(
     initial: &[u8],
     content_length: Option<u32>,
     is_https: bool,
+    initial_received: u32,
 ) -> Result<u32, u32> {
-    let total = content_length.unwrap_or(0);
-    let mut received = 0u32;
+    let total = content_length
+        .map(|cl| initial_received.saturating_add(cl))
+        .unwrap_or(0);
+    let mut received = initial_received;
+    let mut body_received = 0u32;
+    let mut reported = initial_received;
+    let mut file_buf: Vec<u8> = Vec::with_capacity(FILE_WRITE_BUF_SIZE);
 
     if !initial.is_empty() {
         let initial_len = if let Some(cl) = content_length {
-            initial.len().min(cl as usize)
+            initial.len().min(cl.saturating_sub(body_received) as usize)
         } else {
             initial.len()
         };
         if initial_len > 0 {
-            if !write_all(fd, &initial[..initial_len]) {
+            if !buffer_file_write(fd, &mut file_buf, &initial[..initial_len]) {
                 return Err(ERR_FILE_WRITE);
             }
-            received = initial_len as u32;
+            body_received = initial_len as u32;
+            received = received.saturating_add(body_received);
         }
     }
 
-    unsafe {
-        if let Some(cb) = PROGRESS_CB {
-            cb(received, total, PROGRESS_UD);
-        }
-    }
+    report_file_progress(received, total, &mut reported, false);
 
     let mut recv_buf = [0u8; RECV_BUF_SIZE];
-    let mut retried = false;
+    // See read_body_drain: extend tail-of-body patience past recv_some's
+    // own retry budget so a few seconds of stall near 100% don't kill an
+    // otherwise-successful download.
+    const MAX_TAIL_RETRIES: u32 = 10;
+    let mut tail_retries: u32 = 0;
 
     loop {
         if let Some(cl) = content_length {
-            if received >= cl {
+            if body_received >= cl {
                 break;
             }
         }
@@ -1168,46 +1204,53 @@ fn read_body_to_file(
         let n = recv_some(conn, &mut recv_buf, is_https);
         if n == 0 {
             if let Some(cl) = content_length {
-                if received < cl && !retried {
-                    retried = true;
-                    syscall::sleep(50);
+                if body_received < cl && tail_retries < MAX_TAIL_RETRIES {
+                    let avail = syscall::tcp_recv_available(conn.sock);
+                    if avail == u32::MAX || avail == u32::MAX - 1 {
+                        return Err(ERR_NO_RESPONSE);
+                    }
+                    tail_retries += 1;
+                    syscall::sleep(100);
                     continue;
                 }
-                if received < cl {
+                if body_received < cl {
                     return Err(ERR_NO_RESPONSE);
                 }
             }
             break;
         }
-        retried = false;
+        tail_retries = 0;
 
         let write_len = if let Some(cl) = content_length {
-            let remaining = cl.saturating_sub(received) as usize;
+            let remaining = cl.saturating_sub(body_received) as usize;
             n.min(remaining)
         } else {
             n
         };
 
         if write_len > 0 {
-            if !write_all(fd, &recv_buf[..write_len]) {
+            if !buffer_file_write(fd, &mut file_buf, &recv_buf[..write_len]) {
                 return Err(ERR_FILE_WRITE);
             }
             received = received.saturating_add(write_len as u32);
+            body_received = body_received.saturating_add(write_len as u32);
         }
 
-        unsafe {
-            if let Some(cb) = PROGRESS_CB {
-                cb(received, total, PROGRESS_UD);
-            }
-        }
+        let done = content_length.map(|cl| body_received >= cl).unwrap_or(false);
+        report_file_progress(received, total, &mut reported, done);
+    }
+
+    if !flush_file_buffer(fd, &mut file_buf) {
+        return Err(ERR_FILE_WRITE);
     }
 
     if let Some(cl) = content_length {
-        if received < cl {
+        if body_received < cl {
             return Err(ERR_NO_RESPONSE);
         }
     }
 
+    report_file_progress(received, total, &mut reported, true);
     Ok(received)
 }
 
@@ -1220,6 +1263,7 @@ fn read_body_drain(
 ) -> Result<u32, u32> {
     let total = content_length.unwrap_or(0);
     let mut received = 0u32;
+    let mut reported = 0u32;
 
     if !initial.is_empty() {
         let initial_len = if let Some(cl) = content_length {
@@ -1230,14 +1274,15 @@ fn read_body_drain(
         received = initial_len as u32;
     }
 
-    unsafe {
-        if let Some(cb) = PROGRESS_CB {
-            cb(received, total, PROGRESS_UD);
-        }
-    }
+    report_drain_progress(received, total, &mut reported, false);
 
     let mut recv_buf = [0u8; RECV_BUF_SIZE];
-    let mut retried = false;
+    // Retry up to ~30s of patience past recv_some's own 3x3s patience.
+    // The body-tail of a slow HTTP server (or a TCP path with reordering)
+    // can stall for several seconds while the kernel waits for the final
+    // segments — speedtest at 99% is a textbook case of this.
+    const MAX_TAIL_RETRIES: u32 = 10;
+    let mut tail_retries: u32 = 0;
 
     loop {
         if let Some(cl) = content_length {
@@ -1249,9 +1294,17 @@ fn read_body_drain(
         let n = recv_some(conn, &mut recv_buf, is_https);
         if n == 0 {
             if let Some(cl) = content_length {
-                if received < cl && !retried {
-                    retried = true;
-                    syscall::sleep(50);
+                if received < cl && tail_retries < MAX_TAIL_RETRIES {
+                    // Connection still alive (recv_some checks liveness
+                    // and only returns 0 on EOF/error or after exhausting
+                    // its own retries). For body-incomplete cases, give
+                    // the peer more time before declaring a hard failure.
+                    let avail = syscall::tcp_recv_available(conn.sock);
+                    if avail == u32::MAX || avail == u32::MAX - 1 {
+                        return Err(ERR_NO_RESPONSE);
+                    }
+                    tail_retries += 1;
+                    syscall::sleep(100);
                     continue;
                 }
                 if received < cl {
@@ -1260,7 +1313,7 @@ fn read_body_drain(
             }
             return Ok(received);
         }
-        retried = false;
+        tail_retries = 0;
 
         let read_len = if let Some(cl) = content_length {
             let remaining = cl.saturating_sub(received) as usize;
@@ -1271,11 +1324,8 @@ fn read_body_drain(
 
         received = received.saturating_add(read_len as u32);
 
-        unsafe {
-            if let Some(cb) = PROGRESS_CB {
-                cb(received, total, PROGRESS_UD);
-            }
-        }
+        let done = content_length.map(|cl| received >= cl).unwrap_or(false);
+        report_drain_progress(received, total, &mut reported, done);
     }
 }
 
@@ -1362,12 +1412,15 @@ fn read_chunked_body_to_file(
     fd: u32,
     initial: &[u8],
     is_https: bool,
+    initial_received: u32,
 ) -> Result<u32, u32> {
     let mut buf: Vec<u8> = Vec::with_capacity(RECV_BUF_SIZE * 4);
     buf.extend_from_slice(initial);
     let mut cursor: usize = 0;
-    let mut received = 0u32;
+    let mut received = initial_received;
+    let mut reported = initial_received;
     let mut recv_buf = [0u8; RECV_BUF_SIZE];
+    let mut file_buf: Vec<u8> = Vec::with_capacity(FILE_WRITE_BUF_SIZE);
 
     loop {
         let chunk_size;
@@ -1403,18 +1456,14 @@ fn read_chunked_body_to_file(
 
         let available = (buf.len() - cursor).min(chunk_size);
         if available > 0 {
-            if !write_all(fd, &buf[cursor..cursor + available]) {
+            if !buffer_file_write(fd, &mut file_buf, &buf[cursor..cursor + available]) {
                 return Err(ERR_FILE_WRITE);
             }
             received = received.saturating_add(available as u32);
         }
         cursor += available;
 
-        unsafe {
-            if let Some(cb) = PROGRESS_CB {
-                cb(received, 0, PROGRESS_UD);
-            }
-        }
+        report_file_progress(received, 0, &mut reported, false);
 
         while buf.len() - cursor < 2 {
             let n = recv_some(conn, &mut recv_buf, is_https);
@@ -1433,6 +1482,11 @@ fn read_chunked_body_to_file(
         }
     }
 
+    if !flush_file_buffer(fd, &mut file_buf) {
+        return Err(ERR_FILE_WRITE);
+    }
+
+    report_file_progress(received, 0, &mut reported, true);
     Ok(received)
 }
 
@@ -1442,6 +1496,7 @@ fn read_chunked_body_drain(conn: &Connection, initial: &[u8], is_https: bool) ->
     buf.extend_from_slice(initial);
     let mut cursor: usize = 0;
     let mut received = 0u32;
+    let mut reported = 0u32;
     let mut recv_buf = [0u8; RECV_BUF_SIZE];
 
     loop {
@@ -1480,11 +1535,7 @@ fn read_chunked_body_drain(conn: &Connection, initial: &[u8], is_https: bool) ->
         received = received.saturating_add(available as u32);
         cursor += available;
 
-        unsafe {
-            if let Some(cb) = PROGRESS_CB {
-                cb(received, 0, PROGRESS_UD);
-            }
-        }
+        report_drain_progress(received, 0, &mut reported, false);
 
         while buf.len() - cursor < 2 {
             let n = recv_some(conn, &mut recv_buf, is_https);
@@ -1503,6 +1554,7 @@ fn read_chunked_body_drain(conn: &Connection, initial: &[u8], is_https: bool) ->
         }
     }
 
+    report_drain_progress(received, 0, &mut reported, true);
     Ok(received)
 }
 
@@ -1615,4 +1667,53 @@ fn write_all(fd: u32, data: &[u8]) -> bool {
         written += n as usize;
     }
     true
+}
+
+fn buffer_file_write(fd: u32, file_buf: &mut Vec<u8>, data: &[u8]) -> bool {
+    if data.len() >= FILE_WRITE_BUF_SIZE {
+        return flush_file_buffer(fd, file_buf) && write_all(fd, data);
+    }
+
+    if file_buf.len() + data.len() > FILE_WRITE_BUF_SIZE && !flush_file_buffer(fd, file_buf) {
+        return false;
+    }
+
+    file_buf.extend_from_slice(data);
+    if file_buf.len() >= FILE_WRITE_BUF_SIZE {
+        return flush_file_buffer(fd, file_buf);
+    }
+    true
+}
+
+fn flush_file_buffer(fd: u32, file_buf: &mut Vec<u8>) -> bool {
+    if file_buf.is_empty() {
+        return true;
+    }
+    let ok = write_all(fd, file_buf);
+    file_buf.clear();
+    ok
+}
+
+fn report_file_progress(received: u32, total: u32, reported: &mut u32, force: bool) {
+    if !force && received.saturating_sub(*reported) < FILE_PROGRESS_STEP {
+        return;
+    }
+    unsafe {
+        if let Some(cb) = PROGRESS_CB {
+            cb(received, total, PROGRESS_UD);
+        }
+    }
+    *reported = received;
+}
+
+fn report_drain_progress(received: u32, total: u32, reported: &mut u32, force: bool) {
+    if !force && received.saturating_sub(*reported) < DRAIN_PROGRESS_STEP {
+        return;
+    }
+    unsafe {
+        if let Some(cb) = PROGRESS_CB {
+            cb(received, total, PROGRESS_UD);
+        }
+    }
+    *reported = received;
 }

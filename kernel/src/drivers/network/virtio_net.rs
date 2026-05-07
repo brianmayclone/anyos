@@ -260,6 +260,23 @@ pub fn recv_all_packets(out: &mut Vec<Vec<u8>>) {
     }
 }
 
+/// Poll the used RX ring and drain queued packets in a single lock hold.
+pub fn poll_rx_into(out: &mut Vec<Vec<u8>>) {
+    let mut state = STATE.lock();
+    let net = match state.as_mut() {
+        Some(n) => n,
+        None => return,
+    };
+    while let Some(packet) = net.rx_queue.pop_front() {
+        out.push(packet);
+    }
+    net.poll_rx();
+    net.pump_tx();
+    while let Some(packet) = net.rx_queue.pop_front() {
+        out.push(packet);
+    }
+}
+
 // ── IRQ Handler ─────────────────────────────────────────────────────────────
 
 /// ISR address for the VirtIO-Net device (set during probe).

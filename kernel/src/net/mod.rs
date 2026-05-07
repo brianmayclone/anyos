@@ -124,22 +124,15 @@ pub fn poll_rx() {
     {
         let mut packets: Vec<Vec<u8>> = Vec::new();
 
-        // E1000: batch-drain rx_queue + poll hardware ring
-        crate::drivers::network::e1000::recv_all_packets(&mut packets);
-        for packet in packets.iter() {
-            ethernet::handle_frame(packet);
-        }
-        crate::drivers::network::e1000::poll_rx();
-        packets.clear();
-        crate::drivers::network::e1000::recv_all_packets(&mut packets);
+        // E1000: batch-drain rx_queue + hardware ring in one driver lock hold.
+        crate::drivers::network::e1000::poll_rx_into(&mut packets);
         for packet in packets.iter() {
             ethernet::handle_frame(packet);
         }
 
-        // VirtIO Net: poll virtqueue and drain received packets
-        crate::drivers::network::virtio_net::poll_rx();
+        // VirtIO Net: batch-drain rx_queue + used ring in one driver lock hold.
         packets.clear();
-        crate::drivers::network::virtio_net::recv_all_packets(&mut packets);
+        crate::drivers::network::virtio_net::poll_rx_into(&mut packets);
         for packet in packets.iter() {
             ethernet::handle_frame(packet);
         }

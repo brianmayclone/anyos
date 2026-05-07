@@ -87,6 +87,16 @@ mod host {
         download(url, path)
     }
 
+    pub fn download_progress_resume(
+        url: &str,
+        path: &str,
+        callback: ProgressCallback,
+        userdata: u64,
+        _resume_from: u32,
+    ) -> bool {
+        download_progress(url, path, callback, userdata)
+    }
+
     pub fn drain_progress(url: &str, callback: ProgressCallback, userdata: u64) -> Option<u32> {
         let data = get(url)?;
         callback(data.len() as u32, data.len() as u32, userdata);
@@ -270,6 +280,8 @@ mod imp {
     type DrainProgressFn = extern "C" fn(*const u8, u32, Option<ProgressCallback>, u64) -> u32;
     type DownloadProgressFn =
         extern "C" fn(*const u8, u32, *const u8, u32, Option<ProgressCallback>, u64) -> u32;
+    type DownloadProgressResumeFn =
+        extern "C" fn(*const u8, u32, *const u8, u32, Option<ProgressCallback>, u64, u32) -> u32;
     type PostFn =
         extern "C" fn(*const u8, u32, *const u8, u32, *const u8, u32, *mut u8, u32) -> u32;
     type PostHeadersFn = extern "C" fn(
@@ -308,6 +320,7 @@ mod imp {
         libhttp_download: DownloadFn,
         libhttp_drain_progress: Option<DrainProgressFn>,
         libhttp_download_progress: Option<DownloadProgressFn>,
+        libhttp_download_progress_resume: Option<DownloadProgressResumeFn>,
         libhttp_post: PostFn,
         libhttp_post_with_headers: Option<PostHeadersFn>,
         libhttp_request_with_headers: Option<RequestHeadersFn>,
@@ -341,6 +354,13 @@ mod imp {
     fn load_download_progress(handle: &dynlink::DlHandle) -> Option<DownloadProgressFn> {
         let ptr = dynlink::dl_sym(handle, "libhttp_download_progress")?;
         Some(unsafe { core::mem::transmute_copy::<*const (), DownloadProgressFn>(&ptr) })
+    }
+
+    fn load_download_progress_resume(
+        handle: &dynlink::DlHandle,
+    ) -> Option<DownloadProgressResumeFn> {
+        let ptr = dynlink::dl_sym(handle, "libhttp_download_progress_resume")?;
+        Some(unsafe { core::mem::transmute_copy::<*const (), DownloadProgressResumeFn>(&ptr) })
     }
 
     fn load_post(handle: &dynlink::DlHandle) -> Option<PostFn> {
@@ -405,6 +425,7 @@ mod imp {
 
         let libhttp_drain_progress = load_drain_progress(&handle);
         let libhttp_download_progress = load_download_progress(&handle);
+        let libhttp_download_progress_resume = load_download_progress_resume(&handle);
         let libhttp_post_with_headers = load_post_headers(&handle);
         let libhttp_request_with_headers = load_request_headers(&handle);
         let libhttp_last_headers = load_last_headers(&handle);
@@ -415,6 +436,7 @@ mod imp {
             libhttp_download,
             libhttp_drain_progress,
             libhttp_download_progress,
+            libhttp_download_progress_resume,
             libhttp_post,
             libhttp_post_with_headers,
             libhttp_request_with_headers,
@@ -527,6 +549,33 @@ mod imp {
                 callback(1, 1, userdata);
             }
             result
+        };
+        result == 0
+    }
+
+    /// Download a URL with progress reporting, resuming at `resume_from` bytes if supported.
+    ///
+    /// If the loaded libhttp lacks resume support, this falls back to a full
+    /// download so older images keep working.
+    pub fn download_progress_resume(
+        url: &str,
+        path: &str,
+        callback: ProgressCallback,
+        userdata: u64,
+        resume_from: u32,
+    ) -> bool {
+        let result = if let Some(download_progress_resume) = lib().libhttp_download_progress_resume {
+            download_progress_resume(
+                url.as_ptr(),
+                url.len() as u32,
+                path.as_ptr(),
+                path.len() as u32,
+                Some(callback),
+                userdata,
+                resume_from,
+            )
+        } else {
+            return download_progress(url, path, callback, userdata);
         };
         result == 0
     }

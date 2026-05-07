@@ -21,16 +21,16 @@ pub enum CipherSuite {
 impl CipherSuite {
     /// Ordered list of TLS 1.3 cipher suites we support (preferred first).
     pub const TLS13_SUITES: &'static [CipherSuite] = &[
+        CipherSuite::Chacha20Poly1305Sha256,
         CipherSuite::Aes128GcmSha256,
         CipherSuite::Aes256GcmSha384,
-        CipherSuite::Chacha20Poly1305Sha256,
     ];
 
     /// Ordered list of TLS 1.2 cipher suites we support (preferred first).
     pub const TLS12_SUITES: &'static [CipherSuite] = &[
+        CipherSuite::EcdheRsaChacha20Poly1305Sha256,
         CipherSuite::EcdheRsaAes128GcmSha256,
         CipherSuite::EcdheEcdsaAes128GcmSha256,
-        CipherSuite::EcdheRsaChacha20Poly1305Sha256,
     ];
 
     /// AEAD key size in bytes.
