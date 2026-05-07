@@ -1159,12 +1159,34 @@ Detail-Audit der bestehenden Implementierung gegen die Spezifikationen siehe
       synchronen Wait-Pfad oder einen `EXEC_WAIT <exec-id>` Wire-Command.
 
 #### A5. `aslctl logs` + Diagnose-Endpunkte
-- [ ] `GetLogs` API in asld (`system/daemons/asld/src/ipc.rs`) — fehlt komplett.
-- [ ] Log-Quellen: asld-eigenes Log + Agent-Output + Konsole
-      (aslconsoled-Buffer).
-- [ ] `aslctl logs <distro> [--follow]` Subcommand.
-- [ ] `ListEvents` API + `aslctl events` an aslobsd-Quelle koppeln (CLI heisst
-      aktuell `vm-events` — umbenennen oder Alias).
+- [x] `GetLogs` API in asld als `LOGS <distro|*>\t<limit>` Wire-Command —
+      Tail des `/System/var/asl/asld.log` mit optionalem
+      Distro-Substring-Filter, Best-Effort (leer bei fehlender Datei).
+      Pure tail+filter-Logik in `crate::log::tail_lines` mit 8 Tests.
+      Wire-Dispatcher in `ipc.rs` mit 5 Tests. 2026-05-07.
+- [x] `aslctl logs [<distro>|*] [<limit>]` Subcommand — default 200
+      Zeilen, "*" oder fehlend = alle, garbage limit -> default cap.
+      5 Tests (Parsing, Wildcards, garbage limit, Wire-Format).
+      2026-05-07.
+- [ ] `--follow` Mode — braucht persistente Pipe oder Long-Poll.
+      Erstmal verschoben.
+- [ ] Log-Quellen erweitern: heute nur asld-eigenes Log. Agent-Output
+      und aslconsoled-Buffer waeren weitere Quellen — eigene
+      Implementierungen, brauchen Schema-Erweiterung.
+- [x] `RunDoctor` API als `DOCTOR <distro>` Wire-Command — Pass/Warn/Fail
+      pro Subsystem (storage, boot, network, mounts, agent, vm) plus
+      aggregierte `summary`-Zeile. Reine Helper-Funktionen
+      `aggregate_verdict` und `doctor_summary_from_self_check` mit
+      Unit-Tests. CLI: `aslctl doctor <name>` routet jetzt zu
+      `DOCTOR` (vorher: `DIAGNOSE`). 7 runtime-Tests + 5
+      Dispatcher-Tests. 2026-05-07.
+- [x] `ListEvents` als spec-aligned Alias `events` zu `vm-events`
+      (`vm-events`/`events`/`events-tail`/`events-clear` parsen alle
+      auf dieselben `VM_EVENTS*`-Wire-Commands). 3 Tests pinnen die
+      Aequivalenz. 2026-05-07.
+- [ ] **Echter Lifecycle-Event-Trail** — aslobsd haelt heute nur Counter
+      + last_event. Ein ringbuffered Trail (analog VM-Exits in asld)
+      ist eigene Aufgabe. Bleibt offen.
 - [ ] `aslctl --json` global einfuehren — Voraussetzung fuer aslmanager-Backend
       (Block D) und Skripting.
 

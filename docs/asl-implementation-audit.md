@@ -49,19 +49,24 @@ Audit-Quellen:
 | GetAgentStatus | IMPLEMENTED | ipc.rs:313 | |
 | RestartAgent | IMPLEMENTED | ipc.rs:317 | |
 | **Diagnostics** | | | |
-| GetLogs | MISSING | — | Kein Dispatcher, keine Implementierung |
-| RunDoctor | MISSING | — | CLI hat `doctor`, asld-Endpoint fehlt |
-| ListEvents | MISSING | — | aslobsd sammelt, API exponiert nichts |
+| GetLogs | IMPLEMENTED | ipc.rs `LOGS` / runtime via `log::read_tail` | Tail des asld.log mit optionalem Distro-Substring-Filter. Default 200 Zeilen. CLI: `aslctl logs [<distro>\|*] [<limit>]`. Geliefert 2026-05-07. |
+| RunDoctor | IMPLEMENTED | ipc.rs `DOCTOR` / runtime.rs `doctor_report()` | Pass/Warn/Fail pro Subsystem (storage, boot, network, mounts, agent, vm) plus aggregierte `summary`-Zeile. CLI: `aslctl doctor <name>`. Geliefert 2026-05-07. |
+| ListEvents | IMPLEMENTED (alias) | ipc.rs `VM_EVENTS` / aslctl `events` Alias | `aslctl events <name>` ist seit 2026-05-07 spec-aligned Alias zu `vm-events`. Beide produzieren denselben `VM_EVENTS` Wire-Command. Vollwertige Lifecycle-Event-Liste (nicht nur VM-Exits) bleibt offen — aslobsd haelt aktuell nur Counter, keine Liste. |
 | InspectDistro | PARTIAL | ipc.rs:387 / runtime.rs:853 | `diagnose()` deckt Spec-Felder unvollstaendig |
 
-### Top 5 Luecken nach User-Value
-1. **GetLogs** — essentiell fuer Debugging.
-2. **RunDoctor** — Health-Check-Framework (VM, Agent, Storage, Network).
-3. **ListEvents** — Audit-Trail.
-4. ~~**ImportBaseImage** unter Linux~~ — geklaert 2026-05-07: kein Bug, Linux-
-   Stub ist beabsichtigt. Auf anyOS funktioniert der Import. Stufe-2/3
-   Image-Trust ist eigener TODO (siehe ADR-0011).
-5. **InspectDistro** Spec-Gap.
+### Top Luecken (Stand 2026-05-07)
+1. ~~**GetLogs**~~ — IMPLEMENTED (`LOGS` Wire-Command + `aslctl logs`).
+2. ~~**RunDoctor**~~ — IMPLEMENTED (`DOCTOR` Wire-Command + `aslctl doctor`
+   mit Pass/Warn/Fail-Aggregation).
+3. **ListEvents als echter Lifecycle-Trail** — Naming gefixt (`events`
+   Alias zu `vm-events`), aber aslobsd haelt nur Counter und
+   last_event. Ein ringbuffered Event-Trail in aslobsd waere die
+   Vollausbaustufe. Bleibt offen.
+4. ~~**ImportBaseImage** unter Linux~~ — geklaert 2026-05-07: kein Bug,
+   Linux-Stub ist beabsichtigt. Auf anyOS funktioniert der Import.
+   Stufe-2/3 Image-Trust siehe ADR-0011.
+5. **InspectDistro** Spec-Gap — `diagnose()` ist eigentlich reichhaltig,
+   Audit-Befund "PARTIAL" war zu pessimistisch.
 
 ---
 
