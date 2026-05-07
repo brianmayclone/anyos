@@ -92,6 +92,8 @@ enum RenderWork {
 }
 
 const IMAGE_RESULTS_PER_TAB_BATCH: usize = 16;
+const MIN_IMAGE_RESULTS_PER_UI_POLL: usize = 4;
+const IMAGE_BURST_MIN_GRACE_MS: u32 = 48;
 const MAX_RESULTS_PER_UI_POLL: usize = 24;
 const RESULT_PROCESS_BUDGET_MS: u32 = 10;
 const SCROLL_INTERACTION_GRACE_MS: u32 = 160;
@@ -1597,12 +1599,20 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
 
         let batch_start_ms = anyos_std::sys::uptime_ms();
         let mut processed = 0usize;
+        let image_only_batch = urgent
+            .iter()
+            .all(|result| matches!(result, net_worker::FetchResult::ImageDone { .. }));
         while !urgent.is_empty() {
             let result = urgent.remove(0);
             process_single_fetch_result(result);
             processed += 1;
             let elapsed = anyos_std::sys::uptime_ms().wrapping_sub(batch_start_ms);
-            if processed >= MAX_RESULTS_PER_UI_POLL || elapsed >= RESULT_PROCESS_BUDGET_MS {
+            let budget_exhausted =
+                processed >= MAX_RESULTS_PER_UI_POLL || elapsed >= RESULT_PROCESS_BUDGET_MS;
+            let keep_image_burst_moving = image_only_batch
+                && processed < MIN_IMAGE_RESULTS_PER_UI_POLL
+                && elapsed < IMAGE_BURST_MIN_GRACE_MS;
+            if budget_exhausted && !keep_image_burst_moving {
                 if !urgent.is_empty() {
                     crate::surf_log!(
                         "[surf] requeue {} result(s) for tab {} after ui budget processed={} elapsed={}ms",
@@ -2070,6 +2080,7 @@ fn handle_nav_done(
     st.tabs[tab_idx].requested_image_urls.clear();
     st.tabs[tab_idx].deferred_images_inflight = 0;
     st.tabs[tab_idx].css_background_scan_pending = false;
+    st.tabs[tab_idx].inline_svg_cache.clear();
 
     // Set URL and cookies on the JS runtime before rendering.
     st.tabs[tab_idx].webview.set_url(&url_str);
@@ -2543,6 +2554,7 @@ fn handle_image_done(
     );
 
     let _ = headers;
+    let mut needs_layout = false;
     if let Some(decoded_raster) = decoded_raster {
         if let Some(black_ratio_ppm) = decoded_raster.suspicious_black_ppm {
             crate::surf_log!(
@@ -2555,7 +2567,7 @@ fn handle_image_done(
                 tab_index
             );
         }
-        st.tabs[tab_index].webview.add_image(
+        needs_layout = st.tabs[tab_index].webview.add_image_and_get_layout_effect(
             &src,
             decoded_raster.pixels,
             decoded_raster.width,
@@ -2569,9 +2581,6 @@ fn handle_image_done(
             encoded_len
         );
     }
-    let needs_layout = st.tabs[tab_index]
-        .webview
-        .image_requires_layout_refresh(&src);
     if from_deferred && st.tabs[tab_index].deferred_images_inflight > 0 {
         st.tabs[tab_index].deferred_images_inflight -= 1;
     }

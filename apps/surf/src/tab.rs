@@ -123,6 +123,12 @@ pub(crate) struct DeferredFontRequest {
     pub(crate) generation: u32,
 }
 
+#[derive(Clone)]
+pub(crate) struct InlineSvgCacheEntry {
+    pub(crate) node_id: usize,
+    pub(crate) content_hash: u64,
+}
+
 impl PageLoadState {
     fn new() -> Self {
         Self {
@@ -257,6 +263,8 @@ pub(crate) struct TabState {
     /// External CSS has completed and background images should be discovered
     /// after the next layout refreshes the computed-style cache.
     pub(crate) css_background_scan_pending: bool,
+    /// Fingerprints of inline SVGs already rasterised for this document.
+    pub(crate) inline_svg_cache: Vec<InlineSvgCacheEntry>,
     /// Number of JS console lines already mirrored to Surf's system log.
     pub(crate) js_console_logged_len: usize,
     /// True while DOM + JS runtime are detached and executing on the JS worker.
@@ -289,6 +297,7 @@ impl TabState {
             requested_image_urls: Vec::new(),
             deferred_images_inflight: 0,
             css_background_scan_pending: false,
+            inline_svg_cache: Vec::new(),
             js_console_logged_len: 0,
             js_worker_busy: false,
         }

@@ -13,6 +13,15 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+fn fnv1a64(data: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for &b in data.as_bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash ^ ((data.len() as u64) << 32)
+}
+
 fn image_already_queued_or_decoded(tab_index: usize, src: &str) -> bool {
     let st = crate::state();
     if tab_index >= st.tabs.len() {
@@ -44,6 +53,33 @@ fn mark_image_requested(tab_index: usize, src: &str) -> bool {
     }
     tab.requested_image_urls.push(String::from(src));
     true
+}
+
+fn inline_svg_cache_matches(tab_index: usize, node_id: usize, content_hash: u64) -> bool {
+    let st = crate::state();
+    if tab_index >= st.tabs.len() {
+        return false;
+    }
+    st.tabs[tab_index]
+        .inline_svg_cache
+        .iter()
+        .any(|entry| entry.node_id == node_id && entry.content_hash == content_hash)
+}
+
+fn remember_inline_svg_cache(tab_index: usize, node_id: usize, content_hash: u64) {
+    let st = crate::state();
+    if tab_index >= st.tabs.len() {
+        return;
+    }
+    let cache = &mut st.tabs[tab_index].inline_svg_cache;
+    if let Some(entry) = cache.iter_mut().find(|entry| entry.node_id == node_id) {
+        entry.content_hash = content_hash;
+    } else {
+        cache.push(crate::tab::InlineSvgCacheEntry {
+            node_id,
+            content_hash,
+        });
+    }
 }
 
 pub(crate) fn resolve_css_resource_urls(css: &str, css_url: &crate::http::Url) -> String {
@@ -1343,6 +1379,7 @@ pub(crate) fn queue_inline_svgs(
     let mut count = 0u32;
     let mut total = 0u32;
     let mut skipped_no_markup = 0u32;
+    let mut skipped_cached = 0u32;
     let mut sprite_urls = Vec::new();
 
     for (node_id, node) in dom.nodes.iter().enumerate() {
@@ -1369,7 +1406,13 @@ pub(crate) fn queue_inline_svgs(
             collect_external_svg_use_urls(&svg, base_url, &mut sprite_urls);
 
             let key = inline_svg_key(node_id);
+            let content_hash = fnv1a64(&svg);
+            if inline_svg_cache_matches(tab_index, node_id, content_hash) {
+                skipped_cached += 1;
+                continue;
+            }
             decode_svg_no_relayout(svg.as_bytes(), &key, tab_index);
+            remember_inline_svg_cache(tab_index, node_id, content_hash);
             count += 1;
         }
     }
@@ -1378,9 +1421,10 @@ pub(crate) fn queue_inline_svgs(
     queue_svg_sprite_fetches(tab_index, sprite_urls);
 
     crate::surf_log!(
-        "[surf] inline SVG scan: total={} rasterised={} skipped_no_markup={} sprites_queued={} tab={}",
+        "[surf] inline SVG scan: total={} rasterised={} skipped_cached={} skipped_no_markup={} sprites_queued={} tab={}",
         total,
         count,
+        skipped_cached,
         skipped_no_markup,
         sprite_count,
         tab_index
