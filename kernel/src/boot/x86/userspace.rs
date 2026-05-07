@@ -35,9 +35,12 @@ pub(super) fn start_userspace(_boot_info: &BootInfo, nogui: bool) -> ! {
     }
 
     arch::hal::disable_interrupts();
+    // Must outrank normal user threads (priority 100): joined process/thread
+    // churn otherwise retains 2 MiB kernel stacks faster than the heap can
+    // recycle them.
     task::scheduler::spawn(
         task::scheduler::deferred_reaper_thread,
-        20,
+        120,
         "deferred_reaper",
     );
     task::scheduler::spawn(task::cpu_monitor::start, 10, "cpu_monitor");
