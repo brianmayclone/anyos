@@ -1404,6 +1404,33 @@ endif()
 # WiFi credential storage directory
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/etc/wifi")
 
+# ── ASL toolchain profiles (ADR-0008) ──────────────────────────────────────
+# Per-language bootstrap scripts that run inside an ASL distro to install
+# C/C++, Rust, Node.js, or Java toolchains. Invoked from the host via
+# `aslctl run <distro> -- bash /path/to/<profile>.sh`. They are kept in
+# the host image so they ship with the OS and are versionsgleich with
+# the rest of ASL.
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/etc/asl/toolchains")
+# Scripts are executable so `aslctl run <distro> -- bash <path>` is the
+# only operator gesture needed.
+file(GLOB _ASL_TOOLCHAIN_SCRIPTS
+     "${CMAKE_SOURCE_DIR}/defaults/System/etc/asl/toolchains/*.sh")
+foreach(_tc ${_ASL_TOOLCHAIN_SCRIPTS})
+  file(COPY "${_tc}"
+       DESTINATION "${SYSROOT_DIR}/System/etc/asl/toolchains"
+       FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                        GROUP_READ GROUP_EXECUTE
+                        WORLD_READ WORLD_EXECUTE)
+endforeach()
+# README ships next to the scripts but is plain documentation.
+if(EXISTS "${CMAKE_SOURCE_DIR}/defaults/System/etc/asl/toolchains/README.md")
+  file(COPY "${CMAKE_SOURCE_DIR}/defaults/System/etc/asl/toolchains/README.md"
+       DESTINATION "${SYSROOT_DIR}/System/etc/asl/toolchains"
+       FILE_PERMISSIONS OWNER_READ OWNER_WRITE
+                        GROUP_READ
+                        WORLD_READ)
+endif()
+
 # FTP public share directory with a test file for download verification.
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Users/shared/ftp")
 if(NOT EXISTS "${SYSROOT_DIR}/Users/shared/ftp/README.txt")
