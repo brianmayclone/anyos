@@ -393,6 +393,40 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
                 Err(err) => err_line(&err),
             }
         }
+        "DOCTOR" | "doctor" => {
+            // RunDoctor: pass/warn/fail per subsystem + summary line.
+            // Designed for monitoring/CI consumers, not a replacement
+            // for DIAGNOSE (which is the full status dump).
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
+            match runtime.doctor_report(store, name) {
+                Ok(lines) => ok_lines(lines),
+                Err(err) => err_line(&err),
+            }
+        }
+        "LOGS" | "logs" => {
+            // LOGS <distro|*>\t<limit>
+            //   distro="*" or empty -> no substring filter (full asld log)
+            //   limit=0             -> no cap
+            // Returns one OK line per log entry, oldest first within
+            // the returned tail. Best-effort — silently empty if the
+            // log file is missing or unreadable (matches the write
+            // path which is also best-effort).
+            let fields = split_tab_fields(rest);
+            let raw_distro = fields.first().copied().unwrap_or("");
+            let limit: usize = fields
+                .get(1)
+                .and_then(|raw| raw.parse::<usize>().ok())
+                .unwrap_or(200);
+            let needle = if raw_distro.is_empty() || raw_distro == "*" {
+                None
+            } else {
+                Some(raw_distro)
+            };
+            let lines = crate::log::read_tail(limit, needle);
+            ok_lines(lines)
+        }
         "SELF_CHECK" | "self_check" => ok_lines(runtime.self_check()),
         "CONSOLE_CANVAS" | "console_canvas" => {
             let Some(name) = first_tab_field(rest) else {
@@ -1243,5 +1277,119 @@ mod tests {
         assert!(exec_clear.contains("cleared\t1"));
         let events_tail = dispatch(&mut runtime, &mut store, "VM_EVENTS_TAIL ubuntu-dev\t5");
         assert!(events_tail.starts_with("OK\t0"));
+    }
+
+    // ---- LOGS dispatcher tests ------------------------------------------
+    //
+    // The pure tail+filter logic is exercised by `log::tests` with
+    // synthetic buffers. Here we pin the wire-level contract:
+    // dispatcher routes correctly, returns OK, accepts the documented
+    // argument shapes. On Linux/host builds `read_tail` returns empty
+    // (no on-disk log), so we assert OK+0 lines rather than content.
+
+    #[test]
+    fn logs_command_returns_ok_with_no_args() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let resp = dispatch(&mut runtime, &mut store, "LOGS");
+        assert!(resp.starts_with("OK\t"));
+    }
+
+    #[test]
+    fn logs_command_accepts_distro_filter() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let resp = dispatch(&mut runtime, &mut store, "LOGS ubuntu-dev\t50");
+        assert!(resp.starts_with("OK\t"));
+    }
+
+    #[test]
+    fn logs_command_accepts_wildcard_distro() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let resp = dispatch(&mut runtime, &mut store, "LOGS *\t10");
+        assert!(resp.starts_with("OK\t"));
+    }
+
+    #[test]
+    fn logs_command_lowercase_alias_works() {
+        // Wire commands are case-insensitive across asld; pin the
+        // lowercase form so future refactors don't quietly drop it.
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let resp = dispatch(&mut runtime, &mut store, "logs *\t5");
+        assert!(resp.starts_with("OK\t"));
+    }
+
+    #[test]
+    fn logs_command_garbage_limit_falls_back_to_default() {
+        // ADR-0010 invariant: bad operator input must not crash the
+        // daemon. Garbage limit -> default cap, still OK.
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let resp = dispatch(&mut runtime, &mut store, "LOGS *\tnot-a-number");
+        assert!(resp.starts_with("OK\t"));
+    }
+
+    // ---- DOCTOR dispatcher tests ----------------------------------------
+
+    #[test]
+    fn doctor_command_returns_check_lines_and_summary() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let _ = dispatch(
+            &mut runtime,
+            &mut store,
+            "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati",
+        );
+        let resp = dispatch(&mut runtime, &mut store, "DOCTOR ubuntu-dev");
+        assert!(resp.starts_with("OK\t"));
+        // All canonical subsystems present.
+        for sub in ["storage", "boot", "network", "mounts", "agent", "vm"] {
+            assert!(
+                resp.contains(&alloc::format!("check\t{sub}\t")),
+                "missing check for {sub}: {resp:?}"
+            );
+        }
+        // Summary present.
+        assert!(resp.contains("summary\t"));
+    }
+
+    #[test]
+    fn doctor_command_lowercase_alias_works() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let _ = dispatch(
+            &mut runtime,
+            &mut store,
+            "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati",
+        );
+        let resp = dispatch(&mut runtime, &mut store, "doctor ubuntu-dev");
+        assert!(resp.starts_with("OK\t"));
+    }
+
+    #[test]
+    fn doctor_command_self_route() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let resp = dispatch(&mut runtime, &mut store, "DOCTOR self");
+        assert!(resp.starts_with("OK\t"));
+        assert!(resp.contains("summary\t"));
+    }
+
+    #[test]
+    fn doctor_command_missing_distro_yields_err() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let resp = dispatch(&mut runtime, &mut store, "DOCTOR ");
+        assert!(resp.starts_with("ERR"), "got: {resp:?}");
+    }
+
+    #[test]
+    fn doctor_command_unknown_distro_yields_err() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let resp = dispatch(&mut runtime, &mut store, "DOCTOR nonexistent");
+        assert!(resp.starts_with("ERR"));
     }
 }

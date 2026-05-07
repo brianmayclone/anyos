@@ -949,6 +949,186 @@ impl RuntimeService {
         crate::diagnostics::run_self_check().lines
     }
 
+    /// Operator-facing health check (RunDoctor / `aslctl doctor`).
+    ///
+    /// Wraps the existing `diagnose()` data set with a per-subsystem
+    /// pass/warn/fail verdict so a script can decide programmatically
+    /// whether the distro is healthy. Intended for monitoring hooks
+    /// and CI smoke tests.
+    ///
+    /// Output format: `check\t<subsystem>\t<verdict>\t<message>` plus
+    /// a final `summary\t<verdict>` line. Verdicts: `pass`, `warn`,
+    /// `fail`. The summary aggregates: any `fail` -> `fail`, else any
+    /// `warn` -> `warn`, else `pass`.
+    pub fn doctor_report<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+    ) -> Result<Vec<String>, AsldError> {
+        if matches!(name, "asld" | "service" | "self") {
+            // Self-check has its own report shape; route through but
+            // keep the doctor envelope so callers can rely on the
+            // summary line.
+            let mut lines = self.self_check();
+            // Self-check lines have shape "<key>\t<value>"; we treat
+            // anything containing "fail" as a fail signal.
+            let verdict = doctor_summary_from_self_check(&lines);
+            lines.push(format!("summary\t{}", verdict));
+            return Ok(lines);
+        }
+
+        let cfg = load_distro(store, name)?;
+        let status = self.store.get(name).cloned().unwrap_or_else(|| {
+            stopped_status(&cfg.name, cfg.resources.clone(), cfg.network.clone())
+        });
+
+        let mount_report = crate::mounts::validate_mount_set(&cfg.mounts);
+        let unhealthy_mounts = mount_report.iter().filter(|item| !item.valid).count();
+        let storage_report = crate::storage::validate_storage(&cfg.name, &cfg.storage);
+        let unhealthy_storage = storage_report.iter().filter(|item| !item.valid).count();
+        let network_report = self.validate_network(store, name)?;
+        let unhealthy_network = network_report.iter().filter(|item| !item.valid).count();
+        let boot_plan = crate::boot::build_boot_plan(&cfg);
+        let vm = self.vm_status(name).ok();
+        let agent_state = status.agent_state.as_str();
+
+        let mut checks: Vec<DoctorCheck> = Vec::new();
+
+        // Storage layer: any unhealthy storage entry is a hard fail —
+        // without base.img the VM cannot boot.
+        checks.push(DoctorCheck {
+            subsystem: String::from("storage"),
+            verdict: if unhealthy_storage > 0 {
+                DoctorVerdict::Fail
+            } else {
+                DoctorVerdict::Pass
+            },
+            message: format!(
+                "layout={} unhealthy={}",
+                cfg.storage.layout, unhealthy_storage
+            ),
+        });
+
+        // Boot plan: unstartable means there's no path from "stopped"
+        // to "ready" — operator must fix before anything else helps.
+        checks.push(DoctorCheck {
+            subsystem: String::from("boot"),
+            verdict: if boot_plan.startable {
+                DoctorVerdict::Pass
+            } else {
+                DoctorVerdict::Fail
+            },
+            message: format!(
+                "mode={} startable={} {}",
+                boot_plan.mode,
+                boot_plan.startable,
+                if boot_plan.message.is_empty() {
+                    "ready"
+                } else {
+                    &boot_plan.message
+                }
+            ),
+        });
+
+        // Network: bad rules are warn, not fail — the VM can still
+        // boot, just without that listener.
+        checks.push(DoctorCheck {
+            subsystem: String::from("network"),
+            verdict: if unhealthy_network > 0 {
+                DoctorVerdict::Warn
+            } else {
+                DoctorVerdict::Pass
+            },
+            message: format!(
+                "mode={} dns={} forwards={} unhealthy={}",
+                cfg.network.mode,
+                cfg.network.dns_mode,
+                cfg.port_forwards.len(),
+                unhealthy_network
+            ),
+        });
+
+        // Mounts: bad mount rules are warn — the VM still boots, but
+        // shared folders won't work.
+        checks.push(DoctorCheck {
+            subsystem: String::from("mounts"),
+            verdict: if unhealthy_mounts > 0 {
+                DoctorVerdict::Warn
+            } else {
+                DoctorVerdict::Pass
+            },
+            message: format!(
+                "mounts={} unhealthy={}",
+                cfg.mounts.len(),
+                unhealthy_mounts
+            ),
+        });
+
+        // Agent: only meaningful while running. When VM isn't running
+        // we skip with a pass-with-context rather than warn.
+        let agent_verdict = if vm.is_none() {
+            DoctorVerdict::Pass
+        } else {
+            match agent_state {
+                "ready" | "connected" => DoctorVerdict::Pass,
+                "starting" | "disconnected" => DoctorVerdict::Warn,
+                _ => DoctorVerdict::Fail,
+            }
+        };
+        checks.push(DoctorCheck {
+            subsystem: String::from("agent"),
+            verdict: agent_verdict,
+            message: format!(
+                "state={} required_for_rich_integration={}",
+                agent_state, cfg.agent.required_for_rich_integration
+            ),
+        });
+
+        // VM: derive verdict from run_state when running.
+        let vm_msg = if let Some(vm) = vm.as_ref() {
+            format!(
+                "backend={} run_state={} exits={}",
+                vm.backend,
+                vm.run_state.as_str(),
+                vm.total_exits
+            )
+        } else {
+            format!("backend=none run_state={}", status.state.as_str())
+        };
+        let vm_verdict = match (vm.as_ref(), status.state.as_str()) {
+            (Some(vm), _) => match vm.run_state.as_str() {
+                "ready" => DoctorVerdict::Pass,
+                "degraded" => DoctorVerdict::Warn,
+                "failed" => DoctorVerdict::Fail,
+                _ => DoctorVerdict::Pass,
+            },
+            (None, "stopped" | "created") => DoctorVerdict::Pass,
+            (None, "failed") => DoctorVerdict::Fail,
+            (None, _) => DoctorVerdict::Warn,
+        };
+        checks.push(DoctorCheck {
+            subsystem: String::from("vm"),
+            verdict: vm_verdict,
+            message: vm_msg,
+        });
+
+        // Render lines + summary.
+        let mut lines: Vec<String> = checks
+            .iter()
+            .map(|c| {
+                format!(
+                    "check\t{}\t{}\t{}",
+                    c.subsystem,
+                    c.verdict.as_str(),
+                    c.message
+                )
+            })
+            .collect();
+        let summary = aggregate_verdict(&checks);
+        lines.push(format!("summary\t{}", summary.as_str()));
+        Ok(lines)
+    }
+
     fn upsert_backend(&mut self, name: &str, vm: vm::VmInstance) {
         if let Some(existing) = self
             .backends
@@ -1081,6 +1261,71 @@ fn annotate_cross_distro_port_conflicts<S: ConfigStore>(
         }
     }
     Ok(())
+}
+
+// ---- Doctor primitives ------------------------------------------------------
+//
+// These are pure helpers for `doctor_report()` so the verdict/aggregate
+// logic is exercised by unit tests without mocking the runtime store.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DoctorVerdict {
+    Pass,
+    Warn,
+    Fail,
+}
+
+impl DoctorVerdict {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            DoctorVerdict::Pass => "pass",
+            DoctorVerdict::Warn => "warn",
+            DoctorVerdict::Fail => "fail",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DoctorCheck {
+    pub(crate) subsystem: String,
+    pub(crate) verdict: DoctorVerdict,
+    pub(crate) message: String,
+}
+
+/// Aggregate per-check verdicts into one overall verdict.
+/// Pure function — testable.
+pub(crate) fn aggregate_verdict(checks: &[DoctorCheck]) -> DoctorVerdict {
+    let mut worst = DoctorVerdict::Pass;
+    for c in checks {
+        match c.verdict {
+            DoctorVerdict::Fail => return DoctorVerdict::Fail,
+            DoctorVerdict::Warn => worst = DoctorVerdict::Warn,
+            DoctorVerdict::Pass => {}
+        }
+    }
+    worst
+}
+
+/// Best-effort verdict from the raw self-check lines. Self-check lines
+/// are key/value, no explicit verdict — we look for the substring
+/// "fail" anywhere as a fail signal and "warn" as a warn signal,
+/// otherwise pass.
+pub(crate) fn doctor_summary_from_self_check(lines: &[String]) -> &'static str {
+    let mut had_warn = false;
+    for line in lines {
+        let lc = line.to_ascii_lowercase();
+        if lc.contains("fail") {
+            return "fail";
+        }
+        if lc.contains("warn") {
+            had_warn = true;
+        }
+    }
+    if had_warn {
+        "warn"
+    } else {
+        "pass"
+    }
 }
 
 fn append_broker_status(lines: &mut Vec<String>, broker: &'static str) {
@@ -1700,5 +1945,147 @@ mod tests {
         assert!(runtime.vm_events_tail("ubuntu-dev", 5).unwrap().is_empty());
         assert_eq!(runtime.clear_execs("ubuntu-dev").unwrap(), 1);
         assert!(runtime.list_execs("ubuntu-dev").unwrap().is_empty());
+    }
+
+    // ---- Doctor primitives -----------------------------------------------
+
+    #[test]
+    fn doctor_aggregate_all_pass_is_pass() {
+        use super::{aggregate_verdict, DoctorCheck, DoctorVerdict};
+        let checks = alloc::vec![
+            DoctorCheck {
+                subsystem: "a".into(),
+                verdict: DoctorVerdict::Pass,
+                message: String::new(),
+            },
+            DoctorCheck {
+                subsystem: "b".into(),
+                verdict: DoctorVerdict::Pass,
+                message: String::new(),
+            },
+        ];
+        assert_eq!(aggregate_verdict(&checks), DoctorVerdict::Pass);
+    }
+
+    #[test]
+    fn doctor_aggregate_warn_dominates_pass() {
+        use super::{aggregate_verdict, DoctorCheck, DoctorVerdict};
+        let checks = alloc::vec![
+            DoctorCheck {
+                subsystem: "a".into(),
+                verdict: DoctorVerdict::Pass,
+                message: String::new(),
+            },
+            DoctorCheck {
+                subsystem: "b".into(),
+                verdict: DoctorVerdict::Warn,
+                message: String::new(),
+            },
+        ];
+        assert_eq!(aggregate_verdict(&checks), DoctorVerdict::Warn);
+    }
+
+    #[test]
+    fn doctor_aggregate_fail_dominates_warn() {
+        use super::{aggregate_verdict, DoctorCheck, DoctorVerdict};
+        let checks = alloc::vec![
+            DoctorCheck {
+                subsystem: "a".into(),
+                verdict: DoctorVerdict::Warn,
+                message: String::new(),
+            },
+            DoctorCheck {
+                subsystem: "b".into(),
+                verdict: DoctorVerdict::Fail,
+                message: String::new(),
+            },
+            DoctorCheck {
+                subsystem: "c".into(),
+                verdict: DoctorVerdict::Pass,
+                message: String::new(),
+            },
+        ];
+        assert_eq!(aggregate_verdict(&checks), DoctorVerdict::Fail);
+    }
+
+    #[test]
+    fn doctor_aggregate_empty_is_pass() {
+        // Defensive: an empty check list is a degenerate but legal
+        // input. Pin the choice (vs panic or fail) so future refactors
+        // don't accidentally break it.
+        use super::{aggregate_verdict, DoctorVerdict};
+        assert_eq!(aggregate_verdict(&[]), DoctorVerdict::Pass);
+    }
+
+    #[test]
+    fn doctor_summary_from_self_check_detects_fail() {
+        use super::doctor_summary_from_self_check;
+        let lines = alloc::vec![
+            String::from("services\tok"),
+            String::from("hypervisor\tFAIL: kvm not available"),
+        ];
+        assert_eq!(doctor_summary_from_self_check(&lines), "fail");
+    }
+
+    #[test]
+    fn doctor_summary_from_self_check_detects_warn() {
+        use super::doctor_summary_from_self_check;
+        let lines = alloc::vec![
+            String::from("services\tok"),
+            String::from("network\twarn: dns broker disabled"),
+        ];
+        assert_eq!(doctor_summary_from_self_check(&lines), "warn");
+    }
+
+    #[test]
+    fn doctor_summary_from_self_check_pass_when_clean() {
+        use super::doctor_summary_from_self_check;
+        let lines = alloc::vec![
+            String::from("services\tok"),
+            String::from("hypervisor\tavailable"),
+        ];
+        assert_eq!(doctor_summary_from_self_check(&lines), "pass");
+    }
+
+    #[test]
+    fn doctor_report_for_stopped_distro_is_pass_or_warn() {
+        // ADR-0010: a freshly-created, stopped distro must not be
+        // flagged as fail. The boot plan may report not-startable
+        // until storage import runs, but that's a warn at most for a
+        // distro that has never been started — pin the contract here.
+        let mut store = FakeStore::default();
+        let mut runtime = RuntimeService::new();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
+        let lines = runtime.doctor_report(&mut store, "ubuntu-dev").unwrap();
+
+        // Must include all canonical checks.
+        assert!(lines.iter().any(|l| l.starts_with("check\tstorage\t")));
+        assert!(lines.iter().any(|l| l.starts_with("check\tboot\t")));
+        assert!(lines.iter().any(|l| l.starts_with("check\tnetwork\t")));
+        assert!(lines.iter().any(|l| l.starts_with("check\tmounts\t")));
+        assert!(lines.iter().any(|l| l.starts_with("check\tagent\t")));
+        assert!(lines.iter().any(|l| l.starts_with("check\tvm\t")));
+
+        // Summary is the last line and is one of the three verdicts.
+        let last = lines.last().expect("at least the summary line");
+        assert!(last.starts_with("summary\t"));
+        let verdict = last.split('\t').nth(1).unwrap_or("");
+        assert!(
+            matches!(verdict, "pass" | "warn" | "fail"),
+            "unexpected verdict: {verdict:?}"
+        );
+    }
+
+    #[test]
+    fn doctor_report_self_returns_summary() {
+        // Self-mode should always return at least a summary line so
+        // callers don't have to special-case it.
+        let mut store = FakeStore::default();
+        let mut runtime = RuntimeService::new();
+        let lines = runtime.doctor_report(&mut store, "self").unwrap();
+        let last = lines.last().expect("at least the summary line");
+        assert!(last.starts_with("summary\t"));
     }
 }

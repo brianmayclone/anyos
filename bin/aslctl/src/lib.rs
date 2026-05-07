@@ -61,6 +61,12 @@ pub enum ClientCommand<'a> {
     VmEventsClear(&'a str),
     Diagnose(&'a str),
     Doctor(&'a str),
+    Logs {
+        /// Distro filter; "*" or empty means full asld log.
+        distro: &'a str,
+        /// Tail size; 0 means "default" on the daemon side (200).
+        limit: u32,
+    },
     SelfCheck,
     ConsoleCanvas(&'a str),
     ShellList(&'a str),
@@ -216,12 +222,27 @@ pub fn parse_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<Clien
         "agent-status" => Some(ClientCommand::AgentStatus(args.pos(1)?)),
         "agent-restart" => Some(ClientCommand::AgentRestart(args.pos(1)?)),
         "vm-status" => Some(ClientCommand::VmStatus(args.pos(1)?)),
-        "vm-events" => Some(ClientCommand::VmEvents(args.pos(1)?)),
-        "vm-events-tail" => Some(ClientCommand::VmEventsTail {
+        // `events` is the spec-aligned name (asl-control-plane-api.md
+        // Op:ListEvents). `vm-events` and friends remain as backwards-
+        // compatible aliases — they all hit the same VM_EVENTS wire
+        // command on asld.
+        "vm-events" | "events" => Some(ClientCommand::VmEvents(args.pos(1)?)),
+        "vm-events-tail" | "events-tail" => Some(ClientCommand::VmEventsTail {
             distro: args.pos(1)?,
             limit: args.pos(2).unwrap_or("10"),
         }),
-        "vm-events-clear" => Some(ClientCommand::VmEventsClear(args.pos(1)?)),
+        "vm-events-clear" | "events-clear" => Some(ClientCommand::VmEventsClear(args.pos(1)?)),
+        "logs" => {
+            // `aslctl logs [<distro>] [<limit>]`
+            //   distro defaults to "*" (no filter)
+            //   limit  defaults to 200 (matches asld LOGS default)
+            let distro = args.pos(1).unwrap_or("*");
+            let limit = args
+                .pos(2)
+                .and_then(|raw| raw.parse::<u32>().ok())
+                .unwrap_or(200);
+            Some(ClientCommand::Logs { distro, limit })
+        }
         "diagnose" => Some(ClientCommand::Diagnose(args.pos(1)?)),
         "doctor" => Some(ClientCommand::Doctor(args.pos(1)?)),
         "self-check" | "service-check" => Some(ClientCommand::SelfCheck),
@@ -725,6 +746,14 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                     );
                 }
             }
+            ClientCommand::Logs { .. } => {
+                // Each OK line is a verbatim log entry — print as-is.
+                // Operators expect to be able to grep this output, so
+                // we don't add any prefix decoration.
+                for line in lines {
+                    println!("{}", line);
+                }
+            }
             ClientCommand::VmEventsClear(_)
             | ClientCommand::Diagnose(_)
             | ClientCommand::Doctor(_)
@@ -1011,9 +1040,10 @@ fn print_usage() {
     println!("  aslctl agent status <name>");
     println!("  aslctl agent restart <name>");
     println!("  aslctl vm-status <name>");
-    println!("  aslctl vm-events <name>");
-    println!("  aslctl vm-events-tail <name> [limit]");
-    println!("  aslctl vm-events-clear <name>");
+    println!("  aslctl events <name>                 (alias: vm-events)");
+    println!("  aslctl events-tail <name> [limit]    (alias: vm-events-tail)");
+    println!("  aslctl events-clear <name>           (alias: vm-events-clear)");
+    println!("  aslctl logs [<distro>|*] [<limit>]   (tail asld log; default 200 lines)");
     println!("  aslctl diagnose <name>");
     println!("  aslctl doctor <name>");
     println!("  aslctl self-check");
@@ -1109,9 +1139,10 @@ impl ClientCommand<'_> {
             Self::VmStatus(name) => format!("VM_STATUS {}", name),
             Self::VmEvents(name) => format!("VM_EVENTS {}", name),
             Self::VmEventsTail { distro, limit } => format!("VM_EVENTS_TAIL {}\t{}", distro, limit),
+            Self::Logs { distro, limit } => format!("LOGS {}\t{}", distro, limit),
             Self::VmEventsClear(name) => format!("VM_EVENTS_CLEAR {}", name),
             Self::Diagnose(name) => format!("DIAGNOSE {}", name),
-            Self::Doctor(name) => format!("DIAGNOSE {}", name),
+            Self::Doctor(name) => format!("DOCTOR {}", name),
             Self::SelfCheck => String::from("SELF_CHECK"),
             Self::ConsoleCanvas(name) => format!("CONSOLE_CANVAS {}", name),
             Self::ShellList(name) => format!("SHELL_LIST {}", name),
@@ -1511,6 +1542,109 @@ mod tests {
             Some(ClientCommand::AgentStatus(name)) => assert_eq!(name, "ubuntu-dev"),
             _ => panic!("expected agent status command"),
         }
+    }
+
+    #[test]
+    fn events_is_alias_for_vm_events() {
+        // ADR-style naming pin: `events` and `vm-events` parse to the
+        // same variant so they hit the same wire command. This keeps
+        // the spec-aligned name working without a dual code path.
+        let a = anyos_std::args::parse("events ubuntu-dev", b"");
+        let b = anyos_std::args::parse("vm-events ubuntu-dev", b"");
+        let parsed_a = parse_command(&a);
+        let parsed_b = parse_command(&b);
+        assert!(matches!(parsed_a, Some(ClientCommand::VmEvents("ubuntu-dev"))));
+        assert!(matches!(parsed_b, Some(ClientCommand::VmEvents("ubuntu-dev"))));
+        // Wire output must be byte-identical so a script that uses
+        // either form gets the same response.
+        assert_eq!(parsed_a.unwrap().as_wire(), parsed_b.unwrap().as_wire());
+    }
+
+    #[test]
+    fn events_tail_alias_parses_with_limit() {
+        let args = anyos_std::args::parse("events-tail ubuntu-dev 5", b"");
+        match parse_command(&args) {
+            Some(ClientCommand::VmEventsTail { distro, limit }) => {
+                assert_eq!(distro, "ubuntu-dev");
+                assert_eq!(limit, "5");
+            }
+            _ => panic!("expected events-tail command"),
+        }
+    }
+
+    #[test]
+    fn events_clear_alias_parses() {
+        let args = anyos_std::args::parse("events-clear ubuntu-dev", b"");
+        assert!(matches!(
+            parse_command(&args),
+            Some(ClientCommand::VmEventsClear("ubuntu-dev"))
+        ));
+    }
+
+    #[test]
+    fn parses_logs_command_with_distro_and_limit() {
+        let args = anyos_std::args::parse("logs ubuntu-dev 50", b"");
+        match parse_command(&args) {
+            Some(ClientCommand::Logs { distro, limit }) => {
+                assert_eq!(distro, "ubuntu-dev");
+                assert_eq!(limit, 50);
+            }
+            _ => panic!("expected logs command"),
+        }
+    }
+
+    #[test]
+    fn parses_logs_command_defaults() {
+        let args = anyos_std::args::parse("logs", b"");
+        match parse_command(&args) {
+            Some(ClientCommand::Logs { distro, limit }) => {
+                assert_eq!(distro, "*");
+                assert_eq!(limit, 200);
+            }
+            _ => panic!("expected logs command with defaults"),
+        }
+    }
+
+    #[test]
+    fn parses_logs_command_with_explicit_wildcard() {
+        let args = anyos_std::args::parse("logs * 5", b"");
+        match parse_command(&args) {
+            Some(ClientCommand::Logs { distro, limit }) => {
+                assert_eq!(distro, "*");
+                assert_eq!(limit, 5);
+            }
+            _ => panic!("expected logs command"),
+        }
+    }
+
+    #[test]
+    fn logs_command_garbage_limit_falls_back_to_default() {
+        let args = anyos_std::args::parse("logs ubuntu-dev nonsense", b"");
+        match parse_command(&args) {
+            Some(ClientCommand::Logs { distro, limit }) => {
+                assert_eq!(distro, "ubuntu-dev");
+                // unparseable limit -> default 200, not 0 (would mean
+                // "unlimited" on the daemon side and could overwhelm
+                // the operator's terminal).
+                assert_eq!(limit, 200);
+            }
+            _ => panic!("expected logs command"),
+        }
+    }
+
+    #[test]
+    fn logs_command_emits_correct_wire_format() {
+        let cmd = ClientCommand::Logs {
+            distro: "ubuntu-dev",
+            limit: 100,
+        };
+        assert_eq!(cmd.as_wire(), "LOGS ubuntu-dev\t100");
+
+        let cmd = ClientCommand::Logs {
+            distro: "*",
+            limit: 200,
+        };
+        assert_eq!(cmd.as_wire(), "LOGS *\t200");
     }
 
     #[test]
