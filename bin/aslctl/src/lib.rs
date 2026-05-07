@@ -176,7 +176,7 @@ pub fn parse_cli_command<'a>(raw: &'a str) -> Option<ClientCommand<'a>> {
             distro: *tokens.get(1)?,
             exec_id: *tokens.get(2)?,
         }),
-        "exec" => parse_exec_tokens(&tokens),
+        "exec" | "run" => parse_exec_tokens(&tokens),
         _ => {
             let args = anyos_std::args::parse(raw, b"");
             parse_command(&args)
@@ -1026,6 +1026,7 @@ fn print_usage() {
     println!("  aslctl exec-show <name> <exec-id>");
     println!("  aslctl exec-clear <name>");
     println!("  aslctl exec <name> [--fallback-console] [--cwd <path>] [--env KEY=VALUE] -- <command> [args...]");
+    println!("  aslctl run  <name> [--fallback-console] [--cwd <path>] [--env KEY=VALUE] -- <command> [args...]   (alias for exec)");
     println!("  aslctl mount list <name>");
     println!("  aslctl mount validate <name>");
     println!("  aslctl mount show <name> <mount-id>");
@@ -1608,6 +1609,94 @@ mod tests {
                 assert_eq!(argv, Vec::from(["cargo", "test"]));
             }
             _ => panic!("expected exec command"),
+        }
+    }
+
+    #[test]
+    fn parses_run_command_with_env_and_cwd() {
+        match parse_cli_command(
+            "run ubuntu-dev --cwd /workspace --env RUST_BACKTRACE=1 -- cargo test",
+        ) {
+            Some(ClientCommand::Exec {
+                distro,
+                cwd,
+                env,
+                argv,
+                ..
+            }) => {
+                assert_eq!(distro, "ubuntu-dev");
+                assert_eq!(cwd, "/workspace");
+                assert_eq!(env.len(), 1);
+                assert_eq!(argv, Vec::from(["cargo", "test"]));
+            }
+            _ => panic!("expected run -> Exec command"),
+        }
+    }
+
+    #[test]
+    fn run_and_exec_emit_identical_wire_command() {
+        let exec = parse_cli_command(
+            "exec ubuntu-dev --cwd /workspace --env A=1 --env B=2 -- cargo build --release",
+        )
+        .expect("exec parses");
+        let run = parse_cli_command(
+            "run ubuntu-dev --cwd /workspace --env A=1 --env B=2 -- cargo build --release",
+        )
+        .expect("run parses");
+        assert_eq!(exec.as_wire(), run.as_wire());
+        assert!(exec.as_wire().starts_with("EXEC "));
+    }
+
+    #[test]
+    fn parses_run_with_multiple_env_pairs() {
+        match parse_cli_command(
+            "run ubuntu-dev --env FOO=1 --env BAR=baz -- printenv",
+        ) {
+            Some(ClientCommand::Exec { env, argv, .. }) => {
+                assert_eq!(env, Vec::from(["FOO=1", "BAR=baz"]));
+                assert_eq!(argv, Vec::from(["printenv"]));
+            }
+            _ => panic!("expected run command"),
+        }
+    }
+
+    #[test]
+    fn run_without_argv_is_rejected() {
+        // Doc spec says `run <name> ... -- <command>` — without command, must fail.
+        assert!(parse_cli_command("run ubuntu-dev --cwd /workspace --").is_none());
+        assert!(parse_cli_command("run ubuntu-dev").is_none());
+    }
+
+    #[test]
+    fn run_with_unknown_flag_is_rejected() {
+        // Defense-in-depth: unknown flags must not silently be swallowed as argv.
+        assert!(
+            parse_cli_command("run ubuntu-dev --bogus -- cargo test").is_none()
+        );
+    }
+
+    #[test]
+    fn run_passes_double_dash_separator_through() {
+        // Tokens after `--` must be argv even if they look like flags.
+        match parse_cli_command("run ubuntu-dev -- cargo --version") {
+            Some(ClientCommand::Exec { argv, .. }) => {
+                assert_eq!(argv, Vec::from(["cargo", "--version"]));
+            }
+            _ => panic!("expected run command"),
+        }
+    }
+
+    #[test]
+    fn run_with_fallback_console_flag() {
+        match parse_cli_command(
+            "run ubuntu-dev --fallback-console -- bash -lc 'echo hi'",
+        ) {
+            Some(ClientCommand::Exec {
+                fallback_console, ..
+            }) => {
+                assert!(fallback_console);
+            }
+            _ => panic!("expected run command"),
         }
     }
 }

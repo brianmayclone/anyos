@@ -95,8 +95,8 @@ Ziel:
 aslctl shell <name>
 aslctl shell <name> --fallback-console
 aslctl shell <name> --session <session-name>
-aslctl exec <name> -- <command> [args...]
-aslctl run <name> --cwd <path> --env KEY=VALUE -- <command> [args...]
+aslctl exec <name> [--fallback-console] [--cwd <path>] [--env KEY=VALUE]... -- <command> [args...]
+aslctl run  <name> [--fallback-console] [--cwd <path>] [--env KEY=VALUE]... -- <command> [args...]
 ```
 
 Verhalten:
@@ -106,8 +106,11 @@ Verhalten:
   Agent-Integration
 - `shell --session <session-name>` adressiert oder erzeugt eine benannte
   persistente Sitzung
-- `exec` fuehrt einmaligen Befehl aus
-- `run` ist die erweiterte Variante mit Arbeitsverzeichnis und Umgebungsvariablen
+- `exec` fuehrt einmaligen Befehl aus, optional mit `--cwd` und einer oder
+  mehreren `--env KEY=VALUE` Variablen
+- `run` ist ein Alias zu `exec` mit identischer Semantik. Empfohlen fuer
+  Build-Workflows aus IDEs (anycode), wo `run` lesbarer ist als `exec`.
+  Beide Befehle erzeugen denselben Wire-Command (`EXEC ...`).
 
 Hinweis:
 
