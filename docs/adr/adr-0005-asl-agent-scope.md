@@ -2,11 +2,19 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Date
 
-2026-04-23
+2026-04-23, status promoted 2026-05-07
+
+## Promotion note
+
+`asl-agent` Scope ist in der asld-Implementierung als minimal-but-first-class
+verankert: Schema-Felder `agent.enabled`, `required_for_rich_integration`,
+`fallback_console_enabled` (siehe `system/daemons/asld/src/schema.rs:14-15`,
+`config.rs:243-253`). Boot-Pfad ueber `aslconsoled`-Fallback funktioniert ohne
+Agent. `GetAgentStatus` und `RestartAgent` API implementiert.
 
 ## Context
 

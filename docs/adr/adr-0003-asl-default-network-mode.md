@@ -2,11 +2,19 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Date
 
-2026-04-23
+2026-04-23, status promoted 2026-05-07
+
+## Promotion note
+
+NAT ist Default in `network.mode` (Schema), `aslnetd` implementiert die
+NAT-/Port-Forward-Datenstrukturen. Offen: DNS-Broker
+(`dns_broker_enabled=true` Default, Implementierung fehlt — getrackt in
+`todos/asl-anyos-subsystem-linux.md` Block A1). Die Architekturentscheidung
+selbst ist umgesetzt.
 
 ## Context
 

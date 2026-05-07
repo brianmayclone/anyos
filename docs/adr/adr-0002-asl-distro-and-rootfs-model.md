@@ -2,11 +2,19 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Date
 
-2026-04-23
+2026-04-23, status promoted 2026-05-07
+
+## Promotion note
+
+Das geschichtete Distro-/Rootfs-Modell ist in der Implementierung umgesetzt:
+`base.img` / `overlay.img` / `state.img` werden in
+`system/daemons/asld/src/config.rs` (Storage-Sektion) und `model.rs` verwaltet,
+das Distro-Verzeichnis-Layout unter `/System/var/asl/distros/<name>/...` ist
+produktiv. Audit siehe `docs/asl-implementation-audit.md`.
 
 ## Context
 

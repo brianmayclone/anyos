@@ -2,11 +2,19 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Date
 
-2026-04-23
+2026-04-23, status promoted 2026-05-07
+
+## Promotion note
+
+`aslfsd` ist als Shared-Folder-Broker produktiv mit allen ADR-konformen
+Policy-Feldern: `mode`, `metadata_mode`, `case_mode`, `exec_policy`,
+`watch_policy` (siehe `system/daemons/asld/src/config.rs:749-774`). Mount-Add/
+Remove/Validate-API in asld implementiert. Offen: Verifikation der
+virtio-fs/9P-Anbindung in der Gast-VM (Block A3).
 
 ## Context
 
