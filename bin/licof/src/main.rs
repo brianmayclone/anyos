@@ -5,7 +5,10 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use anyos_std::{fs, println, process};
+use anyos_std::{
+    fs::{self, Read, Write},
+    println, process,
+};
 
 const ROOT: &str = "/System/var/licof";
 const ROOTFS_DEFAULT: &str = "/System/var/licof/rootfs/default";
@@ -270,14 +273,7 @@ fn install_package(pkg: &str, rootfs: &str, depth: u8) -> bool {
         return false;
     }
 
-    let index = match fs::read_to_string(PACKAGES_TXT) {
-        Ok(s) => s,
-        Err(_) => {
-            println!("licof apt: cannot read package index");
-            return false;
-        }
-    };
-    let Some(info) = find_package(&index, pkg) else {
+    let Some(info) = find_package_in_index(pkg) else {
         println!("licof apt: package '{}' not found", pkg);
         return false;
     };
@@ -337,8 +333,11 @@ fn ensure_apt_index() -> bool {
         return false;
     }
     ensure_dir(CACHE);
-    if fs::stat(PACKAGES_TXT, &mut [0u32; 7]) == 0 {
-        return true;
+    if file_size(PACKAGES_TXT) > 0 {
+        if looks_like_plain_packages_index(PACKAGES_TXT) {
+            return true;
+        }
+        println!("licof apt: cached package index is invalid; refreshing");
     }
     let url = alloc::format!(
         "{}/dists/{}/main/binary-{}/Packages.gz",
@@ -348,37 +347,114 @@ fn ensure_apt_index() -> bool {
     );
     println!("licof apt: fetching package index");
     if !libhttp_client::download(&url, PACKAGES_GZ) {
-        println!("licof apt: failed to download {}", url);
+        println!(
+            "licof apt: failed to download {} (http-status={}, error={})",
+            url,
+            libhttp_client::last_status(),
+            libhttp_client::last_error()
+        );
+        return false;
+    }
+    let downloaded = file_size(PACKAGES_GZ);
+    if downloaded == 0 {
+        println!("licof apt: downloaded package index is empty");
+        return false;
+    }
+    if looks_like_plain_packages_index(PACKAGES_GZ) {
+        println!(
+            "licof apt: package index arrived uncompressed ({} bytes)",
+            downloaded
+        );
+        if copy_file(PACKAGES_GZ, PACKAGES_TXT) {
+            return true;
+        }
+        println!("licof apt: cannot store uncompressed package index");
+        return false;
+    }
+    if !looks_like_gzip(PACKAGES_GZ) {
+        print_index_download_diagnostic(PACKAGES_GZ, downloaded);
         return false;
     }
     if !libzip_client::gzip_decompress_file(PACKAGES_GZ, PACKAGES_TXT) {
-        println!("licof apt: failed to decompress package index");
+        println!(
+            "licof apt: failed to decompress package index (downloaded {} bytes)",
+            downloaded
+        );
         return false;
     }
+    let unpacked = file_size(PACKAGES_TXT);
+    if unpacked == 0 {
+        println!("licof apt: decompressed package index is empty");
+        return false;
+    }
+    println!("licof apt: package index ready ({} bytes)", unpacked);
     true
 }
 
-fn find_package(index: &str, wanted: &str) -> Option<PackageInfo> {
-    for para in index.split("\n\n") {
-        let Some(package) = field(para, "Package") else {
-            continue;
+fn find_package_in_index(wanted: &str) -> Option<PackageInfo> {
+    let mut file = match fs::File::open(PACKAGES_TXT) {
+        Ok(file) => file,
+        Err(_) => {
+            println!("licof apt: cannot open package index '{}'", PACKAGES_TXT);
+            return None;
+        }
+    };
+    let mut chunk = [0u8; 4096];
+    let mut para = Vec::with_capacity(1024);
+    let mut newline_run = 0usize;
+
+    loop {
+        let n = match file.read(&mut chunk) {
+            Ok(n) => n,
+            Err(_) => {
+                println!("licof apt: cannot read package index '{}'", PACKAGES_TXT);
+                return None;
+            }
         };
-        if package != wanted {
-            continue;
+        if n == 0 {
+            break;
         }
-        let arch = field(para, "Architecture").unwrap_or("");
-        if arch != APT_ARCH && arch != "all" {
-            continue;
+        for &b in &chunk[..n] {
+            para.push(b);
+            if b == b'\n' {
+                newline_run += 1;
+                if newline_run >= 2 {
+                    if let Some(info) = package_info_from_para(&para, wanted) {
+                        return Some(info);
+                    }
+                    para.clear();
+                    newline_run = 0;
+                }
+            } else if b != b'\r' {
+                newline_run = 0;
+            }
         }
-        return Some(PackageInfo {
-            package: String::from(wanted),
-            version: String::from(field(para, "Version").unwrap_or("unknown")),
-            filename: String::from(field(para, "Filename")?),
-            depends: String::from(field(para, "Depends").unwrap_or("")),
-            pre_depends: String::from(field(para, "Pre-Depends").unwrap_or("")),
-        });
     }
-    None
+
+    if !para.is_empty() {
+        package_info_from_para(&para, wanted)
+    } else {
+        None
+    }
+}
+
+fn package_info_from_para(para: &[u8], wanted: &str) -> Option<PackageInfo> {
+    let para = core::str::from_utf8(para).ok()?;
+    let package = field(para, "Package")?;
+    if package != wanted {
+        return None;
+    }
+    let arch = field(para, "Architecture").unwrap_or("");
+    if arch != APT_ARCH && arch != "all" {
+        return None;
+    }
+    Some(PackageInfo {
+        package: String::from(wanted),
+        version: String::from(field(para, "Version").unwrap_or("unknown")),
+        filename: String::from(field(para, "Filename")?),
+        depends: String::from(field(para, "Depends").unwrap_or("")),
+        pre_depends: String::from(field(para, "Pre-Depends").unwrap_or("")),
+    })
 }
 
 fn field<'a>(para: &'a str, key: &str) -> Option<&'a str> {
@@ -752,6 +828,68 @@ fn linux_path_in_rootfs(rootfs: &str, linux_path: &str) -> String {
 
 fn path_exists(path: &str) -> bool {
     fs::stat(path, &mut [0u32; 7]) == 0
+}
+
+fn file_size(path: &str) -> u32 {
+    let mut stat_buf = [0u32; 7];
+    if fs::stat(path, &mut stat_buf) == 0 {
+        stat_buf[1]
+    } else {
+        0
+    }
+}
+
+fn looks_like_gzip(path: &str) -> bool {
+    let prefix = read_prefix(path);
+    prefix[0] == 0x1f && prefix[1] == 0x8b && prefix[2] == 0x08
+}
+
+fn looks_like_plain_packages_index(path: &str) -> bool {
+    let prefix = read_prefix(path);
+    prefix.starts_with(b"Package:")
+}
+
+fn read_prefix(path: &str) -> [u8; 16] {
+    let mut prefix = [0u8; 16];
+    if let Ok(mut file) = fs::File::open(path) {
+        let _ = file.read(&mut prefix);
+    }
+    prefix
+}
+
+fn print_index_download_diagnostic(path: &str, size: u32) {
+    let prefix = read_prefix(path);
+    println!(
+        "licof apt: downloaded package index is not gzip ({} bytes, first bytes {:02x} {:02x} {:02x} {:02x})",
+        size, prefix[0], prefix[1], prefix[2], prefix[3]
+    );
+    if prefix[0] == b'<' {
+        println!("licof apt: response looks like HTML; archive server returned an error page");
+    }
+}
+
+fn copy_file(src: &str, dst: &str) -> bool {
+    let mut input = match fs::File::open(src) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut output = match fs::File::create(dst) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = match input.read(&mut buf) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        if n == 0 {
+            return true;
+        }
+        if output.write_all(&buf[..n]).is_err() {
+            return false;
+        }
+    }
 }
 
 fn ensure_dir(path: &str) {
