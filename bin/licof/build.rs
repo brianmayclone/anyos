@@ -17,4 +17,3 @@ fn main() {
     println!("cargo:rustc-link-arg=-T{}", link_ld.display());
     println!("cargo:rerun-if-changed={}", link_ld.display());
 }
-

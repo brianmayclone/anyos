@@ -923,9 +923,29 @@ static CREATE_USER_PD_LOCK: core::sync::atomic::AtomicBool =
 /// PML4[510] is set to the NEW PML4's own address for recursive mapping.
 /// Returns the physical address of the new PML4.
 pub fn create_user_page_directory() -> Option<PhysAddr> {
+    create_user_page_directory_inner(true)
+}
+
+/// Create a user PML4 without the low identity-map compatibility window.
+///
+/// This is used by licof/Linux processes so classic Linux ET_EXEC mappings
+/// around 0x400000 can be installed as normal user pages.
+pub fn create_user_page_directory_no_low_identity() -> Option<PhysAddr> {
+    create_user_page_directory_inner(false)
+}
+
+fn create_user_page_directory_inner(map_low_identity: bool) -> Option<PhysAddr> {
     let new_pml4_phys = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)?;
-    let new_pdpt_phys = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)?; // PDPT for PML4[0]
-    let new_pd_phys = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)?; // PD for PML4[0]→PDPT[0]
+    let new_pdpt_phys = if map_low_identity {
+        Some(physical::alloc_frame_with(physical::FrameAllocPolicy::Any)?) // PDPT for PML4[0]
+    } else {
+        None
+    };
+    let new_pd_phys = if map_low_identity {
+        Some(physical::alloc_frame_with(physical::FrameAllocPolicy::Any)?) // PD for PML4[0]→PDPT[0]
+    } else {
+        None
+    };
 
     // Temp virtual addresses to write into the new page tables.
     // MUST be outside the heap range (HEAP_START + 704 MiB max) to avoid
@@ -951,8 +971,12 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
     }
 
     map_page(temp_pml4, new_pml4_phys, PAGE_WRITABLE);
-    map_page(temp_pdpt, new_pdpt_phys, PAGE_WRITABLE);
-    map_page(temp_pd, new_pd_phys, PAGE_WRITABLE);
+    if let Some(pdpt) = new_pdpt_phys {
+        map_page(temp_pdpt, pdpt, PAGE_WRITABLE);
+    }
+    if let Some(pd) = new_pd_phys {
+        map_page(temp_pd, pd, PAGE_WRITABLE);
+    }
 
     let new_pml4 = temp_pml4.as_u64() as *mut u64;
     let new_pdpt_ptr = temp_pdpt.as_u64() as *mut u64;
@@ -960,28 +984,32 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
     let cur_pml4 = RECURSIVE_PML4_BASE as *const u64;
 
     unsafe {
-        // Zero the new PDPT and PD
-        for i in 0..ENTRIES_PER_TABLE {
-            new_pdpt_ptr.add(i).write_volatile(0);
-            new_pd_ptr.add(i).write_volatile(0);
+        if let (Some(pdpt), Some(pd)) = (new_pdpt_phys, new_pd_phys) {
+            // Zero the new PDPT and PD
+            for i in 0..ENTRIES_PER_TABLE {
+                new_pdpt_ptr.add(i).write_volatile(0);
+                new_pd_ptr.add(i).write_volatile(0);
+            }
+
+            // Copy identity-map PD entries [0..31] from kernel (covers first 64 MiB).
+            // These are kernel-only (no PAGE_USER), so Ring 3 can't access them.
+            // Entries [32+] left empty for DLLs (0x04000000+) and user programs.
+            let kernel_pd = recursive_pd_base(VirtAddr::new(0)) as *const u64;
+            for i in 0..32 {
+                new_pd_ptr
+                    .add(i)
+                    .write_volatile(kernel_pd.add(i).read_volatile());
+            }
+
+            // Wire PDPT[0] -> new PD (PAGE_USER so user program pages in PD[64+] work)
+            new_pdpt_ptr
+                .write_volatile(pd.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+
+            // Wire PML4[0] -> new PDPT (PAGE_USER for same reason)
+            new_pml4.write_volatile(pdpt.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+        } else {
+            new_pml4.write_volatile(0);
         }
-
-        // Copy identity-map PD entries [0..31] from kernel (covers first 64 MiB).
-        // These are kernel-only (no PAGE_USER), so Ring 3 can't access them.
-        // Entries [32+] left empty for DLLs (0x04000000+) and user programs.
-        let kernel_pd = recursive_pd_base(VirtAddr::new(0)) as *const u64;
-        for i in 0..32 {
-            new_pd_ptr
-                .add(i)
-                .write_volatile(kernel_pd.add(i).read_volatile());
-        }
-
-        // Wire PDPT[0] → new PD (PAGE_USER so user program pages in PD[64+] work)
-        new_pdpt_ptr
-            .write_volatile(new_pd_phys.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
-
-        // Wire PML4[0] → new PDPT (PAGE_USER for same reason)
-        new_pml4.write_volatile(new_pdpt_phys.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
 
         // Clear remaining user-space entries (1-255)
         for i in 1..256 {
@@ -1007,8 +1035,12 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
 
     // Unmap temp pages
     unmap_page(temp_pml4);
-    unmap_page(temp_pdpt);
-    unmap_page(temp_pd);
+    if new_pdpt_phys.is_some() {
+        unmap_page(temp_pdpt);
+    }
+    if new_pd_phys.is_some() {
+        unmap_page(temp_pd);
+    }
 
     CREATE_USER_PD_LOCK.store(false, core::sync::atomic::Ordering::Release);
 

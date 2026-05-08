@@ -1017,6 +1017,7 @@ fn write_linux_initial_stack(
 fn load_elf64(
     data: &[u8],
     pd_phys: crate::memory::address::PhysAddr,
+    min_user_vaddr: u64,
 ) -> Result<ElfLoadResult, &'static str> {
     if data.len() < 64 {
         return Err("ELF64 file too small");
@@ -1064,8 +1065,8 @@ fn load_elf64(
         // would write to physical addresses used by kernel data structures
         // (via the identity mapping), causing silent memory corruption and
         // spinlock deadlocks. Reject early with a clear error.
-        if vaddr < 0x0800_0000 {
-            return Err("ELF64 segment below 128 MiB identity-map boundary");
+        if vaddr < min_user_vaddr {
+            return Err("ELF64 segment below ABI minimum user address");
         }
 
         // Allocate pages for this segment
@@ -1200,7 +1201,7 @@ fn load_elf64(
     let brk = (max_vaddr_end + PAGE_SIZE - 1) & !0xFFF;
 
     // Validate entry point: must be above identity-map boundary
-    if entry < 0x0800_0000 || entry >= 0x0000_8000_0000_0000 {
+    if entry < min_user_vaddr || entry >= 0x0000_8000_0000_0000 {
         return Err("ELF64 entry point outside valid user address range");
     }
 
@@ -1316,7 +1317,7 @@ pub fn load_binary_into_pd(
             stack_flags,
             true,
         )?;
-        let elf_result = load_elf64(data, pd_phys)?;
+        let elf_result = load_elf64(data, pd_phys, 0x0800_0000)?;
         total_user_pages += elf_result.pages_mapped + stack_mapped;
         Ok(LoadResult {
             entry: elf_result.entry,
@@ -1631,9 +1632,15 @@ fn load_and_run_with_args_abi(
         return Err("Program file is empty");
     }
 
-    // Create per-process PML4 (clones kernel mappings, empty user space)
-    let pd_phys =
-        virtual_mem::create_user_page_directory().ok_or("Failed to create user page directory")?;
+    // Create per-process PML4 (clones kernel mappings, empty user space).
+    // Linux processes intentionally omit the low identity-map compatibility
+    // window so Linux ET_EXEC binaries can occupy addresses around 0x400000.
+    let pd_phys = if abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
+        virtual_mem::create_user_page_directory_no_low_identity()
+    } else {
+        virtual_mem::create_user_page_directory()
+    }
+    .ok_or("Failed to create user page directory")?;
 
     let (entry_point, brk);
     let mut total_user_pages: u32 = 0;
@@ -1710,10 +1717,17 @@ fn load_and_run_with_args_abi(
         // the kernel's demand-page handler (which holds LOADED_DLLS + ALLOCATOR
         // locks). Pre-mapping avoids that fragile nested-lock path for RO code.
         // Per-process .data/.bss pages are still demand-paged on first access.
-        crate::task::dll::map_all_dlls_into(pd_phys);
+        if abi != crate::task::abi::AbiPersonality::LinuxX86_64 {
+            crate::task::dll::map_all_dlls_into(pd_phys);
+        }
 
         // Load ELF64 segments
-        let elf_result = load_elf64(&data, pd_phys)?;
+        let min_user_vaddr = if abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
+            0x0001_0000
+        } else {
+            0x0800_0000
+        };
+        let elf_result = load_elf64(&data, pd_phys, min_user_vaddr)?;
         entry_point = elf_result.entry;
         brk = elf_result.brk;
         total_user_pages += elf_result.pages_mapped + stack_mapped;

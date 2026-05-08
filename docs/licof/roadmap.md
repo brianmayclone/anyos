@@ -23,6 +23,37 @@ Slice:
 - ASL bleibt der Pfad fuer echte Distributionen, Kernelmodule, systemd-nahe
   Workloads und maximale Linux-Kompatibilitaet.
 
+## Aktueller Implementierungsstand
+
+- Kernel-Threads besitzen eine ABI-Personality; Fork/Spawn vererben sie.
+- `SYS_LICOF_SPAWN` startet ELF64-Prozesse gezielt als `LinuxX86_64`.
+- Linux-x86_64 Syscalls werden im gemeinsamen x86_64 Entry anhand der
+  Personality in eine separate Linux-Tabelle dispatcht.
+- Der Linux-ELF64-Pfad baut einen Linux-konformen Initialstack mit
+  `argc`/`argv`/`envp`/`auxv` inklusive `AT_PHDR`, `AT_ENTRY`, `AT_RANDOM`,
+  `AT_PLATFORM` und `AT_EXECFN`.
+- Linux-ABI-Prozesse bekommen auf x86_64 eine User-PML4 ohne Low-Identity-
+  Mapping, damit klassische Linux-ET_EXECs bei `0x400000` nicht mehr mit
+  Kernel-Identity-Mappings kollidieren.
+- Tier-0/Startsyscalls sind angebunden: `read`, `write`, `open`, `openat`,
+  `close`, `stat`, `lstat`, `fstat`, `newfstatat`, `lseek`, `brk`, `mmap`,
+  `munmap`, `getpid`, `getcwd`, `chdir`, `readlink`, `uname`, `getuid`,
+  `getgid`, `arch_prctl`, `set_tid_address`, `set_robust_list`, `getrandom`,
+  `exit` und `exit_group`.
+- `/System/bin/licof` existiert mit `status`, `run`, `rootfs`, `pkg` und
+  `apt install`.
+- `licof rootfs create <name>` legt den Rootfs-Baum, Apt-Konfiguration, Cache
+  und Paketdatenbank an und bootstrapped eine minimale Apt-Basis.
+- `licof apt install <pkg>` laedt Paketindex und `.deb`-Pakete aus
+  `archive.debian.org`, loest einfache `Pre-Depends`/`Depends` rekursiv auf und
+  extrahiert `data.tar.gz` in den Rootfs.
+
+Aktuelle Grenze: dynamische ELF64-Binaries mit `PT_INTERP` und ET_DYN
+Load-Bias werden bewusst abgelehnt, bis der dynamische Loader-/Rootfs-Pfad
+implementiert ist. Moderne Debian-Pakete verwenden haeufig `data.tar.xz`;
+dieser Pfad wird aktuell erkannt und sauber abgelehnt, bis XZ-Support in licof
+landet.
+
 ## Architektur
 
 ### Kernel
@@ -119,13 +150,14 @@ CLI:
 - `licof rootfs create <name>`
 - `licof rootfs list`
 - `licof pkg install <file.deb>`
-- `licof apt install <pkg>` spaeter
+- `licof apt install <pkg>`
 
 Implementierung:
 
 - Debian `ar` Container lesen.
-- `control.tar.*` und `data.tar.*` extrahieren.
+- `data.tar.gz` extrahieren.
 - Paketdatenbank minimal pflegen.
+- Paketindex aus Debian-Archiv laden und einfache Depends aufloesen.
 - Maintainer-Scripts zuerst nicht automatisch ausfuehren.
 
 ## Risiken
@@ -145,4 +177,3 @@ Implementierung:
    `LinuxX86_64`.
 4. `/System/bin/licof` mit `run`, `status`, `rootfs`, `pkg` Skeleton.
 5. Tests: Buildbarkeit und Smoke-Pfad fuer statische Linux-ELF64-Binaries.
-

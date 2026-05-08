@@ -563,6 +563,14 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
     Some(PhysAddr::new(frame))
 }
 
+/// Create a new user page directory without low identity mappings.
+///
+/// AArch64 does not install x86-style low identity mappings here, so the
+/// regular empty user page table already has the shape Linux-ABI loaders need.
+pub fn create_user_page_directory_no_low_identity() -> Option<PhysAddr> {
+    create_user_page_directory()
+}
+
 /// Deep-copy a user page directory (all levels + page contents).
 pub fn clone_user_page_directory(src_pd: PhysAddr) -> Option<PhysAddr> {
     let src_l0 = src_pd.as_u64();
