@@ -5,11 +5,16 @@
 
 // CPU workloads
 mod crypto_hash;
+mod image_filter;
+mod json_parse;
 mod mandelbrot;
 mod matrix_multiply;
 mod memory_copy;
+mod ml_inference;
+mod nbody_physics;
 mod prime_sieve;
 mod sort;
+mod text_compression;
 
 // GPU workloads
 mod gpu_blending;
@@ -23,6 +28,7 @@ pub(crate) mod gl3d_common;
 mod gl3d_depth;
 mod gl3d_drawcalls;
 mod gl3d_lighting;
+mod gl3d_showcase;
 mod gl3d_textured;
 mod gl3d_triangles;
 
@@ -30,11 +36,16 @@ mod gl3d_triangles;
 mod disk_io;
 
 pub use crypto_hash::bench_crypto_hash;
+pub use image_filter::bench_image_filter;
+pub use json_parse::bench_json_parse;
 pub use mandelbrot::bench_mandelbrot;
 pub use matrix_multiply::bench_matrix_multiply;
 pub use memory_copy::bench_memory_copy;
+pub use ml_inference::bench_ml_inference;
+pub use nbody_physics::bench_nbody_physics;
 pub use prime_sieve::bench_prime_sieve;
 pub use sort::bench_sort;
+pub use text_compression::bench_text_compression;
 
 pub use gpu_blending::bench_gpu_blending;
 pub use gpu_circles::bench_gpu_circles;
@@ -45,6 +56,7 @@ pub use gpu_pixels::bench_gpu_pixels;
 pub use gl3d_depth::bench_gl3d_depth;
 pub use gl3d_drawcalls::bench_gl3d_drawcalls;
 pub use gl3d_lighting::bench_gl3d_lighting;
+pub use gl3d_showcase::run_gl3d_showcase_window;
 pub use gl3d_textured::bench_gl3d_textured;
 pub use gl3d_triangles::bench_gl3d_triangles;
 
@@ -67,7 +79,7 @@ pub const GL3D_TEST_MS: u32 = 5000;
 /// Duration for each Disk I/O benchmark in milliseconds.
 pub const DISK_TEST_MS: u32 = 3000;
 
-pub const NUM_CPU_TESTS: usize = 6;
+pub const NUM_CPU_TESTS: usize = 11;
 pub const NUM_GPU_TESTS: usize = 5;
 pub const NUM_GL3D_TESTS: usize = 5;
 pub const NUM_DISK_TESTS: usize = 4;
@@ -80,6 +92,11 @@ pub const CPU_BASELINES: [u64; NUM_CPU_TESTS] = [
     500_000_000, // matrix multiply ops (N^3 * 2 per rep)
     500_000,     // SHA-256-like hash iterations
     10_000_000,  // elements sorted
+    120_000,     // quantized neural network inferences
+    12_000_000,  // 3x3 image-filter pixels
+    6_000_000,   // LZ-style compression bytes
+    50_000_000,  // JSON-like text bytes parsed
+    8_000_000,   // N-body pair interactions
 ];
 
 /// Baseline raw scores for GPU tests (calibrated for ~1000 pts, 5 s runs).
@@ -115,6 +132,11 @@ pub const CPU_TEST_NAMES: [&str; NUM_CPU_TESTS] = [
     "Matrix Math",
     "Crypto Hash",
     "Sorting",
+    "ML Inference",
+    "Image Filters",
+    "Compression",
+    "JSON Parsing",
+    "Physics",
 ];
 
 pub const GPU_TEST_NAMES: [&str; NUM_GPU_TESTS] = [
@@ -149,6 +171,11 @@ pub fn run_cpu_bench(bench_id: u32) -> u64 {
         4 => bench_matrix_multiply(),
         5 => bench_crypto_hash(),
         6 => bench_sort(),
+        7 => bench_ml_inference(),
+        8 => bench_image_filter(),
+        9 => bench_text_compression(),
+        10 => bench_json_parse(),
+        11 => bench_nbody_physics(),
         _ => 0,
     }
 }

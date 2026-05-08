@@ -9,6 +9,9 @@ anyos_std::entry!(main);
 
 const VERSION: &str = "1.1";
 const TEST_DIR: &str = "/tmp/kstress";
+const THREAD_WAIT_TIMEOUT_MS: u32 = 10_000;
+const PROCESS_WAIT_TIMEOUT_MS: u32 = 5_000;
+const KILL_GRACE_MS: u32 = 1_000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Profile {
@@ -133,6 +136,78 @@ fn clamp_u32(v: u32, min: u32, max: u32) -> u32 {
     } else {
         v
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WaitOutcome {
+    Exited(u32),
+    Missing,
+    TimedOut,
+}
+
+fn poll_tid(tid: u32) -> WaitOutcome {
+    match process::try_waitpid(tid) {
+        process::STILL_RUNNING => WaitOutcome::TimedOut,
+        u32::MAX => WaitOutcome::Missing,
+        code => WaitOutcome::Exited(code),
+    }
+}
+
+fn wait_tid_until(tid: u32, timeout_ms: u32) -> WaitOutcome {
+    let start = sys::uptime_ms();
+    let mut saw_running = false;
+    loop {
+        match poll_tid(tid) {
+            WaitOutcome::TimedOut => {
+                saw_running = true;
+            }
+            WaitOutcome::Missing if saw_running => return WaitOutcome::Exited(0),
+            other => return other,
+        }
+        if elapsed_ms(start) >= timeout_ms {
+            return WaitOutcome::TimedOut;
+        }
+        process::yield_cpu();
+    }
+}
+
+fn wait_tid_bounded(tid: u32, timeout_ms: u32) -> WaitOutcome {
+    match wait_tid_until(tid, timeout_ms) {
+        WaitOutcome::TimedOut => {
+            let _ = process::kill(tid);
+            wait_tid_until(tid, KILL_GRACE_MS)
+        }
+        other => other,
+    }
+}
+
+fn join_thread_bounded(thread: process::Thread, timeout_ms: u32) -> WaitOutcome {
+    let tid = thread.tid();
+    let outcome = wait_tid_bounded(tid, timeout_ms);
+    match outcome {
+        WaitOutcome::TimedOut => {
+            // Avoid Thread::drop() blocking forever on the same stuck wait.
+            core::mem::forget(thread);
+        }
+        _ => {
+            let _ = thread.join();
+        }
+    }
+    outcome
+}
+
+fn join_all_threads(threads: Vec<process::Thread>, timeout_ms: u32) -> u32 {
+    let mut failures = 0u32;
+    for t in threads {
+        if join_thread_bounded(t, timeout_ms) != WaitOutcome::Exited(0) {
+            failures += 1;
+        }
+    }
+    failures
+}
+
+fn wait_process_bounded(tid: u32) -> WaitOutcome {
+    wait_tid_bounded(tid, PROCESS_WAIT_TIMEOUT_MS)
 }
 
 fn parse_config() -> Option<Config> {
@@ -297,13 +372,11 @@ fn test_scheduler() -> (u32, u32) {
                 }
             }
         }
-        for t in threads {
-            t.join();
-        }
+        let join_fail = join_all_threads(threads, THREAD_WAIT_TIMEOUT_MS);
         let dt = elapsed_ms(t0);
         let done = THREAD_COUNTER.load(Ordering::SeqCst);
         let errs = THREAD_ERRORS.load(Ordering::SeqCst);
-        let ok = done == count && errs == 0;
+        let ok = done == count && errs == 0 && join_fail == 0;
         print_result(
             "Thread spawn/join (16x)",
             ok,
@@ -311,6 +384,7 @@ fn test_scheduler() -> (u32, u32) {
         );
         print_metric("Dauer", dt, "ms");
         print_metric("Abgeschlossen", done, "");
+        print_metric("Join-Timeouts", join_fail, "");
         if ok {
             pass += 1;
         } else {
@@ -329,14 +403,13 @@ fn test_scheduler() -> (u32, u32) {
                 Err(_) => {}
             }
         }
-        for t in threads {
-            t.join();
-        }
+        let join_fail = join_all_threads(threads, THREAD_WAIT_TIMEOUT_MS);
         let dt = elapsed_ms(t0);
         let yields = SCHED_YIELD_COUNT.load(Ordering::SeqCst);
-        let ok = yields >= 4000;
+        let ok = yields >= 4000 && join_fail == 0;
         print_result("Yield-Stress (4 Threads, 1000x)", ok, "");
         print_metric("Yields gesamt", yields, "");
+        print_metric("Join-Timeouts", join_fail, "");
         print_metric("Dauer", dt, "ms");
         if dt > 0 {
             print_metric("Yields/ms", yields / dt.max(1), "");
@@ -378,16 +451,15 @@ fn test_scheduler() -> (u32, u32) {
                 }
             }
         }
-        for t in threads {
-            t.join();
-        }
+        let join_fail = join_all_threads(threads, THREAD_WAIT_TIMEOUT_MS);
         let dt = elapsed_ms(t0);
         let done = THREAD_COUNTER.load(Ordering::SeqCst);
         let errs = THREAD_ERRORS.load(Ordering::SeqCst);
-        let ok = done + errs == count;
+        let ok = done + errs == count && join_fail == 0;
         print_result("Massen-Thread-Test (64x)", ok, "");
         print_metric("Erstellt", done, "");
         print_metric("Fehler", errs, "");
+        print_metric("Join-Timeouts", join_fail, "");
         print_metric("Dauer", dt, "ms");
         if ok {
             pass += 1;
@@ -617,13 +689,11 @@ fn test_memory() -> (u32, u32) {
                 Err(_) => {}
             }
         }
-        for t in threads {
-            t.join();
-        }
+        let join_fail = join_all_threads(threads, THREAD_WAIT_TIMEOUT_MS);
         let dt = elapsed_ms(t0);
         let ok_count = MEM_ALLOC_OK.load(Ordering::SeqCst);
         let fail_count = MEM_ALLOC_FAIL.load(Ordering::SeqCst);
-        let ok = fail_count == 0;
+        let ok = fail_count == 0 && join_fail == 0;
         print_result(
             "Multi-Thread Heap (8 Threads)",
             ok,
@@ -631,6 +701,7 @@ fn test_memory() -> (u32, u32) {
         );
         print_metric("Erfolgreiche Allocs", ok_count, "");
         print_metric("Fehlgeschlagen", fail_count, "");
+        print_metric("Join-Timeouts", join_fail, "");
         print_metric("Dauer", dt, "ms");
         if ok {
             pass += 1;
@@ -1294,10 +1365,22 @@ fn test_process() -> (u32, u32) {
         let tid = process::spawn("/System/bin/echo", "kstress-process-test");
         let ok = tid != 0 && tid != u32::MAX;
         if ok {
-            let exit_code = process::waitpid(tid);
+            let wait = wait_process_bounded(tid);
+            let exit_code = match wait {
+                WaitOutcome::Exited(code) => code,
+                _ => u32::MAX,
+            };
             let dt = elapsed_ms(t0);
-            let ok2 = exit_code == 0;
-            print_result("Prozess spawn/wait (echo)", ok2, "");
+            let ok2 = wait == WaitOutcome::Exited(0);
+            print_result(
+                "Prozess spawn/wait (echo)",
+                ok2,
+                if wait == WaitOutcome::TimedOut {
+                    "wait timeout"
+                } else {
+                    ""
+                },
+            );
             print_metric("Exit-Code", exit_code, "");
             print_metric("Dauer", dt, "ms");
             if ok2 {
@@ -1327,8 +1410,7 @@ fn test_process() -> (u32, u32) {
         }
         let mut exit_errors = 0u32;
         for &tid in tids.iter() {
-            let code = process::waitpid(tid);
-            if code != 0 {
+            if wait_process_bounded(tid) != WaitOutcome::Exited(0) {
                 exit_errors += 1;
             }
         }
@@ -1402,9 +1484,7 @@ fn test_combined_stress() -> (u32, u32) {
     }
 
     let spawned = threads.len() as u32;
-    for t in threads {
-        t.join();
-    }
+    let join_fail = join_all_threads(threads, THREAD_WAIT_TIMEOUT_MS);
 
     let dt = elapsed_ms(t0);
     let ops = STRESS_OPS.load(Ordering::SeqCst);
@@ -1416,13 +1496,14 @@ fn test_combined_stress() -> (u32, u32) {
         0
     };
 
-    let ok = errors == 0 && spawned == 8;
+    let ok = errors == 0 && spawned == 8 && join_fail == 0;
     print_result(
         "8 Threads (Heap+IO+Yield)",
         ok,
         if errors > 0 { "Fehler unter Last!" } else { "" },
     );
     print_metric("Threads", spawned, "");
+    print_metric("Join-Timeouts", join_fail, "");
     print_metric("Operationen", ops, "");
     print_metric("Fehler", errors, "");
     print_metric("Dauer", dt, "ms");
@@ -1513,6 +1594,7 @@ fn test_deep_stress(cfg: Config) -> (u32, u32) {
         let per_wave = clamp_u32(cfg.threads, 4, 128);
         let mut spawned = 0u32;
         let mut spawn_fail = 0u32;
+        let mut join_fail = 0u32;
 
         for _ in 0..waves {
             let mut threads = Vec::new();
@@ -1527,18 +1609,18 @@ fn test_deep_stress(cfg: Config) -> (u32, u32) {
                     }
                 }
             }
-            for t in threads {
-                t.join();
-            }
+            join_fail += join_all_threads(threads, THREAD_WAIT_TIMEOUT_MS);
         }
 
         let dt = elapsed_ms(t0);
         let done = THREAD_COUNTER.load(Ordering::SeqCst);
-        let ok = spawn_fail == 0 && done == spawned && spawned == waves * per_wave;
+        let ok =
+            spawn_fail == 0 && join_fail == 0 && done == spawned && spawned == waves * per_wave;
         print_result("Thread-Churn Wellen", ok, "");
         print_metric("Wellen", waves, "");
         print_metric("Threads", spawned, "");
         print_metric("Spawn-Fehler", spawn_fail, "");
+        print_metric("Join-Timeouts", join_fail, "");
         print_metric("Dauer", dt, "ms");
         if ok {
             pass += 1;
@@ -1635,7 +1717,7 @@ fn test_deep_stress(cfg: Config) -> (u32, u32) {
             }
         }
         for &tid in tids.iter() {
-            if process::waitpid(tid) != 0 {
+            if wait_process_bounded(tid) != WaitOutcome::Exited(0) {
                 exit_errors += 1;
             }
         }
@@ -1681,17 +1763,16 @@ fn test_deep_stress(cfg: Config) -> (u32, u32) {
                 Err(_) => spawn_fail += 1,
             }
         }
-        for t in threads {
-            t.join();
-        }
+        let join_fail = join_all_threads(threads, THREAD_WAIT_TIMEOUT_MS);
 
         let dt = elapsed_ms(t0);
         let ops = DEEP_OPS.load(Ordering::SeqCst);
         let errors = DEEP_ERRORS.load(Ordering::SeqCst);
-        let ok = spawn_fail == 0 && errors == 0 && ops > 0;
+        let ok = spawn_fail == 0 && join_fail == 0 && errors == 0 && ops > 0;
         print_result("Gemischter Parallelstress", ok, "");
         print_metric("Threads", count.saturating_sub(spawn_fail), "");
         print_metric("Spawn-Fehler", spawn_fail, "");
+        print_metric("Join-Timeouts", join_fail, "");
         print_metric("Operationen", ops, "");
         print_metric("Fehler", errors, "");
         print_metric("VM-Fehler", DEEP_VM_ERRORS.load(Ordering::SeqCst), "");

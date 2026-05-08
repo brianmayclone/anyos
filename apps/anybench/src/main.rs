@@ -7,6 +7,11 @@
 //!   4. Matrix Math      — Dense matrix multiplication
 //!   5. Crypto           — SHA-256–like hash chain
 //!   6. Sorting          — Quicksort on random data
+//!   7. ML Inference     — Quantized neural-network inference
+//!   8. Image Filters    — 3x3 convolution filters
+//!   9. Compression      — LZ-style text compression
+//!  10. JSON Parsing     — Structured text parsing
+//!  11. Physics          — Fixed-point N-body simulation
 //!
 //! GPU tests (OnScreen & OffScreen):
 //!   1. Fill Rate        — Rectangle fill throughput
@@ -521,6 +526,7 @@ struct AppState {
     running: bool,
     phase: BenchPhase,
     current_test: usize,
+    gl3d_showcase_done: bool,
     timer_id: u32,
 
     // Results storage
@@ -939,17 +945,26 @@ fn build_ui() {
     lbl_cpu_single_score.set_state(TEXT_ALIGN_RIGHT);
     panel_cpu.add(&lbl_cpu_single_score);
 
+    const CPU_ROW_START: i32 = 42;
+    const CPU_ROW_STEP: i32 = 17;
+    const CPU_MULTI_HEADER_Y: i32 = 246;
+    const CPU_MULTI_ROW_START: i32 = 278;
+
     let mut cpu_single_labels = [anyui::Label::new(""); NUM_CPU_TESTS];
     let mut cpu_single_scores = [anyui::Label::new(""); NUM_CPU_TESTS];
     for i in 0..NUM_CPU_TESTS {
-        let y = 44 + i as i32 * 28;
+        let y = CPU_ROW_START + i as i32 * CPU_ROW_STEP;
         let (ln, ls) = make_label_pair(&panel_cpu, CPU_TEST_NAMES[i], y);
+        ln.set_size(200, 16);
+        ln.set_font_size(11);
+        ls.set_size(100, 16);
+        ls.set_font_size(11);
         cpu_single_labels[i] = ln;
         cpu_single_scores[i] = ls;
     }
 
     let lbl_mc_header = anyui::Label::new(i18n::t("Multi-Core Performance"));
-    lbl_mc_header.set_position(16, 226);
+    lbl_mc_header.set_position(16, CPU_MULTI_HEADER_Y);
     lbl_mc_header.set_size(300, 24);
     lbl_mc_header.set_font_size(16);
     lbl_mc_header.set_font(1);
@@ -957,14 +972,14 @@ fn build_ui() {
     panel_cpu.add(&lbl_mc_header);
 
     let lbl_mc_cores = anyui::Label::new(&format!("({} Cores)", num_cpus));
-    lbl_mc_cores.set_position(220, 226);
+    lbl_mc_cores.set_position(220, CPU_MULTI_HEADER_Y);
     lbl_mc_cores.set_size(100, 24);
     lbl_mc_cores.set_font_size(13);
     lbl_mc_cores.set_text_color(colors.text_secondary);
     panel_cpu.add(&lbl_mc_cores);
 
     let lbl_cpu_multi_score = anyui::Label::new("Score: -");
-    lbl_cpu_multi_score.set_position(400, 226);
+    lbl_cpu_multi_score.set_position(400, CPU_MULTI_HEADER_Y);
     lbl_cpu_multi_score.set_size(220, 24);
     lbl_cpu_multi_score.set_font_size(16);
     lbl_cpu_multi_score.set_font(1);
@@ -975,8 +990,12 @@ fn build_ui() {
     let mut cpu_multi_labels = [anyui::Label::new(""); NUM_CPU_TESTS];
     let mut cpu_multi_scores = [anyui::Label::new(""); NUM_CPU_TESTS];
     for i in 0..NUM_CPU_TESTS {
-        let y = 258 + i as i32 * 28;
+        let y = CPU_MULTI_ROW_START + i as i32 * CPU_ROW_STEP;
         let (ln, ls) = make_label_pair(&panel_cpu, CPU_TEST_NAMES[i], y);
+        ln.set_size(200, 16);
+        ln.set_font_size(11);
+        ls.set_size(100, 16);
+        ls.set_font_size(11);
         cpu_multi_labels[i] = ln;
         cpu_multi_scores[i] = ls;
     }
@@ -1293,6 +1312,7 @@ fn build_ui() {
             running: false,
             phase: BenchPhase::Idle,
             current_test: 0,
+            gl3d_showcase_done: false,
             timer_id: 0,
             cpu_single_raw: [0; NUM_CPU_TESTS],
             cpu_multi_raw: [0; NUM_CPU_TESTS],
@@ -1338,6 +1358,7 @@ fn start_benchmark(mode: BenchMode) {
     a.gpu_off_raw = [0; NUM_GPU_TESTS];
     a.gl3d_raw = [0; NUM_GL3D_TESTS];
     a.disk_raw = [0; NUM_DISK_TESTS];
+    a.gl3d_showcase_done = false;
 
     for i in 0..NUM_CPU_TESTS {
         a.cpu_single_scores[i].set_text("-");
@@ -1593,6 +1614,13 @@ fn tick_benchmark() {
                 BENCH_STATE.store(0, Ordering::SeqCst);
             }
             BenchPhase::Gl3D => {
+                if !a.gl3d_showcase_done {
+                    a.gl3d_showcase_done = true;
+                    a.lbl_status.set_text("Running 3D showcase scene...");
+                    workloads::run_gl3d_showcase_window();
+                    a.lbl_status.set_text("Starting 3D benchmark tests...");
+                    return;
+                }
                 if a.current_test >= NUM_GL3D_TESTS {
                     update_gl3d_summary();
                     let mode = unsafe { BENCH_MODE };
