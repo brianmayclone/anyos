@@ -1002,8 +1002,7 @@ fn create_user_page_directory_inner(map_low_identity: bool) -> Option<PhysAddr> 
             }
 
             // Wire PDPT[0] -> new PD (PAGE_USER so user program pages in PD[64+] work)
-            new_pdpt_ptr
-                .write_volatile(pd.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+            new_pdpt_ptr.write_volatile(pd.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
 
             // Wire PML4[0] -> new PDPT (PAGE_USER for same reason)
             new_pml4.write_volatile(pdpt.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);

@@ -117,6 +117,14 @@ mod host {
         inflate(data).or_else(|| inflate_raw(data))
     }
 
+    pub fn unxz(data: &[u8]) -> Option<Vec<u8>> {
+        libzip::xz::xz_decompress(data)
+    }
+
+    pub fn xz_decompress_file(_in_path: &str, _out_path: &str) -> bool {
+        false
+    }
+
     pub struct TarReader {
         inner: libzip::tar::TarReader,
     }
@@ -148,6 +156,41 @@ mod host {
                 .get(index as usize)
                 .map(|entry| entry.is_dir)
                 .unwrap_or(false)
+        }
+        pub fn entry_typeflag(&self, index: u32) -> u32 {
+            self.inner
+                .entries
+                .get(index as usize)
+                .map(|entry| entry.typeflag as u32)
+                .unwrap_or(0)
+        }
+        pub fn entry_mode(&self, index: u32) -> u32 {
+            self.inner
+                .entries
+                .get(index as usize)
+                .map(|entry| entry.mode)
+                .unwrap_or(0)
+        }
+        pub fn entry_uid(&self, index: u32) -> u32 {
+            self.inner
+                .entries
+                .get(index as usize)
+                .map(|entry| entry.uid)
+                .unwrap_or(0)
+        }
+        pub fn entry_gid(&self, index: u32) -> u32 {
+            self.inner
+                .entries
+                .get(index as usize)
+                .map(|entry| entry.gid)
+                .unwrap_or(0)
+        }
+        pub fn entry_link_name(&self, index: u32) -> String {
+            self.inner
+                .entries
+                .get(index as usize)
+                .map(|entry| entry.link_name.clone())
+                .unwrap_or_default()
         }
         pub fn extract(&self, index: u32) -> Option<alloc::vec::Vec<u8>> {
             self.inner.extract(index as usize)
@@ -216,8 +259,10 @@ mod imp {
             libzip_deflate_raw(data: *const u8, data_len: u32, out: *mut u8, out_len: u32) -> u32,
             libzip_inflate_raw(data: *const u8, data_len: u32, out: *mut u8, out_len: u32) -> u32,
             libzip_unzip(data: *const u8, data_len: u32, out: *mut u8, out_len: u32) -> u32,
+            libzip_xz_decompress(data: *const u8, data_len: u32, out: *mut u8, out_len: u32) -> u32,
             libzip_gzip_compress_file(in_path: *const u8, in_len: u32, out_path: *const u8, out_len: u32) -> u32,
             libzip_gzip_decompress_file(in_path: *const u8, in_len: u32, out_path: *const u8, out_len: u32) -> u32,
+            libzip_xz_decompress_file(in_path: *const u8, in_len: u32, out_path: *const u8, out_len: u32) -> u32,
             // Tar functions
             libzip_tar_open(path: *const u8, len: u32) -> u32,
             libzip_tar_create() -> u32,
@@ -226,6 +271,11 @@ mod imp {
             libzip_tar_entry_name(handle: u32, index: u32, buf: *mut u8, buf_len: u32) -> u32,
             libzip_tar_entry_size(handle: u32, index: u32) -> u32,
             libzip_tar_entry_is_dir(handle: u32, index: u32) -> u32,
+            libzip_tar_entry_typeflag(handle: u32, index: u32) -> u32,
+            libzip_tar_entry_mode(handle: u32, index: u32) -> u32,
+            libzip_tar_entry_uid(handle: u32, index: u32) -> u32,
+            libzip_tar_entry_gid(handle: u32, index: u32) -> u32,
+            libzip_tar_entry_link_name(handle: u32, index: u32, buf: *mut u8, buf_len: u32) -> u32,
             libzip_tar_extract(handle: u32, index: u32, buf: *mut u8, buf_len: u32) -> u32,
             libzip_tar_extract_to_file(handle: u32, index: u32, path: *const u8, path_len: u32) -> u32,
             libzip_tar_add_file(handle: u32, name: *const u8, name_len: u32, data: *const u8, data_len: u32) -> u32,
@@ -461,6 +511,24 @@ mod imp {
         )
     }
 
+    pub fn unxz(data: &[u8]) -> Option<Vec<u8>> {
+        transform_bytes(
+            data,
+            data.len().saturating_mul(8) + 1024,
+            lib().libzip_xz_decompress,
+        )
+    }
+
+    /// Decompress an XZ file. Returns true on success.
+    pub fn xz_decompress_file(in_path: &str, out_path: &str) -> bool {
+        (lib().libzip_xz_decompress_file)(
+            in_path.as_ptr(),
+            in_path.len() as u32,
+            out_path.as_ptr(),
+            out_path.len() as u32,
+        ) == 0
+    }
+
     // ── TarReader ───────────────────────────────────────────────────────────────
 
     /// An open tar archive for reading.
@@ -500,6 +568,34 @@ mod imp {
         /// Check if entry is a directory.
         pub fn entry_is_dir(&self, index: u32) -> bool {
             (lib().libzip_tar_entry_is_dir)(self.handle, index) == 1
+        }
+
+        /// Get tar typeflag.
+        pub fn entry_typeflag(&self, index: u32) -> u32 {
+            (lib().libzip_tar_entry_typeflag)(self.handle, index)
+        }
+
+        /// Get POSIX mode bits from the tar header.
+        pub fn entry_mode(&self, index: u32) -> u32 {
+            (lib().libzip_tar_entry_mode)(self.handle, index)
+        }
+
+        /// Get uid from the tar header.
+        pub fn entry_uid(&self, index: u32) -> u32 {
+            (lib().libzip_tar_entry_uid)(self.handle, index)
+        }
+
+        /// Get gid from the tar header.
+        pub fn entry_gid(&self, index: u32) -> u32 {
+            (lib().libzip_tar_entry_gid)(self.handle, index)
+        }
+
+        /// Get link target for symlink/hardlink entries.
+        pub fn entry_link_name(&self, index: u32) -> String {
+            let mut buf = [0u8; 512];
+            let n = (lib().libzip_tar_entry_link_name)(self.handle, index, buf.as_mut_ptr(), 512);
+            let s = core::str::from_utf8(&buf[..n as usize]).unwrap_or("");
+            String::from(s)
         }
 
         /// Extract an entry to a byte vector.

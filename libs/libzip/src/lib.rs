@@ -23,6 +23,7 @@ pub mod gzip;
 pub mod inflate;
 pub mod syscall;
 pub mod tar;
+pub mod xz;
 pub mod zip;
 pub mod zlib;
 
@@ -577,6 +578,53 @@ pub extern "C" fn libzip_unzip(
     copy_optional_to_out(result, out_buf, out_buf_len)
 }
 
+#[no_mangle]
+pub extern "C" fn libzip_xz_decompress(
+    data_ptr: *const u8,
+    data_len: u32,
+    out_buf: *mut u8,
+    out_buf_len: u32,
+) -> u32 {
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
+    copy_optional_to_out(xz::xz_decompress(data), out_buf, out_buf_len)
+}
+
+/// Decompress an XZ file. Returns 0 on success, u32::MAX on error.
+#[no_mangle]
+pub extern "C" fn libzip_xz_decompress_file(
+    in_path_ptr: *const u8,
+    in_path_len: u32,
+    out_path_ptr: *const u8,
+    out_path_len: u32,
+) -> u32 {
+    let in_path = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+            in_path_ptr,
+            in_path_len as usize,
+        ))
+    };
+    let out_path = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+            out_path_ptr,
+            out_path_len as usize,
+        ))
+    };
+
+    let data = match read_file_to_vec(in_path) {
+        Some(d) => d,
+        None => return u32::MAX,
+    };
+    let decompressed = match xz::xz_decompress(&data) {
+        Some(d) => d,
+        None => return u32::MAX,
+    };
+    if write_vec_to_file(out_path, &decompressed) {
+        0
+    } else {
+        u32::MAX
+    }
+}
+
 /// Compress a file with gzip. Returns 0 on success, u32::MAX on error.
 #[no_mangle]
 pub extern "C" fn libzip_gzip_compress_file(
@@ -743,6 +791,70 @@ pub extern "C" fn libzip_tar_entry_is_dir(handle: u32, index: u32) -> u32 {
         },
         None => 0,
     }
+}
+
+/// Get tar entry typeflag.
+#[no_mangle]
+pub extern "C" fn libzip_tar_entry_typeflag(handle: u32, index: u32) -> u32 {
+    match get_tar_reader(handle) {
+        Some(r) => r
+            .entries
+            .get(index as usize)
+            .map(|e| e.typeflag as u32)
+            .unwrap_or(0),
+        None => 0,
+    }
+}
+
+/// Get tar entry POSIX mode bits.
+#[no_mangle]
+pub extern "C" fn libzip_tar_entry_mode(handle: u32, index: u32) -> u32 {
+    match get_tar_reader(handle) {
+        Some(r) => r.entries.get(index as usize).map(|e| e.mode).unwrap_or(0),
+        None => 0,
+    }
+}
+
+/// Get tar entry uid.
+#[no_mangle]
+pub extern "C" fn libzip_tar_entry_uid(handle: u32, index: u32) -> u32 {
+    match get_tar_reader(handle) {
+        Some(r) => r.entries.get(index as usize).map(|e| e.uid).unwrap_or(0),
+        None => 0,
+    }
+}
+
+/// Get tar entry gid.
+#[no_mangle]
+pub extern "C" fn libzip_tar_entry_gid(handle: u32, index: u32) -> u32 {
+    match get_tar_reader(handle) {
+        Some(r) => r.entries.get(index as usize).map(|e| e.gid).unwrap_or(0),
+        None => 0,
+    }
+}
+
+/// Get tar link target for symlink/hardlink entries.
+#[no_mangle]
+pub extern "C" fn libzip_tar_entry_link_name(
+    handle: u32,
+    index: u32,
+    buf: *mut u8,
+    buf_len: u32,
+) -> u32 {
+    let reader = match get_tar_reader(handle) {
+        Some(r) => r,
+        None => return 0,
+    };
+    let entry = match reader.entries.get(index as usize) {
+        Some(e) => e,
+        None => return 0,
+    };
+    let link = entry.link_name.as_bytes();
+    let copy_len = link.len().min(buf_len as usize);
+    unsafe {
+        core::ptr::copy_nonoverlapping(link.as_ptr(), buf, copy_len);
+    }
+    copy_len as u32
 }
 
 /// Extract a tar entry to a buffer.

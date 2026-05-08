@@ -32,6 +32,8 @@ Slice:
 - Der Linux-ELF64-Pfad baut einen Linux-konformen Initialstack mit
   `argc`/`argv`/`envp`/`auxv` inklusive `AT_PHDR`, `AT_ENTRY`, `AT_RANDOM`,
   `AT_PLATFORM` und `AT_EXECFN`.
+- Der Linux-Loader kann `PT_INTERP` aus dem licof-Rootfs laden, ET_DYN-Objekte
+  mit festem Load-Bias mappen und `AT_BASE` auf den dynamischen Loader setzen.
 - Linux-ABI-Prozesse bekommen auf x86_64 eine User-PML4 ohne Low-Identity-
   Mapping, damit klassische Linux-ET_EXECs bei `0x400000` nicht mehr mit
   Kernel-Identity-Mappings kollidieren.
@@ -43,16 +45,29 @@ Slice:
 - `/System/bin/licof` existiert mit `status`, `run`, `rootfs`, `pkg` und
   `apt install`.
 - `licof rootfs create <name>` legt den Rootfs-Baum, Apt-Konfiguration, Cache
-  und Paketdatenbank an und bootstrapped eine minimale Apt-Basis.
+  und Paketdatenbank an, bootstrapped eine minimale Apt-Basis inklusive
+  `passwd` und versucht danach interaktiv `passwd root` zu starten.
+- `licof` prueft vor `run`/`passwd` den Linux-ELF64-Header, zeigt `PT_INTERP`
+  und fehlende Interpreter-Pfade sichtbar an und warnt bei fehlendem TTY fuer
+  interaktive Linux-Tools.
 - `licof apt install <pkg>` laedt Paketindex und `.deb`-Pakete aus
   `archive.debian.org`, loest einfache `Pre-Depends`/`Depends` rekursiv auf und
   extrahiert `data.tar.gz` in den Rootfs.
+- Der Paketcache verwendet interne, dateisystemfreundliche Namen; Debian-
+  Dateinamen mit `+`, `:` oder anderen Sonderzeichen bleiben nur in der URL.
+- `libzip` reicht Tar-Metadaten wie Typeflag, Mode, UID/GID und Link-Ziel an
+  Clients durch. `licof` erzeugt Symlinks und wendet chmod/chown best-effort
+  an.
+- `data.tar.xz` ist im `licof`/`libzip_client`-Pfad verdrahtet. `libzip`
+  entpackt XZ-Container mit einfachem LZMA2-Filter inklusive normaler
+  komprimierter Chunks und unkomprimierter LZMA2-Chunks.
 
-Aktuelle Grenze: dynamische ELF64-Binaries mit `PT_INTERP` und ET_DYN
-Load-Bias werden bewusst abgelehnt, bis der dynamische Loader-/Rootfs-Pfad
-implementiert ist. Moderne Debian-Pakete verwenden haeufig `data.tar.xz`;
-dieser Pfad wird aktuell erkannt und sauber abgelehnt, bis XZ-Support in licof
-landet.
+Aktuelle Grenze: dynamische ELF64-Binaries kommen jetzt bis zum Interpreter-
+Startpfad, brauchen aber weitere Linux-Syscalls (`futex`, `mprotect`, `access`,
+`pread64`, TLS-/Thread-Pfade), bevor glibc stabil laeuft. Moderne Debian-
+Pakete verwenden haeufig `data.tar.xz`; der Debian-Standardpfad mit einfachem
+LZMA2-Filter ist implementiert. XZ-Filterketten mit Delta/BCJ und SHA256-
+Check-Verifikation sind noch nicht Ziel des ersten Licof-Slices.
 
 ## Architektur
 
@@ -155,7 +170,8 @@ CLI:
 Implementierung:
 
 - Debian `ar` Container lesen.
-- `data.tar.gz` extrahieren.
+- `data.tar.gz` und `data.tar.xz` extrahieren.
+- Tar-Metadaten fuer Symlinks, Mode und Ownership auswerten.
 - Paketdatenbank minimal pflegen.
 - Paketindex aus Debian-Archiv laden und einfache Depends aufloesen.
 - Maintainer-Scripts zuerst nicht automatisch ausfuehren.

@@ -681,6 +681,10 @@ const AT_PLATFORM: u64 = 15;
 const AT_RANDOM: u64 = 25;
 const AT_EXECFN: u64 = 31;
 
+const LICOF_ROOTFS_DEFAULT: &str = "/System/var/licof/rootfs/default";
+const LINUX_MAIN_DYN_BASE: u64 = 0x0000_5555_0000_0000;
+const LINUX_INTERP_BASE: u64 = 0x0000_7000_0000_0000;
+
 /// ELF class constants (EI_CLASS byte at offset 4).
 const ELFCLASS32: u8 = 1;
 const ELFCLASS64: u8 = 2;
@@ -730,7 +734,8 @@ struct LinuxElf64Info {
     phdr_addr: u64,
     phent: u64,
     phnum: u64,
-    has_interp: bool,
+    interp_path: Option<alloc::string::String>,
+    interp_base: u64,
     is_dyn: bool,
 }
 
@@ -766,7 +771,7 @@ fn inspect_linux_elf64(data: &[u8]) -> Result<LinuxElf64Info, &'static str> {
     }
 
     let mut phdr_addr = 0u64;
-    let mut has_interp = false;
+    let mut interp_path = None;
     for i in 0..ph_num {
         let ph_offset = ph_off + i * ph_size;
         let phdr = unsafe { &*(data.as_ptr().add(ph_offset) as *const Elf64Phdr) };
@@ -778,7 +783,17 @@ fn inspect_linux_elf64(data: &[u8]) -> Result<LinuxElf64Info, &'static str> {
         if p_type == PT_PHDR {
             phdr_addr = p_vaddr;
         } else if p_type == PT_INTERP {
-            has_interp = true;
+            let start = p_offset as usize;
+            let len = p_filesz as usize;
+            if len == 0 || len > 512 || start.checked_add(len).map_or(true, |end| end > data.len())
+            {
+                return Err("licof: invalid PT_INTERP");
+            }
+            let bytes = &data[start..start + len];
+            let nul = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+            let path =
+                core::str::from_utf8(&bytes[..nul]).map_err(|_| "licof: PT_INTERP is not UTF-8")?;
+            interp_path = Some(alloc::string::String::from(path));
         } else if p_type == PT_LOAD && phdr_addr == 0 {
             if let Some(end) = p_offset.checked_add(p_filesz) {
                 let ph_file_off = ph_off as u64;
@@ -794,16 +809,21 @@ fn inspect_linux_elf64(data: &[u8]) -> Result<LinuxElf64Info, &'static str> {
         phdr_addr,
         phent: ph_size as u64,
         phnum: ph_num as u64,
-        has_interp,
+        interp_path,
+        interp_base: 0,
         is_dyn: e_type == ET_DYN,
     })
 }
 
-fn copy_to_user_pd(
-    pd_phys: crate::memory::address::PhysAddr,
-    dst: u64,
-    src: &[u8],
-) {
+fn licof_resolve_interp_path(path: &str) -> alloc::string::String {
+    if path.starts_with('/') {
+        alloc::format!("{}{}", LICOF_ROOTFS_DEFAULT, path)
+    } else {
+        alloc::format!("{}/{}", LICOF_ROOTFS_DEFAULT, path)
+    }
+}
+
+fn copy_to_user_pd(pd_phys: crate::memory::address::PhysAddr, dst: u64, src: &[u8]) {
     unsafe {
         #[cfg(target_arch = "x86_64")]
         let saved_flags: u64;
@@ -868,12 +888,7 @@ fn write_linux_initial_stack(
         return Err("licof: too many argv entries");
     }
 
-    let envp = [
-        "PATH=/usr/bin:/bin",
-        "HOME=/",
-        "TERM=ansi",
-        "LICOF=1",
-    ];
+    let envp = ["PATH=/usr/bin:/bin", "HOME=/", "TERM=ansi", "LICOF=1"];
 
     let mut string_bytes = 0usize;
     for s in argv.iter().copied().chain(envp.iter().copied()) {
@@ -950,7 +965,7 @@ fn write_linux_initial_stack(
     auxv.push((AT_PHENT, elf.phent));
     auxv.push((AT_PHNUM, elf.phnum));
     auxv.push((AT_PAGESZ, PAGE_SIZE));
-    auxv.push((AT_BASE, 0));
+    auxv.push((AT_BASE, elf.interp_base));
     auxv.push((AT_FLAGS, 0));
     auxv.push((AT_ENTRY, elf.entry));
     auxv.push((AT_UID, 0));
@@ -962,8 +977,7 @@ fn write_linux_initial_stack(
     auxv.push((AT_EXECFN, argv_ptrs[0]));
     auxv.push((AT_NULL, 0));
 
-    let vector_bytes =
-        8 + (argv_ptrs.len() + 1) * 8 + (env_ptrs.len() + 1) * 8 + auxv.len() * 16;
+    let vector_bytes = 8 + (argv_ptrs.len() + 1) * 8 + (env_ptrs.len() + 1) * 8 + auxv.len() * 16;
     if sp
         .checked_sub(vector_bytes as u64)
         .ok_or("licof: initial stack underflow")?
@@ -1018,6 +1032,7 @@ fn load_elf64(
     data: &[u8],
     pd_phys: crate::memory::address::PhysAddr,
     min_user_vaddr: u64,
+    load_bias: u64,
 ) -> Result<ElfLoadResult, &'static str> {
     if data.len() < 64 {
         return Err("ELF64 file too small");
@@ -1046,6 +1061,9 @@ fn load_elf64(
         }
 
         let vaddr = phdr.p_vaddr;
+        let effective_vaddr = vaddr
+            .checked_add(load_bias)
+            .ok_or("ELF64 segment load bias overflow")?;
         let memsz = phdr.p_memsz;
         let _filesz = phdr.p_filesz;
 
@@ -1054,7 +1072,7 @@ fn load_elf64(
         }
 
         // Validate: vaddr must be in user space (lower canonical half)
-        if vaddr >= 0x0000_8000_0000_0000 {
+        if effective_vaddr >= 0x0000_8000_0000_0000 {
             return Err("ELF64 segment in kernel space");
         }
 
@@ -1065,13 +1083,13 @@ fn load_elf64(
         // would write to physical addresses used by kernel data structures
         // (via the identity mapping), causing silent memory corruption and
         // spinlock deadlocks. Reject early with a clear error.
-        if vaddr < min_user_vaddr {
+        if effective_vaddr < min_user_vaddr {
             return Err("ELF64 segment below ABI minimum user address");
         }
 
         // Allocate pages for this segment
-        let page_start = vaddr & !0xFFF;
-        let seg_total = match vaddr
+        let page_start = effective_vaddr & !0xFFF;
+        let seg_total = match effective_vaddr
             .checked_add(memsz)
             .and_then(|v| v.checked_add(PAGE_SIZE - 1))
         {
@@ -1109,7 +1127,7 @@ fn load_elf64(
             }
         }
 
-        let seg_end = match vaddr.checked_add(memsz) {
+        let seg_end = match effective_vaddr.checked_add(memsz) {
             Some(v) => v,
             None => return Err("ELF64 segment vaddr+memsz overflow"),
         };
@@ -1154,7 +1172,10 @@ fn load_elf64(
                 continue;
             }
 
-            let vaddr = phdr.p_vaddr;
+            let vaddr = match phdr.p_vaddr.checked_add(load_bias) {
+                Some(v) => v,
+                None => continue,
+            };
             let filesz = phdr.p_filesz as usize;
             let memsz = phdr.p_memsz as usize;
             let offset = phdr.p_offset as usize;
@@ -1201,6 +1222,9 @@ fn load_elf64(
     let brk = (max_vaddr_end + PAGE_SIZE - 1) & !0xFFF;
 
     // Validate entry point: must be above identity-map boundary
+    let entry = entry
+        .checked_add(load_bias)
+        .ok_or("ELF64 entry point load bias overflow")?;
     if entry < min_user_vaddr || entry >= 0x0000_8000_0000_0000 {
         return Err("ELF64 entry point outside valid user address range");
     }
@@ -1317,7 +1341,7 @@ pub fn load_binary_into_pd(
             stack_flags,
             true,
         )?;
-        let elf_result = load_elf64(data, pd_phys, 0x0800_0000)?;
+        let elf_result = load_elf64(data, pd_phys, 0x0800_0000, 0)?;
         total_user_pages += elf_result.pages_mapped + stack_mapped;
         Ok(LoadResult {
             entry: elf_result.entry,
@@ -1642,7 +1666,7 @@ fn load_and_run_with_args_abi(
     }
     .ok_or("Failed to create user page directory")?;
 
-    let (entry_point, brk);
+    let (mut entry_point, brk);
     let mut total_user_pages: u32 = 0;
     let mut linux_initial_stack: Option<u64> = None;
 
@@ -1689,14 +1713,8 @@ fn load_and_run_with_args_abi(
     let class = elf_class(&data);
     if class == ELFCLASS64 {
         // ---- ELF64 binary path ----
-        let linux_elf = if abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
+        let mut linux_elf = if abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
             let info = inspect_linux_elf64(&data)?;
-            if info.has_interp {
-                return Err("licof: PT_INTERP/dynamic Linux ELF is not supported yet");
-            }
-            if info.is_dyn {
-                return Err("licof: ET_DYN Linux ELF load bias is not supported yet");
-            }
             Some(info)
         } else {
             None
@@ -1727,12 +1745,43 @@ fn load_and_run_with_args_abi(
         } else {
             0x0800_0000
         };
-        let elf_result = load_elf64(&data, pd_phys, min_user_vaddr)?;
+        let main_load_bias = if linux_elf.as_ref().map_or(false, |info| info.is_dyn) {
+            LINUX_MAIN_DYN_BASE
+        } else {
+            0
+        };
+        let elf_result = load_elf64(&data, pd_phys, min_user_vaddr, main_load_bias)?;
         entry_point = elf_result.entry;
         brk = elf_result.brk;
         total_user_pages += elf_result.pages_mapped + stack_mapped;
 
-        if let Some(ref info) = linux_elf {
+        if let Some(ref mut info) = linux_elf {
+            info.entry = elf_result.entry;
+            if info.phdr_addr != 0 {
+                info.phdr_addr = info
+                    .phdr_addr
+                    .checked_add(main_load_bias)
+                    .ok_or("licof: AT_PHDR load bias overflow")?;
+            }
+            if let Some(ref interp_path) = info.interp_path {
+                let resolved_interp = licof_resolve_interp_path(interp_path);
+                let interp_data = crate::fs::vfs::read_file_to_vec(&resolved_interp)
+                    .map_err(|_| "licof: failed to read PT_INTERP from rootfs")?;
+                let interp_info = inspect_linux_elf64(&interp_data)?;
+                if interp_info.interp_path.is_some() {
+                    return Err("licof: nested PT_INTERP is not supported");
+                }
+                let interp_load_bias = if interp_info.is_dyn {
+                    LINUX_INTERP_BASE
+                } else {
+                    0
+                };
+                let interp_result =
+                    load_elf64(&interp_data, pd_phys, min_user_vaddr, interp_load_bias)?;
+                entry_point = interp_result.entry;
+                info.interp_base = interp_load_bias;
+                total_user_pages += interp_result.pages_mapped;
+            }
             linux_initial_stack = Some(write_linux_initial_stack(
                 pd_phys,
                 aslr_stack_top,

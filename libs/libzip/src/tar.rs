@@ -14,9 +14,12 @@ const USTAR_MAGIC: &[u8; 6] = b"ustar\0";
 // Header field offsets
 const OFF_NAME: usize = 0;
 const OFF_MODE: usize = 100;
+const OFF_UID: usize = 108;
+const OFF_GID: usize = 116;
 const OFF_SIZE: usize = 124;
 const OFF_CHKSUM: usize = 148;
 const OFF_TYPEFLAG: usize = 156;
+const OFF_LINKNAME: usize = 157;
 const OFF_MAGIC: usize = 257;
 const OFF_PREFIX: usize = 345;
 
@@ -27,6 +30,11 @@ pub struct TarEntry {
     pub name: String,
     pub size: u64,
     pub is_dir: bool,
+    pub typeflag: u8,
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub link_name: String,
     /// Byte offset of the file data in the raw tar data.
     data_offset: usize,
 }
@@ -71,6 +79,10 @@ impl TarReader {
             let size = parse_octal(&header[OFF_SIZE..OFF_SIZE + 12]);
             let typeflag = header[OFF_TYPEFLAG];
             let is_dir = typeflag == b'5' || name.ends_with('/');
+            let mode = parse_octal(&header[OFF_MODE..OFF_MODE + 8]) as u32;
+            let uid = parse_octal(&header[OFF_UID..OFF_UID + 8]) as u32;
+            let gid = parse_octal(&header[OFF_GID..OFF_GID + 8]) as u32;
+            let link_name = String::from(parse_str(&header[OFF_LINKNAME..OFF_LINKNAME + 100]));
 
             let data_offset = pos + BLOCK_SIZE;
 
@@ -78,6 +90,11 @@ impl TarReader {
                 name,
                 size,
                 is_dir,
+                typeflag,
+                mode,
+                uid,
+                gid,
+                link_name,
                 data_offset,
             });
 

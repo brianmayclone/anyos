@@ -21,8 +21,10 @@ EXPORTS
     libzip_deflate_raw
     libzip_inflate_raw
     libzip_unzip
+    libzip_xz_decompress
     libzip_gzip_compress_file
     libzip_gzip_decompress_file
+    libzip_xz_decompress_file
     libzip_tar_open
     libzip_tar_create
     libzip_tar_close
@@ -30,6 +32,11 @@ EXPORTS
     libzip_tar_entry_name
     libzip_tar_entry_size
     libzip_tar_entry_is_dir
+    libzip_tar_entry_typeflag
+    libzip_tar_entry_mode
+    libzip_tar_entry_uid
+    libzip_tar_entry_gid
+    libzip_tar_entry_link_name
     libzip_tar_extract
     libzip_tar_extract_to_file
     libzip_tar_add_file
