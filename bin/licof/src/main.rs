@@ -20,6 +20,7 @@ const APT_DIST: &str = "wheezy";
 const APT_ARCH: &str = "amd64";
 const PACKAGES_GZ: &str = "/System/var/licof/cache/debian-wheezy-amd64-Packages.gz";
 const PACKAGES_TXT: &str = "/System/var/licof/cache/debian-wheezy-amd64-Packages";
+const WGET: &str = "/System/bin/wget";
 const BOOTSTRAP_SEED: &[&str] = &[
     "base-files",
     "base-passwd",
@@ -262,11 +263,16 @@ struct PackageInfo {
 }
 
 fn install_package(pkg: &str, rootfs: &str, depth: u8) -> bool {
-    if depth > 8 {
+    let mut pending = Vec::new();
+    install_package_inner(pkg, rootfs, depth, &mut pending)
+}
+
+fn install_package_inner(pkg: &str, rootfs: &str, depth: u8, pending: &mut Vec<String>) -> bool {
+    if depth > 32 {
         println!("licof apt: dependency recursion too deep at '{}'", pkg);
         return false;
     }
-    if is_installed(pkg) {
+    if is_installed(pkg, rootfs) {
         return true;
     }
     if !ensure_apt_index() {
@@ -275,18 +281,44 @@ fn install_package(pkg: &str, rootfs: &str, depth: u8) -> bool {
 
     let Some(info) = find_package_in_index(pkg) else {
         println!("licof apt: package '{}' not found", pkg);
+        if package_name_present(PACKAGES_TXT, pkg) {
+            println!(
+                "licof apt: package '{}' exists in raw index but could not be parsed",
+                pkg
+            );
+        } else {
+            println!(
+                "licof apt: package '{}' is absent from cached index ({} bytes)",
+                pkg,
+                file_size(PACKAGES_TXT)
+            );
+        }
         return false;
     };
+    if is_installed(&info.package, rootfs) {
+        return true;
+    }
+    if dependency_pending(pkg, pending) || dependency_pending(&info.package, pending) {
+        println!(
+            "licof apt: dependency '{}' is already scheduled; continuing",
+            pkg
+        );
+        return true;
+    }
+
+    pending.push(info.package.clone());
 
     for dep_group in parse_depends(&info.pre_depends) {
-        if !install_dependency_group(&dep_group, rootfs, depth + 1) {
+        if !install_dependency_group(&dep_group, rootfs, depth + 1, pending) {
             println!("licof apt: dependency for '{}' not satisfied", info.package);
+            pending.pop();
             return false;
         }
     }
     for dep_group in parse_depends(&info.depends) {
-        if !install_dependency_group(&dep_group, rootfs, depth + 1) {
+        if !install_dependency_group(&dep_group, rootfs, depth + 1, pending) {
             println!("licof apt: dependency for '{}' not satisfied", info.package);
+            pending.pop();
             return false;
         }
     }
@@ -299,18 +331,34 @@ fn install_package(pkg: &str, rootfs: &str, depth: u8) -> bool {
     if fs::stat(&deb_path, &mut [0u32; 7]) != 0 {
         let url = alloc::format!("{}/{}", APT_BASE, info.filename);
         println!("licof apt: downloading {} {}", info.package, info.version);
-        if !libhttp_client::download(&url, &deb_path) {
+        if !download_url(&url, &deb_path) {
             println!("licof apt: download failed: {}", url);
+            pending.pop();
+            return false;
+        }
+        if !looks_like_deb(&deb_path) {
+            println!(
+                "licof apt: downloaded file is not a Debian archive: {}",
+                deb_path
+            );
+            pending.pop();
             return false;
         }
     }
 
-    install_deb(&deb_path, rootfs, Some(&info))
+    let ok = install_deb(&deb_path, rootfs, Some(&info));
+    pending.pop();
+    ok
 }
 
-fn install_dependency_group(alternatives: &[String], rootfs: &str, depth: u8) -> bool {
+fn install_dependency_group(
+    alternatives: &[String],
+    rootfs: &str,
+    depth: u8,
+    pending: &mut Vec<String>,
+) -> bool {
     for dep in alternatives {
-        if install_package(dep, rootfs, depth) {
+        if install_package_inner(dep, rootfs, depth, pending) {
             return true;
         }
     }
@@ -323,11 +371,11 @@ fn install_dependency_group(alternatives: &[String], rootfs: &str, depth: u8) ->
     alternatives.is_empty()
 }
 
+fn dependency_pending(pkg: &str, pending: &[String]) -> bool {
+    pending.iter().any(|p| p == pkg)
+}
+
 fn ensure_apt_index() -> bool {
-    if !libhttp_client::init() {
-        println!("licof apt: libhttp unavailable");
-        return false;
-    }
     if !libzip_client::init() {
         println!("licof apt: libzip unavailable");
         return false;
@@ -346,13 +394,8 @@ fn ensure_apt_index() -> bool {
         APT_ARCH
     );
     println!("licof apt: fetching package index");
-    if !libhttp_client::download(&url, PACKAGES_GZ) {
-        println!(
-            "licof apt: failed to download {} (http-status={}, error={})",
-            url,
-            libhttp_client::last_status(),
-            libhttp_client::last_error()
-        );
+    if !download_url(&url, PACKAGES_GZ) {
+        println!("licof apt: failed to download {}", url);
         return false;
     }
     let downloaded = file_size(PACKAGES_GZ);
@@ -392,6 +435,7 @@ fn ensure_apt_index() -> bool {
 }
 
 fn find_package_in_index(wanted: &str) -> Option<PackageInfo> {
+    let wanted = preferred_package(wanted).unwrap_or(wanted);
     let mut file = match fs::File::open(PACKAGES_TXT) {
         Ok(file) => file,
         Err(_) => {
@@ -439,30 +483,65 @@ fn find_package_in_index(wanted: &str) -> Option<PackageInfo> {
 }
 
 fn package_info_from_para(para: &[u8], wanted: &str) -> Option<PackageInfo> {
-    let para = core::str::from_utf8(para).ok()?;
-    let package = field(para, "Package")?;
-    if package != wanted {
+    let package = field_bytes_as_str(para, b"Package")?;
+    let exact = package == wanted;
+    if !exact && !provides_package_bytes(para, wanted) {
         return None;
     }
-    let arch = field(para, "Architecture").unwrap_or("");
+    let arch = field_bytes_as_str(para, b"Architecture").unwrap_or("");
     if arch != APT_ARCH && arch != "all" {
         return None;
     }
     Some(PackageInfo {
-        package: String::from(wanted),
-        version: String::from(field(para, "Version").unwrap_or("unknown")),
-        filename: String::from(field(para, "Filename")?),
-        depends: String::from(field(para, "Depends").unwrap_or("")),
-        pre_depends: String::from(field(para, "Pre-Depends").unwrap_or("")),
+        package: String::from(package),
+        version: String::from(field_bytes_as_str(para, b"Version").unwrap_or("unknown")),
+        filename: String::from(field_bytes_as_str(para, b"Filename")?),
+        depends: String::from(field_bytes_as_str(para, b"Depends").unwrap_or("")),
+        pre_depends: String::from(field_bytes_as_str(para, b"Pre-Depends").unwrap_or("")),
     })
 }
 
-fn field<'a>(para: &'a str, key: &str) -> Option<&'a str> {
-    let prefix = alloc::format!("{}: ", key);
-    for line in para.lines() {
-        if line.starts_with(&prefix) {
-            return Some(line[prefix.len()..].trim());
+fn preferred_package(wanted: &str) -> Option<&'static str> {
+    match wanted {
+        "awk" => Some("mawk"),
+        _ => None,
+    }
+}
+
+fn provides_package_bytes(para: &[u8], wanted: &str) -> bool {
+    for provided in parse_depends(field_bytes_as_str(para, b"Provides").unwrap_or("")) {
+        if provided.iter().any(|name| name == wanted) {
+            return true;
         }
+    }
+    false
+}
+
+fn field_bytes_as_str<'a>(para: &'a [u8], key: &[u8]) -> Option<&'a str> {
+    let value = field_bytes(para, key)?;
+    core::str::from_utf8(value).ok().map(str::trim)
+}
+
+fn field_bytes<'a>(para: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
+    let mut line_start = 0usize;
+    while line_start < para.len() {
+        let mut line_end = line_start;
+        while line_end < para.len() && para[line_end] != b'\n' {
+            line_end += 1;
+        }
+        let line = &para[line_start..line_end];
+        if line.len() > key.len() + 2
+            && &line[..key.len()] == key
+            && line[key.len()] == b':'
+            && line[key.len() + 1] == b' '
+        {
+            let mut value = &line[key.len() + 2..];
+            if value.last() == Some(&b'\r') {
+                value = &value[..value.len() - 1];
+            }
+            return Some(value);
+        }
+        line_start = line_end.saturating_add(1);
     }
     None
 }
@@ -713,7 +792,7 @@ fn install_deb(path: &str, rootfs: &str, info: Option<&PackageInfo>) -> bool {
     }
 
     if let Some(info) = info {
-        mark_installed(info, files);
+        mark_installed(info, rootfs, files);
         println!(
             "licof apt: installed {} {} ({} files)",
             info.package, info.version, files
@@ -782,22 +861,30 @@ fn sanitize_tar_path(name: &str) -> Option<String> {
     Some(String::from(rel))
 }
 
-fn mark_installed(info: &PackageInfo, files: u32) {
-    ensure_dir(INSTALLED_DB);
-    let path = alloc::format!("{}/{}", INSTALLED_DB, info.package);
+fn mark_installed(info: &PackageInfo, rootfs: &str, files: u32) {
+    let db_dir = installed_db_dir(rootfs);
+    ensure_dir(&db_dir);
+    let path = alloc::format!("{}/{}", db_dir, info.package);
     let body = alloc::format!(
-        "Package: {}\nVersion: {}\nFilename: {}\nFiles: {}\n",
+        "Package: {}\nVersion: {}\nRootFS: {}\nFilename: {}\nFiles: {}\n",
         info.package,
         info.version,
+        rootfs,
         info.filename,
         files
     );
     let _ = fs::write_bytes(&path, body.as_bytes());
 }
 
-fn is_installed(pkg: &str) -> bool {
-    let path = alloc::format!("{}/{}", INSTALLED_DB, pkg);
+fn is_installed(pkg: &str, rootfs: &str) -> bool {
+    let path = alloc::format!("{}/{}", installed_db_dir(rootfs), pkg);
     fs::stat(&path, &mut [0u32; 7]) == 0
+}
+
+fn installed_db_dir(rootfs: &str) -> String {
+    let mut key = String::new();
+    push_cache_safe(&mut key, rootfs);
+    alloc::format!("{}/{}", INSTALLED_DB, key)
 }
 
 fn deb_basename(path: &str) -> &str {
@@ -849,6 +936,11 @@ fn looks_like_plain_packages_index(path: &str) -> bool {
     prefix.starts_with(b"Package:")
 }
 
+fn looks_like_deb(path: &str) -> bool {
+    let prefix = read_prefix(path);
+    prefix.starts_with(b"!<arch>\n")
+}
+
 fn read_prefix(path: &str) -> [u8; 16] {
     let mut prefix = [0u8; 16];
     if let Ok(mut file) = fs::File::open(path) {
@@ -866,6 +958,39 @@ fn print_index_download_diagnostic(path: &str, size: u32) {
     if prefix[0] == b'<' {
         println!("licof apt: response looks like HTML; archive server returned an error page");
     }
+}
+
+fn download_url(url: &str, dest: &str) -> bool {
+    if !path_exists(WGET) {
+        println!("licof download: wget not found at {}", WGET);
+        return false;
+    }
+    let _ = fs::unlink(dest);
+    let args = alloc::format!("-q -O {} {}", dest, url);
+    let tid = process::spawn(WGET, &args);
+    if tid == u32::MAX {
+        println!("licof download: failed to start wget");
+        return false;
+    }
+
+    let code = process::waitpid(tid);
+    if code == process::STILL_RUNNING {
+        println!("licof download: wget is still running");
+        return false;
+    }
+    if code == u32::MAX {
+        println!("licof download: wait failed for wget");
+        return false;
+    }
+    if code != 0 {
+        println!("licof download: wget exited with status {}", code);
+        return false;
+    }
+    if file_size(dest) == 0 {
+        println!("licof download: wget produced an empty file: {}", dest);
+        return false;
+    }
+    true
 }
 
 fn copy_file(src: &str, dst: &str) -> bool {
@@ -890,6 +1015,65 @@ fn copy_file(src: &str, dst: &str) -> bool {
             return false;
         }
     }
+}
+
+fn package_name_present(path: &str, package: &str) -> bool {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut pattern = Vec::new();
+    pattern.extend_from_slice(b"\nPackage: ");
+    pattern.extend_from_slice(package.as_bytes());
+    pattern.push(b'\n');
+    let mut at_start = Vec::new();
+    at_start.extend_from_slice(b"Package: ");
+    at_start.extend_from_slice(package.as_bytes());
+    at_start.push(b'\n');
+
+    let mut buf = [0u8; 4096];
+    let mut window = Vec::new();
+    let keep = pattern.len().max(at_start.len()).saturating_sub(1);
+    let mut first = true;
+    loop {
+        let n = match file.read(&mut buf) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        if n == 0 {
+            return false;
+        }
+        window.extend_from_slice(&buf[..n]);
+        if first && window.starts_with(&at_start) {
+            return true;
+        }
+        first = false;
+        if contains_bytes(&window, &pattern) {
+            return true;
+        }
+        if window.len() > keep {
+            let drop = window.len() - keep;
+            let mut next = Vec::with_capacity(keep);
+            next.extend_from_slice(&window[drop..]);
+            window = next;
+        }
+    }
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    let end = haystack.len() - needle.len();
+    for idx in 0..=end {
+        if &haystack[idx..idx + needle.len()] == needle {
+            return true;
+        }
+    }
+    false
 }
 
 fn ensure_dir(path: &str) {
