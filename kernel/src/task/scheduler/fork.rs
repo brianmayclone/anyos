@@ -7,6 +7,7 @@ use crate::memory::address::PhysAddr;
 /// All fields captured under a single scheduler lock to prevent TOCTOU.
 pub struct ForkSnapshot {
     pub pd: PhysAddr,
+    pub abi: crate::task::abi::AbiPersonality,
     pub brk: u64,
     pub args: [u8; 256],
     pub cwd: [u8; 512],
@@ -36,6 +37,7 @@ pub fn current_thread_fork_snapshot() -> Option<ForkSnapshot> {
     let pd = thread.page_directory?;
     Some(ForkSnapshot {
         pd,
+        abi: thread.abi,
         brk: thread.brk,
         args: thread.args,
         cwd: thread.cwd,

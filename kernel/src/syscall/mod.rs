@@ -13,6 +13,7 @@
 
 mod defs;
 pub mod handlers;
+mod linux;
 pub mod table;
 pub use defs::*;
 
@@ -179,6 +180,7 @@ pub(crate) fn dispatch_inner(
         SYS_WAITPID => handlers::sys_waitpid(arg1 as u32, arg2, arg3 as u32),
         SYS_KILL => handlers::sys_kill(arg1 as u32, arg2 as u32),
         SYS_SPAWN => handlers::sys_spawn(arg1, arg2 as u32, arg3, arg4 as u32),
+        SYS_LICOF_SPAWN => handlers::sys_licof_spawn(arg1, arg2),
         SYS_DETACH => handlers::sys_detach(arg1 as u32),
         SYS_EXEC => handlers::sys_exec(arg1, arg2),
         SYS_GETARGS => handlers::sys_getargs(arg1, arg2 as u32),
@@ -672,6 +674,15 @@ pub(crate) fn dispatch_inner(
 #[no_mangle]
 pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
     let syscall_num = regs.rax as u32;
+
+    #[cfg(target_arch = "x86_64")]
+    if crate::task::scheduler::current_thread_abi()
+        == crate::task::abi::AbiPersonality::LinuxX86_64
+    {
+        let result = linux::dispatch(regs);
+        handlers::deliver_pending_signal_default();
+        return result;
+    }
 
     // fork() needs the full register frame — intercept before dispatch_inner.
     // Currently x86_64-only; ARM64 fork uses a separate ERET-based path.

@@ -660,6 +660,26 @@ extern "C" {
 
 const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
 const PT_LOAD: u32 = 1;
+const PT_INTERP: u32 = 3;
+const PT_PHDR: u32 = 6;
+
+const ET_DYN: u16 = 3;
+
+const AT_NULL: u64 = 0;
+const AT_PHDR: u64 = 3;
+const AT_PHENT: u64 = 4;
+const AT_PHNUM: u64 = 5;
+const AT_PAGESZ: u64 = 6;
+const AT_BASE: u64 = 7;
+const AT_FLAGS: u64 = 8;
+const AT_ENTRY: u64 = 9;
+const AT_UID: u64 = 11;
+const AT_EUID: u64 = 12;
+const AT_GID: u64 = 13;
+const AT_EGID: u64 = 14;
+const AT_PLATFORM: u64 = 15;
+const AT_RANDOM: u64 = 25;
+const AT_EXECFN: u64 = 31;
 
 /// ELF class constants (EI_CLASS byte at offset 4).
 const ELFCLASS32: u8 = 1;
@@ -703,6 +723,293 @@ struct ElfLoadResult {
     brk: u64,
     /// Total user pages mapped (code + data + BSS segments).
     pages_mapped: u32,
+}
+
+struct LinuxElf64Info {
+    entry: u64,
+    phdr_addr: u64,
+    phent: u64,
+    phnum: u64,
+    has_interp: bool,
+    is_dyn: bool,
+}
+
+fn inspect_linux_elf64(data: &[u8]) -> Result<LinuxElf64Info, &'static str> {
+    if data.len() < core::mem::size_of::<Elf64Header>() {
+        return Err("ELF64 file too small");
+    }
+    if !is_elf(data) || elf_class(data) != ELFCLASS64 {
+        return Err("licof: expected ELF64 binary");
+    }
+
+    let hdr = unsafe { &*(data.as_ptr() as *const Elf64Header) };
+    let entry = hdr.e_entry;
+    let e_type = hdr.e_type;
+    let ph_off = hdr.e_phoff as usize;
+    let ph_size = hdr.e_phentsize as usize;
+    let ph_num = hdr.e_phnum as usize;
+
+    if ph_size < core::mem::size_of::<Elf64Phdr>() {
+        return Err("licof: ELF64 program header entry too small");
+    }
+    if ph_num == 0 {
+        return Err("licof: ELF64 has no program headers");
+    }
+    let ph_table_size = ph_size
+        .checked_mul(ph_num)
+        .ok_or("licof: ELF64 program header table overflow")?;
+    if ph_off
+        .checked_add(ph_table_size)
+        .map_or(true, |end| end > data.len())
+    {
+        return Err("licof: ELF64 program header table out of bounds");
+    }
+
+    let mut phdr_addr = 0u64;
+    let mut has_interp = false;
+    for i in 0..ph_num {
+        let ph_offset = ph_off + i * ph_size;
+        let phdr = unsafe { &*(data.as_ptr().add(ph_offset) as *const Elf64Phdr) };
+        let p_type = phdr.p_type;
+        let p_offset = phdr.p_offset;
+        let p_vaddr = phdr.p_vaddr;
+        let p_filesz = phdr.p_filesz;
+
+        if p_type == PT_PHDR {
+            phdr_addr = p_vaddr;
+        } else if p_type == PT_INTERP {
+            has_interp = true;
+        } else if p_type == PT_LOAD && phdr_addr == 0 {
+            if let Some(end) = p_offset.checked_add(p_filesz) {
+                let ph_file_off = ph_off as u64;
+                if ph_file_off >= p_offset && ph_file_off < end {
+                    phdr_addr = p_vaddr + (ph_file_off - p_offset);
+                }
+            }
+        }
+    }
+
+    Ok(LinuxElf64Info {
+        entry,
+        phdr_addr,
+        phent: ph_size as u64,
+        phnum: ph_num as u64,
+        has_interp,
+        is_dyn: e_type == ET_DYN,
+    })
+}
+
+fn copy_to_user_pd(
+    pd_phys: crate::memory::address::PhysAddr,
+    dst: u64,
+    src: &[u8],
+) {
+    unsafe {
+        #[cfg(target_arch = "x86_64")]
+        let saved_flags: u64;
+        #[cfg(target_arch = "x86_64")]
+        {
+            core::arch::asm!("pushfq; pop {}", out(reg) saved_flags, options(nomem));
+            core::arch::asm!("cli", options(nomem, nostack));
+        }
+        #[cfg(target_arch = "aarch64")]
+        let saved_daif: u64;
+        #[cfg(target_arch = "aarch64")]
+        {
+            core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
+            core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+        }
+
+        let old_pt = virtual_mem::current_cr3();
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
+        #[cfg(target_arch = "aarch64")]
+        {
+            core::arch::asm!("msr ttbr0_el1, {}", in(reg) pd_phys.as_u64(), options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack));
+        }
+
+        core::ptr::copy_nonoverlapping(src.as_ptr(), dst as *mut u8, src.len());
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            core::arch::asm!("mov cr3, {}", in(reg) old_pt);
+            core::arch::asm!("push {}; popfq", in(reg) saved_flags, options(nomem));
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            core::arch::asm!("msr ttbr0_el1, {}", in(reg) old_pt, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack));
+            core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
+        }
+    }
+}
+
+fn push_linux_u64(buf: &mut alloc::vec::Vec<u8>, value: u64) {
+    buf.extend_from_slice(&value.to_ne_bytes());
+}
+
+fn write_linux_initial_stack(
+    pd_phys: crate::memory::address::PhysAddr,
+    stack_top: u64,
+    stack_bottom: u64,
+    path: &str,
+    args: &str,
+    elf: &LinuxElf64Info,
+) -> Result<u64, &'static str> {
+    let mut argv = alloc::vec::Vec::<&str>::new();
+    argv.push(path);
+    for arg in args.split_ascii_whitespace() {
+        if !arg.is_empty() {
+            argv.push(arg);
+        }
+    }
+    if argv.len() > 64 {
+        return Err("licof: too many argv entries");
+    }
+
+    let envp = [
+        "PATH=/usr/bin:/bin",
+        "HOME=/",
+        "TERM=ansi",
+        "LICOF=1",
+    ];
+
+    let mut string_bytes = 0usize;
+    for s in argv.iter().copied().chain(envp.iter().copied()) {
+        string_bytes = string_bytes
+            .checked_add(s.len() + 1)
+            .ok_or("licof: initial stack string size overflow")?;
+    }
+    if string_bytes > 64 * 1024 {
+        return Err("licof: initial stack strings too large");
+    }
+
+    let mut sp = stack_top;
+    let mut payload_chunks = alloc::vec::Vec::<(u64, alloc::vec::Vec<u8>)>::new();
+    let mut argv_ptrs = alloc::vec::Vec::<u64>::new();
+    let mut env_ptrs = alloc::vec::Vec::<u64>::new();
+
+    for s in envp.iter().rev() {
+        let bytes = s.as_bytes();
+        sp = sp
+            .checked_sub((bytes.len() + 1) as u64)
+            .ok_or("licof: initial stack underflow")?;
+        let mut chunk = alloc::vec::Vec::<u8>::new();
+        chunk.extend_from_slice(bytes);
+        chunk.push(0);
+        payload_chunks.push((sp, chunk));
+        env_ptrs.push(sp);
+    }
+    env_ptrs.reverse();
+
+    for s in argv.iter().rev() {
+        let bytes = s.as_bytes();
+        sp = sp
+            .checked_sub((bytes.len() + 1) as u64)
+            .ok_or("licof: initial stack underflow")?;
+        let mut chunk = alloc::vec::Vec::<u8>::new();
+        chunk.extend_from_slice(bytes);
+        chunk.push(0);
+        payload_chunks.push((sp, chunk));
+        argv_ptrs.push(sp);
+    }
+    argv_ptrs.reverse();
+
+    let platform = b"x86_64\0";
+    sp = sp
+        .checked_sub(platform.len() as u64)
+        .ok_or("licof: initial stack underflow")?;
+    let platform_ptr = sp;
+    let mut platform_chunk = alloc::vec::Vec::<u8>::new();
+    platform_chunk.extend_from_slice(platform);
+    payload_chunks.push((sp, platform_chunk));
+
+    let mut random_bytes = [0u8; 16];
+    let seed = counter_entropy()
+        ^ ((crate::arch::hal::timer_current_ticks() as u64) << 32)
+        ^ crate::task::scheduler::current_tid() as u64;
+    for i in 0..2 {
+        let value = seed.rotate_left((i as u32) * 23) ^ (0x9E37_79B9_7F4A_7C15u64 * (i as u64 + 1));
+        random_bytes[i * 8..i * 8 + 8].copy_from_slice(&value.to_ne_bytes());
+    }
+    sp = sp
+        .checked_sub(random_bytes.len() as u64)
+        .ok_or("licof: initial stack underflow")?;
+    let random_ptr = sp;
+    let mut random_chunk = alloc::vec::Vec::<u8>::new();
+    random_chunk.extend_from_slice(&random_bytes);
+    payload_chunks.push((sp, random_chunk));
+
+    sp &= !0xF;
+
+    let mut auxv = alloc::vec::Vec::<(u64, u64)>::new();
+    if elf.phdr_addr != 0 {
+        auxv.push((AT_PHDR, elf.phdr_addr));
+    }
+    auxv.push((AT_PHENT, elf.phent));
+    auxv.push((AT_PHNUM, elf.phnum));
+    auxv.push((AT_PAGESZ, PAGE_SIZE));
+    auxv.push((AT_BASE, 0));
+    auxv.push((AT_FLAGS, 0));
+    auxv.push((AT_ENTRY, elf.entry));
+    auxv.push((AT_UID, 0));
+    auxv.push((AT_EUID, 0));
+    auxv.push((AT_GID, 0));
+    auxv.push((AT_EGID, 0));
+    auxv.push((AT_PLATFORM, platform_ptr));
+    auxv.push((AT_RANDOM, random_ptr));
+    auxv.push((AT_EXECFN, argv_ptrs[0]));
+    auxv.push((AT_NULL, 0));
+
+    let vector_bytes =
+        8 + (argv_ptrs.len() + 1) * 8 + (env_ptrs.len() + 1) * 8 + auxv.len() * 16;
+    if sp
+        .checked_sub(vector_bytes as u64)
+        .ok_or("licof: initial stack underflow")?
+        & 0xF
+        != 0
+    {
+        sp = sp
+            .checked_sub(8)
+            .ok_or("licof: initial stack alignment underflow")?;
+    }
+    sp = sp
+        .checked_sub(vector_bytes as u64)
+        .ok_or("licof: initial stack underflow")?;
+    if sp < stack_bottom {
+        return Err("licof: initial stack exceeds mapped stack");
+    }
+
+    let mut vectors = alloc::vec::Vec::<u8>::new();
+    push_linux_u64(&mut vectors, argv_ptrs.len() as u64);
+    for ptr in argv_ptrs {
+        push_linux_u64(&mut vectors, ptr);
+    }
+    push_linux_u64(&mut vectors, 0);
+    for ptr in env_ptrs {
+        push_linux_u64(&mut vectors, ptr);
+    }
+    push_linux_u64(&mut vectors, 0);
+    for (key, value) in auxv {
+        push_linux_u64(&mut vectors, key);
+        push_linux_u64(&mut vectors, value);
+    }
+
+    for (addr, bytes) in &payload_chunks {
+        let end = addr
+            .checked_add(bytes.len() as u64)
+            .ok_or("licof: initial stack payload overflow")?;
+        if *addr < stack_bottom || end > stack_top {
+            return Err("licof: initial stack payload outside mapped stack");
+        }
+    }
+
+    for (addr, bytes) in payload_chunks {
+        copy_to_user_pd(pd_phys, addr, &bytes);
+    }
+    copy_to_user_pd(pd_phys, sp, &vectors);
+    Ok(sp)
 }
 
 /// Load an ELF64 binary into a user PML4.
@@ -1189,6 +1496,35 @@ pub fn load_and_run(path: &str, name: &str) -> Result<u32, &'static str> {
 /// the binary is resolved from Info.conf `exec=` field, or derived from the folder name.
 /// The exec binary MUST reside directly inside the .app directory (no subdirectories).
 pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32, &'static str> {
+    load_and_run_with_args_abi(path, name, args, crate::task::abi::AbiPersonality::AnyOs)
+}
+
+/// Load and run a Linux x86_64 ELF through licof.
+pub fn load_and_run_linux_with_args(
+    path: &str,
+    name: &str,
+    args: &str,
+) -> Result<u32, &'static str> {
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (path, name, args);
+        return Err("licof: Linux x86_64 ABI requires an x86_64 kernel");
+    }
+    #[cfg(target_arch = "x86_64")]
+    load_and_run_with_args_abi(
+        path,
+        name,
+        args,
+        crate::task::abi::AbiPersonality::LinuxX86_64,
+    )
+}
+
+fn load_and_run_with_args_abi(
+    path: &str,
+    name: &str,
+    args: &str,
+    abi: crate::task::abi::AbiPersonality,
+) -> Result<u32, &'static str> {
     // .app bundle resolution
     let resolved_path: alloc::string::String;
     let bundle_cwd: Option<alloc::string::String>;
@@ -1301,6 +1637,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
 
     let (entry_point, brk);
     let mut total_user_pages: u32 = 0;
+    let mut linux_initial_stack: Option<u64> = None;
 
     // ASLR: randomize the stack top within the 8 MiB region.
     let stack_aslr_offset = random_page_offset(ASLR_STACK_MAX_PAGES) as u64 * PAGE_SIZE;
@@ -1345,6 +1682,18 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     let class = elf_class(&data);
     if class == ELFCLASS64 {
         // ---- ELF64 binary path ----
+        let linux_elf = if abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
+            let info = inspect_linux_elf64(&data)?;
+            if info.has_interp {
+                return Err("licof: PT_INTERP/dynamic Linux ELF is not supported yet");
+            }
+            if info.is_dyn {
+                return Err("licof: ET_DYN Linux ELF load bias is not supported yet");
+            }
+            Some(info)
+        } else {
+            None
+        };
 
         // Allocate, map, and zero stack pages (single CR3 switch)
         let stack_bottom = aslr_stack_top - USER_STACK_PAGES * PAGE_SIZE;
@@ -1368,11 +1717,25 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         entry_point = elf_result.entry;
         brk = elf_result.brk;
         total_user_pages += elf_result.pages_mapped + stack_mapped;
+
+        if let Some(ref info) = linux_elf {
+            linux_initial_stack = Some(write_linux_initial_stack(
+                pd_phys,
+                aslr_stack_top,
+                stack_bottom,
+                actual_path,
+                args,
+                info,
+            )?);
+        }
     } else if class == ELFCLASS32 {
         return Err("ELF32 binaries are no longer supported (32-bit user space removed)");
     } else if is_elf(&data) {
         return Err("Unknown ELF class (only ELF64 is supported)");
     } else {
+        if abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
+            return Err("licof: only ELF64 Linux binaries are supported");
+        }
         // ---- Flat binary path (no ELF headers → map code RWX for compat) ----
         let code_pages = (data.len() as u64 + PAGE_SIZE - 1) / PAGE_SIZE;
         let code_mapped = virtual_mem::map_pages_range_in_pd(
@@ -1461,6 +1824,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     // Initialize VMA table for this process (gap-finding allocator).
     crate::memory::vma::init_process(pd_phys, mmap_start);
     crate::task::scheduler::set_thread_user_info(tid, pd_phys, brk);
+    crate::task::scheduler::set_thread_abi(tid, abi);
     if total_user_pages > 0 {
         crate::task::scheduler::adjust_thread_user_pages(tid, total_user_pages as i32);
     }
@@ -1470,7 +1834,11 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     // therefore wants RSP % 16 == 8. AArch64 enters EL0 via `eret` and
     // requires SP to remain 16-byte aligned.
     #[cfg(target_arch = "x86_64")]
-    let pending_user_stack = aslr_stack_top - 8;
+    let pending_user_stack = if abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
+        linux_initial_stack.ok_or("licof: missing Linux initial stack")?
+    } else {
+        aslr_stack_top - 8
+    };
     #[cfg(target_arch = "aarch64")]
     let pending_user_stack = aslr_stack_top;
 

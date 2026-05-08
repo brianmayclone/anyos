@@ -100,6 +100,7 @@ pub fn create_thread_in_current_process(
         pd,
         brk,
         parent_pri,
+        parent_abi,
         parent_cwd,
         parent_caps,
         parent_uid,
@@ -132,6 +133,7 @@ pub fn create_thread_in_current_process(
             pd,
             thread.brk,
             thread.priority,
+            thread.abi,
             thread.cwd,
             thread.capabilities,
             thread.uid,
@@ -172,6 +174,7 @@ pub fn create_thread_in_current_process(
             thread.context.checksum = thread.context.compute_checksum();
             thread.is_user = true;
             thread.brk = brk;
+            thread.abi = parent_abi;
             thread.pd_shared = true;
             thread.cwd = parent_cwd;
             thread.capabilities = parent_caps;

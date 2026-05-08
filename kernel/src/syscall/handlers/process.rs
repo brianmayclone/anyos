@@ -801,6 +801,43 @@ pub fn sys_spawn(path_ptr: u64, stdout_pipe: u32, args_ptr: u64, stdin_pipe: u32
     }
 }
 
+/// sys_licof_spawn - Spawn a Linux x86_64 process through licof.
+/// arg1=path_ptr, arg2=args_ptr (0=none). Returns TID or u32::MAX on error.
+pub fn sys_licof_spawn(path_ptr: u64, args_ptr: u64) -> u32 {
+    let path = match read_user_str_safe(path_ptr) {
+        Some(path) if !path.is_empty() => path,
+        _ => return u32::MAX,
+    };
+    let args = if args_ptr != 0 {
+        read_user_str_safe(args_ptr).unwrap_or("")
+    } else {
+        ""
+    };
+    let name = path.rsplit('/').next().unwrap_or("linux");
+
+    match crate::task::loader::load_and_run_linux_with_args(path, name, args) {
+        Ok(tid) => {
+            let mut cwd_buf = [0u8; 512];
+            let cwd_len = crate::task::scheduler::current_thread_cwd(&mut cwd_buf);
+            if cwd_len > 0 {
+                if let Ok(cwd) = core::str::from_utf8(&cwd_buf[..cwd_len]) {
+                    crate::task::scheduler::set_thread_cwd(tid, cwd);
+                }
+            }
+            if let Some(parent_pd) = crate::task::scheduler::current_thread_page_directory() {
+                if let Some(child_pd) = crate::task::scheduler::thread_page_directory(tid) {
+                    crate::task::env::clone_env(parent_pd.0, child_pd.0);
+                }
+            }
+            tid
+        }
+        Err(e) => {
+            crate::serial_verbose_println!("sys_licof_spawn: FAILED path='{}': {}", path, e);
+            u32::MAX
+        }
+    }
+}
+
 /// sys_getargs - Get command-line arguments for the current process.
 /// arg1=buf_ptr, arg2=buf_size. Returns bytes written.
 pub fn sys_getargs(buf_ptr: u64, buf_size: u32) -> u32 {
@@ -891,6 +928,7 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
     // Capabilities, identity
     scheduler::set_thread_capabilities(child_tid, snap.capabilities);
     scheduler::set_thread_identity(child_tid, snap.uid, snap.gid);
+    scheduler::set_thread_abi(child_tid, snap.abi);
 
     // Pipes
     if snap.stdout_pipe != 0 {
@@ -1043,6 +1081,7 @@ pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
 
     scheduler::set_thread_capabilities(child_tid, snap.capabilities);
     scheduler::set_thread_identity(child_tid, snap.uid, snap.gid);
+    scheduler::set_thread_abi(child_tid, snap.abi);
 
     if snap.stdout_pipe != 0 {
         scheduler::set_thread_stdout_pipe(child_tid, snap.stdout_pipe);

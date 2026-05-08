@@ -328,6 +328,9 @@ pub const SYS_AVM_IOCTL: u32 = 630;
 pub const SYS_MMAP64: u32 = 631;
 pub const SYS_MUNMAP64: u32 = 632;
 
+// licof - Linux Compatibility Framework
+pub const SYS_LICOF_SPAWN: u32 = 710;
+
 // Multi-monitor display syscalls. The legacy SYS_SCREEN_SIZE / SYS_SET_RESOLUTION
 // / SYS_MAP_FRAMEBUFFER continue to operate on output 0 for backwards
 // compatibility; these new syscalls let the compositor (and displayd) work

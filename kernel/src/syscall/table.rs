@@ -26,6 +26,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_KILL, "kill"),
     (SYS_MMAP, "mmap"),
     (SYS_MUNMAP, "munmap"),
+    (SYS_LICOF_SPAWN, "licof_spawn"),
     (SYS_DEVLIST, "devlist"),
     (SYS_DEVOPEN, "devopen"),
     (SYS_DEVCLOSE, "devclose"),

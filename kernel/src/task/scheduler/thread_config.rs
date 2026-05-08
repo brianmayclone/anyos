@@ -4,6 +4,7 @@
 use super::{get_cpu_id, SCHEDULER};
 use crate::fs::fd_table::FdKind;
 use crate::memory::address::PhysAddr;
+use crate::task::abi::AbiPersonality;
 use crate::task::thread::ThreadState;
 
 /// Configure a thread as a user process.
@@ -32,6 +33,30 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u64) {
         thread.fd_table.alloc_at(1, FdKind::Tty);
         thread.fd_table.alloc_at(2, FdKind::Tty);
     }
+}
+
+/// Set the ABI personality for a thread.
+pub fn set_thread_abi(tid: u32, abi: AbiPersonality) {
+    let mut guard = SCHEDULER.lock();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.abi = abi;
+    }
+}
+
+/// Get the current thread's ABI personality.
+pub fn current_thread_abi() -> AbiPersonality {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            return sched.threads[idx].abi;
+        }
+    }
+    AbiPersonality::AnyOs
 }
 
 /// Get the current thread's page directory.

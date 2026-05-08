@@ -6,6 +6,7 @@
 use crate::fs::fd_table::FdTable;
 use crate::ipc::signal::SignalState;
 use crate::memory::address::PhysAddr;
+use crate::task::abi::AbiPersonality;
 use crate::task::capabilities::CapSet;
 use crate::task::context::CpuContext;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -226,6 +227,8 @@ pub struct Thread {
     pub signals: SignalState,
     /// TID of the parent process (set by fork/spawn, 0 for init/kernel threads).
     pub parent_tid: u32,
+    /// Userspace ABI personality for syscall dispatch.
+    pub abi: AbiPersonality,
 
     // ---- Debug / trace state (anyTrace) ----
     /// TID of the debugger thread attached to this thread (0 = not attached).
@@ -382,6 +385,7 @@ impl Thread {
             fd_table: FdTable::new(),
             signals: SignalState::new(),
             parent_tid: 0,
+            abi: AbiPersonality::AnyOs,
             debug_attached_by: 0,
             debug_suspended: false,
             debug_sw_breakpoints: [(0, 0); 16],

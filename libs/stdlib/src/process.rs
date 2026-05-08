@@ -213,6 +213,25 @@ pub fn spawn(path: &str, args: &str) -> u32 {
     spawn_piped(path, args, 0)
 }
 
+/// Spawn a Linux x86_64 ELF through licof.
+pub fn licof_spawn(path: &str, args: &str) -> u32 {
+    let mut path_buf = [0u8; 257];
+    let plen = path.len().min(256);
+    path_buf[..plen].copy_from_slice(&path.as_bytes()[..plen]);
+    path_buf[plen] = 0;
+
+    let mut args_buf = [0u8; 257];
+    let alen = args.len().min(256);
+    args_buf[..alen].copy_from_slice(&args.as_bytes()[..alen]);
+    args_buf[alen] = 0;
+
+    syscall2(
+        SYS_LICOF_SPAWN,
+        path_buf.as_ptr() as u64,
+        args_buf.as_ptr() as u64,
+    )
+}
+
 /// Detach a child process so it survives parent exit.
 ///
 /// After detach, the child is no longer cascade-killed when the calling

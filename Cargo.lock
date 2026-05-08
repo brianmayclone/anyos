@@ -1413,6 +1413,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "licof"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "listgroups"
 version = "0.1.0"
 dependencies = [

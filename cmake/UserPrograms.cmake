@@ -77,7 +77,6 @@ file(GLOB_RECURSE ANYOS_SELFHOST_ANYRC_SRCS CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/libs/libzip_client/*"
   "${CMAKE_SOURCE_DIR}/bin/acargo/*"
   "${CMAKE_SOURCE_DIR}/bin/anyrc/*"
-  "${CMAKE_SOURCE_DIR}/docs/crust-ccargo-api.md"
 )
 
 add_custom_command(
@@ -146,9 +145,6 @@ add_custom_command(
     ${ANYOS_SELFHOST_ROOT}/libs/libcorevm_client/target
     ${ANYOS_SELFHOST_ROOT}/libs/libhttp_client/target
     ${ANYOS_SELFHOST_ROOT}/libs/libzip_client/target
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    ${CMAKE_SOURCE_DIR}/docs/crust-ccargo-api.md
-    ${ANYOS_SELFHOST_ROOT}/docs/crust-ccargo-api.md
   COMMAND ${CMAKE_COMMAND} -E touch ${ANYOS_SELFHOST_ROOT}/.stamp
   DEPENDS
     ${CMAKE_SOURCE_DIR}/Cargo.toml
@@ -178,7 +174,6 @@ file(GLOB_RECURSE ANYOS_SOURCE_MIRROR_DEPS CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/libs/libnode/*"
   "${CMAKE_SOURCE_DIR}/libs/libuv/*"
   "${CMAKE_SOURCE_DIR}/libs/libzip_client/*"
-  "${CMAKE_SOURCE_DIR}/docs/crust-ccargo-api.md"
 )
 
 add_custom_command(
@@ -258,9 +253,6 @@ add_custom_command(
     ${ANYOS_SOURCE_MIRROR_ROOT}/bin/git/git.elf
     ${ANYOS_SOURCE_MIRROR_ROOT}/bin/make/make.o
     ${ANYOS_SOURCE_MIRROR_ROOT}/bin/make/make.elf
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    ${CMAKE_SOURCE_DIR}/docs/crust-ccargo-api.md
-    ${ANYOS_SOURCE_MIRROR_ROOT}/docs/crust-ccargo-api.md
   COMMAND ${CMAKE_COMMAND} -E touch ${ANYOS_SOURCE_MIRROR_ROOT}/.stamp
   DEPENDS
     ${CMAKE_SOURCE_DIR}/Cargo.toml
@@ -894,6 +886,7 @@ add_rust_user_program(vdagent)
 add_rust_user_program(vmd)
 add_rust_user_program(vmctl)
 add_rust_user_program(aslctl)
+add_rust_user_program(licof)
 add_rust_user_program(ftpd)
 add_rust_user_program(zip)
 add_rust_user_program(unzip)
