@@ -18,6 +18,7 @@ const FHCRC: u8 = 0x02;
 const FEXTRA: u8 = 0x04;
 const FNAME: u8 = 0x08;
 const FCOMMENT: u8 = 0x10;
+const RESERVED_FLAGS: u8 = 0xE0;
 
 // ── Compress ────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,9 @@ pub fn gzip_decompress(data: &[u8]) -> Option<Vec<u8>> {
     }
 
     let flags = data[3];
+    if flags & RESERVED_FLAGS != 0 {
+        return None;
+    }
     let mut pos = 10usize; // skip fixed header
 
     // Skip optional FEXTRA field
@@ -73,13 +77,19 @@ pub fn gzip_decompress(data: &[u8]) -> Option<Vec<u8>> {
             return None;
         }
         let xlen = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
-        pos += 2 + xlen;
+        pos = pos.checked_add(2)?.checked_add(xlen)?;
+        if pos > data.len() {
+            return None;
+        }
     }
 
     // Skip optional FNAME (null-terminated string)
     if flags & FNAME != 0 {
         while pos < data.len() && data[pos] != 0 {
             pos += 1;
+        }
+        if pos >= data.len() {
+            return None;
         }
         pos += 1; // skip null terminator
     }
@@ -89,11 +99,17 @@ pub fn gzip_decompress(data: &[u8]) -> Option<Vec<u8>> {
         while pos < data.len() && data[pos] != 0 {
             pos += 1;
         }
+        if pos >= data.len() {
+            return None;
+        }
         pos += 1;
     }
 
     // Skip optional FHCRC (2-byte CRC16 of header)
     if flags & FHCRC != 0 {
+        if pos + 2 > data.len() {
+            return None;
+        }
         pos += 2;
     }
 

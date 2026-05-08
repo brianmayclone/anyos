@@ -24,38 +24,37 @@ impl<'a> BitReader<'a> {
         }
     }
 
-    fn ensure_bits(&mut self, count: u8) {
+    fn ensure_bits(&mut self, count: u8) -> Option<()> {
         while self.bit_count < count {
-            let byte = if self.pos < self.data.len() {
-                let b = self.data[self.pos];
-                self.pos += 1;
-                b
-            } else {
-                0
-            };
+            if self.pos >= self.data.len() {
+                return None;
+            }
+            let byte = self.data[self.pos];
+            self.pos += 1;
             self.bit_buf |= (byte as u32) << self.bit_count;
             self.bit_count += 8;
         }
+        Some(())
     }
 
-    fn read_bits(&mut self, count: u8) -> u32 {
-        self.ensure_bits(count);
+    fn read_bits(&mut self, count: u8) -> Option<u32> {
+        self.ensure_bits(count)?;
         let val = self.bit_buf & ((1 << count) - 1);
         self.bit_buf >>= count;
         self.bit_count -= count;
-        val
+        Some(val)
     }
 
-    fn read_byte_aligned(&mut self) -> u8 {
+    fn read_byte_aligned(&mut self) -> Option<u8> {
         // Discard remaining bits in current byte
         self.bit_buf = 0;
         self.bit_count = 0;
         if self.pos < self.data.len() {
             let b = self.data[self.pos];
             self.pos += 1;
-            b
+            Some(b)
         } else {
-            0
+            None
         }
     }
 
@@ -113,22 +112,22 @@ impl HuffmanTable {
         table
     }
 
-    fn decode(&self, reader: &mut BitReader) -> u16 {
+    fn decode(&self, reader: &mut BitReader) -> Option<u16> {
         let mut code: u32 = 0;
         let mut first: u32 = 0;
         let mut index: u32 = 0;
 
         for len in 1..=MAX_BITS {
-            code |= reader.read_bits(1);
+            code |= reader.read_bits(1)?;
             let count = self.counts[len] as u32;
             if code < first + count {
-                return self.symbols[(index + code - first) as usize];
+                return Some(self.symbols[(index + code - first) as usize]);
             }
             index += count;
             first = (first + count) << 1;
             code <<= 1;
         }
-        0 // Should not happen with valid data
+        None
     }
 }
 
@@ -198,21 +197,24 @@ pub fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
     let mut output = Vec::new();
 
     loop {
-        let bfinal = reader.read_bits(1);
-        let btype = reader.read_bits(2);
+        let bfinal = reader.read_bits(1)?;
+        let btype = reader.read_bits(2)?;
 
         match btype {
             0 => {
                 // Stored block
                 reader.align_to_byte();
-                let lo = reader.read_byte_aligned();
-                let hi = reader.read_byte_aligned();
+                let lo = reader.read_byte_aligned()?;
+                let hi = reader.read_byte_aligned()?;
                 let len = (lo as u16) | ((hi as u16) << 8);
-                let _nlo = reader.read_byte_aligned();
-                let _nhi = reader.read_byte_aligned();
-                // nlen is one's complement of len — skip validation
+                let nlo = reader.read_byte_aligned()?;
+                let nhi = reader.read_byte_aligned()?;
+                let nlen = (nlo as u16) | ((nhi as u16) << 8);
+                if nlen != !len {
+                    return None;
+                }
                 for _ in 0..len {
-                    output.push(reader.read_byte_aligned());
+                    output.push(reader.read_byte_aligned()?);
                 }
             }
             1 => {
@@ -223,14 +225,14 @@ pub fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
             }
             2 => {
                 // Dynamic Huffman
-                let hlit = reader.read_bits(5) as usize + 257;
-                let hdist = reader.read_bits(5) as usize + 1;
-                let hclen = reader.read_bits(4) as usize + 4;
+                let hlit = reader.read_bits(5)? as usize + 257;
+                let hdist = reader.read_bits(5)? as usize + 1;
+                let hclen = reader.read_bits(4)? as usize + 4;
 
                 // Read code length code lengths
                 let mut cl_lengths = [0u8; 19];
                 for i in 0..hclen {
-                    cl_lengths[CL_ORDER[i]] = reader.read_bits(3) as u8;
+                    cl_lengths[CL_ORDER[i]] = reader.read_bits(3)? as u8;
                 }
 
                 let cl_table = HuffmanTable::build(&cl_lengths, 19);
@@ -240,7 +242,7 @@ pub fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
                 let mut lengths = vec![0u8; total];
                 let mut i = 0;
                 while i < total {
-                    let sym = cl_table.decode(&mut reader);
+                    let sym = cl_table.decode(&mut reader)?;
                     match sym {
                         0..=15 => {
                             lengths[i] = sym as u8;
@@ -248,7 +250,7 @@ pub fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
                         }
                         16 => {
                             // Repeat previous 3..6 times
-                            let repeat = reader.read_bits(2) as usize + 3;
+                            let repeat = reader.read_bits(2)? as usize + 3;
                             let prev = if i > 0 { lengths[i - 1] } else { 0 };
                             for _ in 0..repeat {
                                 if i < total {
@@ -259,7 +261,7 @@ pub fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
                         }
                         17 => {
                             // Repeat 0 for 3..10 times
-                            let repeat = reader.read_bits(3) as usize + 3;
+                            let repeat = reader.read_bits(3)? as usize + 3;
                             for _ in 0..repeat {
                                 if i < total {
                                     lengths[i] = 0;
@@ -269,7 +271,7 @@ pub fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
                         }
                         18 => {
                             // Repeat 0 for 11..138 times
-                            let repeat = reader.read_bits(7) as usize + 11;
+                            let repeat = reader.read_bits(7)? as usize + 11;
                             for _ in 0..repeat {
                                 if i < total {
                                     lengths[i] = 0;
@@ -303,7 +305,7 @@ fn decode_block(
     output: &mut Vec<u8>,
 ) -> Option<()> {
     loop {
-        let sym = lit_table.decode(reader) as usize;
+        let sym = lit_table.decode(reader)? as usize;
 
         if sym == 256 {
             // End of block
@@ -320,14 +322,14 @@ fn decode_block(
                 return None;
             }
             let length =
-                LENGTH_BASE[len_idx] as usize + reader.read_bits(LENGTH_EXTRA[len_idx]) as usize;
+                LENGTH_BASE[len_idx] as usize + reader.read_bits(LENGTH_EXTRA[len_idx])? as usize;
 
-            let dist_sym = dist_table.decode(reader) as usize;
+            let dist_sym = dist_table.decode(reader)? as usize;
             if dist_sym >= 30 {
                 return None;
             }
             let distance =
-                DIST_BASE[dist_sym] as usize + reader.read_bits(DIST_EXTRA[dist_sym]) as usize;
+                DIST_BASE[dist_sym] as usize + reader.read_bits(DIST_EXTRA[dist_sym])? as usize;
 
             // Copy from sliding window
             if distance > output.len() {
