@@ -198,7 +198,10 @@ mod tests {
             gzip_decompress_with_limit(&compressed, 5).ok().as_deref(),
             Some(&b"hello"[..])
         );
-        assert_eq!(gzip_decompress_with_limit(&compressed, 4), Err(GZIP_ERR_TOO_LARGE));
+        assert_eq!(
+            gzip_decompress_with_limit(&compressed, 4),
+            Err(GZIP_ERR_TOO_LARGE)
+        );
     }
 
     #[test]
