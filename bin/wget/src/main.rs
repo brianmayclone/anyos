@@ -3,7 +3,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use anyos_std::{args, fs, net, print, println, sys};
+use anyos_std::{args, fs, net, print, println, process, sys};
 
 mod tls;
 
@@ -589,6 +589,39 @@ impl Conn {
     }
 }
 
+fn recv_with_retry(conn: &Conn, buf: &mut [u8]) -> i32 {
+    const MAX_RETRIES: u32 = 10;
+    let mut retries = 0u32;
+    loop {
+        let n = conn.recv(buf);
+        if n >= 0 {
+            return n;
+        }
+
+        let avail = net::tcp_recv_available(conn.sock);
+        if avail == u32::MAX || avail == u32::MAX - 1 {
+            return -1;
+        }
+        if retries >= MAX_RETRIES {
+            return -1;
+        }
+        retries += 1;
+        process::sleep(100);
+    }
+}
+
+fn write_all(fd: u32, data: &[u8]) -> bool {
+    let mut written = 0usize;
+    while written < data.len() {
+        let n = fs::write(fd, &data[written..]);
+        if n == u32::MAX || n == 0 {
+            return false;
+        }
+        written += n as usize;
+    }
+    true
+}
+
 // ── Build HTTP request ──────────────────────────────────────────────────────
 
 fn build_request(url: &Url, resume_offset: u32) -> String {
@@ -811,7 +844,7 @@ fn main() {
         let mut recv_buf = [0u8; 32768];
         let header_end;
         loop {
-            let n = conn.recv(&mut recv_buf);
+            let n = recv_with_retry(&conn, &mut recv_buf);
             if n <= 0 {
                 if !quiet {
                     println!("no data received.");
@@ -949,7 +982,7 @@ fn main() {
         let pull_into_carry =
             |carry: &mut Vec<u8>, conn: &Conn, recv_buf: &mut [u8], n: usize| -> bool {
                 while carry.len() < n {
-                    let r = conn.recv(recv_buf);
+                    let r = recv_with_retry(conn, recv_buf);
                     if r <= 0 {
                         return false;
                     }
@@ -963,6 +996,7 @@ fn main() {
             draw_progress(&out_filename, existing_size, total_size, 0, tick_hz);
         }
 
+        let mut transfer_ok = true;
         if chunked {
             // ── Chunked Transfer-Encoding ─────────────────────────────────
             'chunks: loop {
@@ -981,19 +1015,24 @@ fn main() {
                     if line_end.is_some() {
                         break;
                     }
-                    let r = conn.recv(&mut recv_buf);
+                    let r = recv_with_retry(&conn, &mut recv_buf);
                     if r <= 0 {
+                        transfer_ok = false;
                         break 'chunks;
                     }
                     carry.extend_from_slice(&recv_buf[..r as usize]);
                     if carry.len() > 65536 {
+                        transfer_ok = false;
                         break 'chunks;
                     } // runaway guard
                 }
                 let line_end = line_end.unwrap();
                 let size = match parse_hex_u32(&carry[..line_end]) {
                     Some(s) => s,
-                    None => break,
+                    None => {
+                        transfer_ok = false;
+                        break;
+                    }
                 };
                 carry.drain(..line_end + 2); // consume size line + CRLF
 
@@ -1006,14 +1045,18 @@ fn main() {
                 let mut to_read = size as usize;
                 while to_read > 0 {
                     if carry.is_empty() {
-                        let r = conn.recv(&mut recv_buf);
+                        let r = recv_with_retry(&conn, &mut recv_buf);
                         if r <= 0 {
+                            transfer_ok = false;
                             break 'chunks;
                         }
                         carry.extend_from_slice(&recv_buf[..r as usize]);
                     }
                     let take = carry.len().min(to_read);
-                    fs::write(fd, &carry[..take]);
+                    if !write_all(fd, &carry[..take]) {
+                        transfer_ok = false;
+                        break 'chunks;
+                    }
                     received += take as u32;
                     carry.drain(..take);
                     to_read -= take;
@@ -1034,6 +1077,11 @@ fn main() {
 
                 // Consume the trailing CRLF after the chunk data.
                 if !pull_into_carry(&mut carry, &conn, &mut recv_buf, 2) {
+                    transfer_ok = false;
+                    break;
+                }
+                if carry[0] != b'\r' || carry[1] != b'\n' {
+                    transfer_ok = false;
                     break;
                 }
                 carry.drain(..2);
@@ -1042,24 +1090,39 @@ fn main() {
             // ── Plain body: Content-Length or read-until-close ───────────
             // Flush whatever is already in carry first.
             if !carry.is_empty() {
-                fs::write(fd, &carry);
-                received += carry.len() as u32;
+                let write_len = if let Some(cl) = content_length {
+                    carry.len().min(cl as usize)
+                } else {
+                    carry.len()
+                };
+                if write_len > 0 && !write_all(fd, &carry[..write_len]) {
+                    transfer_ok = false;
+                }
+                received += write_len as u32;
                 carry.clear();
             }
 
-            loop {
+            while transfer_ok {
                 if let Some(cl) = content_length {
                     if received >= cl {
                         break;
                     }
                 }
-                let n = conn.recv(&mut recv_buf);
+                let n = recv_with_retry(&conn, &mut recv_buf);
                 if n <= 0 {
                     break;
                 }
-                let n = n as u32;
-                fs::write(fd, &recv_buf[..n as usize]);
-                received += n;
+                let write_len = if let Some(cl) = content_length {
+                    let remaining = cl.saturating_sub(received) as usize;
+                    (n as usize).min(remaining)
+                } else {
+                    n as usize
+                };
+                if write_len > 0 && !write_all(fd, &recv_buf[..write_len]) {
+                    transfer_ok = false;
+                    break;
+                }
+                received += write_len as u32;
 
                 if !quiet && !to_stdout && received - last_progress_bytes >= 2048 {
                     last_progress_bytes = received;
@@ -1072,6 +1135,12 @@ fn main() {
                         elapsed,
                         tick_hz,
                     );
+                }
+            }
+
+            if let Some(cl) = content_length {
+                if received < cl {
+                    transfer_ok = false;
                 }
             }
         }
@@ -1096,6 +1165,16 @@ fn main() {
             fs::close(fd);
         }
         conn.close();
+
+        if !transfer_ok {
+            println!(
+                "wget: download incomplete for '{}' ({}/{})",
+                out_filename,
+                received + existing_size,
+                total_size.unwrap_or(0)
+            );
+            process::exit(1);
+        }
 
         // Summary line
         if !quiet {
