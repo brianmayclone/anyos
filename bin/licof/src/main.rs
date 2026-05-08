@@ -435,8 +435,7 @@ fn ensure_apt_index() -> bool {
                 print_index_download_diagnostic(PACKAGES_GZ, downloaded);
                 continue;
             }
-            let gzip_status =
-                libzip_client::gzip_decompress_file_status(PACKAGES_GZ, PACKAGES_TXT);
+            let gzip_status = libzip_client::gzip_decompress_file_status(PACKAGES_GZ, PACKAGES_TXT);
             if gzip_status != libzip_client::GZIP_STATUS_OK {
                 println!(
                     "licof apt: failed to decompress package index: {} (downloaded {} bytes)",
@@ -528,7 +527,10 @@ fn find_package_in_compressed_index(wanted: &str) -> Option<PackageInfo> {
     };
     let found = find_package_in_bytes(&index, wanted);
     if found.is_some() {
-        println!("licof apt: resolved '{}' from compressed package index", wanted);
+        println!(
+            "licof apt: resolved '{}' from compressed package index",
+            wanted
+        );
     }
     found
 }
@@ -1178,8 +1180,8 @@ fn packages_index_has_required_entries() -> bool {
         {
             continue;
         }
-            println!("licof apt: package index missing '{}'", pkg);
-            return false;
+        println!("licof apt: package index missing '{}'", pkg);
+        return false;
     }
     true
 }
