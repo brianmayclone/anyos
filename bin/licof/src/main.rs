@@ -418,11 +418,14 @@ fn ensure_apt_index() -> bool {
         print_index_download_diagnostic(PACKAGES_GZ, downloaded);
         return false;
     }
-    if !libzip_client::gzip_decompress_file(PACKAGES_GZ, PACKAGES_TXT) {
+    let gzip_status = libzip_client::gzip_decompress_file_status(PACKAGES_GZ, PACKAGES_TXT);
+    if gzip_status != libzip_client::GZIP_STATUS_OK {
         println!(
-            "licof apt: failed to decompress package index (downloaded {} bytes)",
+            "licof apt: failed to decompress package index: {} (downloaded {} bytes)",
+            gzip_status_text(gzip_status),
             downloaded
         );
+        print_gzip_diagnostic(PACKAGES_GZ, downloaded);
         return false;
     }
     let unpacked = file_size(PACKAGES_TXT);
@@ -957,6 +960,56 @@ fn print_index_download_diagnostic(path: &str, size: u32) {
     );
     if prefix[0] == b'<' {
         println!("licof apt: response looks like HTML; archive server returned an error page");
+    }
+}
+
+fn print_gzip_diagnostic(path: &str, size: u32) {
+    let prefix = read_prefix(path);
+    println!(
+        "licof apt: gzip header: {:02x} {:02x} method={:02x} flags={:02x}",
+        prefix[0], prefix[1], prefix[2], prefix[3]
+    );
+    match read_gzip_trailer(path, size) {
+        Some((crc, isize)) => println!(
+            "licof apt: gzip trailer: crc32=0x{:08x} isize={} bytes",
+            crc, isize
+        ),
+        None => println!("licof apt: cannot read gzip trailer"),
+    }
+}
+
+fn read_gzip_trailer(path: &str, size: u32) -> Option<(u32, u32)> {
+    if size < 8 || size > i32::MAX as u32 {
+        return None;
+    }
+    let mut file = fs::File::open(path).ok()?;
+    if fs::lseek(file.fd(), (size - 8) as i32, fs::SEEK_SET) == u32::MAX {
+        return None;
+    }
+    let mut trailer = [0u8; 8];
+    if file.read(&mut trailer).ok()? != trailer.len() {
+        return None;
+    }
+    let crc = u32::from_le_bytes([trailer[0], trailer[1], trailer[2], trailer[3]]);
+    let isize = u32::from_le_bytes([trailer[4], trailer[5], trailer[6], trailer[7]]);
+    Some((crc, isize))
+}
+
+fn gzip_status_text(status: u32) -> &'static str {
+    match status {
+        libzip_client::GZIP_STATUS_OK => "ok",
+        libzip_client::GZIP_ERR_TOO_SHORT => "input too short",
+        libzip_client::GZIP_ERR_BAD_MAGIC => "bad gzip magic",
+        libzip_client::GZIP_ERR_BAD_METHOD => "unsupported gzip method",
+        libzip_client::GZIP_ERR_BAD_FLAGS => "invalid gzip flags",
+        libzip_client::GZIP_ERR_BAD_HEADER => "invalid gzip header",
+        libzip_client::GZIP_ERR_TOO_LARGE => "uncompressed output exceeds limit",
+        libzip_client::GZIP_ERR_INFLATE => "deflate stream failed",
+        libzip_client::GZIP_ERR_BAD_CRC => "crc mismatch",
+        libzip_client::GZIP_ERR_BAD_SIZE => "uncompressed size mismatch",
+        libzip_client::GZIP_ERR_READ_FILE => "cannot read gzip file",
+        libzip_client::GZIP_ERR_WRITE_FILE => "cannot write decompressed file",
+        _ => "unknown gzip error",
     }
 }
 

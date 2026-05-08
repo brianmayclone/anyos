@@ -517,7 +517,7 @@ pub extern "C" fn libzip_gzip_decompress(
 ) -> u32 {
     let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
     copy_optional_to_out(
-        gzip::gzip_decompress_with_limit(data, MAX_GZIP_DECOMPRESSED_BYTES),
+        gzip::gzip_decompress_with_limit(data, MAX_GZIP_DECOMPRESSED_BYTES).ok(),
         out_buf,
         out_buf_len,
     )
@@ -687,18 +687,18 @@ pub extern "C" fn libzip_gzip_decompress_file(
 
     let data = match read_file_to_vec(in_path) {
         Some(d) => d,
-        None => return u32::MAX,
+        None => return gzip::GZIP_ERR_READ_FILE,
     };
 
     let decompressed = match gzip::gzip_decompress_with_limit(&data, MAX_GZIP_DECOMPRESSED_BYTES) {
-        Some(d) => d,
-        None => return u32::MAX,
+        Ok(d) => d,
+        Err(status) => return status,
     };
 
     if write_vec_to_file(out_path, &decompressed) {
-        0
+        gzip::GZIP_STATUS_OK
     } else {
-        u32::MAX
+        gzip::GZIP_ERR_WRITE_FILE
     }
 }
 

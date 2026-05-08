@@ -20,6 +20,19 @@ const FNAME: u8 = 0x08;
 const FCOMMENT: u8 = 0x10;
 const RESERVED_FLAGS: u8 = 0xE0;
 
+pub const GZIP_STATUS_OK: u32 = 0;
+pub const GZIP_ERR_TOO_SHORT: u32 = 1;
+pub const GZIP_ERR_BAD_MAGIC: u32 = 2;
+pub const GZIP_ERR_BAD_METHOD: u32 = 3;
+pub const GZIP_ERR_BAD_FLAGS: u32 = 4;
+pub const GZIP_ERR_BAD_HEADER: u32 = 5;
+pub const GZIP_ERR_TOO_LARGE: u32 = 6;
+pub const GZIP_ERR_INFLATE: u32 = 7;
+pub const GZIP_ERR_BAD_CRC: u32 = 8;
+pub const GZIP_ERR_BAD_SIZE: u32 = 9;
+pub const GZIP_ERR_READ_FILE: u32 = 10;
+pub const GZIP_ERR_WRITE_FILE: u32 = 11;
+
 // ── Compress ────────────────────────────────────────────────────────────────
 
 /// Compress data into gzip format (RFC 1952).
@@ -53,38 +66,41 @@ pub fn gzip_compress(data: &[u8]) -> Vec<u8> {
 
 /// Decompress gzip data (RFC 1952). Returns None on error.
 pub fn gzip_decompress(data: &[u8]) -> Option<Vec<u8>> {
-    gzip_decompress_with_limit(data, usize::MAX)
+    gzip_decompress_with_limit(data, usize::MAX).ok()
 }
 
 /// Decompress gzip data and fail once output would exceed `max_output`.
-pub fn gzip_decompress_with_limit(data: &[u8], max_output: usize) -> Option<Vec<u8>> {
+pub fn gzip_decompress_with_limit(data: &[u8], max_output: usize) -> Result<Vec<u8>, u32> {
     if data.len() < 18 {
-        return None; // minimum: 10 header + 0 data + 8 trailer
+        return Err(GZIP_ERR_TOO_SHORT); // minimum: 10 header + 0 data + 8 trailer
     }
 
     // Validate magic and method
     if data[0] != GZIP_MAGIC[0] || data[1] != GZIP_MAGIC[1] {
-        return None;
+        return Err(GZIP_ERR_BAD_MAGIC);
     }
     if data[2] != METHOD_DEFLATE {
-        return None;
+        return Err(GZIP_ERR_BAD_METHOD);
     }
 
     let flags = data[3];
     if flags & RESERVED_FLAGS != 0 {
-        return None;
+        return Err(GZIP_ERR_BAD_FLAGS);
     }
     let mut pos = 10usize; // skip fixed header
 
     // Skip optional FEXTRA field
     if flags & FEXTRA != 0 {
         if pos + 2 > data.len() {
-            return None;
+            return Err(GZIP_ERR_BAD_HEADER);
         }
         let xlen = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
-        pos = pos.checked_add(2)?.checked_add(xlen)?;
+        pos = pos
+            .checked_add(2)
+            .and_then(|p| p.checked_add(xlen))
+            .ok_or(GZIP_ERR_BAD_HEADER)?;
         if pos > data.len() {
-            return None;
+            return Err(GZIP_ERR_BAD_HEADER);
         }
     }
 
@@ -94,7 +110,7 @@ pub fn gzip_decompress_with_limit(data: &[u8], max_output: usize) -> Option<Vec<
             pos += 1;
         }
         if pos >= data.len() {
-            return None;
+            return Err(GZIP_ERR_BAD_HEADER);
         }
         pos += 1; // skip null terminator
     }
@@ -105,7 +121,7 @@ pub fn gzip_decompress_with_limit(data: &[u8], max_output: usize) -> Option<Vec<
             pos += 1;
         }
         if pos >= data.len() {
-            return None;
+            return Err(GZIP_ERR_BAD_HEADER);
         }
         pos += 1;
     }
@@ -113,18 +129,18 @@ pub fn gzip_decompress_with_limit(data: &[u8], max_output: usize) -> Option<Vec<
     // Skip optional FHCRC (2-byte CRC16 of header)
     if flags & FHCRC != 0 {
         if pos + 2 > data.len() {
-            return None;
+            return Err(GZIP_ERR_BAD_HEADER);
         }
         pos += 2;
     }
 
     if pos >= data.len() {
-        return None;
+        return Err(GZIP_ERR_BAD_HEADER);
     }
 
     // Trailer is the last 8 bytes
     if data.len() < pos + 8 {
-        return None;
+        return Err(GZIP_ERR_BAD_HEADER);
     }
     let trailer_start = data.len() - 8;
 
@@ -142,26 +158,27 @@ pub fn gzip_decompress_with_limit(data: &[u8], max_output: usize) -> Option<Vec<
     ]);
     let expected_size = expected_isize as usize;
     if expected_size > max_output {
-        return None;
+        return Err(GZIP_ERR_TOO_LARGE);
     }
 
     // Decompress the DEFLATE stream (between header and trailer)
     let compressed = &data[pos..trailer_start];
-    let decompressed = inflate::inflate_with_limit(compressed, expected_size)?;
+    let decompressed =
+        inflate::inflate_with_limit(compressed, expected_size).ok_or(GZIP_ERR_INFLATE)?;
 
     // Verify CRC-32
     let actual_crc = crc32::crc32(&decompressed);
     if actual_crc != expected_crc {
-        return None;
+        return Err(GZIP_ERR_BAD_CRC);
     }
 
     // Verify ISIZE (original size mod 2^32)
     let actual_isize = decompressed.len() as u32;
     if actual_isize != expected_isize {
-        return None;
+        return Err(GZIP_ERR_BAD_SIZE);
     }
 
-    Some(decompressed)
+    Ok(decompressed)
 }
 
 /// Check if data starts with gzip magic bytes.
@@ -171,17 +188,17 @@ pub fn is_gzip(data: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{gzip_compress, gzip_decompress, gzip_decompress_with_limit};
+    use super::{gzip_compress, gzip_decompress, gzip_decompress_with_limit, GZIP_ERR_TOO_LARGE};
 
     #[test]
     fn decompress_respects_output_limit() {
         let compressed = gzip_compress(b"hello");
 
         assert_eq!(
-            gzip_decompress_with_limit(&compressed, 5).as_deref(),
+            gzip_decompress_with_limit(&compressed, 5).ok().as_deref(),
             Some(&b"hello"[..])
         );
-        assert_eq!(gzip_decompress_with_limit(&compressed, 4), None);
+        assert_eq!(gzip_decompress_with_limit(&compressed, 4), Err(GZIP_ERR_TOO_LARGE));
     }
 
     #[test]

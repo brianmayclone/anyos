@@ -24,6 +24,19 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+pub const GZIP_STATUS_OK: u32 = 0;
+pub const GZIP_ERR_TOO_SHORT: u32 = 1;
+pub const GZIP_ERR_BAD_MAGIC: u32 = 2;
+pub const GZIP_ERR_BAD_METHOD: u32 = 3;
+pub const GZIP_ERR_BAD_FLAGS: u32 = 4;
+pub const GZIP_ERR_BAD_HEADER: u32 = 5;
+pub const GZIP_ERR_TOO_LARGE: u32 = 6;
+pub const GZIP_ERR_INFLATE: u32 = 7;
+pub const GZIP_ERR_BAD_CRC: u32 = 8;
+pub const GZIP_ERR_BAD_SIZE: u32 = 9;
+pub const GZIP_ERR_READ_FILE: u32 = 10;
+pub const GZIP_ERR_WRITE_FILE: u32 = 11;
+
 #[cfg(feature = "host")]
 mod host {
     use super::*;
@@ -84,6 +97,9 @@ mod host {
     }
     pub fn gzip_decompress_file(_in_path: &str, _out_path: &str) -> bool {
         false
+    }
+    pub fn gzip_decompress_file_status(_in_path: &str, _out_path: &str) -> u32 {
+        GZIP_ERR_READ_FILE
     }
 
     pub fn gzip(data: &[u8]) -> Option<Vec<u8>> {
@@ -433,12 +449,17 @@ mod imp {
 
     /// Decompress a gzip file. Returns true on success.
     pub fn gzip_decompress_file(in_path: &str, out_path: &str) -> bool {
+        gzip_decompress_file_status(in_path, out_path) == GZIP_STATUS_OK
+    }
+
+    /// Decompress a gzip file and return the libzip gzip status code.
+    pub fn gzip_decompress_file_status(in_path: &str, out_path: &str) -> u32 {
         (lib().libzip_gzip_decompress_file)(
             in_path.as_ptr(),
             in_path.len() as u32,
             out_path.as_ptr(),
             out_path.len() as u32,
-        ) == 0
+        )
     }
 
     fn transform_bytes(
