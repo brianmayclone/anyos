@@ -193,6 +193,11 @@ const CL_ORDER: [usize; 19] = [
 
 /// Decompress DEFLATE data. Returns decompressed bytes or None on error.
 pub fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
+    inflate_with_limit(compressed, usize::MAX)
+}
+
+/// Decompress DEFLATE data and fail once output would exceed `max_output`.
+pub fn inflate_with_limit(compressed: &[u8], max_output: usize) -> Option<Vec<u8>> {
     let mut reader = BitReader::new(compressed);
     let mut output = Vec::new();
 
@@ -213,6 +218,9 @@ pub fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
                 if nlen != !len {
                     return None;
                 }
+                if output.len().checked_add(len as usize)? > max_output {
+                    return None;
+                }
                 for _ in 0..len {
                     output.push(reader.read_byte_aligned()?);
                 }
@@ -221,7 +229,13 @@ pub fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
                 // Fixed Huffman
                 let lit_table = build_fixed_literal_table();
                 let dist_table = build_fixed_distance_table();
-                decode_block(&mut reader, &lit_table, &dist_table, &mut output)?;
+                decode_block(
+                    &mut reader,
+                    &lit_table,
+                    &dist_table,
+                    &mut output,
+                    max_output,
+                )?;
             }
             2 => {
                 // Dynamic Huffman
@@ -285,7 +299,13 @@ pub fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
 
                 let lit_table = HuffmanTable::build(&lengths[..hlit], hlit);
                 let dist_table = HuffmanTable::build(&lengths[hlit..], hdist);
-                decode_block(&mut reader, &lit_table, &dist_table, &mut output)?;
+                decode_block(
+                    &mut reader,
+                    &lit_table,
+                    &dist_table,
+                    &mut output,
+                    max_output,
+                )?;
             }
             _ => return None, // Reserved/invalid
         }
@@ -303,6 +323,7 @@ fn decode_block(
     lit_table: &HuffmanTable,
     dist_table: &HuffmanTable,
     output: &mut Vec<u8>,
+    max_output: usize,
 ) -> Option<()> {
     loop {
         let sym = lit_table.decode(reader)? as usize;
@@ -314,6 +335,9 @@ fn decode_block(
 
         if sym < 256 {
             // Literal byte
+            if output.len() >= max_output {
+                return None;
+            }
             output.push(sym as u8);
         } else {
             // Length/distance pair
@@ -333,6 +357,9 @@ fn decode_block(
 
             // Copy from sliding window
             if distance > output.len() {
+                return None;
+            }
+            if output.len().checked_add(length)? > max_output {
                 return None;
             }
             let start = output.len() - distance;

@@ -53,6 +53,11 @@ pub fn gzip_compress(data: &[u8]) -> Vec<u8> {
 
 /// Decompress gzip data (RFC 1952). Returns None on error.
 pub fn gzip_decompress(data: &[u8]) -> Option<Vec<u8>> {
+    gzip_decompress_with_limit(data, usize::MAX)
+}
+
+/// Decompress gzip data and fail once output would exceed `max_output`.
+pub fn gzip_decompress_with_limit(data: &[u8], max_output: usize) -> Option<Vec<u8>> {
     if data.len() < 18 {
         return None; // minimum: 10 header + 0 data + 8 trailer
     }
@@ -135,10 +140,14 @@ pub fn gzip_decompress(data: &[u8]) -> Option<Vec<u8>> {
         data[trailer_start + 6],
         data[trailer_start + 7],
     ]);
+    let expected_size = expected_isize as usize;
+    if expected_size > max_output {
+        return None;
+    }
 
     // Decompress the DEFLATE stream (between header and trailer)
     let compressed = &data[pos..trailer_start];
-    let decompressed = inflate::inflate(compressed)?;
+    let decompressed = inflate::inflate_with_limit(compressed, expected_size)?;
 
     // Verify CRC-32
     let actual_crc = crc32::crc32(&decompressed);
@@ -158,4 +167,38 @@ pub fn gzip_decompress(data: &[u8]) -> Option<Vec<u8>> {
 /// Check if data starts with gzip magic bytes.
 pub fn is_gzip(data: &[u8]) -> bool {
     data.len() >= 2 && data[0] == GZIP_MAGIC[0] && data[1] == GZIP_MAGIC[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{gzip_compress, gzip_decompress, gzip_decompress_with_limit};
+
+    #[test]
+    fn decompress_respects_output_limit() {
+        let compressed = gzip_compress(b"hello");
+
+        assert_eq!(
+            gzip_decompress_with_limit(&compressed, 5).as_deref(),
+            Some(&b"hello"[..])
+        );
+        assert_eq!(gzip_decompress_with_limit(&compressed, 4), None);
+    }
+
+    #[test]
+    fn rejects_reserved_header_flags() {
+        let mut compressed = gzip_compress(b"hello");
+        compressed[3] = 0x20;
+
+        assert_eq!(gzip_decompress(&compressed), None);
+    }
+
+    #[test]
+    fn rejects_output_beyond_trailer_size() {
+        let mut compressed = gzip_compress(b"hello");
+        let trailer = compressed.len() - 8;
+        compressed[trailer..trailer + 4].copy_from_slice(&0u32.to_le_bytes());
+        compressed[trailer + 4..trailer + 8].copy_from_slice(&0u32.to_le_bytes());
+
+        assert_eq!(gzip_decompress(&compressed), None);
+    }
 }

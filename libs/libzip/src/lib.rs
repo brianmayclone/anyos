@@ -51,6 +51,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 // ── Handle table ────────────────────────────────────────────────────────────
 
 const MAX_HANDLES: usize = 8;
+const MAX_GZIP_DECOMPRESSED_BYTES: usize = 512 * 1024 * 1024;
 
 enum ZipHandle {
     Reader(ZipReader),
@@ -515,7 +516,11 @@ pub extern "C" fn libzip_gzip_decompress(
     out_buf_len: u32,
 ) -> u32 {
     let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
-    copy_optional_to_out(gzip::gzip_decompress(data), out_buf, out_buf_len)
+    copy_optional_to_out(
+        gzip::gzip_decompress_with_limit(data, MAX_GZIP_DECOMPRESSED_BYTES),
+        out_buf,
+        out_buf_len,
+    )
 }
 
 #[no_mangle]
@@ -685,7 +690,7 @@ pub extern "C" fn libzip_gzip_decompress_file(
         None => return u32::MAX,
     };
 
-    let decompressed = match gzip::gzip_decompress(&data) {
+    let decompressed = match gzip::gzip_decompress_with_limit(&data, MAX_GZIP_DECOMPRESSED_BYTES) {
         Some(d) => d,
         None => return u32::MAX,
     };
