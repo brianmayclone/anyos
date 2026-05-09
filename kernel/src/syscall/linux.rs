@@ -18,6 +18,7 @@ const EAGAIN: i32 = 11;
 const ENOTTY: i32 = 25;
 const EPERM: i32 = 1;
 const ELOOP: i32 = 40;
+const EAFNOSUPPORT: i32 = 97;
 
 const LINUX_SYS_READ: u64 = 0;
 const LINUX_SYS_WRITE: u64 = 1;
@@ -45,6 +46,7 @@ const LINUX_SYS_DUP: u64 = 32;
 const LINUX_SYS_DUP2: u64 = 33;
 const LINUX_SYS_NANOSLEEP: u64 = 35;
 const LINUX_SYS_GETPID: u64 = 39;
+const LINUX_SYS_SOCKET: u64 = 41;
 const LINUX_SYS_UNAME: u64 = 63;
 const LINUX_SYS_EXIT: u64 = 60;
 const LINUX_SYS_FSYNC: u64 = 74;
@@ -175,6 +177,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_NANOSLEEP => 0,
         LINUX_SYS_ARCH_PRCTL => linux_arch_prctl(a1, a2),
         LINUX_SYS_GETPID => handlers::sys_getpid() as u64,
+        LINUX_SYS_SOCKET => linux_socket(a1, a2, a3),
         LINUX_SYS_UNAME => linux_uname(a1),
         LINUX_SYS_FSYNC | LINUX_SYS_FDATASYNC => anyos_u32_ret(handlers::sys_fsync(a1 as u32)),
         LINUX_SYS_TRUNCATE => linux_truncate(a1, a2),
@@ -1520,6 +1523,16 @@ fn linux_sysinfo(info_ptr: u64) -> u64 {
         write_u16(info_ptr, 104, 1);
     }
     0
+}
+
+fn linux_socket(domain: u64, type_: u64, protocol: u64) -> u64 {
+    crate::serial_println!(
+        "licof linux socket: unsupported domain={} type={:#x} protocol={} -> EAFNOSUPPORT",
+        domain,
+        type_,
+        protocol
+    );
+    linux_err(EAFNOSUPPORT)
 }
 
 fn linux_getgroups(size: u64, list_ptr: u64) -> u64 {

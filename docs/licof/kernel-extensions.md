@@ -73,6 +73,8 @@ glibc binaries. It includes:
   `time`, `sysinfo`, `uname`, `getrandom`, `prlimit64`, `fcntl`, `ioctl`,
   `poll`, `nanosleep`.
 - Pipes and fd duplication: `pipe`, `pipe2`, `dup`, `dup2`, `dup3`.
+- Network probes: `socket` returns `-EAFNOSUPPORT` for now so glibc/NSS probes
+  for services such as `nscd` fail cleanly and fall back to local files.
 
 Many of these are pragmatic shims, not full Linux implementations. For
 example, `mprotect` currently validates enough for loader flows, `futex` only

@@ -229,8 +229,10 @@ Check minimal account files when debugging `passwd`:
 ls /System/var/licof/rootfs/etc/
 ```
 
-Some Debian tools also require PAM, NSS or shadow files that may not yet be
-configured to full Debian semantics.
+At minimum, `/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/gshadow`, and
+`/etc/nsswitch.conf` should exist. `licof init` creates conservative seed
+versions only when they are missing, because Debian maintainer scripts are not
+executed during package extraction.
 
 ## Adding a New Syscall
 

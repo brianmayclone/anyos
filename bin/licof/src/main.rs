@@ -139,6 +139,7 @@ fn ensure_rootfs_layout(config: &LicoConfig) {
     ensure_dir(&alloc::format!("{}/etc", rootfs));
     ensure_dir(&alloc::format!("{}/etc/apt", rootfs));
     ensure_dir(&alloc::format!("{}/etc/apt/apt.conf.d", rootfs));
+    ensure_dir(&alloc::format!("{}/root", rootfs));
     let _ = fs::write_bytes(
         &alloc::format!("{}/etc/apt/sources.list", rootfs),
         alloc::format!(
@@ -153,6 +154,36 @@ fn ensure_rootfs_layout(config: &LicoConfig) {
         &alloc::format!("{}/etc/apt/apt.conf.d/99licof", rootfs),
         b"Acquire::Check-Valid-Until \"false\";\n",
     );
+    ensure_linux_account_files(rootfs);
+}
+
+fn ensure_linux_account_files(rootfs: &str) {
+    ensure_rootfs_file(
+        rootfs,
+        "/etc/passwd",
+        b"root:x:0:0:root:/root:/bin/sh\n",
+        0o644,
+    );
+    ensure_rootfs_file(rootfs, "/etc/group", b"root:x:0:\n", 0o644);
+    ensure_rootfs_file(rootfs, "/etc/shadow", b"root:*:19700:0:99999:7:::\n", 0o640);
+    ensure_rootfs_file(rootfs, "/etc/gshadow", b"root:*::\n", 0o640);
+    ensure_rootfs_file(
+        rootfs,
+        "/etc/nsswitch.conf",
+        b"passwd: files\ngroup: files\nshadow: files\nhosts: files dns\nnetworks: files\nprotocols: files\nservices: files\nethers: files\nrpc: files\n",
+        0o644,
+    );
+}
+
+fn ensure_rootfs_file(rootfs: &str, linux_path: &str, data: &[u8], mode: u16) {
+    let path = linux_path_in_rootfs(rootfs, linux_path);
+    if path_exists(&path) {
+        return;
+    }
+    ensure_parent_dirs(&path);
+    if fs::write_bytes(&path, data).is_ok() {
+        let _ = fs::chmod(&path, mode);
+    }
 }
 
 fn resolve_run_path(rootfs: &str, path: &str) -> String {

@@ -151,6 +151,12 @@ Behavior:
 
 Maintainer scripts are not executed.
 
+Because maintainer scripts are not executed, `licof init` seeds a tiny account
+database when the files are missing. The seed includes `/etc/passwd`,
+`/etc/group`, `/etc/shadow`, `/etc/gshadow`, `/etc/nsswitch.conf`, and `/root`.
+Existing files are preserved so `passwd`, later package installs, or manual
+edits are not overwritten.
+
 ## `licof apt install`
 
 Downloads and installs packages from the configured Debian archive:
