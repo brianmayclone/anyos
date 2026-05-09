@@ -523,6 +523,94 @@ pub struct InterruptFrame {
     pub ss: u64,
 }
 
+const LINUX_VSYSCALL_GETTIMEOFDAY: u64 = 0xffff_ffff_ff60_0000;
+const LINUX_VSYSCALL_TIME: u64 = 0xffff_ffff_ff60_0400;
+const LINUX_VSYSCALL_GETCPU: u64 = 0xffff_ffff_ff60_0800;
+
+fn try_handle_linux_vsyscall_fault(frame: &InterruptFrame, cr2: u64) -> bool {
+    if frame.rip != cr2 {
+        return false;
+    }
+    if frame.rip != LINUX_VSYSCALL_GETTIMEOFDAY
+        && frame.rip != LINUX_VSYSCALL_TIME
+        && frame.rip != LINUX_VSYSCALL_GETCPU
+    {
+        return false;
+    }
+    if crate::task::scheduler::current_thread_abi() != crate::task::abi::AbiPersonality::LinuxX86_64
+    {
+        return false;
+    }
+
+    let Some(ret_bytes) = crate::syscall::handlers::helpers::copy_user_bytes(frame.rsp, 8, 8)
+    else {
+        return false;
+    };
+    let mut ret_arr = [0u8; 8];
+    ret_arr.copy_from_slice(&ret_bytes[..8]);
+    let return_rip = u64::from_le_bytes(ret_arr);
+    let sec = linux_compat_now_seconds();
+    let mut rax = 0u64;
+
+    match frame.rip {
+        LINUX_VSYSCALL_GETTIMEOFDAY => {
+            if frame.rdi != 0 {
+                if !copy_user_u64(frame.rdi, sec) || !copy_user_u64(frame.rdi + 8, 0) {
+                    rax = (-14i64) as u64;
+                }
+            }
+            if rax == 0 && frame.rsi != 0 {
+                if !copy_user_u32(frame.rsi, 0) || !copy_user_u32(frame.rsi + 4, 0) {
+                    rax = (-14i64) as u64;
+                }
+            }
+        }
+        LINUX_VSYSCALL_TIME => {
+            rax = sec;
+            if frame.rdi != 0 && !copy_user_u64(frame.rdi, sec) {
+                rax = (-14i64) as u64;
+            }
+        }
+        LINUX_VSYSCALL_GETCPU => {
+            if frame.rdi != 0
+                && !copy_user_u32(frame.rdi, crate::arch::x86::smp::current_cpu_id() as u32)
+            {
+                rax = (-14i64) as u64;
+            }
+            if rax == 0 && frame.rsi != 0 && !copy_user_u32(frame.rsi, 0) {
+                rax = (-14i64) as u64;
+            }
+        }
+        _ => return false,
+    }
+
+    let frame_mut = frame as *const InterruptFrame as *mut InterruptFrame;
+    unsafe {
+        (*frame_mut).rax = rax;
+        (*frame_mut).rip = return_rip;
+        (*frame_mut).rsp = frame.rsp + 8;
+    }
+    true
+}
+
+fn linux_compat_now_seconds() -> u64 {
+    let ticks = crate::arch::hal::timer_current_ticks() as u64;
+    let hz = crate::arch::hal::timer_frequency_hz() as u64;
+    if hz == 0 {
+        0
+    } else {
+        ticks / hz
+    }
+}
+
+fn copy_user_u64(ptr: u64, value: u64) -> bool {
+    crate::syscall::handlers::helpers::copy_to_user_bytes(ptr, &value.to_le_bytes(), 8)
+}
+
+fn copy_user_u32(ptr: u64, value: u32) -> bool {
+    crate::syscall::handlers::helpers::copy_to_user_bytes(ptr, &value.to_le_bytes(), 4)
+}
+
 /// Try to recover from a fault by killing the current thread.
 /// Returns true if the thread was killed (never actually returns to caller
 /// because exit_current switches context). Returns false if unrecoverable.
@@ -1525,6 +1613,10 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 if (is_user_mode || is_dll_range) && crate::task::dll::handle_dll_demand_page(cr2) {
                     return; // DLL page mapped — retry faulting instruction via iretq
                 }
+            }
+
+            if err_not_present && is_user_mode && try_handle_linux_vsyscall_fault(frame, cr2) {
+                return;
             }
 
             // User-mode page fault: print diagnostics and kill the thread

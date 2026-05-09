@@ -844,7 +844,12 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                     .find(|(p, _)| *p == mount_path_owned)
                     .map(|(_, fs)| fs)
                     .ok_or(FsError::IoError)?;
-                let lookup_result = exfat.lookup(relative_path);
+                let lookup_result = if flags.write || flags.create || flags.truncate {
+                    exfat.lookup(relative_path)
+                } else {
+                    resolve_exfat_path(exfat, relative_path, true)
+                        .map(|r| (r.inode, r.file_type, r.size))
+                };
                 let (inode, file_type, size, parent_cluster) = match lookup_result {
                     Ok((inode, file_type, size)) => {
                         if flags.truncate && flags.write {
@@ -2210,7 +2215,10 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
                         .find(|(p, _)| *p == mount_path_owned)
                         .map(|(_, fs)| fs)
                         .ok_or(FsError::IoError)?;
-                    let (inode, file_type, size) = exfat.lookup(relative_path)?;
+                    let r = resolve_exfat_path(exfat, relative_path, true)?;
+                    let inode = r.inode;
+                    let file_type = r.file_type;
+                    let size = r.size;
                     if file_type == FileType::Directory {
                         return Err(FsError::IsADirectory);
                     }
@@ -2732,8 +2740,16 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
                     .find(|(p, _)| *p == mount_path_owned)
                     .map(|(_, fs)| fs)
                     .ok_or(FsError::IoError)?;
-                let (_inode, file_type, size) = exfat.lookup(relative_path)?;
-                return Ok(default_stat(file_type, size, false));
+                let r = resolve_exfat_path(exfat, relative_path, follow_last)?;
+                return Ok(StatResult {
+                    file_type: r.file_type,
+                    size: r.size,
+                    is_symlink: r.is_symlink,
+                    uid: r.uid,
+                    gid: r.gid,
+                    mode: r.mode,
+                    mtime: r.mtime,
+                });
             }
             FsType::Smb => {
                 let mount_path_owned = String::from(mount_path);
@@ -2760,8 +2776,7 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
                 } else {
                     relative_path
                 };
-                let (_inode, file_type, size) = Filesystem::lookup(driver, q)?;
-                return Ok(default_stat(file_type, size, false));
+                return Filesystem::stat(driver, q);
             }
             FsType::Fuse => {
                 let session_id = state
@@ -3346,6 +3361,36 @@ pub fn create_symlink(link_path: &str, target: &str) -> Result<(), FsError> {
     if let Some((mount_path, relative_path, mnt_fs_type)) =
         find_submount(link_path, &state.mount_points)
     {
+        if mnt_fs_type == FsType::ExFat {
+            let mount_path_owned = String::from(mount_path);
+            let exfat = state
+                .mounted_exfat
+                .iter_mut()
+                .find(|(p, _)| *p == mount_path_owned)
+                .map(|(_, fs)| fs)
+                .ok_or(FsError::IoError)?;
+            let rel = if relative_path.is_empty() {
+                "/"
+            } else {
+                relative_path
+            };
+            let rel = rel.trim_end_matches('/');
+            let (parent, name) = match rel.rfind('/') {
+                Some(0) => ("/", &rel[1..]),
+                Some(pos) => (&rel[..pos], &rel[pos + 1..]),
+                None => ("/", rel),
+            };
+            if name.is_empty() {
+                return Err(FsError::InvalidPath);
+            }
+            let pr = resolve_exfat_path(exfat, parent, true)?;
+            if pr.file_type != FileType::Directory {
+                return Err(FsError::NotADirectory);
+            }
+            let (parent_cluster, _) = crate::fs::exfat::decode_inode(pr.inode);
+            exfat.create_symlink(parent_cluster, name, target)?;
+            return Ok(());
+        }
         if mnt_fs_type == FsType::CoreFs {
             let driver = state
                 .corefs_for_mount(mount_path)
@@ -3410,19 +3455,52 @@ pub fn readlink(path: &str) -> Result<String, FsError> {
     // FUSE mounts take precedence over legacy backends.
     if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points)
     {
-        if mnt_fs_type == FsType::Fuse {
-            let session_id = fuse_session_id_for(state, mount_path).ok_or(FsError::IoError)?;
-            let session = crate::fs::fuse::session(session_id).ok_or(FsError::NotFound)?;
-            let (attr, _u32, ino_u64) = fuse_resolve_path(&session, session_id, relative_path)?;
-            if attr.kind != 3 {
-                return Err(FsError::InvalidPath);
+        match mnt_fs_type {
+            FsType::ExFat => {
+                let mount_path_owned = String::from(mount_path);
+                let exfat = state
+                    .mounted_exfat
+                    .iter()
+                    .find(|(p, _)| *p == mount_path_owned)
+                    .map(|(_, fs)| fs)
+                    .ok_or(FsError::IoError)?;
+                let r = resolve_exfat_path(exfat, relative_path, false)?;
+                if !r.is_symlink {
+                    return Err(FsError::InvalidPath);
+                }
+                return exfat.readlink(r.inode, r.size);
             }
-            let req = fuse_proto::Request::Readlink { ino: ino_u64 };
-            let reply = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
-            return match reply {
-                fuse_proto::Reply::Readlink(t) => Ok(t),
-                _ => Err(FsError::IoError),
-            };
+            FsType::CoreFs => {
+                let driver = state
+                    .corefs_for_mount(mount_path)
+                    .ok_or(FsError::NotFound)?;
+                let rel = if relative_path.is_empty() {
+                    "/"
+                } else {
+                    relative_path
+                };
+                let st = Filesystem::stat(driver, rel)?;
+                if !st.is_symlink {
+                    return Err(FsError::InvalidPath);
+                }
+                let (inode, _, _) = Filesystem::lookup(driver, rel)?;
+                return Filesystem::readlink(driver, inode);
+            }
+            FsType::Fuse => {
+                let session_id = fuse_session_id_for(state, mount_path).ok_or(FsError::IoError)?;
+                let session = crate::fs::fuse::session(session_id).ok_or(FsError::NotFound)?;
+                let (attr, _u32, ino_u64) = fuse_resolve_path(&session, session_id, relative_path)?;
+                if attr.kind != 3 {
+                    return Err(FsError::InvalidPath);
+                }
+                let req = fuse_proto::Request::Readlink { ino: ino_u64 };
+                let reply = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
+                return match reply {
+                    fuse_proto::Reply::Readlink(t) => Ok(t),
+                    _ => Err(FsError::IoError),
+                };
+            }
+            _ => {}
         }
     }
 
@@ -3435,6 +3513,14 @@ pub fn readlink(path: &str) -> Result<String, FsError> {
             return Err(FsError::InvalidPath); // Not a symlink
         }
         return exfat.readlink(r.inode, r.size);
+    }
+    if let Some(driver) = state.corefs_driver.as_ref() {
+        let st = Filesystem::stat(driver, path)?;
+        if !st.is_symlink {
+            return Err(FsError::InvalidPath);
+        }
+        let (inode, _, _) = Filesystem::lookup(driver, path)?;
+        return Filesystem::readlink(driver, inode);
     }
     Err(FsError::PermissionDenied)
 }

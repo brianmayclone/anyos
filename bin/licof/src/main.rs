@@ -847,6 +847,7 @@ fn install_deb(config: &LicoConfig, path: &str, rootfs: &str, info: Option<&Pack
     }
 
     let mut files = 0u32;
+    let mut complete = true;
     let mut links = Vec::new();
     for i in 0..reader.entry_count() {
         let name = reader.entry_name(i);
@@ -882,6 +883,7 @@ fn install_deb(config: &LicoConfig, path: &str, rootfs: &str, info: Option<&Pack
                 files += 1;
             } else {
                 println!("licof pkg: failed to extract {}", rel);
+                complete = false;
             }
         }
     }
@@ -893,15 +895,21 @@ fn install_deb(config: &LicoConfig, path: &str, rootfs: &str, info: Option<&Pack
                 "licof pkg: failed to create symlink {} -> {}",
                 link.rel, link.target
             );
+            complete = false;
         } else {
             println!(
                 "licof pkg: failed to materialize hardlink {} -> {}",
                 link.rel, link.target
             );
+            complete = false;
         }
     }
     if files == 0 {
         println!("licof pkg: extracted no files from '{}'", path);
+        return false;
+    }
+    if !complete {
+        println!("licof pkg: package '{}' extracted incompletely", path);
         return false;
     }
 
