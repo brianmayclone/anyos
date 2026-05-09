@@ -246,16 +246,28 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
             None => return u64::MAX,
         };
 
-        // Prevent heap from growing into the DLIB region.
-        // DLLs are demand-paged there; heap writes would corrupt their
-        // export tables.
-        if old_brk < DLIB_REGION_START && new_brk >= DLIB_REGION_START {
-            return u64::MAX;
-        }
+        if old_brk < HEAP_LIMIT {
+            // Prevent low legacy heaps from growing into the DLIB region.
+            // DLLs are demand-paged there; heap writes would corrupt their
+            // export tables.
+            if old_brk < DLIB_REGION_START && new_brk >= DLIB_REGION_START {
+                return u64::MAX;
+            }
 
-        // Prevent heap from growing into the mmap region (guard gap).
-        if new_brk >= HEAP_LIMIT {
-            return u64::MAX;
+            // Prevent low legacy heaps from growing into the mmap region
+            // (guard gap). Linux PIE/ET_DYN binaries have a high brk and are
+            // handled by the high-heap guard below.
+            if new_brk >= HEAP_LIMIT {
+                return u64::MAX;
+            }
+        } else {
+            // Linux ET_DYN/PIE binaries are loaded high in the canonical-low
+            // half. Their brk must be allowed to grow there, but stop before
+            // the fixed dynamic-loader area at 0x7000_0000_0000.
+            const HIGH_HEAP_LIMIT: u64 = 0x0000_7000_0000_0000;
+            if new_brk >= HIGH_HEAP_LIMIT {
+                return u64::MAX;
+            }
         }
 
         let old_page_end = (old_brk + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
