@@ -684,8 +684,7 @@ const AT_PLATFORM: u64 = 15;
 const AT_RANDOM: u64 = 25;
 const AT_EXECFN: u64 = 31;
 
-const LICOF_ROOTFS_DIR: &str = "/System/var/licof/rootfs";
-const LICOF_ROOTFS_DEFAULT: &str = "/System/var/licof/rootfs/default";
+const LICOF_ROOTFS: &str = "/System/var/licof/rootfs";
 const LINUX_MAIN_DYN_BASE: u64 = 0x0000_5555_0000_0000;
 const LINUX_INTERP_BASE: u64 = 0x0000_7000_0000_0000;
 
@@ -820,18 +819,13 @@ fn inspect_linux_elf64(data: &[u8]) -> Result<LinuxElf64Info, &'static str> {
 }
 
 fn licof_rootfs_for_binary(path: &str) -> alloc::string::String {
-    if path.starts_with(LICOF_ROOTFS_DIR) {
-        let prefix_len = LICOF_ROOTFS_DIR.len();
-        if path.as_bytes().get(prefix_len) == Some(&b'/') {
-            let rest = &path[prefix_len + 1..];
-            if let Some(end) = rest.find('/') {
-                if end > 0 {
-                    return alloc::format!("{}/{}", LICOF_ROOTFS_DIR, &rest[..end]);
-                }
-            }
-        }
+    if path == LICOF_ROOTFS
+        || (path.starts_with(LICOF_ROOTFS)
+            && path.as_bytes().get(LICOF_ROOTFS.len()) == Some(&b'/'))
+    {
+        return alloc::string::String::from(LICOF_ROOTFS);
     }
-    alloc::string::String::from(LICOF_ROOTFS_DEFAULT)
+    alloc::string::String::from(LICOF_ROOTFS)
 }
 
 fn licof_resolve_interp_path(rootfs: &str, path: &str) -> alloc::string::String {
@@ -1687,7 +1681,7 @@ fn load_and_run_with_args_abi(
     let linux_rootfs = if abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
         licof_rootfs_for_binary(actual_path)
     } else {
-        alloc::string::String::from(LICOF_ROOTFS_DEFAULT)
+        alloc::string::String::from(LICOF_ROOTFS)
     };
 
     let (mut entry_point, brk);

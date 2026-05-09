@@ -21,18 +21,17 @@ pub struct DownloadReport {
 pub fn run_full_download_test(tmp_root: &Path) -> Result<DownloadReport, String> {
     let cache_dir = tmp_root.join("cache");
     let db_dir = tmp_root.join("db");
-    let rootfs_dir = tmp_root.join("rootfs");
+    let rootfs = tmp_root.join("rootfs");
     fs::create_dir_all(&cache_dir).map_err(|err| format!("create cache dir: {err}"))?;
     fs::create_dir_all(&db_dir).map_err(|err| format!("create db dir: {err}"))?;
-    fs::create_dir_all(&rootfs_dir).map_err(|err| format!("create rootfs dir: {err}"))?;
+    fs::create_dir_all(&rootfs).map_err(|err| format!("create rootfs dir: {err}"))?;
 
     let mut config = LicoConfig::defaults();
     config.root = tmp_root.to_string_lossy().into_owned();
     config.cache = cache_dir.to_string_lossy().into_owned();
     config.db = db_dir.to_string_lossy().into_owned();
     config.installed_db = db_dir.join("installed").to_string_lossy().into_owned();
-    config.rootfs_dir = rootfs_dir.to_string_lossy().into_owned();
-    config.default_rootfs = rootfs_dir.join("debian").to_string_lossy().into_owned();
+    config.rootfs = rootfs.to_string_lossy().into_owned();
 
     let index_url = config.package_index_url();
     let index_gz = http_get(&index_url, 0)?;

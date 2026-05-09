@@ -121,7 +121,7 @@ const LINUX_MAP_PRIVATE: u64 = 0x02;
 const LINUX_MAP_FIXED: u64 = 0x10;
 const LINUX_ARCH_SET_FS: u64 = 0x1002;
 const LINUX_ARCH_GET_FS: u64 = 0x1003;
-const LICOF_ROOTFS_DEFAULT: &str = "/System/var/licof/rootfs/default";
+const LICOF_ROOTFS: &str = "/System/var/licof/rootfs";
 
 pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
     let nr = regs.rax;
@@ -1571,11 +1571,11 @@ fn current_linux_rootfs() -> String {
     let mut buf = [0u8; 512];
     let len = crate::task::scheduler::current_thread_linux_rootfs(&mut buf);
     if len == 0 {
-        return String::from(LICOF_ROOTFS_DEFAULT);
+        return String::from(LICOF_ROOTFS);
     }
     core::str::from_utf8(&buf[..len])
         .map(String::from)
-        .unwrap_or_else(|_| String::from(LICOF_ROOTFS_DEFAULT))
+        .unwrap_or_else(|_| String::from(LICOF_ROOTFS))
 }
 
 fn linux_now_seconds() -> u64 {

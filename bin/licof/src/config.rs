@@ -3,8 +3,7 @@ use alloc::vec::Vec;
 use libconf_schema::{default_int, default_string, manifest, RegistryScope, ServiceSchema};
 
 const DEFAULT_ROOT: &str = "/System/var/licof";
-const DEFAULT_ROOTFS_DIR: &str = "/System/var/licof/rootfs";
-const DEFAULT_ROOTFS: &str = "/System/var/licof/rootfs/default";
+const DEFAULT_ROOTFS: &str = "/System/var/licof/rootfs";
 const DEFAULT_CACHE: &str = "/System/var/licof/cache";
 const DEFAULT_DB: &str = "/System/var/licof/db";
 const DEFAULT_INSTALLED_DB: &str = "/System/var/licof/db/installed";
@@ -22,8 +21,7 @@ const DEFAULT_BOOTSTRAP_SEED: &str =
 const LICOF_DIRS: &[&str] = &["paths", "apt", "bootstrap", "tools"];
 const LICOF_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
     default_string("paths/root", DEFAULT_ROOT),
-    default_string("paths/rootfs_dir", DEFAULT_ROOTFS_DIR),
-    default_string("paths/default_rootfs", DEFAULT_ROOTFS),
+    default_string("paths/rootfs", DEFAULT_ROOTFS),
     default_string("paths/cache", DEFAULT_CACHE),
     default_string("paths/db", DEFAULT_DB),
     default_string("paths/installed_db", DEFAULT_INSTALLED_DB),
@@ -53,8 +51,7 @@ const LICOF_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("licof", &LICOF_
 #[derive(Clone)]
 pub struct LicoConfig {
     pub root: String,
-    pub rootfs_dir: String,
-    pub default_rootfs: String,
+    pub rootfs: String,
     pub cache: String,
     pub db: String,
     pub installed_db: String,
@@ -72,8 +69,7 @@ impl LicoConfig {
     pub fn defaults() -> Self {
         Self {
             root: String::from(DEFAULT_ROOT),
-            rootfs_dir: String::from(DEFAULT_ROOTFS_DIR),
-            default_rootfs: String::from(DEFAULT_ROOTFS),
+            rootfs: String::from(DEFAULT_ROOTFS),
             cache: String::from(DEFAULT_CACHE),
             db: String::from(DEFAULT_DB),
             installed_db: String::from(DEFAULT_INSTALLED_DB),
@@ -125,18 +121,9 @@ impl LicoConfig {
         )
     }
 
-    pub fn rootfs_path(&self, name: &str) -> String {
-        if name == "default" {
-            self.default_rootfs.clone()
-        } else {
-            alloc::format!("{}/{}", self.rootfs_dir, name)
-        }
-    }
-
     fn read_confd_strings(&mut self) {
         read_confd_string("paths/root", &mut self.root);
-        read_confd_string("paths/rootfs_dir", &mut self.rootfs_dir);
-        read_confd_string("paths/default_rootfs", &mut self.default_rootfs);
+        read_confd_string("paths/rootfs", &mut self.rootfs);
         read_confd_string("paths/cache", &mut self.cache);
         read_confd_string("paths/db", &mut self.db);
         read_confd_string("paths/installed_db", &mut self.installed_db);
@@ -169,8 +156,7 @@ impl LicoConfig {
 
     fn normalize(&mut self) {
         trim_trailing_slashes(&mut self.root);
-        trim_trailing_slashes(&mut self.rootfs_dir);
-        trim_trailing_slashes(&mut self.default_rootfs);
+        trim_trailing_slashes(&mut self.rootfs);
         trim_trailing_slashes(&mut self.cache);
         trim_trailing_slashes(&mut self.db);
         trim_trailing_slashes(&mut self.installed_db);
