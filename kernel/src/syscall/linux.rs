@@ -1528,6 +1528,12 @@ fn linux_sysinfo(info_ptr: u64) -> u64 {
 }
 
 fn linux_socket(domain: u64, type_: u64, protocol: u64) -> u64 {
+    const AF_UNIX: u64 = 1;
+    const SOCK_TYPE_MASK: u64 = 0xF;
+    const SOCK_STREAM: u64 = 1;
+    if domain == AF_UNIX && (type_ & SOCK_TYPE_MASK) == SOCK_STREAM {
+        return linux_err(EAFNOSUPPORT);
+    }
     crate::serial_println!(
         "licof linux socket: unsupported domain={} type={:#x} protocol={} -> EAFNOSUPPORT",
         domain,

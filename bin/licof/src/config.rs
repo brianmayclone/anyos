@@ -14,9 +14,9 @@ const DEFAULT_APT_ARCH: &str = "amd64";
 const DEFAULT_WGET: &str = "/System/bin/wget";
 const DEFAULT_DOWNLOAD_ATTEMPTS: i64 = 4;
 const DEFAULT_INDEX_REQUIRED_PACKAGES: &str =
-    "apt,libc6,libgcc1,libstdc++6,multiarch-support,passwd,zlib1g";
+    "apt,base-files,base-passwd,bash,coreutils,dash,libc6,libgcc1,libpam-runtime,libstdc++6,login,multiarch-support,passwd,zlib1g";
 const DEFAULT_BOOTSTRAP_SEED: &str =
-    "base-files,base-passwd,libc6,libgcc1,libstdc++6,zlib1g,libapt-pkg4.12,apt,passwd";
+    "base-files,base-passwd,libc6,libgcc1,libstdc++6,zlib1g,libapt-pkg4.12,apt,dash,bash,coreutils,libpam-runtime,login,passwd";
 
 const LICOF_DIRS: &[&str] = &["paths", "apt", "bootstrap", "tools"];
 const LICOF_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[

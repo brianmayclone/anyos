@@ -75,6 +75,7 @@ glibc binaries. It includes:
 - Pipes and fd duplication: `pipe`, `pipe2`, `dup`, `dup2`, `dup3`.
 - Network probes: `socket` returns `-EAFNOSUPPORT` for now so glibc/NSS probes
   for services such as `nscd` fail cleanly and fall back to local files.
+  The common AF_UNIX stream probe is intentionally quiet.
 
 Many of these are pragmatic shims, not full Linux implementations. For
 example, `mprotect` currently validates enough for loader flows, `futex` only
