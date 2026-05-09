@@ -70,11 +70,11 @@ fn usage() {
     println!();
     println!("Usage:");
     println!("  licof status");
-    println!("  licof run <linux-elf64> [args...]");
+    println!("  licof run [--rootfs <name>] <linux-elf64> [args...]");
     println!("  licof rootfs create [name]");
     println!("  licof rootfs list");
-    println!("  licof pkg install <file.deb>");
-    println!("  licof apt install <package> [package...]");
+    println!("  licof pkg install [--rootfs <name>] <file.deb>");
+    println!("  licof apt install [--rootfs <name>] <package> [package...]");
 }
 
 fn status(config: &LicoConfig) {
@@ -91,14 +91,18 @@ fn status(config: &LicoConfig) {
 }
 
 fn run(config: &LicoConfig, args: &[&str]) {
+    let (rootfs, args) = match split_rootfs_option(config, args) {
+        Some(parsed) => parsed,
+        None => return,
+    };
     if args.is_empty() {
         println!("licof run: missing Linux ELF64 path");
         return;
     }
 
-    let path = args[0];
+    let path = resolve_run_path(&rootfs, args[0]);
     let child_args = join_args(&args[1..]);
-    run_linux_process(config, "licof run", path, &child_args);
+    run_linux_process(config, "licof run", &path, &child_args);
 }
 
 fn rootfs(config: &LicoConfig, args: &[&str]) {
@@ -108,7 +112,7 @@ fn rootfs(config: &LicoConfig, args: &[&str]) {
             create_rootfs(config, name, true);
         }
         Some("list") => {
-            println!("default  {}", config.default_rootfs);
+            list_rootfs(config);
         }
         _ => {
             println!("licof rootfs: expected create or list");
@@ -116,15 +120,61 @@ fn rootfs(config: &LicoConfig, args: &[&str]) {
     }
 }
 
+fn list_rootfs(config: &LicoConfig) {
+    ensure_dir(&config.rootfs_dir);
+    let mut printed_default = false;
+    for name in read_dir_entries(&config.rootfs_dir) {
+        if !valid_rootfs_name(&name) {
+            continue;
+        }
+        let path = config.rootfs_path(&name);
+        if !directory_exists(&path) {
+            continue;
+        }
+        let marker = if path == config.default_rootfs {
+            printed_default = true;
+            "*"
+        } else {
+            " "
+        };
+        println!("{}{}  {}", marker, name, path);
+    }
+    if !printed_default {
+        let marker = if directory_exists(&config.default_rootfs) {
+            "*"
+        } else {
+            "!"
+        };
+        println!("{}default  {}", marker, config.default_rootfs);
+    }
+}
+
 fn create_rootfs(config: &LicoConfig, name: &str, configure_password: bool) {
+    let Some(rootfs) = rootfs_path_for_name(config, name) else {
+        return;
+    };
+    ensure_rootfs_layout(config, &rootfs);
+
+    println!("licof: rootfs '{}' ready at {}", name, rootfs);
+    println!("licof: bootstrapping minimal Debian userland with apt");
+    let bootstrapped = bootstrap_rootfs(config, &rootfs);
+    repair_rootfs_runtime(&rootfs);
+    fs::sync();
+    if bootstrapped && configure_password {
+        configure_root_password(config, &rootfs);
+    } else if configure_password {
+        println!("licof rootfs: bootstrap incomplete; skipping root password setup");
+    }
+}
+
+fn ensure_rootfs_layout(config: &LicoConfig, rootfs: &str) {
     ensure_dir(&config.root);
     ensure_dir(&config.rootfs_dir);
     ensure_dir(&config.cache);
     ensure_dir(&config.db);
     ensure_dir(&config.installed_db);
 
-    let rootfs = config.rootfs_path(name);
-    ensure_dir(&rootfs);
+    ensure_dir(rootfs);
     ensure_dir(&alloc::format!("{}/bin", rootfs));
     ensure_dir(&alloc::format!("{}/lib", rootfs));
     ensure_dir(&alloc::format!("{}/lib64", rootfs));
@@ -147,24 +197,63 @@ fn create_rootfs(config: &LicoConfig, name: &str, configure_password: bool) {
         &alloc::format!("{}/etc/apt/apt.conf.d/99licof", rootfs),
         b"Acquire::Check-Valid-Until \"false\";\n",
     );
+}
 
-    println!("licof: rootfs '{}' ready at {}", name, rootfs);
-    println!("licof: bootstrapping minimal Debian userland with apt");
-    let bootstrapped = bootstrap_rootfs(config, &rootfs);
-    repair_rootfs_runtime(&rootfs);
-    if bootstrapped && configure_password {
-        configure_root_password(config, &rootfs);
-    } else if configure_password {
-        println!("licof rootfs: bootstrap incomplete; skipping root password setup");
+fn split_rootfs_option<'a>(
+    config: &LicoConfig,
+    args: &'a [&'a str],
+) -> Option<(String, &'a [&'a str])> {
+    if let Some(name) = args.first().and_then(|arg| arg.strip_prefix("--rootfs=")) {
+        return rootfs_path_for_name(config, name).map(|rootfs| (rootfs, &args[1..]));
+    }
+    if args.first().copied() == Some("--rootfs") {
+        let Some(name) = args.get(1).copied() else {
+            println!("licof: --rootfs needs a rootfs name");
+            return None;
+        };
+        return rootfs_path_for_name(config, name).map(|rootfs| (rootfs, &args[2..]));
+    }
+    Some((config.default_rootfs.clone(), args))
+}
+
+fn rootfs_path_for_name(config: &LicoConfig, name: &str) -> Option<String> {
+    if !valid_rootfs_name(name) {
+        println!("licof rootfs: invalid rootfs name '{}'", name);
+        return None;
+    }
+    Some(config.rootfs_path(name))
+}
+
+fn valid_rootfs_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_'
+        })
+}
+
+fn resolve_run_path(rootfs: &str, path: &str) -> String {
+    if path.starts_with("/System/") || path.starts_with("/Applications/") || path.starts_with("/Users/")
+    {
+        String::from(path)
+    } else if path.starts_with('/') {
+        linux_path_in_rootfs(rootfs, path)
+    } else {
+        alloc::format!("{}/{}", rootfs, path)
     }
 }
 
 fn pkg(config: &LicoConfig, args: &[&str]) {
     match args.first().copied() {
         Some("install") => {
-            if let Some(path) = args.get(1) {
-                create_rootfs(config, "default", false);
-                if install_deb(config, path, &config.default_rootfs, None) {
+            let (rootfs, args) = match split_rootfs_option(config, &args[1..]) {
+                Some(parsed) => parsed,
+                None => return,
+            };
+            if let Some(path) = args.first() {
+                ensure_rootfs_layout(config, &rootfs);
+                if install_deb(config, path, &rootfs, None) {
                     println!("licof pkg: installed '{}'", path);
                 }
             } else {
@@ -178,13 +267,17 @@ fn pkg(config: &LicoConfig, args: &[&str]) {
 fn apt(config: &LicoConfig, args: &[&str]) {
     match args.first().copied() {
         Some("install") => {
-            if args.len() < 2 {
+            let (rootfs, packages) = match split_rootfs_option(config, &args[1..]) {
+                Some(parsed) => parsed,
+                None => return,
+            };
+            if packages.is_empty() {
                 println!("licof apt install: missing package name");
                 return;
             }
-            create_rootfs(config, "default", false);
-            for pkg in &args[1..] {
-                install_package(config, pkg, &config.default_rootfs, 0);
+            ensure_rootfs_layout(config, &rootfs);
+            for pkg in packages {
+                install_package(config, pkg, &rootfs, 0);
             }
         }
         _ => println!("licof apt: expected install <package>"),
@@ -856,6 +949,7 @@ fn install_deb(config: &LicoConfig, path: &str, rootfs: &str, info: Option<&Pack
             });
         } else {
             ensure_parent_dirs(&dest);
+            println!("licof pkg: extracting {}", rel);
             if reader.extract_to_file(i, &dest) {
                 apply_tar_metadata(&reader, i, &dest);
                 files += 1;
@@ -917,6 +1011,11 @@ fn install_package_link(
         return false;
     }
     ensure_parent_dirs(&link.dest);
+    if link.symlink {
+        println!("licof pkg: linking {} -> {}", link.rel, link.target);
+    } else {
+        println!("licof pkg: hardlink {} -> {}", link.rel, link.target);
+    }
     if materialize_link_target(rootfs, &link.dest, &link.target, link.symlink) {
         apply_tar_metadata(reader, link.index, &link.dest);
         return true;
@@ -1096,6 +1195,11 @@ fn path_exists(path: &str) -> bool {
     fs::stat(path, &mut [0u32; 7]) == 0
 }
 
+fn directory_exists(path: &str) -> bool {
+    let mut stat_buf = [0u32; 7];
+    fs::stat(path, &mut stat_buf) == 0 && stat_buf[0] == FS_TYPE_DIRECTORY
+}
+
 fn regular_file_exists(path: &str) -> bool {
     let mut stat_buf = [0u32; 7];
     fs::stat(path, &mut stat_buf) == 0 && stat_buf[0] == FS_TYPE_REGULAR
@@ -1156,11 +1260,16 @@ fn repair_common_library_links(rootfs: &str, linux_dir: &str) {
 }
 
 fn materialize_known_library(src: &str, dest: &str) {
-    if !is_elf_file(src) || is_elf_file(dest) {
+    if !is_elf_file(src) || src == dest {
+        return;
+    }
+    if files_equal(src, dest) {
         return;
     }
     let _ = fs::unlink(dest);
-    let _ = copy_file(src, dest);
+    if copy_file(src, dest) {
+        println!("licof rootfs: repaired library alias {}", dest);
+    }
 }
 
 fn read_dir_entries(path: &str) -> Vec<String> {
@@ -1457,10 +1566,43 @@ fn copy_file(src: &str, dst: &str) -> bool {
             Err(_) => return false,
         };
         if n == 0 {
+            let _ = fs::fsync(output.fd() as i32);
             return true;
         }
         if output.write_all(&buf[..n]).is_err() {
             return false;
+        }
+    }
+}
+
+fn files_equal(left: &str, right: &str) -> bool {
+    if file_size(left) != file_size(right) {
+        return false;
+    }
+    let mut left_file = match fs::File::open(left) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut right_file = match fs::File::open(right) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut left_buf = [0u8; 4096];
+    let mut right_buf = [0u8; 4096];
+    loop {
+        let left_n = match left_file.read(&mut left_buf) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        let right_n = match right_file.read(&mut right_buf) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        if left_n != right_n || left_buf[..left_n] != right_buf[..right_n] {
+            return false;
+        }
+        if left_n == 0 {
+            return true;
         }
     }
 }
