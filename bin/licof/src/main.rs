@@ -205,8 +205,14 @@ fn bootstrap_rootfs(config: &LicoConfig, rootfs: &str) -> bool {
     let mut ok = true;
     for pkg in &config.bootstrap_seed {
         if !install_package(config, pkg, rootfs, 0) {
+            println!("licof init: bootstrap seed '{}' failed", pkg);
             ok = false;
         }
+    }
+    if ok {
+        println!("licof init: bootstrap complete");
+    } else {
+        println!("licof init: bootstrap incomplete; see failed seed package above");
     }
     ok
 }
@@ -1049,7 +1055,7 @@ fn sanitize_tar_path(name: &str) -> Option<String> {
 fn mark_installed(config: &LicoConfig, info: &PackageInfo, rootfs: &str, files: u32) {
     let db_dir = installed_db_dir(config, rootfs);
     ensure_dir(&db_dir);
-    let path = alloc::format!("{}/{}", db_dir, info.package);
+    let path = installed_package_path(config, &info.package, rootfs);
     let body = alloc::format!(
         "Package: {}\nVersion: {}\nRootFS: {}\nFilename: {}\nFiles: {}\n",
         info.package,
@@ -1062,8 +1068,14 @@ fn mark_installed(config: &LicoConfig, info: &PackageInfo, rootfs: &str, files: 
 }
 
 fn is_installed(config: &LicoConfig, pkg: &str, rootfs: &str) -> bool {
-    let path = alloc::format!("{}/{}", installed_db_dir(config, rootfs), pkg);
+    let path = installed_package_path(config, pkg, rootfs);
     fs::stat(&path, &mut [0u32; 7]) == 0
+}
+
+fn installed_package_path(config: &LicoConfig, pkg: &str, rootfs: &str) -> String {
+    let mut package_key = String::new();
+    push_cache_safe(&mut package_key, pkg);
+    alloc::format!("{}/{}", installed_db_dir(config, rootfs), package_key)
 }
 
 fn installed_db_dir(config: &LicoConfig, rootfs: &str) -> String {
