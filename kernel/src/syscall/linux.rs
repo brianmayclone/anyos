@@ -405,12 +405,15 @@ fn linux_log_library_open(linux_path: &str, resolved_path: &str, fd: u32, global
     }
     match crate::fs::vfs::fstat(global_id) {
         Ok((_file_type, size, _position, _mtime)) => {
+            let (dev, ino) = linux_fd_identity(global_id);
             crate::serial_println!(
-                "licof linux open-resolve: ok linux='{}' resolved='{}' fd={} size={}",
+                "licof linux open-resolve: ok linux='{}' resolved='{}' fd={} size={} dev={} ino={}",
                 linux_path,
                 resolved_path,
                 fd,
-                size
+                size,
+                dev,
+                ino
             );
         }
         Err(_) => {
@@ -446,8 +449,11 @@ fn linux_stat_translated(path: &str, stat_ptr: u64, nofollow: bool) -> u64 {
             } else {
                 st.uid as u32
             };
+            let (dev, ino) = linux_stat_identity(&path);
             write_linux_stat(
                 stat_ptr,
+                dev,
+                ino,
                 type_val,
                 st.size as u64,
                 uid,
@@ -472,8 +478,11 @@ fn linux_fstat(fd: u32, stat_ptr: u64) -> u64 {
         Some(entry) => match entry.kind {
             FdKind::File { global_id } => match crate::fs::vfs::fstat(global_id) {
                 Ok((file_type, size, _position, mtime)) => {
+                    let (dev, ino) = linux_fd_identity(global_id);
                     write_linux_stat(
                         stat_ptr,
+                        dev,
+                        ino,
                         anyos_file_type(file_type),
                         size as u64,
                         handlers::sys_getuid(),
@@ -486,13 +495,13 @@ fn linux_fstat(fd: u32, stat_ptr: u64) -> u64 {
                 Err(_) => linux_err(EBADF),
             },
             FdKind::PipeRead { .. } | FdKind::PipeWrite { .. } | FdKind::Tty => {
-                write_linux_stat(stat_ptr, 2, 0, 0, 0, 0o666, 0);
+                write_linux_stat(stat_ptr, 0, 2, 2, 0, 0, 0, 0o666, 0);
                 0
             }
             FdKind::None => linux_err(EBADF),
         },
         None if fd < 3 => {
-            write_linux_stat(stat_ptr, 2, 0, 0, 0, 0o666, 0);
+            write_linux_stat(stat_ptr, 0, 2, 2, 0, 0, 0, 0o666, 0);
             0
         }
         None => linux_err(EBADF),
@@ -1812,6 +1821,8 @@ fn write_linux_uts_field(base: u64, index: u64, value: &[u8]) {
 
 fn write_linux_stat(
     stat_ptr: u64,
+    dev: u64,
+    ino: u64,
     anyos_type: u32,
     size: u64,
     uid: u32,
@@ -1827,8 +1838,8 @@ fn write_linux_stat(
     let full_mode = file_type_bits | (mode & 0o7777);
     unsafe {
         core::ptr::write_bytes(stat_ptr as *mut u8, 0, 144);
-        write_u64(stat_ptr, 0, 0);
-        write_u64(stat_ptr, 8, 1);
+        write_u64(stat_ptr, 0, dev);
+        write_u64(stat_ptr, 8, ino.max(1));
         write_u64(stat_ptr, 16, 1);
         write_u32(stat_ptr, 24, full_mode);
         write_u32(stat_ptr, 28, uid);
@@ -1849,6 +1860,31 @@ fn anyos_file_type(file_type: crate::fs::file::FileType) -> u32 {
         crate::fs::file::FileType::Directory => 1,
         crate::fs::file::FileType::Device => 2,
     }
+}
+
+fn linux_fd_identity(global_id: u32) -> (u64, u64) {
+    match crate::fs::vfs::get_fd_path(global_id) {
+        Ok(path) => linux_stat_identity(&path),
+        Err(_) => (1, global_id as u64 + 2),
+    }
+}
+
+fn linux_stat_identity(path: &str) -> (u64, u64) {
+    let dev = if path.starts_with(LICOF_ROOTFS) {
+        0x1cf
+    } else {
+        1
+    };
+    (dev, linux_path_inode(path))
+}
+
+fn linux_path_inode(path: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &b in path.as_bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash & 0x7fff_ffff_ffff_ffff
 }
 
 unsafe fn write_u32(base: u64, offset: u64, value: u32) {
