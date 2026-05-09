@@ -608,43 +608,46 @@ unsafe fn fork_return_to_user(regs: *const ForkChildRegs) -> ! {
     crate::arch::x86::syscall_msr::debug_assert_gs_is_kernel();
     core::arch::asm!(
         "cli",
-        // Set data segments for user mode — use {seg} operand, NEVER hardcode ax
-        "mov ds, {seg:x}",
-        "mov es, {seg:x}",
-        "mov fs, {seg:x}",
-        "mov gs, {seg:x}",
+        // Set data segments for user mode. Do not load GS yet: in long mode
+        // `mov gs, ...` can replace GS.base with the descriptor base (0),
+        // and prepare_gs_for_ring3_asm!() must still see GS.base=PERCPU.
+        "mov ax, 0x23",
+        "mov ds, ax",
+        "mov es, ax",
+        "mov fs, ax",
         // Build IRETQ frame from struct (field offsets in ForkChildRegs):
         // rbx=0, rcx=8, rdx=16, rsi=24, rdi=32, rbp=40,
         // r8=48, r9=56, r10=64, r11=72, r12=80, r13=88, r14=96, r15=104,
         // rip=112, cs=120, rflags=128, rsp=136, ss=144
-        "push qword ptr [{p} + 144]",   // SS
-        "push qword ptr [{p} + 136]",   // RSP
-        "push qword ptr [{p} + 128]",   // RFLAGS
+        "push qword ptr [r15 + 144]",   // SS
+        "push qword ptr [r15 + 136]",   // RSP
+        "push qword ptr [r15 + 128]",   // RFLAGS
         "or qword ptr [rsp], 0x200",    // Ensure IF set (no hardcoded reg)
-        "push qword ptr [{p} + 120]",   // CS
-        "push qword ptr [{p} + 112]",   // RIP
-        // Restore GPRs — {p} is still live, no hardcoded reg writes allowed
-        "mov r15, [{p} + 104]",
-        "mov r14, [{p} + 96]",
-        "mov r13, [{p} + 88]",
-        "mov r12, [{p} + 80]",
-        "mov r11, [{p} + 72]",
-        "mov r10, [{p} + 64]",
-        "mov r9,  [{p} + 56]",
-        "mov r8,  [{p} + 48]",
-        "mov rbp, [{p} + 40]",
-        "mov rdi, [{p} + 32]",
-        "mov rsi, [{p} + 24]",
-        "mov rdx, [{p} + 16]",
-        "mov rcx, [{p} + 8]",
-        "mov rbx, [{p}]",
-        // {p} is now dead — safe to clobber any register.
+        "push qword ptr [r15 + 120]",   // CS
+        "push qword ptr [r15 + 112]",   // RIP
         // Preserve PERCPU invariant across ring 3 transition.
         crate::prepare_gs_for_ring3_asm!(),
+        "mov ax, 0x23",
+        "mov gs, ax",
+        // Restore GPRs after prepare_gs_for_ring3_asm!(), which clobbers
+        // RAX/RCX/RDX. r15 keeps the frame pointer until its own restore.
+        "mov r14, [r15 + 96]",
+        "mov r13, [r15 + 88]",
+        "mov r12, [r15 + 80]",
+        "mov r11, [r15 + 72]",
+        "mov r10, [r15 + 64]",
+        "mov r9,  [r15 + 56]",
+        "mov r8,  [r15 + 48]",
+        "mov rbp, [r15 + 40]",
+        "mov rdi, [r15 + 32]",
+        "mov rsi, [r15 + 24]",
+        "mov rdx, [r15 + 16]",
+        "mov rcx, [r15 + 8]",
+        "mov rbx, [r15]",
+        "mov r15, [r15 + 104]",
         "xor eax, eax",             // RAX = 0 (fork child return value)
         "iretq",
-        p = in(reg) regs,
-        seg = in(reg) 0x23u64,
+        in("r15") regs,
         options(noreturn)
     );
 }
@@ -2100,7 +2103,6 @@ unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
         "mov ds, ax",
         "mov es, ax",
         "mov fs, ax",
-        "mov gs, ax",
         // Build iretq frame on the kernel stack:
         //   SS, RSP, RFLAGS, CS, RIP
         "push 0x23",       // SS = user data segment
@@ -2114,6 +2116,8 @@ unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
         // Preserve the PERCPU invariant across the ring 3 transition:
         // KERNEL_GS_BASE ← PERCPU, GS.base ← 0. See CLAUDE.md.
         crate::prepare_gs_for_ring3_asm!(),
+        "mov ax, 0x23",
+        "mov gs, ax",
         // Clear all GPRs to prevent kernel address leaks to user mode
         // (critical for exec: INT 0x80 frame leaves kernel values in regs)
         "xor eax, eax",
