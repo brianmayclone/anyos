@@ -347,14 +347,7 @@ fn install_package_inner(
     }
     if fs::stat(&deb_path, &mut [0u32; 7]) != 0 {
         let url = alloc::format!("{}/{}", config.apt_base, info.filename);
-        println!("licof apt: downloading {} {}", info.package, info.version);
-        if !download_url(config, &url, &deb_path) {
-            println!("licof apt: download failed: {}", url);
-            pending.pop();
-            return false;
-        }
-        if !verify_package_file(&info, &deb_path) {
-            let _ = fs::unlink(&deb_path);
+        if !download_verified_package(config, &info, &url, &deb_path) {
             pending.pop();
             return false;
         }
@@ -384,6 +377,40 @@ fn install_dependency_group(
         );
     }
     alternatives.is_empty()
+}
+
+fn download_verified_package(
+    config: &LicoConfig,
+    info: &PackageInfo,
+    url: &str,
+    dest: &str,
+) -> bool {
+    for attempt in 1..=config.download_attempts {
+        let _ = fs::unlink(dest);
+        println!(
+            "licof apt: downloading {} {} (attempt {}/{})",
+            info.package, info.version, attempt, config.download_attempts
+        );
+        if !download_url(config, url, dest) {
+            println!("licof apt: download failed: {}", url);
+            return false;
+        }
+        if verify_package_file(info, dest) {
+            return true;
+        }
+        let _ = fs::unlink(dest);
+        if attempt < config.download_attempts {
+            println!(
+                "licof apt: package verification failed for {}; retrying download",
+                info.package
+            );
+        }
+    }
+    println!(
+        "licof apt: package verification failed for {} after {} attempts",
+        info.package, config.download_attempts
+    );
+    false
 }
 
 fn dependency_pending(pkg: &str, pending: &[String]) -> bool {
@@ -724,6 +751,11 @@ fn diagnose_linux_binary(config: &LicoConfig, label: &str, path: &str) {
         } else {
             println!("{}: missing PT_INTERP {}", label, interp);
             println!("{}: expected interpreter at {}", label, resolved);
+            print_path_probe(label, &resolved);
+            print_path_probe(
+                label,
+                &linux_path_in_rootfs(&rootfs, "/lib/x86_64-linux-gnu/ld-2.13.so"),
+            );
         }
     } else {
         println!("{}: static/no-PT_INTERP Linux ELF64", label);
@@ -914,6 +946,9 @@ fn install_deb(config: &LicoConfig, path: &str, rootfs: &str, info: Option<&Pack
     }
 
     if let Some(info) = info {
+        if !validate_installed_package(rootfs, info) {
+            return false;
+        }
         mark_installed(config, info, rootfs, files);
         println!(
             "licof apt: installed {} {} ({} files)",
@@ -950,7 +985,13 @@ fn install_package_link(
         println!("licof pkg: linking {} -> {}", link.rel, link.target);
         let _ = fs::unlink(&link.dest);
         if fs::symlink(&link.target, &link.dest) == 0 {
-            return true;
+            if symlink_points_to(&link.dest, &link.target) {
+                return true;
+            }
+            println!(
+                "licof pkg: symlink verification failed {} -> {}; materializing",
+                link.rel, link.target
+            );
         }
     } else {
         println!("licof pkg: hardlink {} -> {}", link.rel, link.target);
@@ -980,6 +1021,132 @@ fn materialize_link_target(rootfs: &str, dest: &str, target: &str, symlink: bool
     } else {
         copy_file(&src, dest)
     }
+}
+
+fn validate_installed_package(rootfs: &str, info: &PackageInfo) -> bool {
+    match info.package.as_str() {
+        "libc6" => validate_libc6_runtime(rootfs),
+        "libpam0g" => validate_libpam_runtime(rootfs),
+        _ => true,
+    }
+}
+
+fn validate_libc6_runtime(rootfs: &str) -> bool {
+    ensure_runtime_alias(
+        rootfs,
+        "/lib64/ld-linux-x86-64.so.2",
+        "/lib/x86_64-linux-gnu/ld-2.13.so",
+        "dynamic loader",
+    );
+    ensure_runtime_alias(
+        rootfs,
+        "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        "ld-2.13.so",
+        "dynamic loader alias",
+    );
+    ensure_runtime_alias(
+        rootfs,
+        "/lib/x86_64-linux-gnu/libc.so.6",
+        "libc-2.13.so",
+        "libc alias",
+    );
+
+    let loader_ok = validate_runtime_elf(rootfs, "/lib64/ld-linux-x86-64.so.2", "dynamic loader");
+    let libc_ok = validate_runtime_elf(rootfs, "/lib/x86_64-linux-gnu/libc.so.6", "libc");
+    loader_ok && libc_ok
+}
+
+fn validate_libpam_runtime(rootfs: &str) -> bool {
+    let pam_ok = ensure_runtime_alias(
+        rootfs,
+        "/lib/x86_64-linux-gnu/libpam.so.0",
+        "libpam.so.0.83.0",
+        "libpam alias",
+    ) && validate_runtime_elf(rootfs, "/lib/x86_64-linux-gnu/libpam.so.0", "libpam");
+    let misc_ok = ensure_runtime_alias(
+        rootfs,
+        "/lib/x86_64-linux-gnu/libpam_misc.so.0",
+        "libpam_misc.so.0.82.0",
+        "libpam_misc alias",
+    ) && validate_runtime_elf(
+        rootfs,
+        "/lib/x86_64-linux-gnu/libpam_misc.so.0",
+        "libpam_misc",
+    );
+    let pamc_ok =
+        ensure_runtime_alias(
+            rootfs,
+            "/lib/x86_64-linux-gnu/libpamc.so.0",
+            "libpamc.so.0.82.1",
+            "libpamc alias",
+        ) && validate_runtime_elf(rootfs, "/lib/x86_64-linux-gnu/libpamc.so.0", "libpamc");
+    pam_ok && misc_ok && pamc_ok
+}
+
+fn ensure_runtime_alias(rootfs: &str, dest_linux: &str, target: &str, label: &str) -> bool {
+    let dest = linux_path_in_rootfs(rootfs, dest_linux);
+    let src = resolve_package_link_target(rootfs, &dest, target, true)
+        .unwrap_or_else(|| linux_path_in_rootfs(rootfs, target));
+    if !is_elf_file(&src) {
+        println!(
+            "licof pkg: cannot repair {} {}; source {} is not an ELF",
+            label, dest, src
+        );
+        return false;
+    }
+
+    if symlink_points_to(&dest, target) && is_elf_file(&dest) {
+        return true;
+    }
+    if path_exists_no_follow(&dest) && !path_is_symlink(&dest) && is_elf_file(&dest) {
+        let dest_size = file_size(&dest);
+        let src_size = file_size(&src);
+        if dest_size != 0 && dest_size == src_size {
+            return true;
+        }
+        println!(
+            "licof pkg: replacing stale {} {} (size {}, expected {})",
+            label, dest, dest_size, src_size
+        );
+    } else if path_exists_no_follow(&dest) {
+        println!("licof pkg: replacing stale {} {}", label, dest);
+    }
+
+    ensure_parent_dirs(&dest);
+    let _ = fs::unlink(&dest);
+    if fs::symlink(target, &dest) == 0 && is_elf_file(&dest) {
+        println!("licof pkg: restored {} {} -> {}", label, dest, target);
+        return true;
+    }
+
+    let _ = fs::unlink(&dest);
+    if copy_file(&src, &dest) && is_elf_file(&dest) {
+        println!("licof pkg: materialized {} {} from {}", label, dest, src);
+        return true;
+    }
+
+    println!(
+        "licof pkg: failed to materialize {} {} from {}",
+        label, dest, src
+    );
+    false
+}
+
+fn validate_runtime_elf(rootfs: &str, linux_path: &str, label: &str) -> bool {
+    let path = linux_path_in_rootfs(rootfs, linux_path);
+    let resolved = resolve_rootfs_symlink_path(rootfs, &path).unwrap_or_else(|| path.clone());
+    if is_elf_file(&path) || is_elf_file(&resolved) {
+        return true;
+    }
+    println!(
+        "licof pkg: {} runtime check failed: {} -> {} is not an ELF",
+        label, path, resolved
+    );
+    print_path_probe("licof pkg", &path);
+    if resolved != path {
+        print_path_probe("licof pkg", &resolved);
+    }
+    false
 }
 
 fn resolve_package_link_target(
@@ -1144,6 +1311,35 @@ fn path_exists_no_follow(path: &str) -> bool {
 fn path_is_symlink(path: &str) -> bool {
     let mut stat_buf = [0u32; 7];
     fs::lstat(path, &mut stat_buf) == 0 && (stat_buf[2] & 1) != 0
+}
+
+fn print_path_probe(prefix: &str, path: &str) {
+    let mut stat_buf = [0u32; 7];
+    if fs::lstat(path, &mut stat_buf) == 0 {
+        let kind = match stat_buf[0] {
+            FS_TYPE_DIRECTORY => "dir",
+            FS_TYPE_REGULAR => "file",
+            _ => "other",
+        };
+        let link = if (stat_buf[2] & 1) != 0 {
+            readlink_string(path).unwrap_or_else(|| String::from("<unreadable-link>"))
+        } else {
+            String::from("")
+        };
+        if link.is_empty() {
+            println!(
+                "{}: path {} exists kind={} size={}",
+                prefix, path, kind, stat_buf[1]
+            );
+        } else {
+            println!(
+                "{}: path {} exists kind={} symlink->{}",
+                prefix, path, kind, link
+            );
+        }
+    } else {
+        println!("{}: path {} missing", prefix, path);
+    }
 }
 
 fn symlink_points_to(path: &str, target: &str) -> bool {

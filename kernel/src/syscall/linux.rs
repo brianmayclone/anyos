@@ -386,7 +386,42 @@ fn linux_open_translated(path: &str, linux_flags: u64, linux_path: &str) -> u64 
     if cloexec {
         crate::task::scheduler::current_fd_set_cloexec(local_fd, true);
     }
+    linux_log_library_open(linux_path, &resolved_path, local_fd, global_id);
     local_fd as u64
+}
+
+fn linux_log_library_open(linux_path: &str, resolved_path: &str, fd: u32, global_id: u32) {
+    if !linux_path.contains(".so") && !resolved_path.contains(".so") {
+        return;
+    }
+    if !(linux_path.contains("libpam")
+        || linux_path.contains("libc.so")
+        || linux_path.contains("ld-linux")
+        || resolved_path.contains("libpam")
+        || resolved_path.contains("libc.so")
+        || resolved_path.contains("ld-linux"))
+    {
+        return;
+    }
+    match crate::fs::vfs::fstat(global_id) {
+        Ok((_file_type, size, _position, _mtime)) => {
+            crate::serial_println!(
+                "licof linux open-resolve: ok linux='{}' resolved='{}' fd={} size={}",
+                linux_path,
+                resolved_path,
+                fd,
+                size
+            );
+        }
+        Err(_) => {
+            crate::serial_println!(
+                "licof linux open-resolve: ok linux='{}' resolved='{}' fd={}",
+                linux_path,
+                resolved_path,
+                fd
+            );
+        }
+    }
 }
 
 fn linux_stat_translated(path: &str, stat_ptr: u64, nofollow: bool) -> u64 {
