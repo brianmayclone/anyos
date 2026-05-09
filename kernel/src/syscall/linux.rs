@@ -1379,21 +1379,46 @@ fn linux_rt_sigprocmask(_how: u64, _set: u64, oldset: u64, sigsetsize: u64) -> u
 
 fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
     const TCGETS: u64 = 0x5401;
+    const TCSETS: u64 = 0x5402;
+    const TCSETSW: u64 = 0x5403;
+    const TCSETSF: u64 = 0x5404;
     const TIOCGWINSZ: u64 = 0x5413;
     match request {
         TCGETS => {
-            if fd > 2 && crate::task::scheduler::current_fd_get(fd).is_none() {
+            if !linux_fd_is_tty(fd) {
                 return linux_err(EBADF);
             }
             if arg != 0 {
-                unsafe {
-                    core::ptr::write_bytes(arg as *mut u8, 0, 60);
+                if !handlers::helpers::is_user_range_accessible(arg, 36) {
+                    return linux_err(EFAULT);
                 }
+                linux_write_termios(arg);
             }
+            crate::serial_println!("licof linux ioctl: TCGETS fd={} -> ok", fd);
+            0
+        }
+        TCSETS | TCSETSW | TCSETSF => {
+            if !linux_fd_is_tty(fd) {
+                return linux_err(EBADF);
+            }
+            if arg != 0 && !handlers::helpers::is_user_range_accessible(arg, 36) {
+                return linux_err(EFAULT);
+            }
+            crate::serial_println!(
+                "licof linux ioctl: TCSETS* fd={} request={:#x} -> ok",
+                fd,
+                request
+            );
             0
         }
         TIOCGWINSZ => {
+            if !linux_fd_is_tty(fd) {
+                return linux_err(EBADF);
+            }
             if arg != 0 {
+                if !handlers::helpers::is_user_range_accessible(arg, 8) {
+                    return linux_err(EFAULT);
+                }
                 let packed = handlers::sys_con_get_size();
                 let cols = (packed >> 16) as u16;
                 let rows = (packed & 0xFFFF) as u16;
@@ -1404,9 +1429,45 @@ fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
                     *((arg + 6) as *mut u16) = 0;
                 }
             }
+            crate::serial_println!("licof linux ioctl: TIOCGWINSZ fd={} -> ok", fd);
             0
         }
-        _ => linux_err(ENOTTY),
+        _ => {
+            crate::serial_println!(
+                "licof linux ioctl: unsupported fd={} request={:#x}",
+                fd,
+                request
+            );
+            linux_err(ENOTTY)
+        }
+    }
+}
+
+fn linux_fd_is_tty(fd: u32) -> bool {
+    if fd < 3 {
+        return true;
+    }
+    matches!(
+        crate::task::scheduler::current_fd_get(fd).map(|entry| entry.kind),
+        Some(crate::fs::fd_table::FdKind::Tty)
+    )
+}
+
+fn linux_write_termios(arg: u64) {
+    // Linux x86_64 TCGETS uses the kernel ABI termios layout:
+    // 4 tcflag_t fields, one line byte, and 19 control chars = 36 bytes.
+    unsafe {
+        core::ptr::write_bytes(arg as *mut u8, 0, 36);
+        write_u32(arg, 0, 0x0500); // ICRNL | IXON
+        write_u32(arg, 4, 0x0005); // OPOST | ONLCR
+        write_u32(arg, 8, 0x00bf); // B38400 | CS8 | CREAD
+        write_u32(arg, 12, 0x8a3b); // ISIG | ICANON | ECHO | ECHOE | ECHOK | IEXTEN ...
+        *((arg + 16) as *mut u8) = 0;
+        let cc = (arg + 17) as *mut u8;
+        let defaults = [
+            3u8, 28, 127, 21, 4, 0, 1, 0, 17, 19, 26, 0, 18, 15, 23, 22, 0, 0, 0,
+        ];
+        core::ptr::copy_nonoverlapping(defaults.as_ptr(), cc, defaults.len());
     }
 }
 
