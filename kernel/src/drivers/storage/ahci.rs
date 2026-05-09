@@ -5,6 +5,7 @@
 
 use crate::drivers::pci::{pci_config_read32, pci_config_write32, PciDevice};
 use crate::memory::address::{PhysAddr, VirtAddr};
+use crate::memory::physmap;
 use crate::memory::{physical, virtual_mem};
 use alloc::boxed::Box;
 
@@ -134,7 +135,7 @@ struct AhciController {
     fb_phys: u64,
     ctba_phys: u64,
     bounce_phys: u64,
-    bounce_virt: u64, // = bounce_phys (identity-mapped)
+    bounce_virt: u64,
     total_sectors: u64,
     irq: u8,
     /// ATA IDENTIFY model string (byte-swapped, trimmed).
@@ -163,6 +164,7 @@ struct SecondaryAhci {
     clb_phys: u64,
     ctba_phys: u64,
     bounce_phys: u64,
+    bounce_virt: u64,
     total_sectors: u64,
     disk_id: u8,
 }
@@ -220,6 +222,16 @@ unsafe fn port_read(base: u64, port: u32, reg: u64) -> u32 {
 #[inline(always)]
 unsafe fn port_write(base: u64, port: u32, reg: u64, val: u32) {
     mmio_write32(base, port_base(port) + reg, val);
+}
+
+#[inline(always)]
+fn dma_ptr<T>(phys: u64) -> *mut T {
+    physmap::phys_to_virt_or_identity(PhysAddr::new(phys)) as *mut T
+}
+
+#[inline(always)]
+unsafe fn dma_zero(phys: u64, len: usize) {
+    core::ptr::write_bytes(dma_ptr::<u8>(phys), 0, len);
 }
 
 // ── Port Start / Stop ───────────────────────────────
@@ -482,7 +494,7 @@ unsafe fn issue_command_once(
     write: bool,
 ) -> bool {
     // Set up command header (slot 0)
-    let cmd_header = ahci.clb_phys as *mut CmdHeader;
+    let cmd_header = dma_ptr::<CmdHeader>(ahci.clb_phys);
     let cfl: u16 = 5; // 5 DWORDs for Register H2D FIS
     let w_bit: u16 = if write { 1 << 6 } else { 0 };
     (*cmd_header).flags = cfl | w_bit;
@@ -491,7 +503,7 @@ unsafe fn issue_command_once(
     // ctba/ctbau already set during init
 
     // Set up command table
-    let cmd_table = ahci.ctba_phys as *mut CmdTable;
+    let cmd_table = dma_ptr::<CmdTable>(ahci.ctba_phys);
 
     // Zero CFIS + ACMD
     core::ptr::write_bytes((*cmd_table).cfis.as_mut_ptr(), 0, 64);
@@ -678,14 +690,14 @@ unsafe fn issue_command_on_port(
             start_port(mmio_base, port);
         }
 
-        let cmd_header = clb_phys as *mut CmdHeader;
+        let cmd_header = dma_ptr::<CmdHeader>(clb_phys);
         let cfl: u16 = 5;
         let w_bit: u16 = if write { 1 << 6 } else { 0 };
         (*cmd_header).flags = cfl | w_bit;
         (*cmd_header).prdtl = if dma_size > 0 { 1 } else { 0 };
         (*cmd_header).prdbc = 0;
 
-        let cmd_table = ctba_phys as *mut CmdTable;
+        let cmd_table = dma_ptr::<CmdTable>(ctba_phys);
         core::ptr::write_bytes((*cmd_table).cfis.as_mut_ptr(), 0, 64);
         core::ptr::write_bytes((*cmd_table).acmd.as_mut_ptr(), 0, 16);
 
@@ -1086,7 +1098,7 @@ pub fn init_and_register(pci: &PciDevice) {
         // Stop port before configuring
         stop_port(mmio_base, active_port);
 
-        // ── Allocate DMA structures (identity-mapped, phys < 64 MiB) ──
+        // ── Allocate DMA structures ──
 
         // Command List: 1 KiB (1 frame)
         let clb_phys = match physical::alloc_frame() {
@@ -1136,13 +1148,13 @@ pub fn init_and_register(pci: &PciDevice) {
         );
 
         // Zero all DMA structures
-        core::ptr::write_bytes(clb_phys as *mut u8, 0, 4096);
-        core::ptr::write_bytes(fb_phys as *mut u8, 0, 4096);
-        core::ptr::write_bytes(ctba_phys as *mut u8, 0, 4096);
-        core::ptr::write_bytes(bounce_phys as *mut u8, 0, BOUNCE_BUF_SIZE);
+        dma_zero(clb_phys, 4096);
+        dma_zero(fb_phys, 4096);
+        dma_zero(ctba_phys, 4096);
+        dma_zero(bounce_phys, BOUNCE_BUF_SIZE);
 
         // Pre-configure CmdHeader[0] to point to our command table
-        let cmd_header = clb_phys as *mut CmdHeader;
+        let cmd_header = dma_ptr::<CmdHeader>(clb_phys);
         (*cmd_header).ctba = ctba_phys as u32;
         (*cmd_header).ctbau = (ctba_phys >> 32) as u32;
 
@@ -1178,12 +1190,12 @@ pub fn init_and_register(pci: &PciDevice) {
                 atapi_fb_phys = fb.as_u64();
                 atapi_ctba_phys = ct.as_u64();
 
-                core::ptr::write_bytes(atapi_clb_phys as *mut u8, 0, 4096);
-                core::ptr::write_bytes(atapi_fb_phys as *mut u8, 0, 4096);
-                core::ptr::write_bytes(atapi_ctba_phys as *mut u8, 0, 4096);
+                dma_zero(atapi_clb_phys, 4096);
+                dma_zero(atapi_fb_phys, 4096);
+                dma_zero(atapi_ctba_phys, 4096);
 
                 // Pre-configure CmdHeader[0] for ATAPI port
-                let cmd_header = atapi_clb_phys as *mut CmdHeader;
+                let cmd_header = dma_ptr::<CmdHeader>(atapi_clb_phys);
                 (*cmd_header).ctba = atapi_ctba_phys as u32;
                 (*cmd_header).ctbau = (atapi_ctba_phys >> 32) as u32;
 
@@ -1221,7 +1233,7 @@ pub fn init_and_register(pci: &PciDevice) {
             fb_phys,
             ctba_phys,
             bounce_phys,
-            bounce_virt: bounce_phys, // identity-mapped
+            bounce_virt: dma_ptr::<u8>(bounce_phys) as u64,
             total_sectors: 0,
             irq,
             model: [0u8; 40],
@@ -1253,7 +1265,7 @@ pub fn init_and_register(pci: &PciDevice) {
         );
 
         if identify_ok {
-            let identify = bounce_phys as *const u16;
+            let identify = dma_ptr::<u16>(bounce_phys) as *const u16;
 
             // Parse model string (words 27-46, byte-swapped)
             let mut model = [0u8; 40];
@@ -1358,12 +1370,12 @@ pub fn init_and_register(pci: &PciDevice) {
                 }
             };
 
-            core::ptr::write_bytes(e_clb as *mut u8, 0, 4096);
-            core::ptr::write_bytes(e_fb as *mut u8, 0, 4096);
-            core::ptr::write_bytes(e_ct as *mut u8, 0, 4096);
+            dma_zero(e_clb, 4096);
+            dma_zero(e_fb, 4096);
+            dma_zero(e_ct, 4096);
 
             // Point CmdHeader[0] to command table
-            let cmd_header = e_clb as *mut CmdHeader;
+            let cmd_header = dma_ptr::<CmdHeader>(e_clb);
             (*cmd_header).ctba = e_ct as u32;
             (*cmd_header).ctbau = (e_ct >> 32) as u32;
 
@@ -1392,7 +1404,7 @@ pub fn init_and_register(pci: &PciDevice) {
                 false,
             );
             if id_ok {
-                let identify = bounce_phys as *const u16;
+                let identify = dma_ptr::<u16>(bounce_phys) as *const u16;
                 let lo = *identify.add(100) as u64 | ((*identify.add(101) as u64) << 16);
                 let hi = *identify.add(102) as u64 | ((*identify.add(103) as u64) << 16);
                 extra_total_sectors = lo | (hi << 32);
@@ -1540,12 +1552,12 @@ fn init_secondary_controller(pci: &PciDevice) {
             None => return,
         };
 
-        core::ptr::write_bytes(clb_phys as *mut u8, 0, 4096);
-        core::ptr::write_bytes(fb_phys as *mut u8, 0, 4096);
-        core::ptr::write_bytes(ctba_phys as *mut u8, 0, 4096);
-        core::ptr::write_bytes(bounce_phys as *mut u8, 0, BOUNCE_BUF_SIZE);
+        dma_zero(clb_phys, 4096);
+        dma_zero(fb_phys, 4096);
+        dma_zero(ctba_phys, 4096);
+        dma_zero(bounce_phys, BOUNCE_BUF_SIZE);
 
-        let cmd_header = clb_phys as *mut CmdHeader;
+        let cmd_header = dma_ptr::<CmdHeader>(clb_phys);
         (*cmd_header).ctba = ctba_phys as u32;
         (*cmd_header).ctbau = (ctba_phys >> 32) as u32;
 
@@ -1573,7 +1585,7 @@ fn init_secondary_controller(pci: &PciDevice) {
             false,
         );
         if id_ok {
-            let identify = bounce_phys as *const u16;
+            let identify = dma_ptr::<u16>(bounce_phys) as *const u16;
             let lo = *identify.add(100) as u64 | ((*identify.add(101) as u64) << 16);
             let hi = *identify.add(102) as u64 | ((*identify.add(103) as u64) << 16);
             total_sectors = lo | (hi << 32);
@@ -1610,6 +1622,7 @@ fn init_secondary_controller(pci: &PciDevice) {
             clb_phys,
             ctba_phys,
             bounce_phys,
+            bounce_virt: dma_ptr::<u8>(bounce_phys) as u64,
             total_sectors,
             disk_id,
         });
@@ -1678,7 +1691,7 @@ fn secondary_ahci_read(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> boo
 
         unsafe {
             core::ptr::copy_nonoverlapping(
-                sec.bounce_phys as *const u8,
+                sec.bounce_virt as *const u8,
                 buf.as_mut_ptr().add(offset),
                 byte_count,
             );
@@ -1712,7 +1725,7 @@ fn secondary_ahci_write(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
         unsafe {
             core::ptr::copy_nonoverlapping(
                 buf.as_ptr().add(offset),
-                sec.bounce_phys as *mut u8,
+                sec.bounce_virt as *mut u8,
                 byte_count,
             );
         }
@@ -1928,7 +1941,7 @@ unsafe fn issue_atapi_read(
     byte_count: u32,
 ) -> bool {
     // Set up command header (slot 0) on the ATAPI port's CLB
-    let cmd_header = ahci.atapi_clb_phys as *mut CmdHeader;
+    let cmd_header = dma_ptr::<CmdHeader>(ahci.atapi_clb_phys);
     let cfl: u16 = 5; // 5 DWORDs for Register H2D FIS
     let a_bit: u16 = 1 << 5; // ATAPI flag
     (*cmd_header).flags = cfl | a_bit;
@@ -1936,7 +1949,7 @@ unsafe fn issue_atapi_read(
     (*cmd_header).prdbc = 0;
 
     // Set up command table on the ATAPI port
-    let cmd_table = ahci.atapi_ctba_phys as *mut CmdTable;
+    let cmd_table = dma_ptr::<CmdTable>(ahci.atapi_ctba_phys);
 
     // Zero CFIS + ACMD
     core::ptr::write_bytes((*cmd_table).cfis.as_mut_ptr(), 0, 64);
