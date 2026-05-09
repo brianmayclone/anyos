@@ -15,6 +15,7 @@ const ENOSYS: i32 = 38;
 const EACCES: i32 = 13;
 const EAGAIN: i32 = 11;
 const ENOTTY: i32 = 25;
+const EPERM: i32 = 1;
 
 const LINUX_SYS_READ: u64 = 0;
 const LINUX_SYS_WRITE: u64 = 1;
@@ -23,6 +24,7 @@ const LINUX_SYS_CLOSE: u64 = 3;
 const LINUX_SYS_STAT: u64 = 4;
 const LINUX_SYS_FSTAT: u64 = 5;
 const LINUX_SYS_LSTAT: u64 = 6;
+const LINUX_SYS_POLL: u64 = 7;
 const LINUX_SYS_LSEEK: u64 = 8;
 const LINUX_SYS_MMAP: u64 = 9;
 const LINUX_SYS_MPROTECT: u64 = 10;
@@ -32,21 +34,39 @@ const LINUX_SYS_RT_SIGACTION: u64 = 13;
 const LINUX_SYS_RT_SIGPROCMASK: u64 = 14;
 const LINUX_SYS_IOCTL: u64 = 16;
 const LINUX_SYS_PREAD64: u64 = 17;
+const LINUX_SYS_READV: u64 = 19;
+const LINUX_SYS_WRITEV: u64 = 20;
 const LINUX_SYS_ACCESS: u64 = 21;
 const LINUX_SYS_PIPE: u64 = 22;
+const LINUX_SYS_MADVISE: u64 = 28;
 const LINUX_SYS_DUP: u64 = 32;
 const LINUX_SYS_DUP2: u64 = 33;
 const LINUX_SYS_NANOSLEEP: u64 = 35;
 const LINUX_SYS_GETPID: u64 = 39;
 const LINUX_SYS_UNAME: u64 = 63;
 const LINUX_SYS_EXIT: u64 = 60;
+const LINUX_SYS_FSYNC: u64 = 74;
+const LINUX_SYS_FDATASYNC: u64 = 75;
+const LINUX_SYS_TRUNCATE: u64 = 76;
+const LINUX_SYS_FTRUNCATE: u64 = 77;
 const LINUX_SYS_FCNTL: u64 = 72;
 const LINUX_SYS_GETCWD: u64 = 79;
 const LINUX_SYS_CHDIR: u64 = 80;
+const LINUX_SYS_RENAME: u64 = 82;
+const LINUX_SYS_MKDIR: u64 = 83;
+const LINUX_SYS_RMDIR: u64 = 84;
+const LINUX_SYS_CREAT: u64 = 85;
+const LINUX_SYS_UNLINK: u64 = 87;
 const LINUX_SYS_READLINK: u64 = 89;
+const LINUX_SYS_CHMOD: u64 = 90;
+const LINUX_SYS_FCHMOD: u64 = 91;
+const LINUX_SYS_CHOWN: u64 = 92;
+const LINUX_SYS_FCHOWN: u64 = 93;
+const LINUX_SYS_LCHOWN: u64 = 94;
 const LINUX_SYS_UMASK: u64 = 95;
 const LINUX_SYS_GETTIMEOFDAY: u64 = 96;
 const LINUX_SYS_GETRLIMIT: u64 = 97;
+const LINUX_SYS_SYSINFO: u64 = 99;
 const LINUX_SYS_GETUID: u64 = 102;
 const LINUX_SYS_GETGID: u64 = 104;
 const LINUX_SYS_SETUID: u64 = 105;
@@ -54,6 +74,19 @@ const LINUX_SYS_SETGID: u64 = 106;
 const LINUX_SYS_GETEUID: u64 = 107;
 const LINUX_SYS_GETEGID: u64 = 108;
 const LINUX_SYS_GETPPID: u64 = 110;
+const LINUX_SYS_GETGROUPS: u64 = 115;
+const LINUX_SYS_SETGROUPS: u64 = 116;
+const LINUX_SYS_SETRESUID: u64 = 117;
+const LINUX_SYS_GETRESUID: u64 = 118;
+const LINUX_SYS_SETRESGID: u64 = 119;
+const LINUX_SYS_GETRESGID: u64 = 120;
+const LINUX_SYS_SETFSUID: u64 = 122;
+const LINUX_SYS_SETFSGID: u64 = 123;
+const LINUX_SYS_CAPGET: u64 = 125;
+const LINUX_SYS_CAPSET: u64 = 126;
+const LINUX_SYS_STATFS: u64 = 137;
+const LINUX_SYS_FSTATFS: u64 = 138;
+const LINUX_SYS_PRCTL: u64 = 157;
 const LINUX_SYS_ARCH_PRCTL: u64 = 158;
 const LINUX_SYS_GETTID: u64 = 186;
 const LINUX_SYS_TIME: u64 = 201;
@@ -63,8 +96,16 @@ const LINUX_SYS_GETDENTS64: u64 = 217;
 const LINUX_SYS_CLOCK_GETTIME: u64 = 228;
 const LINUX_SYS_EXIT_GROUP: u64 = 231;
 const LINUX_SYS_OPENAT: u64 = 257;
+const LINUX_SYS_MKDIRAT: u64 = 258;
+const LINUX_SYS_FCHOWNAT: u64 = 260;
 const LINUX_SYS_NEWFSTATAT: u64 = 262;
+const LINUX_SYS_UNLINKAT: u64 = 263;
+const LINUX_SYS_RENAMEAT: u64 = 264;
+const LINUX_SYS_READLINKAT: u64 = 267;
+const LINUX_SYS_FCHMODAT: u64 = 268;
+const LINUX_SYS_FACCESSAT: u64 = 269;
 const LINUX_SYS_SET_ROBUST_LIST: u64 = 273;
+const LINUX_SYS_UTIMENSAT: u64 = 280;
 const LINUX_SYS_DUP3: u64 = 292;
 const LINUX_SYS_PIPE2: u64 = 293;
 const LINUX_SYS_PRLIMIT64: u64 = 302;
@@ -73,6 +114,7 @@ const LINUX_SYS_RSEQ: u64 = 334;
 
 const LINUX_AT_FDCWD: i32 = -100;
 const LINUX_AT_SYMLINK_NOFOLLOW: u64 = 0x100;
+const LINUX_AT_REMOVEDIR: u64 = 0x200;
 const LINUX_AT_EMPTY_PATH: u64 = 0x1000;
 const LINUX_MAP_ANONYMOUS: u64 = 0x20;
 const LINUX_MAP_PRIVATE: u64 = 0x02;
@@ -99,6 +141,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_STAT => linux_stat(a1, a2, false),
         LINUX_SYS_LSTAT => linux_stat(a1, a2, true),
         LINUX_SYS_FSTAT => linux_fstat(a1 as u32, a2),
+        LINUX_SYS_POLL => linux_poll(a1, a2, a3),
         LINUX_SYS_LSEEK => anyos_u32_ret(handlers::sys_lseek(a1 as u32, a2 as u32, a3 as u32)),
         LINUX_SYS_BRK => linux_brk(a1),
         LINUX_SYS_MMAP => linux_mmap(a1, a2, a3, a4, a5, a6),
@@ -108,6 +151,8 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_RT_SIGPROCMASK => linux_rt_sigprocmask(a1, a2, a3, a4),
         LINUX_SYS_IOCTL => linux_ioctl(a1 as u32, a2, a3),
         LINUX_SYS_PREAD64 => linux_pread64(a1 as u32, a2, a3, a4),
+        LINUX_SYS_READV => linux_readv(a1 as u32, a2, a3),
+        LINUX_SYS_WRITEV => linux_writev(a1 as u32, a2, a3),
         LINUX_SYS_ACCESS => linux_access(a1, a2),
         LINUX_SYS_PIPE => anyos_u32_ret(handlers::sys_pipe2(a1, 0)),
         LINUX_SYS_PIPE2 => anyos_u32_ret(handlers::sys_pipe2(a1, a2 as u32)),
@@ -120,32 +165,68 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
             }
             anyos_u32_ret(ret)
         }
+        LINUX_SYS_MADVISE => 0,
         LINUX_SYS_NANOSLEEP => 0,
         LINUX_SYS_ARCH_PRCTL => linux_arch_prctl(a1, a2),
         LINUX_SYS_GETPID => handlers::sys_getpid() as u64,
         LINUX_SYS_UNAME => linux_uname(a1),
-        LINUX_SYS_FCNTL => anyos_u32_ret(handlers::sys_fcntl(a1 as u32, a2 as u32, a3 as u32)),
+        LINUX_SYS_FSYNC | LINUX_SYS_FDATASYNC => anyos_u32_ret(handlers::sys_fsync(a1 as u32)),
+        LINUX_SYS_TRUNCATE => linux_truncate(a1, a2),
+        LINUX_SYS_FTRUNCATE => linux_ftruncate(a1 as u32, a2),
+        LINUX_SYS_FCNTL => linux_fcntl(a1 as u32, a2 as u32, a3),
         LINUX_SYS_GETCWD => linux_getcwd(a1, a2),
         LINUX_SYS_CHDIR => linux_chdir(a1),
+        LINUX_SYS_RENAME => linux_rename(a1, a2),
+        LINUX_SYS_MKDIR => linux_mkdir(a1, a2),
+        LINUX_SYS_RMDIR => linux_unlink_path(a1),
+        LINUX_SYS_CREAT => linux_creat(a1),
+        LINUX_SYS_UNLINK => linux_unlink_path(a1),
         LINUX_SYS_READLINK => linux_readlink(a1, a2, a3),
+        LINUX_SYS_CHMOD => linux_chmod(a1, a2),
+        LINUX_SYS_FCHMOD => linux_fchmod(a1 as u32, a2),
+        LINUX_SYS_CHOWN | LINUX_SYS_LCHOWN => linux_chown(a1, a2, a3),
+        LINUX_SYS_FCHOWN => linux_fchown(a1 as u32, a2, a3),
         LINUX_SYS_UMASK => 0,
         LINUX_SYS_GETTIMEOFDAY => linux_gettimeofday(a1),
         LINUX_SYS_GETRLIMIT => linux_prlimit64(0, a1, 0, a2),
+        LINUX_SYS_SYSINFO => linux_sysinfo(a1),
         LINUX_SYS_GETUID => handlers::sys_getuid() as u64,
         LINUX_SYS_GETGID => handlers::sys_getgid() as u64,
-        LINUX_SYS_SETUID | LINUX_SYS_SETGID => 0,
+        LINUX_SYS_SETUID => linux_set_root_or_current(a1, true),
+        LINUX_SYS_SETGID => linux_set_root_or_current(a1, false),
         LINUX_SYS_GETEUID => handlers::sys_getuid() as u64,
         LINUX_SYS_GETEGID => handlers::sys_getgid() as u64,
         LINUX_SYS_GETPPID => handlers::sys_getppid() as u64,
+        LINUX_SYS_GETGROUPS => linux_getgroups(a1, a2),
+        LINUX_SYS_SETGROUPS => linux_setgroups(a1, a2),
+        LINUX_SYS_SETRESUID => linux_setres_id(a1, a2, a3, true),
+        LINUX_SYS_GETRESUID => linux_getres_id(a1, a2, a3, true),
+        LINUX_SYS_SETRESGID => linux_setres_id(a1, a2, a3, false),
+        LINUX_SYS_GETRESGID => linux_getres_id(a1, a2, a3, false),
+        LINUX_SYS_SETFSUID => linux_setfs_id(a1, true),
+        LINUX_SYS_SETFSGID => linux_setfs_id(a1, false),
+        LINUX_SYS_CAPGET => linux_capget(a1, a2),
+        LINUX_SYS_CAPSET => linux_capset(a1, a2),
+        LINUX_SYS_STATFS => linux_statfs(a1, a2),
+        LINUX_SYS_FSTATFS => linux_fstatfs(a1 as u32, a2),
+        LINUX_SYS_PRCTL => linux_prctl(a1, a2),
         LINUX_SYS_GETTID => crate::task::scheduler::current_tid() as u64,
         LINUX_SYS_TIME => linux_time(a1),
         LINUX_SYS_FUTEX => linux_futex(a1, a2, a3),
-        LINUX_SYS_GETDENTS64 => linux_err(ENOSYS),
+        LINUX_SYS_GETDENTS64 => linux_getdents64(a1 as u32, a2, a3),
         LINUX_SYS_SET_TID_ADDRESS => handlers::sys_getpid() as u64,
         LINUX_SYS_CLOCK_GETTIME => linux_clock_gettime(a1, a2),
         LINUX_SYS_EXIT | LINUX_SYS_EXIT_GROUP => handlers::sys_exit(a1 as u32) as u64,
+        LINUX_SYS_MKDIRAT => linux_mkdirat(a1, a2, a3),
+        LINUX_SYS_FCHOWNAT => linux_fchownat(a1, a2, a3, a4),
         LINUX_SYS_NEWFSTATAT => linux_newfstatat(a1, a2, a3, a4),
+        LINUX_SYS_UNLINKAT => linux_unlinkat(a1, a2, a3),
+        LINUX_SYS_RENAMEAT => linux_renameat(a1, a2, a3, a4),
+        LINUX_SYS_READLINKAT => linux_readlinkat(a1, a2, a3, a4),
+        LINUX_SYS_FCHMODAT => linux_fchmodat(a1, a2, a3, a4),
+        LINUX_SYS_FACCESSAT => linux_faccessat(a1, a2, a3, a4),
         LINUX_SYS_SET_ROBUST_LIST => 0,
+        LINUX_SYS_UTIMENSAT => 0,
         LINUX_SYS_PRLIMIT64 => linux_prlimit64(a1, a2, a3, a4),
         LINUX_SYS_GETRANDOM => linux_getrandom(a1, a2),
         LINUX_SYS_RSEQ => linux_err(ENOSYS),
@@ -154,11 +235,11 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
 }
 
 fn linux_open(path_ptr: u64, linux_flags: u64) -> u64 {
-    let path = match linux_translate_user_path(path_ptr) {
+    let raw_path = match super::handlers::helpers::read_user_str_safe(path_ptr) {
         Some(path) => path,
         None => return linux_err(EFAULT),
     };
-    linux_open_translated(&path, linux_flags)
+    linux_open_linux_path(raw_path, linux_flags)
 }
 
 fn linux_openat(dirfd: u64, path_ptr: u64, linux_flags: u64) -> u64 {
@@ -167,10 +248,13 @@ fn linux_openat(dirfd: u64, path_ptr: u64, linux_flags: u64) -> u64 {
         Some(path) => path,
         None => return linux_err(EFAULT),
     };
-    if dirfd != LINUX_AT_FDCWD && !raw_path.starts_with('/') {
-        return linux_err(ENOSYS);
+    if dirfd == LINUX_AT_FDCWD || raw_path.starts_with('/') {
+        return linux_open_linux_path(raw_path, linux_flags);
     }
-    let path = linux_translate_path(raw_path);
+    let path = match linux_translate_at_path(dirfd as u64, path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
     linux_open_translated(&path, linux_flags)
 }
 
@@ -199,10 +283,10 @@ fn linux_newfstatat(dirfd: u64, path_ptr: u64, stat_ptr: u64, flags: u64) -> u64
     if raw_path.is_empty() && (flags & LINUX_AT_EMPTY_PATH) != 0 {
         return linux_fstat(dirfd as u32, stat_ptr);
     }
-    if (dirfd as i32) != LINUX_AT_FDCWD && !raw_path.starts_with('/') {
-        return linux_err(ENOSYS);
-    }
-    let path = linux_translate_path(raw_path);
+    let path = match linux_translate_at_path(dirfd, path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
     linux_stat_translated(&path, stat_ptr, (flags & LINUX_AT_SYMLINK_NOFOLLOW) != 0)
 }
 
@@ -216,6 +300,22 @@ fn linux_access(path_ptr: u64, _mode: u64) -> u64 {
         Err(crate::fs::vfs::FsError::PermissionDenied) => linux_err(EACCES),
         Err(e) => linux_fs_err(e),
     }
+}
+
+fn linux_open_linux_path(path: &str, linux_flags: u64) -> u64 {
+    let abs = linux_absolute_path(path);
+    if abs == "/dev/tty" {
+        let fd = match crate::task::scheduler::current_fd_alloc(crate::fs::fd_table::FdKind::Tty) {
+            Some(fd) => fd,
+            None => return linux_err(EBADF),
+        };
+        if (linux_flags & 0o2000000) != 0 {
+            crate::task::scheduler::current_fd_set_cloexec(fd, true);
+        }
+        return fd as u64;
+    }
+    let translated = linux_translate_absolute_path(&abs);
+    linux_open_translated(&translated, linux_flags)
 }
 
 fn linux_open_translated(path: &str, linux_flags: u64) -> u64 {
@@ -477,6 +577,306 @@ fn linux_readlink(path_ptr: u64, buf_ptr: u64, buf_size: u64) -> u64 {
     }
 }
 
+fn linux_readlinkat(dirfd: u64, path_ptr: u64, buf_ptr: u64, buf_size: u64) -> u64 {
+    let path = match linux_translate_at_path(dirfd, path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    linux_readlink_translated(&path, buf_ptr, buf_size)
+}
+
+fn linux_readlink_translated(path: &str, buf_ptr: u64, buf_size: u64) -> u64 {
+    if buf_ptr == 0 || buf_size == 0 {
+        return linux_err(EFAULT);
+    }
+    match crate::fs::vfs::readlink(path) {
+        Ok(target) => {
+            let visible = linux_strip_rootfs(&target);
+            let bytes = visible.as_bytes();
+            let to_copy = bytes.len().min(buf_size as usize);
+            if !super::handlers::helpers::copy_to_user_bytes(buf_ptr, &bytes[..to_copy], to_copy) {
+                return linux_err(EFAULT);
+            }
+            to_copy as u64
+        }
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+fn linux_rename(old_ptr: u64, new_ptr: u64) -> u64 {
+    let Some(old_path) = linux_translate_user_path(old_ptr) else {
+        return linux_err(EFAULT);
+    };
+    let Some(new_path) = linux_translate_user_path(new_ptr) else {
+        return linux_err(EFAULT);
+    };
+    match crate::fs::vfs::rename(&old_path, &new_path) {
+        Ok(()) => 0,
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+fn linux_renameat(old_dirfd: u64, old_ptr: u64, new_dirfd: u64, new_ptr: u64) -> u64 {
+    let old_path = match linux_translate_at_path(old_dirfd, old_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    let new_path = match linux_translate_at_path(new_dirfd, new_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    match crate::fs::vfs::rename(&old_path, &new_path) {
+        Ok(()) => 0,
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+fn linux_mkdir(path_ptr: u64, _mode: u64) -> u64 {
+    let Some(path) = linux_translate_user_path(path_ptr) else {
+        return linux_err(EFAULT);
+    };
+    match crate::fs::vfs::mkdir(&path) {
+        Ok(()) => 0,
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+fn linux_mkdirat(dirfd: u64, path_ptr: u64, _mode: u64) -> u64 {
+    let path = match linux_translate_at_path(dirfd, path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    match crate::fs::vfs::mkdir(&path) {
+        Ok(()) => 0,
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+fn linux_unlink_path(path_ptr: u64) -> u64 {
+    let Some(path) = linux_translate_user_path(path_ptr) else {
+        return linux_err(EFAULT);
+    };
+    linux_unlink_translated(&path)
+}
+
+fn linux_unlinkat(dirfd: u64, path_ptr: u64, flags: u64) -> u64 {
+    if (flags & !LINUX_AT_REMOVEDIR) != 0 {
+        return linux_err(EINVAL);
+    }
+    let path = match linux_translate_at_path(dirfd, path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    linux_unlink_translated(&path)
+}
+
+fn linux_unlink_translated(path: &str) -> u64 {
+    match crate::fs::vfs::delete(path) {
+        Ok(()) => 0,
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+fn linux_creat(path_ptr: u64) -> u64 {
+    const O_CREAT_WRONLY_TRUNC: u64 = 0x40 | 0x01 | 0x200;
+    linux_open(path_ptr, O_CREAT_WRONLY_TRUNC)
+}
+
+fn linux_truncate(path_ptr: u64, len: u64) -> u64 {
+    if len != 0 {
+        return linux_err(ENOSYS);
+    }
+    let Some(path) = linux_translate_user_path(path_ptr) else {
+        return linux_err(EFAULT);
+    };
+    match crate::fs::vfs::truncate(&path) {
+        Ok(()) => 0,
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+fn linux_ftruncate(fd: u32, len: u64) -> u64 {
+    if len != 0 {
+        return linux_err(ENOSYS);
+    }
+    anyos_u32_ret(handlers::sys_ftruncate(fd, len as u32))
+}
+
+fn linux_chmod(path_ptr: u64, mode: u64) -> u64 {
+    let Some(path) = linux_translate_user_path(path_ptr) else {
+        return linux_err(EFAULT);
+    };
+    match crate::fs::vfs::set_mode(&path, mode as u16) {
+        Ok(()) => 0,
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+fn linux_fchmod(fd: u32, mode: u64) -> u64 {
+    let path = match linux_fd_path(fd) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    match crate::fs::vfs::set_mode(&path, mode as u16) {
+        Ok(()) => 0,
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+fn linux_fchmodat(dirfd: u64, path_ptr: u64, mode: u64, _flags: u64) -> u64 {
+    let path = match linux_translate_at_path(dirfd, path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    match crate::fs::vfs::set_mode(&path, mode as u16) {
+        Ok(()) => 0,
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+fn linux_chown(path_ptr: u64, uid: u64, gid: u64) -> u64 {
+    let Some(path) = linux_translate_user_path(path_ptr) else {
+        return linux_err(EFAULT);
+    };
+    linux_chown_translated(&path, uid, gid)
+}
+
+fn linux_fchown(fd: u32, uid: u64, gid: u64) -> u64 {
+    let path = match linux_fd_path(fd) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    linux_chown_translated(&path, uid, gid)
+}
+
+fn linux_fchownat(dirfd: u64, path_ptr: u64, uid: u64, gid: u64) -> u64 {
+    let path = match linux_translate_at_path(dirfd, path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    linux_chown_translated(&path, uid, gid)
+}
+
+fn linux_chown_translated(path: &str, uid: u64, gid: u64) -> u64 {
+    let (current_uid, current_gid, _) = crate::fs::vfs::get_permissions(path).unwrap_or((0, 0, 0));
+    let uid = if uid == u32::MAX as u64 {
+        current_uid
+    } else {
+        uid as u16
+    };
+    let gid = if gid == u32::MAX as u64 {
+        current_gid
+    } else {
+        gid as u16
+    };
+    match crate::fs::vfs::set_owner(path, uid, gid) {
+        Ok(()) => 0,
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+fn linux_faccessat(dirfd: u64, path_ptr: u64, mode: u64, _flags: u64) -> u64 {
+    let path = match linux_translate_at_path(dirfd, path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    match crate::fs::vfs::stat(&path) {
+        Ok(_) => {
+            let _ = mode;
+            0
+        }
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+fn linux_fcntl(fd: u32, cmd: u32, arg: u64) -> u64 {
+    const F_GETLK: u32 = 5;
+    const F_SETLK: u32 = 6;
+    const F_SETLKW: u32 = 7;
+    const F_UNLCK: u16 = 2;
+    match cmd {
+        F_GETLK => {
+            if crate::task::scheduler::current_fd_get(fd).is_none() {
+                return linux_err(EBADF);
+            }
+            if arg != 0 {
+                unsafe {
+                    *((arg) as *mut u16) = F_UNLCK;
+                }
+            }
+            0
+        }
+        F_SETLK | F_SETLKW => {
+            if crate::task::scheduler::current_fd_get(fd).is_none() {
+                linux_err(EBADF)
+            } else {
+                0
+            }
+        }
+        _ => anyos_u32_ret(handlers::sys_fcntl(fd, cmd, arg as u32)),
+    }
+}
+
+fn linux_getdents64(fd: u32, dirent_ptr: u64, count: u64) -> u64 {
+    if dirent_ptr == 0 || count < 24 || count > u32::MAX as u64 {
+        return linux_err(EFAULT);
+    }
+    let entry = match crate::task::scheduler::current_fd_get(fd) {
+        Some(entry) => entry,
+        None => return linux_err(EBADF),
+    };
+    let global_id = match entry.kind {
+        crate::fs::fd_table::FdKind::File { global_id } => global_id,
+        _ => return linux_err(EBADF),
+    };
+    let (file_type, _size, position, _mtime) = match crate::fs::vfs::fstat(global_id) {
+        Ok(st) => st,
+        Err(e) => return linux_fs_err(e),
+    };
+    if file_type != crate::fs::file::FileType::Directory {
+        return linux_err(ENOTTY);
+    }
+    let path = match crate::fs::vfs::get_fd_path(global_id) {
+        Ok(path) => path,
+        Err(e) => return linux_fs_err(e),
+    };
+    let entries = match crate::fs::vfs::read_dir(&path) {
+        Ok(entries) => entries,
+        Err(e) => return linux_fs_err(e),
+    };
+
+    let start = position as usize;
+    let mut written = 0usize;
+    let mut next_index = start;
+    for (idx, entry) in entries.iter().enumerate().skip(start) {
+        let name = entry.name.as_bytes();
+        let reclen = align_up(19 + name.len() + 1, 8);
+        if written + reclen > count as usize {
+            break;
+        }
+        let base = dirent_ptr + written as u64;
+        unsafe {
+            write_u64(base, 0, (idx + 1) as u64);
+            write_u64(base, 8, (idx + 1) as u64);
+            *((base + 16) as *mut u16) = reclen as u16;
+            *((base + 18) as *mut u8) = linux_dir_type(entry.file_type);
+            core::ptr::copy_nonoverlapping(name.as_ptr(), (base + 19) as *mut u8, name.len());
+            *((base + 19 + name.len() as u64) as *mut u8) = 0;
+            if reclen > 20 + name.len() {
+                core::ptr::write_bytes(
+                    (base + 20 + name.len() as u64) as *mut u8,
+                    0,
+                    reclen - 20 - name.len(),
+                );
+            }
+        }
+        written += reclen;
+        next_index = idx + 1;
+    }
+    let _ = crate::fs::vfs::lseek(global_id, next_index as i32, 0);
+    written as u64
+}
+
 fn linux_uname(buf_ptr: u64) -> u64 {
     if buf_ptr == 0 {
         return linux_err(EFAULT);
@@ -520,6 +920,78 @@ fn linux_pread64(fd: u32, buf_ptr: u64, len: u64, offset: u64) -> u64 {
         Ok(n) => n as u64,
         Err(errno) => linux_err(errno),
     }
+}
+
+fn linux_readv(fd: u32, iov_ptr: u64, iovcnt: u64) -> u64 {
+    linux_iov_io(fd, iov_ptr, iovcnt, false)
+}
+
+fn linux_writev(fd: u32, iov_ptr: u64, iovcnt: u64) -> u64 {
+    linux_iov_io(fd, iov_ptr, iovcnt, true)
+}
+
+fn linux_iov_io(fd: u32, iov_ptr: u64, iovcnt: u64, write: bool) -> u64 {
+    const IOV_MAX: u64 = 1024;
+    if iov_ptr == 0 || iovcnt > IOV_MAX {
+        return linux_err(EINVAL);
+    }
+    let mut total = 0u64;
+    for i in 0..iovcnt {
+        let base = unsafe { read_u64(iov_ptr, i * 16) };
+        let len = unsafe { read_u64(iov_ptr, i * 16 + 8) };
+        if len == 0 {
+            continue;
+        }
+        if len > u32::MAX as u64 {
+            return linux_err(EINVAL);
+        }
+        let ret = if write {
+            handlers::sys_write(fd, base, len as u32)
+        } else {
+            handlers::sys_read(fd, base, len as u32)
+        };
+        if (ret as i32) < 0 {
+            return if total == 0 {
+                anyos_u32_ret(ret)
+            } else {
+                total
+            };
+        }
+        total += ret as u64;
+        if ret as u64 != len {
+            break;
+        }
+    }
+    total
+}
+
+fn linux_poll(fds_ptr: u64, nfds: u64, _timeout: u64) -> u64 {
+    if nfds == 0 {
+        return 0;
+    }
+    if fds_ptr == 0 || nfds > 1024 {
+        return linux_err(EFAULT);
+    }
+    let mut ready = 0u64;
+    for i in 0..nfds {
+        let base = fds_ptr + i * 8;
+        let fd = unsafe { *((base) as *const i32) };
+        let events = unsafe { *((base + 4) as *const i16) };
+        let mut revents = 0i16;
+        if fd >= 0 && (fd < 3 || crate::task::scheduler::current_fd_get(fd as u32).is_some()) {
+            revents = events & 0x0005; // POLLIN | POLLOUT
+            if revents != 0 {
+                ready += 1;
+            }
+        } else if fd >= 0 {
+            revents = 0x0020; // POLLNVAL
+            ready += 1;
+        }
+        unsafe {
+            *((base + 6) as *mut i16) = revents;
+        }
+    }
+    ready
 }
 
 fn linux_rt_sigaction(_sig: u64, _act: u64, oldact: u64, sigsetsize: u64) -> u64 {
@@ -609,6 +1081,192 @@ fn linux_clock_gettime(_clock_id: u64, ts_ptr: u64) -> u64 {
         write_u64(ts_ptr, 8, 0);
     }
     0
+}
+
+fn linux_sysinfo(info_ptr: u64) -> u64 {
+    if info_ptr == 0 {
+        return linux_err(EFAULT);
+    }
+    unsafe {
+        core::ptr::write_bytes(info_ptr as *mut u8, 0, 112);
+        write_u64(info_ptr, 0, crate::arch::hal::timer_current_ticks() as u64);
+        write_u64(info_ptr, 8, 1);
+        write_u64(info_ptr, 16, 1);
+        write_u64(info_ptr, 24, 1);
+        write_u64(info_ptr, 32, 0);
+        write_u64(info_ptr, 40, 0);
+        write_u64(info_ptr, 48, 0);
+        write_u64(info_ptr, 56, 0);
+        write_u16(info_ptr, 104, 1);
+    }
+    0
+}
+
+fn linux_getgroups(size: u64, list_ptr: u64) -> u64 {
+    if size == 0 {
+        return 1;
+    }
+    if list_ptr == 0 {
+        return linux_err(EFAULT);
+    }
+    unsafe {
+        write_u32(list_ptr, 0, handlers::sys_getgid());
+    }
+    1
+}
+
+fn linux_setgroups(size: u64, _list_ptr: u64) -> u64 {
+    if handlers::sys_getuid() != 0 {
+        return linux_err(EPERM);
+    }
+    if size > 1024 {
+        return linux_err(EINVAL);
+    }
+    0
+}
+
+fn linux_setres_id(real: u64, effective: u64, saved: u64, uid: bool) -> u64 {
+    for value in [real, effective, saved] {
+        if value != u32::MAX as u64 && value != 0 && value != current_linux_id(uid) as u64 {
+            return linux_err(EPERM);
+        }
+    }
+    0
+}
+
+fn linux_getres_id(real_ptr: u64, effective_ptr: u64, saved_ptr: u64, uid: bool) -> u64 {
+    if real_ptr == 0 || effective_ptr == 0 || saved_ptr == 0 {
+        return linux_err(EFAULT);
+    }
+    let id = current_linux_id(uid);
+    unsafe {
+        write_u32(real_ptr, 0, id);
+        write_u32(effective_ptr, 0, id);
+        write_u32(saved_ptr, 0, id);
+    }
+    0
+}
+
+fn linux_setfs_id(id: u64, uid: bool) -> u64 {
+    let old = current_linux_id(uid);
+    if id != u32::MAX as u64 && id != 0 && id != old as u64 {
+        return linux_err(EPERM);
+    }
+    old as u64
+}
+
+fn current_linux_id(uid: bool) -> u32 {
+    if uid {
+        handlers::sys_getuid()
+    } else {
+        handlers::sys_getgid()
+    }
+}
+
+fn linux_set_root_or_current(id: u64, uid: bool) -> u64 {
+    if id == 0 || id == current_linux_id(uid) as u64 {
+        0
+    } else {
+        linux_err(EPERM)
+    }
+}
+
+fn linux_capget(header_ptr: u64, data_ptr: u64) -> u64 {
+    if header_ptr == 0 {
+        return linux_err(EFAULT);
+    }
+    const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+    unsafe {
+        write_u32(header_ptr, 0, LINUX_CAPABILITY_VERSION_3);
+    }
+    if data_ptr != 0 {
+        let effective = if handlers::sys_getuid() == 0 {
+            u32::MAX
+        } else {
+            0
+        };
+        unsafe {
+            write_u32(data_ptr, 0, effective);
+            write_u32(data_ptr, 4, effective);
+            write_u32(data_ptr, 8, 0);
+            write_u32(data_ptr, 12, effective);
+            write_u32(data_ptr, 16, effective);
+            write_u32(data_ptr, 20, 0);
+        }
+    }
+    0
+}
+
+fn linux_capset(_header_ptr: u64, _data_ptr: u64) -> u64 {
+    if handlers::sys_getuid() == 0 {
+        0
+    } else {
+        linux_err(EPERM)
+    }
+}
+
+fn linux_statfs(path_ptr: u64, buf_ptr: u64) -> u64 {
+    if buf_ptr == 0 {
+        return linux_err(EFAULT);
+    }
+    let Some(path) = linux_translate_user_path(path_ptr) else {
+        return linux_err(EFAULT);
+    };
+    linux_statfs_translated(&path, buf_ptr)
+}
+
+fn linux_fstatfs(fd: u32, buf_ptr: u64) -> u64 {
+    if buf_ptr == 0 {
+        return linux_err(EFAULT);
+    }
+    let path = match linux_fd_path(fd) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    linux_statfs_translated(&path, buf_ptr)
+}
+
+fn linux_statfs_translated(path: &str, buf_ptr: u64) -> u64 {
+    let st = crate::fs::vfs::statfs(path).unwrap_or(crate::fs::vfs::StatFs {
+        total_bytes: 64 * 1024 * 1024,
+        used_bytes: 0,
+        free_bytes: 64 * 1024 * 1024,
+    });
+    let block_size = 4096u64;
+    unsafe {
+        core::ptr::write_bytes(buf_ptr as *mut u8, 0, 120);
+        write_u64(buf_ptr, 0, 0xEF53);
+        write_u64(buf_ptr, 8, block_size);
+        write_u64(buf_ptr, 16, st.total_bytes / block_size);
+        write_u64(buf_ptr, 24, st.free_bytes / block_size);
+        write_u64(buf_ptr, 32, st.free_bytes / block_size);
+        write_u64(buf_ptr, 40, 1024 * 1024);
+        write_u64(buf_ptr, 48, 1024 * 1024);
+        write_u32(buf_ptr, 72, 255);
+        write_u64(buf_ptr, 80, block_size);
+    }
+    0
+}
+
+fn linux_prctl(option: u64, arg2: u64) -> u64 {
+    match option {
+        3 => 1,  // PR_GET_DUMPABLE
+        4 => 0,  // PR_SET_DUMPABLE
+        15 => 0, // PR_SET_NAME
+        16 => {
+            if arg2 == 0 {
+                return linux_err(EFAULT);
+            }
+            let name = b"licof\0";
+            if !super::handlers::helpers::copy_to_user_bytes(arg2, name, name.len()) {
+                return linux_err(EFAULT);
+            }
+            0
+        }
+        38 => 0, // PR_SET_NO_NEW_PRIVS
+        39 => 0, // PR_GET_NO_NEW_PRIVS
+        _ => linux_err(EINVAL),
+    }
 }
 
 fn linux_prlimit64(_pid: u64, resource: u64, _new_limit: u64, old_limit: u64) -> u64 {
@@ -719,8 +1377,28 @@ fn linux_translate_user_path(path_ptr: u64) -> Option<String> {
     super::handlers::helpers::read_user_str_safe(path_ptr).map(linux_translate_path)
 }
 
+fn linux_translate_at_path(dirfd: u64, path_ptr: u64) -> Result<String, i32> {
+    let path = super::handlers::helpers::read_user_str_safe(path_ptr).ok_or(EFAULT)?;
+    if path.starts_with('/') || (dirfd as i32) == LINUX_AT_FDCWD {
+        return Ok(linux_translate_path(path));
+    }
+    let base = linux_fd_path(dirfd as u32)?;
+    Ok(crate::fs::path::normalize(&alloc::format!(
+        "{}/{}", base, path
+    )))
+}
+
 fn linux_translate_path(path: &str) -> String {
     let abs = linux_absolute_path(path);
+    linux_translate_absolute_path(&abs)
+}
+
+fn linux_translate_absolute_path(abs: &str) -> String {
+    match abs {
+        "/dev/null" | "/dev/zero" | "/dev/console" => return String::from(abs),
+        "/dev/tty" => return String::from("/dev/console"),
+        _ => {}
+    }
     let rootfs = current_linux_rootfs();
     if abs == "/" {
         rootfs
@@ -742,6 +1420,15 @@ fn linux_absolute_path(path: &str) -> String {
             crate::fs::path::normalize(&alloc::format!("{}/{}", cwd, path))
         }
     }
+}
+
+fn linux_fd_path(fd: u32) -> Result<String, i32> {
+    let entry = crate::task::scheduler::current_fd_get(fd).ok_or(EBADF)?;
+    let global_id = match entry.kind {
+        crate::fs::fd_table::FdKind::File { global_id } => global_id,
+        _ => return Err(EBADF),
+    };
+    crate::fs::vfs::get_fd_path(global_id).map_err(fs_errno)
 }
 
 fn linux_strip_rootfs(path: &str) -> String {
@@ -850,8 +1537,28 @@ unsafe fn write_u32(base: u64, offset: u64, value: u32) {
     *((base + offset) as *mut u32) = value;
 }
 
+unsafe fn write_u16(base: u64, offset: u64, value: u16) {
+    *((base + offset) as *mut u16) = value;
+}
+
 unsafe fn write_u64(base: u64, offset: u64, value: u64) {
     *((base + offset) as *mut u64) = value;
+}
+
+unsafe fn read_u64(base: u64, offset: u64) -> u64 {
+    *((base + offset) as *const u64)
+}
+
+fn linux_dir_type(file_type: crate::fs::file::FileType) -> u8 {
+    match file_type {
+        crate::fs::file::FileType::Regular => 8,   // DT_REG
+        crate::fs::file::FileType::Directory => 4, // DT_DIR
+        crate::fs::file::FileType::Device => 2,    // DT_CHR
+    }
+}
+
+fn align_up(value: usize, alignment: usize) -> usize {
+    (value + alignment - 1) & !(alignment - 1)
 }
 
 fn map_open_flags(flags: u64) -> u32 {

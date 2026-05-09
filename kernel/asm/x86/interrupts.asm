@@ -16,6 +16,7 @@ extern isr_handler
 extern irq_handler
 extern bad_rsp_recovery
 extern bad_kernel_iret_recovery
+extern LAPIC_TO_PERCPU
 
 ; Global variable to save the corrupt RSP for diagnostics.
 ; Defined in Rust (scheduler.rs) as #[no_mangle] pub static.
@@ -25,6 +26,32 @@ extern BAD_RSP_SAVED
 ; Defined in Rust (idt.rs) as #[no_mangle] pub static mut.
 extern SAVED_FAULT_DS
 extern SAVED_FAULT_ES
+
+; LAPIC virtual address: LAPIC_VIRT_BASE(0xFFFFFFFFD0100000) + LAPIC_ID(0x20)
+%define LAPIC_ID_ADDR 0xFFFFFFFFD0100020
+
+%macro SWITCH_TO_RECOVERY_STACK 1
+    ; Save the bad stack pointer before replacing it. This macro deliberately
+    ; does not use the current stack: it is used when RSP may point at user
+    ; memory or an unmapped guard page.
+    mov [rel BAD_RSP_SAVED], rsp
+
+    ; Resolve the current CPU's PERCPU block through the LAPIC lookup table
+    ; instead of using SWAPGS. Interrupts can arrive with either user-GS or
+    ; kernel-GS active, so blindly swapping here can select the wrong base.
+    mov rax, LAPIC_ID_ADDR
+    mov eax, [rax]
+    shr eax, 24
+    movzx eax, al
+    lea rbx, [rel LAPIC_TO_PERCPU]
+    mov rbx, [rbx + rax*8]
+    test rbx, rbx
+    jz %1
+
+    mov rsp, [rbx]                 ; PERCPU.kernel_rsp
+    test rsp, rsp
+    jns %1
+%endmacro
 
 %macro VALIDATE_KERNEL_IRET 1
     ; At this point the stack top is the CPU IRETQ frame:
@@ -166,6 +193,12 @@ IRQ 23, 55      ; LAPIC Spurious / second MSI slot
 ; Common ISR stub - saves all GPRs, calls Rust isr_handler, restores state
 ; =============================================================================
 isr_common_stub:
+    ; If the CPU entered this stub on a user/low stack, do not push anything.
+    ; A push at RSP=...f000 would fault at RSP-8 and turn the original fault
+    ; into a double fault before Rust can recover.
+    test rsp, rsp
+    jns .bad_rsp
+
     ; Capture DS/ES BEFORE overwriting — for #GP diagnostics.
     ; In 64-bit long mode, DS base is forced to 0, so RIP-relative
     ; addressing works even when DS holds a null selector (0x0000).
@@ -272,18 +305,7 @@ isr_common_stub:
     out dx, al
     mov al, 10
     out dx, al
-    ; --- RECOVERY: switch to valid kernel stack and call Rust handler ---
-    ; This fires on Ring 3→0 transition with corrupt TSS.RSP0.
-    ; Save the corrupt RSP for diagnostics before overwriting it.
-    mov [rel BAD_RSP_SAVED], rsp
-    ; At this point: KERNEL_GS_BASE = PERCPU (not swapped yet).
-    ; SWAPGS gives us access to PERCPU.kernel_rsp at [gs:0].
-    swapgs
-    mov rsp, [gs:0]             ; RSP = per-CPU kernel_rsp (idle thread stack)
-    swapgs                      ; restore GS for normal kernel operation
-    ; Validate the loaded RSP is in kernel higher-half
-    test rsp, rsp
-    jns .recovery_failed
+    SWITCH_TO_RECOVERY_STACK .recovery_failed
     ; Set up kernel data segments
     mov ax, 0x10
     mov ds, ax
@@ -299,6 +321,11 @@ isr_common_stub:
 ; Common IRQ stub - saves all GPRs, calls Rust irq_handler, restores state
 ; =============================================================================
 irq_common_stub:
+    ; Same early guard as ISR: recover before the first push can fault on a
+    ; user/low stack.
+    test rsp, rsp
+    jns .bad_rsp
+
     ; Capture DS/ES BEFORE overwriting (same as ISR stub)
     push rax
     mov ax, ds
@@ -389,13 +416,7 @@ irq_common_stub:
     out dx, al
     mov al, 10
     out dx, al
-    ; --- RECOVERY: same as ISR bad_rsp above ---
-    mov [rel BAD_RSP_SAVED], rsp
-    swapgs
-    mov rsp, [gs:0]             ; RSP = per-CPU kernel_rsp
-    swapgs
-    test rsp, rsp
-    jns .irq_recovery_failed
+    SWITCH_TO_RECOVERY_STACK .irq_recovery_failed
     mov ax, 0x10
     mov ds, ax
     mov es, ax

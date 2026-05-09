@@ -32,6 +32,16 @@ const ELF64_PH_TYPE: usize = 0;
 const ELF64_PH_OFFSET: usize = 8;
 const ELF64_PH_FILESZ: usize = 32;
 const ELF64_PH_SIZE: usize = 56;
+const FS_TYPE_REGULAR: u32 = 0;
+const FS_TYPE_DIRECTORY: u32 = 1;
+
+struct PackageLink {
+    index: u32,
+    rel: String,
+    dest: String,
+    target: String,
+    symlink: bool,
+}
 
 anyos_std::entry!(main);
 
@@ -140,7 +150,9 @@ fn create_rootfs(config: &LicoConfig, name: &str, configure_password: bool) {
 
     println!("licof: rootfs '{}' ready at {}", name, rootfs);
     println!("licof: bootstrapping minimal Debian userland with apt");
-    if bootstrap_rootfs(config, &rootfs) && configure_password {
+    let bootstrapped = bootstrap_rootfs(config, &rootfs);
+    repair_rootfs_runtime(&rootfs);
+    if bootstrapped && configure_password {
         configure_root_password(config, &rootfs);
     } else if configure_password {
         println!("licof rootfs: bootstrap incomplete; skipping root password setup");
@@ -815,6 +827,7 @@ fn install_deb(config: &LicoConfig, path: &str, rootfs: &str, info: Option<&Pack
     }
 
     let mut files = 0u32;
+    let mut links = Vec::new();
     for i in 0..reader.entry_count() {
         let name = reader.entry_name(i);
         let Some(rel) = sanitize_tar_path(&name) else {
@@ -826,22 +839,21 @@ fn install_deb(config: &LicoConfig, path: &str, rootfs: &str, info: Option<&Pack
             ensure_dir_recursive(&dest);
             apply_tar_metadata(&reader, i, &dest);
         } else if typeflag == b'2' {
-            ensure_parent_dirs(&dest);
-            let link_name = reader.entry_link_name(i);
-            if link_name.is_empty() || fs::symlink(&link_name, &dest) != 0 {
-                println!(
-                    "licof pkg: failed to create symlink {} -> {}",
-                    rel, link_name
-                );
-            } else {
-                files += 1;
-            }
-        } else if typeflag == b'1' {
-            println!(
-                "licof pkg: skipping hardlink {} -> {}",
+            links.push(PackageLink {
+                index: i,
                 rel,
-                reader.entry_link_name(i)
-            );
+                dest,
+                target: reader.entry_link_name(i),
+                symlink: true,
+            });
+        } else if typeflag == b'1' {
+            links.push(PackageLink {
+                index: i,
+                rel,
+                dest,
+                target: reader.entry_link_name(i),
+                symlink: false,
+            });
         } else {
             ensure_parent_dirs(&dest);
             if reader.extract_to_file(i, &dest) {
@@ -850,6 +862,21 @@ fn install_deb(config: &LicoConfig, path: &str, rootfs: &str, info: Option<&Pack
             } else {
                 println!("licof pkg: failed to extract {}", rel);
             }
+        }
+    }
+    for link in &links {
+        if install_package_link(rootfs, &reader, link) {
+            files += 1;
+        } else if link.symlink {
+            println!(
+                "licof pkg: failed to create symlink {} -> {}",
+                link.rel, link.target
+            );
+        } else {
+            println!(
+                "licof pkg: failed to materialize hardlink {} -> {}",
+                link.rel, link.target
+            );
         }
     }
     if files == 0 {
@@ -879,6 +906,63 @@ fn apply_tar_metadata(reader: &libzip_client::TarReader, index: u32, path: &str)
     if uid != 0 || gid != 0 {
         let _ = fs::chown(path, uid, gid);
     }
+}
+
+fn install_package_link(
+    rootfs: &str,
+    reader: &libzip_client::TarReader,
+    link: &PackageLink,
+) -> bool {
+    if link.target.is_empty() {
+        return false;
+    }
+    ensure_parent_dirs(&link.dest);
+    if materialize_link_target(rootfs, &link.dest, &link.target, link.symlink) {
+        apply_tar_metadata(reader, link.index, &link.dest);
+        return true;
+    }
+    if link.symlink && fs::symlink(&link.target, &link.dest) == 0 {
+        apply_tar_metadata(reader, link.index, &link.dest);
+        return true;
+    }
+    false
+}
+
+fn materialize_link_target(rootfs: &str, dest: &str, target: &str, symlink: bool) -> bool {
+    let Some(src) = resolve_package_link_target(rootfs, dest, target, symlink) else {
+        return false;
+    };
+    if !path_under_rootfs(rootfs, &src) {
+        return false;
+    }
+    let mut stat_buf = [0u32; 7];
+    if fs::stat(&src, &mut stat_buf) != 0 {
+        return false;
+    }
+    let _ = fs::unlink(dest);
+    if stat_buf[0] == FS_TYPE_DIRECTORY {
+        ensure_dir_recursive(dest);
+        true
+    } else {
+        copy_file(&src, dest)
+    }
+}
+
+fn resolve_package_link_target(
+    rootfs: &str,
+    dest: &str,
+    target: &str,
+    symlink: bool,
+) -> Option<String> {
+    if target.starts_with('/') {
+        return Some(normalize_abs_path(&alloc::format!("{}{}", rootfs, target)));
+    }
+    if symlink {
+        let parent = dest.rfind('/').map(|pos| &dest[..pos]).unwrap_or(rootfs);
+        return Some(normalize_abs_path(&alloc::format!("{}/{}", parent, target)));
+    }
+    let clean = sanitize_tar_path(target)?;
+    Some(normalize_abs_path(&alloc::format!("{}/{}", rootfs, clean)))
 }
 
 fn data_tar_reader(data: &[u8], path: &str) -> Option<libzip_client::TarReader> {
@@ -1010,6 +1094,109 @@ fn rootfs_for_path(config: &LicoConfig, path: &str) -> String {
 
 fn path_exists(path: &str) -> bool {
     fs::stat(path, &mut [0u32; 7]) == 0
+}
+
+fn regular_file_exists(path: &str) -> bool {
+    let mut stat_buf = [0u32; 7];
+    fs::stat(path, &mut stat_buf) == 0 && stat_buf[0] == FS_TYPE_REGULAR
+}
+
+fn repair_rootfs_runtime(rootfs: &str) {
+    ensure_dir_recursive(&linux_path_in_rootfs(rootfs, "/lib64"));
+    repair_dynamic_loader(rootfs);
+    repair_common_library_links(rootfs, "/lib/x86_64-linux-gnu");
+    repair_common_library_links(rootfs, "/usr/lib/x86_64-linux-gnu");
+}
+
+fn repair_dynamic_loader(rootfs: &str) {
+    let interp = linux_path_in_rootfs(rootfs, "/lib64/ld-linux-x86-64.so.2");
+    if is_elf_file(&interp) {
+        return;
+    }
+    let candidates = [
+        "/lib/x86_64-linux-gnu/ld-2.13.so",
+        "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+    ];
+    for candidate in &candidates {
+        let src = linux_path_in_rootfs(rootfs, candidate);
+        if is_elf_file(&src) {
+            let _ = fs::unlink(&interp);
+            if copy_file(&src, &interp) {
+                println!("licof rootfs: repaired dynamic loader {}", interp);
+            }
+            return;
+        }
+    }
+}
+
+fn repair_common_library_links(rootfs: &str, linux_dir: &str) {
+    let dir = linux_path_in_rootfs(rootfs, linux_dir);
+    let entries = read_dir_entries(&dir);
+    for name in &entries {
+        if name.starts_with("ld-") && name.ends_with(".so") {
+            let src = alloc::format!("{}/{}", dir, name);
+            materialize_known_library(&src, &alloc::format!("{}/ld-linux-x86-64.so.2", dir));
+        } else if name.starts_with("libc-") && name.ends_with(".so") {
+            let src = alloc::format!("{}/{}", dir, name);
+            materialize_known_library(&src, &alloc::format!("{}/libc.so.6", dir));
+        } else if let Some(pos) = name.find(".so.") {
+            let src = alloc::format!("{}/{}", dir, name);
+            let version = &name[pos + 4..];
+            if let Some(first_dot) = version.find('.') {
+                let soname = alloc::format!("{}{}", &name[..pos + 4], &version[..first_dot]);
+                materialize_known_library(&src, &alloc::format!("{}/{}", dir, soname));
+                if let Some(second_dot) = version[first_dot + 1..].find('.') {
+                    let end = first_dot + 1 + second_dot;
+                    let soname = alloc::format!("{}{}", &name[..pos + 4], &version[..end]);
+                    materialize_known_library(&src, &alloc::format!("{}/{}", dir, soname));
+                }
+            }
+        }
+    }
+}
+
+fn materialize_known_library(src: &str, dest: &str) {
+    if !is_elf_file(src) || is_elf_file(dest) {
+        return;
+    }
+    let _ = fs::unlink(dest);
+    let _ = copy_file(src, dest);
+}
+
+fn read_dir_entries(path: &str) -> Vec<String> {
+    let mut buf = [0u8; 8192];
+    let count = fs::readdir(path, &mut buf);
+    if count == u32::MAX {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let max_entries = (buf.len() / 64).min(count as usize);
+    for idx in 0..max_entries {
+        let off = idx * 64;
+        let name_len = buf[off + 1] as usize;
+        if name_len == 0 || name_len > 55 {
+            continue;
+        }
+        if let Ok(name) = core::str::from_utf8(&buf[off + 8..off + 8 + name_len]) {
+            out.push(String::from(name));
+        }
+    }
+    out
+}
+
+fn is_elf_file(path: &str) -> bool {
+    if !regular_file_exists(path) {
+        return false;
+    }
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut magic = [0u8; 4];
+    match file.read(&mut magic) {
+        Ok(4) => magic == [0x7f, b'E', b'L', b'F'],
+        _ => false,
+    }
 }
 
 fn file_size(path: &str) -> u32 {
@@ -1363,6 +1550,31 @@ fn ensure_parent_dirs(path: &str) {
             ensure_dir_recursive(&path[..pos]);
         }
     }
+}
+
+fn normalize_abs_path(path: &str) -> String {
+    let mut parts = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    let mut out = String::from("/");
+    for (idx, part) in parts.iter().enumerate() {
+        if idx > 0 {
+            out.push('/');
+        }
+        out.push_str(part);
+    }
+    out
+}
+
+fn path_under_rootfs(rootfs: &str, path: &str) -> bool {
+    path == rootfs || (path.starts_with(rootfs) && path.as_bytes().get(rootfs.len()) == Some(&b'/'))
 }
 
 fn join_args(args: &[&str]) -> String {

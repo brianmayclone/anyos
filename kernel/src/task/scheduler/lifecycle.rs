@@ -458,7 +458,7 @@ pub fn try_exit_current(code: u32) -> bool {
     enter_idle_recovery(my_cpu, idle_stack_top, idle_ctx);
 }
 
-/// Saved by interrupts.asm before the recovery SWAPGS overwrites RSP.
+/// Saved by interrupts.asm before the recovery path replaces a bad RSP.
 #[no_mangle]
 pub static mut BAD_RSP_SAVED: u64 = 0;
 
