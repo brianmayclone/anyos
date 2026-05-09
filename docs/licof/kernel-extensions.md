@@ -70,8 +70,8 @@ glibc binaries. It includes:
   `setuid`, `setgid`, `getgroups`, `setgroups`, `setresuid`, `getresuid`,
   `setresgid`, `getresgid`, `setfsuid`, `setfsgid`, `capget`, `capset`.
 - Runtime support: `arch_prctl`, `futex`, `clock_gettime`, `gettimeofday`,
-  `time`, `sysinfo`, `uname`, `getrandom`, `prlimit64`, `fcntl`, `ioctl`,
-  `poll`, `nanosleep`.
+  `time`, `sysinfo`, `uname`, `getrandom`, `getrlimit`, `setrlimit`,
+  `prlimit64`, `fcntl`, `ioctl`, `poll`, `nanosleep`.
 - Pipes and fd duplication: `pipe`, `pipe2`, `dup`, `dup2`, `dup3`.
 - Network probes: `socket` returns `-EAFNOSUPPORT` for now so glibc/NSS probes
   for services such as `nscd` fail cleanly and fall back to local files.

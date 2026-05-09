@@ -92,6 +92,7 @@ const LINUX_SYS_STATFS: u64 = 137;
 const LINUX_SYS_FSTATFS: u64 = 138;
 const LINUX_SYS_PRCTL: u64 = 157;
 const LINUX_SYS_ARCH_PRCTL: u64 = 158;
+const LINUX_SYS_SETRLIMIT: u64 = 160;
 const LINUX_SYS_GETTID: u64 = 186;
 const LINUX_SYS_TIME: u64 = 201;
 const LINUX_SYS_FUTEX: u64 = 202;
@@ -219,6 +220,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_STATFS => linux_statfs(a1, a2),
         LINUX_SYS_FSTATFS => linux_fstatfs(a1 as u32, a2),
         LINUX_SYS_PRCTL => linux_prctl(a1, a2),
+        LINUX_SYS_SETRLIMIT => linux_setrlimit(a1, a2),
         LINUX_SYS_GETTID => crate::task::scheduler::current_tid() as u64,
         LINUX_SYS_TIME => linux_time(a1),
         LINUX_SYS_FUTEX => linux_futex(a1, a2, a3),
@@ -1715,6 +1717,14 @@ fn linux_prlimit64(_pid: u64, resource: u64, _new_limit: u64, old_limit: u64) ->
         write_u64(old_limit, 0, cur);
         write_u64(old_limit, 8, max);
     }
+    0
+}
+
+fn linux_setrlimit(resource: u64, limit_ptr: u64) -> u64 {
+    if limit_ptr == 0 || !handlers::helpers::is_user_range_accessible(limit_ptr, 16) {
+        return linux_err(EFAULT);
+    }
+    crate::serial_println!("licof linux setrlimit: resource={} -> ok", resource);
     0
 }
 

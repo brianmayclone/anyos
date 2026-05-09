@@ -139,6 +139,7 @@ fn ensure_rootfs_layout(config: &LicoConfig) {
     ensure_dir(&alloc::format!("{}/etc", rootfs));
     ensure_dir(&alloc::format!("{}/etc/apt", rootfs));
     ensure_dir(&alloc::format!("{}/etc/apt/apt.conf.d", rootfs));
+    ensure_dir(&alloc::format!("{}/etc/pam.d", rootfs));
     ensure_dir(&alloc::format!("{}/root", rootfs));
     let _ = fs::write_bytes(
         &alloc::format!("{}/etc/apt/sources.list", rootfs),
@@ -171,6 +172,34 @@ fn ensure_linux_account_files(rootfs: &str) {
         rootfs,
         "/etc/nsswitch.conf",
         b"passwd: files\ngroup: files\nshadow: files\nhosts: files dns\nnetworks: files\nprotocols: files\nservices: files\nethers: files\nrpc: files\n",
+        0o644,
+    );
+    ensure_linux_pam_files(rootfs);
+}
+
+fn ensure_linux_pam_files(rootfs: &str) {
+    ensure_rootfs_file(
+        rootfs,
+        "/etc/pam.d/common-auth",
+        b"auth [success=1 default=ignore] pam_unix.so nullok_secure\nauth requisite pam_deny.so\nauth required pam_permit.so\n",
+        0o644,
+    );
+    ensure_rootfs_file(
+        rootfs,
+        "/etc/pam.d/common-account",
+        b"account [success=1 new_authtok_reqd=done default=ignore] pam_unix.so\naccount requisite pam_deny.so\naccount required pam_permit.so\n",
+        0o644,
+    );
+    ensure_rootfs_file(
+        rootfs,
+        "/etc/pam.d/common-password",
+        b"password [success=1 default=ignore] pam_unix.so obscure sha512\npassword requisite pam_deny.so\npassword required pam_permit.so\n",
+        0o644,
+    );
+    ensure_rootfs_file(
+        rootfs,
+        "/etc/pam.d/common-session",
+        b"session required pam_unix.so\n",
         0o644,
     );
 }

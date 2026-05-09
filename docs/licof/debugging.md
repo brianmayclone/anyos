@@ -232,7 +232,9 @@ ls /System/var/licof/rootfs/etc/
 At minimum, `/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/gshadow`, and
 `/etc/nsswitch.conf` should exist. `licof init` creates conservative seed
 versions only when they are missing, because Debian maintainer scripts are not
-executed during package extraction.
+executed during package extraction. PAM tools also need `/etc/pam.d/common-auth`,
+`common-account`, `common-password`, and `common-session`; these are seeded the
+same way.
 
 ## Adding a New Syscall
 
