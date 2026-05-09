@@ -96,6 +96,42 @@ pub fn alloc_region64(pd: PhysAddr, size: u64) -> Option<u64> {
     alloc_region_in(pd, size, true)
 }
 
+/// Reserve a specific mmap range after the caller has unmapped any overlap.
+pub fn alloc_fixed_region64(pd: PhysAddr, addr: u64, size: u64) -> bool {
+    if size == 0 || (addr & 0xFFF) != 0 {
+        return false;
+    }
+    let end = match addr.checked_add(size) {
+        Some(end) => end,
+        None => return false,
+    };
+    let (base, limit) = if addr >= MMAP64_BASE {
+        (MMAP64_BASE, MMAP64_LIMIT)
+    } else {
+        (MMAP_BASE, MMAP_LIMIT)
+    };
+    if addr < base || end > limit {
+        return false;
+    }
+
+    let mut reg = VMA_REGISTRY.lock();
+    let proc = match reg.iter_mut().find(|p| p.pd == pd) {
+        Some(proc) => proc,
+        None => return false,
+    };
+    if vma_overlaps(&proc.vmas, addr, end) {
+        return false;
+    }
+    insert_vma_sorted(
+        &mut proc.vmas,
+        Vma {
+            start: addr,
+            size,
+            flags: 0x02 | 0x04,
+        },
+    )
+}
+
 fn alloc_region_in(pd: PhysAddr, size: u64, high: bool) -> Option<u64> {
     if size == 0 {
         return None;
@@ -286,6 +322,18 @@ fn insert_vma_sorted(head: &mut Option<VmaNodeBox>, vma: Vma) -> bool {
     node.next = cursor.take();
     *cursor = Some(node);
     true
+}
+
+fn vma_overlaps(head: &Option<VmaNodeBox>, start: u64, end: u64) -> bool {
+    let mut cur = head.as_deref();
+    while let Some(node) = cur {
+        let vma_end = node.vma.start + node.vma.size;
+        if node.vma.start < end && vma_end > start {
+            return true;
+        }
+        cur = node.next.as_deref();
+    }
+    false
 }
 
 fn collect_vmas(head: &mut Option<VmaNodeBox>) -> Vec<Vma> {

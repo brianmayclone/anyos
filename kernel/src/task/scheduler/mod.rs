@@ -2460,6 +2460,12 @@ fn schedule_inner(from_timer: bool) {
         // Set FPU trap — next FPU/SSE instruction triggers lazy restore
         crate::arch::hal::fpu_set_trap();
 
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            let fs_base = crate::task::scheduler::current_thread_linux_fs_base();
+            crate::arch::x86::power::wrmsr(0xC000_0100, fs_base);
+        }
+
         // Clear in-scheduler flag BEFORE context_switch. Interrupts are disabled
         // (release_no_irq_restore kept IF=0), so no timer can fire between the
         // clear and the switch. This is CRITICAL because if the new thread is

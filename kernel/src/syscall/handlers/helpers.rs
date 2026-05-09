@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 
 /// Make a relative path absolute using the current thread's working directory.
 /// Normalizes `.` and `..` components so e.g. `"."` resolves to the CWD itself.
-pub(super) fn resolve_path(path: &str) -> String {
+pub(crate) fn resolve_path(path: &str) -> String {
     let abs = if path.starts_with('/') {
         String::from(path)
     } else {
@@ -28,7 +28,7 @@ pub(super) fn resolve_path(path: &str) -> String {
 /// Convert an FsError into a negated-errno return value.
 /// Convention: success = 0, error = (-errno) as u32.
 /// The libc side checks `(int)ret < 0` and does `errno = -(int)ret`.
-pub(super) fn fs_err(e: crate::fs::vfs::FsError) -> u32 {
+pub(crate) fn fs_err(e: crate::fs::vfs::FsError) -> u32 {
     use crate::fs::vfs::FsError;
     let errno: i32 = match e {
         FsError::NotFound => 2,           // ENOENT
@@ -50,7 +50,7 @@ pub(super) fn fs_err(e: crate::fs::vfs::FsError) -> u32 {
 /// Validate that a user pointer is in user address space (below kernel half).
 /// Returns false if the pointer is NULL, in kernel space, or if ptr+len overflows.
 #[inline]
-pub(super) fn is_valid_user_ptr(ptr: u64, len: u64) -> bool {
+pub(crate) fn is_valid_user_ptr(ptr: u64, len: u64) -> bool {
     if ptr == 0 {
         return false;
     }
@@ -77,7 +77,7 @@ fn is_user_page_accessible(addr: u64) -> bool {
 /// Check that a user-space range is valid and currently mapped in the active
 /// address space. The first page and every crossed 4 KiB page boundary are
 /// probed before callers dereference user memory.
-pub(super) fn is_user_range_accessible(ptr: u64, len: u64) -> bool {
+pub(crate) fn is_user_range_accessible(ptr: u64, len: u64) -> bool {
     if len == 0 || !is_valid_user_ptr(ptr, len) || !is_user_page_accessible(ptr) {
         return false;
     }
@@ -100,7 +100,7 @@ pub(super) fn is_user_range_accessible(ptr: u64, len: u64) -> bool {
 ///
 /// Returns `None` if the pointer is invalid, unmapped, or the requested length
 /// exceeds `max_len`. Every crossed page is validated before dereference.
-pub(super) fn copy_user_bytes(ptr: u64, len: usize, max_len: usize) -> Option<Vec<u8>> {
+pub(crate) fn copy_user_bytes(ptr: u64, len: usize, max_len: usize) -> Option<Vec<u8>> {
     if len == 0 || len > max_len || !is_valid_user_ptr(ptr, len as u64) {
         return None;
     }
@@ -126,7 +126,7 @@ pub(super) fn copy_user_bytes(ptr: u64, len: usize, max_len: usize) -> Option<Ve
 ///
 /// Returns `false` if the destination is invalid, unmapped, or the requested
 /// length exceeds `max_len`. Every crossed page is validated before write.
-pub(super) fn copy_to_user_bytes(ptr: u64, data: &[u8], max_len: usize) -> bool {
+pub(crate) fn copy_to_user_bytes(ptr: u64, data: &[u8], max_len: usize) -> bool {
     let len = data.len();
     if len == 0 || len > max_len || !is_valid_user_ptr(ptr, len as u64) {
         return false;
@@ -154,7 +154,7 @@ pub(super) fn copy_to_user_bytes(ptr: u64, data: &[u8], max_len: usize) -> bool 
 /// Validates page mapping at the initial pointer and at every 4K page boundary
 /// to prevent kernel page faults from unmapped user pages.
 /// Uses safe UTF-8 validation on untrusted user data.
-pub(super) fn read_user_str_safe(ptr: u64) -> Option<&'static str> {
+pub(crate) fn read_user_str_safe(ptr: u64) -> Option<&'static str> {
     if !is_user_page_accessible(ptr) {
         return None;
     }
@@ -187,7 +187,7 @@ pub(super) fn read_user_str_safe(ptr: u64) -> Option<&'static str> {
 /// Validates page mapping at the initial pointer and at every 4K page boundary
 /// to prevent kernel page faults from unmapped user pages.
 /// Uses safe UTF-8 validation on untrusted user data.
-pub(super) unsafe fn read_user_str(ptr: u64) -> &'static str {
+pub(crate) unsafe fn read_user_str(ptr: u64) -> &'static str {
     if !is_user_page_accessible(ptr) {
         return "";
     }

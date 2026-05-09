@@ -229,6 +229,10 @@ pub struct Thread {
     pub parent_tid: u32,
     /// Userspace ABI personality for syscall dispatch.
     pub abi: AbiPersonality,
+    /// licof rootfs backing Linux ABI path translation.
+    pub linux_rootfs: [u8; 512],
+    /// Linux x86_64 FS base used for glibc TLS.
+    pub linux_fs_base: u64,
 
     // ---- Debug / trace state (anyTrace) ----
     /// TID of the debugger thread attached to this thread (0 = not attached).
@@ -386,6 +390,8 @@ impl Thread {
             signals: SignalState::new(),
             parent_tid: 0,
             abi: AbiPersonality::AnyOs,
+            linux_rootfs: [0u8; 512],
+            linux_fs_base: 0,
             debug_attached_by: 0,
             debug_suspended: false,
             debug_sw_breakpoints: [(0, 0); 16],

@@ -59,6 +59,72 @@ pub fn current_thread_abi() -> AbiPersonality {
     AbiPersonality::AnyOs
 }
 
+/// Set the licof rootfs used by Linux ABI path translation.
+pub fn set_thread_linux_rootfs(tid: u32, rootfs: &str) {
+    let mut guard = SCHEDULER.lock();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        let bytes = rootfs.as_bytes();
+        let len = bytes.len().min(511);
+        thread.linux_rootfs = [0u8; 512];
+        thread.linux_rootfs[..len].copy_from_slice(&bytes[..len]);
+    }
+}
+
+/// Copy the current thread's licof rootfs into `buf`.
+pub fn current_thread_linux_rootfs(buf: &mut [u8]) -> usize {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            let rootfs = &sched.threads[idx].linux_rootfs;
+            let len = rootfs.iter().position(|&b| b == 0).unwrap_or(512);
+            let copy_len = len.min(buf.len());
+            buf[..copy_len].copy_from_slice(&rootfs[..copy_len]);
+            return copy_len;
+        }
+    }
+    0
+}
+
+/// Set the current Linux thread's x86_64 FS base.
+pub fn set_thread_linux_fs_base(tid: u32, fs_base: u64) {
+    let mut guard = SCHEDULER.lock();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.linux_fs_base = fs_base;
+    }
+}
+
+/// Set the current Linux thread's x86_64 FS base.
+pub fn set_current_thread_linux_fs_base(fs_base: u64) {
+    let mut guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            sched.threads[idx].linux_fs_base = fs_base;
+        }
+    }
+}
+
+/// Read the current scheduler-selected thread's Linux FS base.
+pub fn current_thread_linux_fs_base() -> u64 {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            return sched.threads[idx].linux_fs_base;
+        }
+    }
+    0
+}
+
 /// Get the current thread's page directory.
 pub fn current_thread_page_directory() -> Option<PhysAddr> {
     let guard = SCHEDULER.lock();

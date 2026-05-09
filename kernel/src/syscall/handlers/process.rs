@@ -817,13 +817,7 @@ pub fn sys_licof_spawn(path_ptr: u64, args_ptr: u64) -> u32 {
 
     match crate::task::loader::load_and_run_linux_with_args(path, name, args) {
         Ok(tid) => {
-            let mut cwd_buf = [0u8; 512];
-            let cwd_len = crate::task::scheduler::current_thread_cwd(&mut cwd_buf);
-            if cwd_len > 0 {
-                if let Ok(cwd) = core::str::from_utf8(&cwd_buf[..cwd_len]) {
-                    crate::task::scheduler::set_thread_cwd(tid, cwd);
-                }
-            }
+            crate::task::scheduler::set_thread_cwd(tid, "/");
             if let Some(parent_pd) = crate::task::scheduler::current_thread_page_directory() {
                 if let Some(child_pd) = crate::task::scheduler::thread_page_directory(tid) {
                     crate::task::env::clone_env(parent_pd.0, child_pd.0);
@@ -917,6 +911,13 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
         }
     }
 
+    let linux_rootfs_len = snap.linux_rootfs.iter().position(|&b| b == 0).unwrap_or(0);
+    if linux_rootfs_len > 0 {
+        if let Ok(rootfs) = core::str::from_utf8(&snap.linux_rootfs[..linux_rootfs_len]) {
+            scheduler::set_thread_linux_rootfs(child_tid, rootfs);
+        }
+    }
+
     // Args
     let args_len = snap.args.iter().position(|&b| b == 0).unwrap_or(0);
     if args_len > 0 {
@@ -929,6 +930,9 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
     scheduler::set_thread_capabilities(child_tid, snap.capabilities);
     scheduler::set_thread_identity(child_tid, snap.uid, snap.gid);
     scheduler::set_thread_abi(child_tid, snap.abi);
+    if snap.abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
+        scheduler::set_thread_linux_fs_base(child_tid, snap.linux_fs_base);
+    }
 
     // Pipes
     if snap.stdout_pipe != 0 {
@@ -1072,6 +1076,13 @@ pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
         }
     }
 
+    let linux_rootfs_len = snap.linux_rootfs.iter().position(|&b| b == 0).unwrap_or(0);
+    if linux_rootfs_len > 0 {
+        if let Ok(rootfs) = core::str::from_utf8(&snap.linux_rootfs[..linux_rootfs_len]) {
+            scheduler::set_thread_linux_rootfs(child_tid, rootfs);
+        }
+    }
+
     let args_len = snap.args.iter().position(|&b| b == 0).unwrap_or(0);
     if args_len > 0 {
         if let Ok(args) = core::str::from_utf8(&snap.args[..args_len]) {
@@ -1082,6 +1093,9 @@ pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
     scheduler::set_thread_capabilities(child_tid, snap.capabilities);
     scheduler::set_thread_identity(child_tid, snap.uid, snap.gid);
     scheduler::set_thread_abi(child_tid, snap.abi);
+    if snap.abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
+        scheduler::set_thread_linux_fs_base(child_tid, snap.linux_fs_base);
+    }
 
     if snap.stdout_pipe != 0 {
         scheduler::set_thread_stdout_pipe(child_tid, snap.stdout_pipe);

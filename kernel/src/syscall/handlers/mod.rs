@@ -9,7 +9,7 @@ mod device;
 mod disk;
 mod display;
 mod filesystem;
-mod helpers;
+pub(crate) mod helpers;
 mod io;
 mod ipc;
 #[cfg(target_arch = "x86_64")]

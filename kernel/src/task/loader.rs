@@ -681,6 +681,7 @@ const AT_PLATFORM: u64 = 15;
 const AT_RANDOM: u64 = 25;
 const AT_EXECFN: u64 = 31;
 
+const LICOF_ROOTFS_DIR: &str = "/System/var/licof/rootfs";
 const LICOF_ROOTFS_DEFAULT: &str = "/System/var/licof/rootfs/default";
 const LINUX_MAIN_DYN_BASE: u64 = 0x0000_5555_0000_0000;
 const LINUX_INTERP_BASE: u64 = 0x0000_7000_0000_0000;
@@ -815,11 +816,26 @@ fn inspect_linux_elf64(data: &[u8]) -> Result<LinuxElf64Info, &'static str> {
     })
 }
 
-fn licof_resolve_interp_path(path: &str) -> alloc::string::String {
+fn licof_rootfs_for_binary(path: &str) -> alloc::string::String {
+    if path.starts_with(LICOF_ROOTFS_DIR) {
+        let prefix_len = LICOF_ROOTFS_DIR.len();
+        if path.as_bytes().get(prefix_len) == Some(&b'/') {
+            let rest = &path[prefix_len + 1..];
+            if let Some(end) = rest.find('/') {
+                if end > 0 {
+                    return alloc::format!("{}/{}", LICOF_ROOTFS_DIR, &rest[..end]);
+                }
+            }
+        }
+    }
+    alloc::string::String::from(LICOF_ROOTFS_DEFAULT)
+}
+
+fn licof_resolve_interp_path(rootfs: &str, path: &str) -> alloc::string::String {
     if path.starts_with('/') {
-        alloc::format!("{}{}", LICOF_ROOTFS_DEFAULT, path)
+        alloc::format!("{}{}", rootfs, path)
     } else {
-        alloc::format!("{}/{}", LICOF_ROOTFS_DEFAULT, path)
+        alloc::format!("{}/{}", rootfs, path)
     }
 }
 
@@ -1665,6 +1681,11 @@ fn load_and_run_with_args_abi(
         virtual_mem::create_user_page_directory()
     }
     .ok_or("Failed to create user page directory")?;
+    let linux_rootfs = if abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
+        licof_rootfs_for_binary(actual_path)
+    } else {
+        alloc::string::String::from(LICOF_ROOTFS_DEFAULT)
+    };
 
     let (mut entry_point, brk);
     let mut total_user_pages: u32 = 0;
@@ -1764,7 +1785,7 @@ fn load_and_run_with_args_abi(
                     .ok_or("licof: AT_PHDR load bias overflow")?;
             }
             if let Some(ref interp_path) = info.interp_path {
-                let resolved_interp = licof_resolve_interp_path(interp_path);
+                let resolved_interp = licof_resolve_interp_path(&linux_rootfs, interp_path);
                 let interp_data = crate::fs::vfs::read_file_to_vec(&resolved_interp)
                     .map_err(|_| "licof: failed to read PT_INTERP from rootfs")?;
                 let interp_info = inspect_linux_elf64(&interp_data)?;
@@ -1888,6 +1909,10 @@ fn load_and_run_with_args_abi(
     crate::memory::vma::init_process(pd_phys, mmap_start);
     crate::task::scheduler::set_thread_user_info(tid, pd_phys, brk);
     crate::task::scheduler::set_thread_abi(tid, abi);
+    if abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
+        crate::task::scheduler::set_thread_linux_rootfs(tid, &linux_rootfs);
+        crate::task::scheduler::set_thread_cwd(tid, "/");
+    }
     if total_user_pages > 0 {
         crate::task::scheduler::adjust_thread_user_pages(tid, total_user_pages as i32);
     }

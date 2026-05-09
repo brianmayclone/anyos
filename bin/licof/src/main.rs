@@ -685,7 +685,8 @@ fn diagnose_linux_binary(config: &LicoConfig, label: &str, path: &str) {
         );
     }
     if let Some(interp) = info.interp_path {
-        let resolved = linux_path_in_rootfs(&config.default_rootfs, &interp);
+        let rootfs = rootfs_for_path(config, path);
+        let resolved = linux_path_in_rootfs(&rootfs, &interp);
         if path_exists(&resolved) {
             println!("{}: PT_INTERP {} -> {}", label, interp, resolved);
         } else {
@@ -993,6 +994,20 @@ fn linux_path_in_rootfs(rootfs: &str, linux_path: &str) -> String {
     alloc::format!("{}/{}", rootfs, rel)
 }
 
+fn rootfs_for_path(config: &LicoConfig, path: &str) -> String {
+    let rootfs_dir = config.rootfs_dir.trim_end_matches('/');
+    let prefix_len = rootfs_dir.len();
+    if path.starts_with(rootfs_dir) && path.as_bytes().get(prefix_len) == Some(&b'/') {
+        let rest = &path[prefix_len + 1..];
+        if let Some(end) = rest.find('/') {
+            if end > 0 {
+                return alloc::format!("{}/{}", rootfs_dir, &rest[..end]);
+            }
+        }
+    }
+    config.default_rootfs.clone()
+}
+
 fn path_exists(path: &str) -> bool {
     fs::stat(path, &mut [0u32; 7]) == 0
 }
@@ -1130,25 +1145,30 @@ fn gzip_status_text(status: u32) -> &'static str {
 
 fn download_url(config: &LicoConfig, url: &str, dest: &str) -> bool {
     if libhttp_client::init() {
-        for attempt in 1..=config.download_attempts {
+        let mut last_error = String::new();
+        for _attempt in 1..=config.download_attempts {
             let _ = fs::unlink(dest);
             if !libhttp_client::download(url, dest) {
-                println!(
-                    "licof download: libhttp failed with status {} error {}",
+                last_error = alloc::format!(
+                    "libhttp failed with status {} error {}",
                     libhttp_client::last_status(),
                     libhttp_client::last_error()
                 );
                 continue;
             }
             if file_size(dest) == 0 {
-                println!("licof download: libhttp produced an empty file: {}", dest);
+                last_error = alloc::format!("libhttp produced an empty file: {}", dest);
                 continue;
-            }
-            if attempt > 1 {
-                println!("licof download: succeeded on attempt {}", attempt);
             }
             return true;
         }
+        if last_error.is_empty() {
+            last_error.push_str("libhttp download failed");
+        }
+        println!(
+            "licof download: failed after {} attempts: {}",
+            config.download_attempts, last_error
+        );
         return false;
     }
 
@@ -1157,37 +1177,42 @@ fn download_url(config: &LicoConfig, url: &str, dest: &str) -> bool {
         println!("licof download: wget not found at {}", config.wget);
         return false;
     }
-    for attempt in 1..=config.download_attempts {
+    let mut last_error = String::new();
+    for _attempt in 1..=config.download_attempts {
         let _ = fs::unlink(dest);
         let args = alloc::format!("-q -O {} {}", dest, url);
         let tid = process::spawn(&config.wget, &args);
         if tid == u32::MAX {
-            println!("licof download: failed to start wget");
-            return false;
+            last_error = String::from("failed to start wget");
+            break;
         }
 
         let code = process::waitpid(tid);
         if code == process::STILL_RUNNING {
-            println!("licof download: wget is still running");
+            last_error = String::from("wget is still running");
             continue;
         }
         if code == u32::MAX {
-            println!("licof download: wait failed for wget");
+            last_error = String::from("wait failed for wget");
             continue;
         }
         if code != 0 {
-            println!("licof download: wget exited with status {}", code);
+            last_error = alloc::format!("wget exited with status {}", code);
             continue;
         }
         if file_size(dest) == 0 {
-            println!("licof download: wget produced an empty file: {}", dest);
+            last_error = alloc::format!("wget produced an empty file: {}", dest);
             continue;
-        }
-        if attempt > 1 {
-            println!("licof download: succeeded on attempt {}", attempt);
         }
         return true;
     }
+    if last_error.is_empty() {
+        last_error.push_str("wget download failed");
+    }
+    println!(
+        "licof download: failed after {} attempts: {}",
+        config.download_attempts, last_error
+    );
     false
 }
 
