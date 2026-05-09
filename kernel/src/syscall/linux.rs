@@ -230,8 +230,31 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_PRLIMIT64 => linux_prlimit64(a1, a2, a3, a4),
         LINUX_SYS_GETRANDOM => linux_getrandom(a1, a2),
         LINUX_SYS_RSEQ => linux_err(ENOSYS),
-        _ => linux_err(ENOSYS),
+        _ => linux_unsupported_syscall(regs, a1, a2, a3, a4, a5, a6),
     }
+}
+
+fn linux_unsupported_syscall(
+    regs: &SyscallRegs,
+    a1: u64,
+    a2: u64,
+    a3: u64,
+    a4: u64,
+    a5: u64,
+    a6: u64,
+) -> u64 {
+    crate::serial_println!(
+        "licof linux: unsupported syscall nr={} rip={:#x} args={:#x},{:#x},{:#x},{:#x},{:#x},{:#x}",
+        regs.rax,
+        regs.rip,
+        a1,
+        a2,
+        a3,
+        a4,
+        a5,
+        a6
+    );
+    linux_err(ENOSYS)
 }
 
 fn linux_open(path_ptr: u64, linux_flags: u64) -> u64 {
@@ -886,8 +909,8 @@ fn linux_uname(buf_ptr: u64) -> u64 {
     }
     write_linux_uts_field(buf_ptr, 0, b"Linux");
     write_linux_uts_field(buf_ptr, 1, b"anyos");
-    write_linux_uts_field(buf_ptr, 2, b"0.0-licof");
-    write_linux_uts_field(buf_ptr, 3, b"licof");
+    write_linux_uts_field(buf_ptr, 2, b"3.2.0-licof");
+    write_linux_uts_field(buf_ptr, 3, b"#1 anyOS licof Linux ABI");
     write_linux_uts_field(buf_ptr, 4, b"x86_64");
     write_linux_uts_field(buf_ptr, 5, b"anyos");
     0

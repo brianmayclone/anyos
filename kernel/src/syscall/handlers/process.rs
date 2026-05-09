@@ -817,6 +817,14 @@ pub fn sys_licof_spawn(path_ptr: u64, args_ptr: u64) -> u32 {
 
     match crate::task::loader::load_and_run_linux_with_args(path, name, args) {
         Ok(tid) => {
+            let stdout_pipe = crate::task::scheduler::current_thread_stdout_pipe();
+            let stdin_pipe = crate::task::scheduler::current_thread_stdin_pipe();
+            if stdout_pipe != 0 {
+                crate::task::scheduler::set_thread_stdout_pipe(tid, stdout_pipe);
+            }
+            if stdin_pipe != 0 {
+                crate::task::scheduler::set_thread_stdin_pipe(tid, stdin_pipe);
+            }
             crate::task::scheduler::set_thread_cwd(tid, "/");
             if let Some(parent_pd) = crate::task::scheduler::current_thread_page_directory() {
                 if let Some(child_pd) = crate::task::scheduler::thread_page_directory(tid) {
