@@ -8,7 +8,8 @@ fn exports_def_contains_all_c_abi_symbols() {
         .parent()
         .and_then(Path::parent)
         .expect("repo root");
-    let source = fs::read_to_string(repo.join("libs/libzip/src/lib.rs")).expect("read libzip source");
+    let source =
+        fs::read_to_string(repo.join("libs/libzip/src/lib.rs")).expect("read libzip source");
     let exports =
         fs::read_to_string(repo.join("libs/libzip/exports.def")).expect("read libzip exports.def");
 

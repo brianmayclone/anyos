@@ -42,8 +42,8 @@ pub fn run_full_download_test(tmp_root: &Path) -> Result<DownloadReport, String>
     fs::write(config.package_index_gz(), &index_gz)
         .map_err(|err| format!("write package index gzip: {err}"))?;
 
-    let index =
-        libzip_client::gunzip(&index_gz).ok_or_else(|| "gunzip package index failed".to_string())?;
+    let index = libzip_client::gunzip(&index_gz)
+        .ok_or_else(|| "gunzip package index failed".to_string())?;
     if index.len() < 20_000_000 || !index.starts_with(b"Package: ") {
         return Err(format!(
             "unexpected package index after gunzip: {} bytes",
@@ -318,7 +318,10 @@ fn verify_deb_payload(info: &PackageInfo, data: &[u8]) -> Result<(), String> {
             .ok_or_else(|| format!("{} data.tar.xz decompression failed", info.package))?;
         libzip_client::TarReader::from_bytes(&tar_data)
     } else {
-        return Err(format!("{} has no supported data.tar.* member", info.package));
+        return Err(format!(
+            "{} has no supported data.tar.* member",
+            info.package
+        ));
     };
     let reader = reader.ok_or_else(|| format!("{} data tar parse failed", info.package))?;
     if reader.entry_count() == 0 {
@@ -402,13 +405,14 @@ fn http_get(url: &str, redirects: u8) -> Result<Vec<u8>, String> {
         .read_to_end(&mut response)
         .map_err(|err| format!("read response {url}: {err}"))?;
 
-    let header_end = find_header_end(&response).ok_or_else(|| format!("bad HTTP response {url}"))?;
+    let header_end =
+        find_header_end(&response).ok_or_else(|| format!("bad HTTP response {url}"))?;
     let headers = &response[..header_end];
     let mut body = response[header_end + 4..].to_vec();
     let status = parse_status(headers).ok_or_else(|| format!("missing HTTP status {url}"))?;
     if matches!(status, 301 | 302 | 303 | 307 | 308) {
-        let location =
-            header_value(headers, "Location").ok_or_else(|| format!("redirect without Location from {url}"))?;
+        let location = header_value(headers, "Location")
+            .ok_or_else(|| format!("redirect without Location from {url}"))?;
         let next = absolutize_url(url, &location)?;
         return http_get(&next, redirects + 1);
     }

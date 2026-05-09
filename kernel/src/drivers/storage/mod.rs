@@ -446,8 +446,11 @@ fn read_sectors_raw_for_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) 
 /// and written to disk lazily during writeback. This makes writes extremely fast
 /// (RAM speed) while maintaining read coherency.
 ///
-/// For large writes (>256 sectors / 128 KiB), data goes directly to disk to
-/// avoid flooding the cache and evicting useful read-cache entries.
+/// Bulk writes go directly to disk.  The write-back cache is intentionally
+/// reserved for small metadata-sized writes; streaming downloads otherwise
+/// fill the cache with dirty data faster than it can be flushed.
+const WRITE_BACK_MAX_SECTORS: u32 = 32;
+
 pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
     write_sectors_on_disk(0, lba, count, buf)
 }
@@ -462,8 +465,11 @@ pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> b
     let cache_active = crate::fs::blockcache::is_ready();
     let data_len = count as usize * 512;
 
-    // Write-back path: small writes go to cache, large writes bypass
-    if cache_active && count <= 256 && buf.len() >= data_len {
+    // Write-back path: small writes go to cache, bulk writes bypass.
+    if cache_active && count <= WRITE_BACK_MAX_SECTORS && buf.len() >= data_len {
+        if crate::fs::blockcache::should_flush_before_write_back(disk_id, count) {
+            crate::fs::blockcache::writeback_flush(disk_id);
+        }
         crate::fs::blockcache::write_back(disk_id, lba, count, &buf[..data_len]);
         return true;
     }

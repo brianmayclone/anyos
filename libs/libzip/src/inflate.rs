@@ -198,8 +198,29 @@ pub fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
 
 /// Decompress DEFLATE data and fail once output would exceed `max_output`.
 pub fn inflate_with_limit(compressed: &[u8], max_output: usize) -> Option<Vec<u8>> {
+    inflate_with_output_capacity(compressed, max_output, 0)
+}
+
+/// Decompress DEFLATE data using an optional initial output allocation.
+///
+/// gzip stores the uncompressed size in its trailer, so callers can avoid many
+/// growth reallocations on large archives by passing that value here.
+pub fn inflate_with_output_capacity(
+    compressed: &[u8],
+    max_output: usize,
+    initial_output_capacity: usize,
+) -> Option<Vec<u8>> {
     let mut reader = BitReader::new(compressed);
-    let mut output = Vec::new();
+    let capacity = if initial_output_capacity < max_output {
+        initial_output_capacity
+    } else {
+        max_output
+    };
+    let mut output = if capacity > 0 {
+        Vec::with_capacity(capacity)
+    } else {
+        Vec::new()
+    };
 
     loop {
         let bfinal = reader.read_bits(1)?;

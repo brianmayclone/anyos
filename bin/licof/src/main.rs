@@ -1129,6 +1129,30 @@ fn gzip_status_text(status: u32) -> &'static str {
 }
 
 fn download_url(config: &LicoConfig, url: &str, dest: &str) -> bool {
+    if libhttp_client::init() {
+        for attempt in 1..=config.download_attempts {
+            let _ = fs::unlink(dest);
+            if !libhttp_client::download(url, dest) {
+                println!(
+                    "licof download: libhttp failed with status {} error {}",
+                    libhttp_client::last_status(),
+                    libhttp_client::last_error()
+                );
+                continue;
+            }
+            if file_size(dest) == 0 {
+                println!("licof download: libhttp produced an empty file: {}", dest);
+                continue;
+            }
+            if attempt > 1 {
+                println!("licof download: succeeded on attempt {}", attempt);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    println!("licof download: libhttp unavailable; falling back to wget");
     if !path_exists(&config.wget) {
         println!("licof download: wget not found at {}", config.wget);
         return false;

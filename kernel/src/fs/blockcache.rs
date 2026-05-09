@@ -9,10 +9,13 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 
 /// Number of cached sectors. 16384 × 512 = 8 MiB cache.
 const CACHE_SECTORS: usize = 16384;
+
+/// Flush dirty data before write-back pressure gets close to eviction.
+const DIRTY_FLUSH_HIGH_WATERMARK: u32 = (CACHE_SECTORS as u32 * 3) / 4;
 
 /// Hash table size (power of two, ~2× slots for low collision rate).
 const HASH_SIZE: usize = 32768;
@@ -481,6 +484,22 @@ pub fn write_back(disk_id: u8, lba: u32, count: u32, data: &[u8]) {
             cache.mark_dirty(key);
         }
     }
+}
+
+/// Return true when another write-back batch would push the cache into a
+/// range where dirty eviction becomes likely.
+pub fn should_flush_before_write_back(disk_id: u8, incoming_count: u32) -> bool {
+    if !CACHE_READY.load(Ordering::Acquire) {
+        return false;
+    }
+    let cache = BLOCK_CACHE.lock();
+    let mut dirty = 0u32;
+    for slot in &cache.slots {
+        if slot.dirty && (slot.key >> 32) == disk_id as u64 {
+            dirty += 1;
+        }
+    }
+    dirty.saturating_add(incoming_count) >= DIRTY_FLUSH_HIGH_WATERMARK
 }
 
 /// Flush all dirty sectors to disk. Uses the provided write function to

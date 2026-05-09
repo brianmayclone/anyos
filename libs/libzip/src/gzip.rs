@@ -164,7 +164,8 @@ pub fn gzip_decompress_with_limit(data: &[u8], max_output: usize) -> Result<Vec<
     // Decompress the DEFLATE stream (between header and trailer)
     let compressed = &data[pos..trailer_start];
     let decompressed =
-        inflate::inflate_with_limit(compressed, expected_size).ok_or(GZIP_ERR_INFLATE)?;
+        inflate::inflate_with_output_capacity(compressed, expected_size, expected_size)
+            .ok_or(GZIP_ERR_INFLATE)?;
 
     // Verify CRC-32
     let actual_crc = crc32::crc32(&decompressed);

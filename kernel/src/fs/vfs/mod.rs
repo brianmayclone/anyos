@@ -3193,6 +3193,11 @@ pub fn fsync(slot_id: FileDescriptor) -> Result<(), FsError> {
                 queue_disk_flush(&mut disks_to_flush, disk_id);
             }
         }
+        8 => {
+            let file_path = file.path.clone();
+            let driver = state.corefs_for_path(&file_path).ok_or(FsError::IoError)?;
+            driver.flush()?;
+        }
         _ => {} // Other filesystems flush synchronously already
     }
 

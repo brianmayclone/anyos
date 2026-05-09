@@ -1502,6 +1502,7 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "libconf_schema",
+ "libhttp_client",
  "libzip_client",
 ]
 

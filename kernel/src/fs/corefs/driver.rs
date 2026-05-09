@@ -715,6 +715,7 @@ impl CoreFsDriver {
             inner.dirty_inodes.clear();
             inner.removed_inodes.clear();
         }
+        inner.device.sync().map_err(|e| corefs_to_fs_error(&e))?;
         inner.dirty = false;
         Ok(())
     }

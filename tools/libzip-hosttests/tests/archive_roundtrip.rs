@@ -64,6 +64,17 @@ fn gzip_handles_debian_packages_sized_payloads() {
 }
 
 #[test]
+fn gzip_decodes_real_file_from_env() {
+    let Ok(path) = std::env::var("LIBZIP_REAL_GZIP") else {
+        return;
+    };
+    let data = std::fs::read(&path).expect("LIBZIP_REAL_GZIP should be readable");
+    let unpacked =
+        gzip::gzip_decompress(&data).unwrap_or_else(|| panic!("libzip failed to decode {path}"));
+    assert!(unpacked.starts_with(b"Package:"));
+}
+
+#[test]
 fn byte_abi_roundtrips_gzip_zlib_and_raw_deflate() {
     let input = b"licof bootstrap archive payload\n".repeat(2048);
 

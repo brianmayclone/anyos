@@ -6,12 +6,13 @@ edition = "2021"
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
 libconf_schema = { path = "../../libs/libconf_schema" }
+libhttp_client = { path = "../../libs/libhttp_client" }
 libzip_client = { path = "../../libs/libzip_client" }
 
 [features]
 default = ["anyos-bin"]
 anyos-bin = []
-host = ["anyos_std/host", "libconf_schema/host", "libzip_client/host"]
+host = ["anyos_std/host", "libconf_schema/host", "libhttp_client/host", "libzip_client/host"]
 
 [lib]
 name = "licof"
