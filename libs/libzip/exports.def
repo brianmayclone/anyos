@@ -26,6 +26,7 @@ EXPORTS
     libzip_gzip_decompress_file
     libzip_xz_decompress_file
     libzip_tar_open
+    libzip_tar_open_bytes
     libzip_tar_create
     libzip_tar_close
     libzip_tar_entry_count

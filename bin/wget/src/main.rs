@@ -13,6 +13,7 @@ const HTTP_PORT: u16 = 80;
 const HTTPS_PORT: u16 = 443;
 const CONNECT_TIMEOUT: u32 = 10000;
 const MAX_REDIRECTS: usize = 20;
+const MAX_HTTP_REQUEST: usize = 2048;
 const VERSION: &str = "1.0";
 
 // ── URL parsing ─────────────────────────────────────────────────────────────
@@ -624,29 +625,85 @@ fn write_all(fd: u32, data: &[u8]) -> bool {
 
 // ── Build HTTP request ──────────────────────────────────────────────────────
 
-fn build_request(url: &Url, resume_offset: u32) -> String {
-    let mut req = String::new();
-    req.push_str("GET ");
-    req.push_str(&url.path);
-    req.push_str(" HTTP/1.1\r\nHost: ");
-    req.push_str(&url.host);
+struct RequestBuf {
+    data: [u8; MAX_HTTP_REQUEST],
+    len: usize,
+}
+
+impl RequestBuf {
+    fn new() -> Self {
+        Self {
+            data: [0; MAX_HTTP_REQUEST],
+            len: 0,
+        }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.data[..self.len]
+    }
+
+    fn push_str(&mut self, s: &str) -> bool {
+        self.push_bytes(s.as_bytes())
+    }
+
+    fn push_byte(&mut self, byte: u8) -> bool {
+        if self.len == self.data.len() {
+            return false;
+        }
+        self.data[self.len] = byte;
+        self.len += 1;
+        true
+    }
+
+    fn push_bytes(&mut self, bytes: &[u8]) -> bool {
+        if self.len + bytes.len() > self.data.len() {
+            return false;
+        }
+        self.data[self.len..self.len + bytes.len()].copy_from_slice(bytes);
+        self.len += bytes.len();
+        true
+    }
+
+    fn push_u32(&mut self, val: u32) -> bool {
+        let mut tmp = [0u8; 12];
+        let s = anyos_std::fmt::fmt_u32(&mut tmp, val);
+        self.push_str(s)
+    }
+}
+
+fn build_request(url: &Url, resume_offset: u32) -> Option<RequestBuf> {
+    let mut req = RequestBuf::new();
+    if !req.push_str("GET ")
+        || !req.push_str(&url.path)
+        || !req.push_str(" HTTP/1.1\r\nHost: ")
+        || !req.push_str(&url.host)
+    {
+        return None;
+    }
     let default_port = if url.https { HTTPS_PORT } else { HTTP_PORT };
     if url.port != default_port {
-        req.push(':');
-        push_u32(&mut req, url.port as u32);
+        if !req.push_byte(b':') || !req.push_u32(url.port as u32) {
+            return None;
+        }
     }
-    req.push_str("\r\nUser-Agent: Wget/");
-    req.push_str(VERSION);
-    req.push_str(" (anyOS)\r\nConnection: close\r\nAccept: */*\r\n");
+    if !req.push_str("\r\nUser-Agent: Wget/")
+        || !req.push_str(VERSION)
+        || !req.push_str(" (anyOS)\r\nConnection: close\r\nAccept: */*\r\n")
+    {
+        return None;
+    }
 
     if resume_offset > 0 {
-        req.push_str("Range: bytes=");
-        push_u32(&mut req, resume_offset);
-        req.push_str("-\r\n");
+        if !req.push_str("Range: bytes=") || !req.push_u32(resume_offset) || !req.push_str("-\r\n")
+        {
+            return None;
+        }
     }
 
-    req.push_str("\r\n");
-    req
+    if !req.push_str("\r\n") {
+        return None;
+    }
+    Some(req)
 }
 
 // ── Usage ───────────────────────────────────────────────────────────────────
@@ -826,7 +883,17 @@ fn main() {
         }
 
         // Send request
-        let request = build_request(&current_url, existing_size);
+        let request = match build_request(&current_url, existing_size) {
+            Some(request) => request,
+            None => {
+                if !quiet {
+                    println!("failed.");
+                }
+                println!("wget: HTTP request too large");
+                conn.close();
+                return;
+            }
+        };
         if !quiet {
             print!("HTTP request sent, awaiting response... ");
         }
