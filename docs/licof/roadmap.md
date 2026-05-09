@@ -11,8 +11,8 @@ Slice:
 
 1. Linux-ELF64 starten.
 2. Linux-Syscalls nach anyOS-Semantik uebersetzen.
-3. Dynamische glibc-Binaries ueber einen licof-Rootfs-Pfad ausfuehren.
-4. Debian-Pakete in diesen Rootfs-Pfad installieren.
+3. Dynamische glibc-Binaries ueber die licof-Linux-Base ausfuehren.
+4. Debian-Pakete in diese Linux-Base installieren.
 
 ## Produktgrenzen
 
@@ -32,7 +32,7 @@ Slice:
 - Der Linux-ELF64-Pfad baut einen Linux-konformen Initialstack mit
   `argc`/`argv`/`envp`/`auxv` inklusive `AT_PHDR`, `AT_ENTRY`, `AT_RANDOM`,
   `AT_PLATFORM` und `AT_EXECFN`.
-- Der Linux-Loader kann `PT_INTERP` aus dem licof-Rootfs laden, ET_DYN-Objekte
+- Der Linux-Loader kann `PT_INTERP` aus der licof-Linux-Base laden, ET_DYN-Objekte
   mit festem Load-Bias mappen und `AT_BASE` auf den dynamischen Loader setzen.
 - Linux-ABI-Prozesse bekommen auf x86_64 eine User-PML4 ohne Low-Identity-
   Mapping, damit klassische Linux-ET_EXECs bei `0x400000` nicht mehr mit
@@ -42,17 +42,17 @@ Slice:
   `munmap`, `getpid`, `getcwd`, `chdir`, `readlink`, `uname`, `getuid`,
   `getgid`, `arch_prctl`, `set_tid_address`, `set_robust_list`, `getrandom`,
   `exit` und `exit_group`.
-- `/System/bin/licof` existiert mit `status`, `run`, `rootfs`, `pkg` und
-  `apt install`.
-- `licof rootfs create <name>` legt den Rootfs-Baum, Apt-Konfiguration, Cache
-  und Paketdatenbank an, bootstrapped eine minimale Apt-Basis inklusive
-  `passwd` und versucht danach interaktiv `passwd root` zu starten.
+- `/System/bin/licof` existiert mit `status`, `init`, `repair`, `run`, `pkg`
+  und `apt install`.
+- `licof init` legt die Linux-Base, Apt-Konfiguration, Cache und Paketdatenbank
+  an, bootstrapped eine minimale Apt-Basis inklusive `passwd` und versucht
+  danach interaktiv `passwd root` zu starten.
 - `licof` prueft vor `run`/`passwd` den Linux-ELF64-Header, zeigt `PT_INTERP`
   und fehlende Interpreter-Pfade sichtbar an und warnt bei fehlendem TTY fuer
   interaktive Linux-Tools.
 - `licof apt install <pkg>` laedt Paketindex und `.deb`-Pakete aus
   `archive.debian.org`, loest einfache `Pre-Depends`/`Depends` rekursiv auf und
-  extrahiert `data.tar.gz` in den Rootfs.
+  extrahiert `data.tar.gz` in die Linux-Base.
 - Der Paketcache verwendet interne, dateisystemfreundliche Namen; Debian-
   Dateinamen mit `+`, `:` oder anderen Sonderzeichen bleiben nur in der URL.
 - `libzip` reicht Tar-Metadaten wie Typeflag, Mode, UID/GID und Link-Ziel an
@@ -98,10 +98,10 @@ Check-Verifikation sind noch nicht Ziel des ersten Licof-Slices.
 ### Userland
 
 - `/System/bin/licof` ist die erste CLI.
-- Spaeter optional: `licofd` als Broker fuer Rootfs, Paketdatenbank,
+- Spaeter optional: `licofd` als Broker fuer Linux-Base, Paketdatenbank,
   `/proc`-Emulation und Downloads.
-- Standard-Rootfs:
-  - `/System/var/licof/rootfs/default`
+- Standard-Linux-Base:
+  - `/System/var/licof/rootfs`
   - Cache: `/System/var/licof/cache`
   - Datenbank: `/System/var/licof/db`
 
@@ -130,7 +130,7 @@ CLI:
 
 ### Tier 1: Kleine dynamische glibc-Tools
 
-Ziel: `/bin/echo`, `/usr/bin/env`, einfache Coreutils aus einem licof-Rootfs.
+Ziel: `/bin/echo`, `/usr/bin/env`, einfache Coreutils aus der licof-Linux-Base.
 
 Zusatz:
 
@@ -162,8 +162,8 @@ Ziel: `.deb` lokal installieren und einfache Pakete nutzbar machen.
 
 CLI:
 
-- `licof rootfs create <name>`
-- `licof rootfs list`
+- `licof init`
+- `licof repair`
 - `licof pkg install <file.deb>`
 - `licof apt install <pkg>`
 
@@ -191,5 +191,5 @@ Implementierung:
 2. Linux-x86_64 Dispatch-Skeleton mit Tier-0 Syscalls.
 3. Kernel-Syscall `SYS_LICOF_SPAWN` fuer kontrolliertes Starten als
    `LinuxX86_64`.
-4. `/System/bin/licof` mit `run`, `status`, `rootfs`, `pkg` Skeleton.
+4. `/System/bin/licof` mit `run`, `status`, `init`, `repair`, `pkg` Skeleton.
 5. Tests: Buildbarkeit und Smoke-Pfad fuer statische Linux-ELF64-Binaries.

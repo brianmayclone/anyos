@@ -1,15 +1,16 @@
-# licof CLI and Rootfs
+# licof CLI and Linux Base
 
-`/System/bin/licof` is the user-facing control tool for the Linux
-Compatibility Framework.
+`/System/bin/licof` is the user-facing control tool for the Linux Compatibility
+Framework. licof intentionally manages one active Linux base, not a collection
+of named root filesystems.
 
 ## Commands
 
 ```sh
 licof status
+licof init
+licof repair
 licof run <linux-elf64> [args...]
-licof rootfs create [name]
-licof rootfs list
 licof pkg install <file.deb>
 licof apt install <package> [package...]
 ```
@@ -20,57 +21,25 @@ Prints the current configuration:
 
 - ABI tier.
 - licof root directory.
-- default rootfs.
+- active Linux base path.
 - configured Debian package index URL.
 - config source.
 - supported package archive payloads.
 
-Example:
+## `licof init`
+
+Creates the configured Linux base, writes minimal apt configuration,
+bootstraps the configured seed packages and then tries to start `passwd root`
+when the caller has an interactive terminal.
 
 ```sh
-licof status
+licof init
 ```
 
-## `licof run`
-
-Starts a Linux ELF64 binary through `SYS_LICOF_SPAWN`.
-
-```sh
-licof run /System/var/licof/rootfs/debian/usr/bin/passwd root
-```
-
-Before spawning, the CLI diagnoses the ELF header:
-
-- validates ELF64.
-- warns for `ET_DYN` / PIE.
-- prints `PT_INTERP` and resolved interpreter path.
-- reports missing interpreter paths.
-
-The spawned Linux process inherits Terminal stdin/stdout pipes. `licof` waits
-for the child and prints a non-zero exit status.
-
-## `licof rootfs create`
-
-Creates a named rootfs, writes minimal apt configuration, bootstraps the
-configured seed packages and then tries to start `passwd root` if the bootstrap
-succeeded and the caller has an interactive terminal.
-
-```sh
-licof rootfs create debian
-```
-
-For name `default`, the path is `paths/default_rootfs`. For any other name, the
-path is:
+Default Linux base:
 
 ```text
-<paths/rootfs_dir>/<name>
-```
-
-With defaults:
-
-```text
-default -> /System/var/licof/rootfs/default
-debian  -> /System/var/licof/rootfs/debian
+/System/var/licof/rootfs
 ```
 
 Created directories include:
@@ -96,6 +65,51 @@ etc/apt/apt.conf.d/99licof
 `99licof` disables valid-until checks because the default archive target is an
 old Debian suite on `archive.debian.org`.
 
+## `licof repair`
+
+Recreates the base directory layout, repairs runtime links and syncs the
+filesystem.
+
+```sh
+licof repair
+```
+
+Repair currently:
+
+- ensures `/lib64` exists.
+- recreates `/lib64/ld-linux-x86-64.so.2` as a symlink to a known loader
+  candidate when it is missing.
+- recreates missing common SONAME aliases as symlinks in:
+  - `/lib/x86_64-linux-gnu`
+  - `/usr/lib/x86_64-linux-gnu`
+
+Package symlinks are installed as symlinks when the filesystem supports them.
+If symlink creation fails during package extraction, licof falls back to
+materializing the target as a regular file for that package entry.
+
+## `licof run`
+
+Starts a Linux ELF64 binary through `SYS_LICOF_SPAWN`.
+
+```sh
+licof run /usr/bin/passwd root
+licof run /System/var/licof/rootfs/usr/bin/passwd root
+```
+
+Linux-style absolute paths such as `/usr/bin/passwd` are resolved inside the
+active Linux base. anyOS paths under `/System`, `/Applications` and `/Users`
+are passed through unchanged.
+
+Before spawning, the CLI diagnoses the ELF header:
+
+- validates ELF64.
+- warns for `ET_DYN` / PIE.
+- prints `PT_INTERP` and resolved interpreter path.
+- reports missing interpreter paths.
+
+The spawned Linux process inherits Terminal stdin/stdout pipes. `licof` waits
+for the child and prints a non-zero exit status.
+
 ## Bootstrap Seed
 
 The default bootstrap seed is:
@@ -118,32 +132,9 @@ The seed is configurable through:
 services/licof/bootstrap/packages_csv
 ```
 
-## Rootfs Runtime Repair
-
-After package extraction, `licof` repairs runtime links that are critical for
-dynamic glibc binaries:
-
-- ensures `/lib64` exists.
-- materializes `/lib64/ld-linux-x86-64.so.2` from known loader candidates.
-- materializes common SONAME links in:
-  - `/lib/x86_64-linux-gnu`
-  - `/usr/lib/x86_64-linux-gnu`
-
-This is currently necessary because package symlinks and hardlinks are handled
-best-effort and some anyOS filesystems or extract paths do not preserve Linux
-link semantics perfectly.
-
-## `licof rootfs list`
-
-Currently prints the configured default rootfs:
-
-```sh
-licof rootfs list
-```
-
 ## `licof pkg install`
 
-Installs a local `.deb` into the default rootfs:
+Installs a local `.deb` into the active Linux base:
 
 ```sh
 licof pkg install /path/to/package.deb
@@ -151,10 +142,11 @@ licof pkg install /path/to/package.deb
 
 Behavior:
 
-- ensures the default rootfs exists.
+- ensures the Linux base exists.
 - opens the Debian `ar` container through `libzip_client`.
 - finds `data.tar.gz` or `data.tar.xz`.
-- extracts files into the rootfs.
+- extracts files into the Linux base.
+- installs package symlinks and hardlinks best-effort.
 - records installed package metadata when package info is available.
 
 Maintainer scripts are not executed.
@@ -170,7 +162,7 @@ licof apt install apt passwd
 
 Behavior:
 
-- ensures the default rootfs exists.
+- ensures the Linux base exists.
 - ensures the package index exists and is valid.
 - parses Debian `Packages` paragraphs.
 - supports exact package matches and basic `Provides`.
@@ -228,8 +220,7 @@ Defaults:
 | Key | Default |
 | --- | --- |
 | `paths/root` | `/System/var/licof` |
-| `paths/rootfs_dir` | `/System/var/licof/rootfs` |
-| `paths/default_rootfs` | `/System/var/licof/rootfs/default` |
+| `paths/rootfs` | `/System/var/licof/rootfs` |
 | `paths/cache` | `/System/var/licof/cache` |
 | `paths/db` | `/System/var/licof/db` |
 | `paths/installed_db` | `/System/var/licof/db/installed` |
@@ -252,14 +243,14 @@ Installed package markers are stored under:
 <paths/installed_db>/<rootfs-key>/<package>
 ```
 
-The rootfs key is a filesystem-safe encoding of the rootfs path. This database
-is intentionally minimal: it prevents repeated installs and records enough
-state for bootstrap progress. It is not a full dpkg database.
+The rootfs key is a filesystem-safe encoding of the active Linux base path.
+This database is intentionally minimal: it prevents repeated installs and
+records enough state for bootstrap progress. It is not a full dpkg database.
 
 ## Current Operational Notes
 
-- `licof rootfs create` is expected to be run from Terminal when root password
-  setup is desired.
+- `licof init` is expected to be run from Terminal when root password setup is
+  desired.
 - A successful package install does not imply maintainer scripts have run.
 - Some packages require `/proc`, `/sys`, PAM, NSS, terminal or signal behavior
   that is still incomplete.

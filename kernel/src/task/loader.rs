@@ -13,6 +13,7 @@ use crate::memory::user_vmap::{
 };
 use crate::memory::virtual_mem;
 use crate::sync::spinlock::Spinlock;
+use alloc::vec::Vec;
 
 /// Default load address for flat binaries.
 /// ELF binaries use their own vaddr from program headers.
@@ -836,6 +837,113 @@ fn licof_resolve_interp_path(rootfs: &str, path: &str) -> alloc::string::String 
     }
 }
 
+fn licof_resolve_rootfs_path(
+    rootfs: &str,
+    path: &str,
+) -> Result<alloc::string::String, &'static str> {
+    let translated = crate::fs::path::normalize(path);
+    if !licof_path_under_rootfs(rootfs, &translated) {
+        return Ok(translated);
+    }
+    licof_resolve_rootfs_path_inner(rootfs, &translated, 0)
+}
+
+fn licof_resolve_rootfs_path_inner(
+    rootfs: &str,
+    path: &str,
+    depth: u32,
+) -> Result<alloc::string::String, &'static str> {
+    if depth > 16 {
+        return Err("licof: too many rootfs symlinks");
+    }
+
+    let normalized = crate::fs::path::normalize(path);
+    let rel = licof_rootfs_relative(rootfs, &normalized);
+    let components: Vec<&str> = rel
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect();
+    let mut current = alloc::string::String::from(rootfs);
+    if components.is_empty() {
+        return Ok(current);
+    }
+
+    for (idx, component) in components.iter().enumerate() {
+        let candidate = licof_join_path(&current, component);
+        match crate::fs::vfs::lstat(&candidate) {
+            Ok(st) if st.is_symlink => {
+                let target = crate::fs::vfs::readlink(&candidate)
+                    .map_err(|_| "licof: failed to read rootfs symlink")?;
+                let parent = licof_parent_path(&candidate);
+                let next =
+                    licof_resolve_link_target(rootfs, &parent, &target, &components[idx + 1..]);
+                return licof_resolve_rootfs_path_inner(rootfs, &next, depth + 1);
+            }
+            Ok(_) => {
+                current = candidate;
+            }
+            Err(crate::fs::vfs::FsError::NotFound) => {
+                return Err("licof: rootfs path not found");
+            }
+            Err(_) => return Err("licof: failed to resolve rootfs path"),
+        }
+    }
+    Ok(current)
+}
+
+fn licof_path_under_rootfs(rootfs: &str, path: &str) -> bool {
+    path == rootfs || (path.starts_with(rootfs) && path.as_bytes().get(rootfs.len()) == Some(&b'/'))
+}
+
+fn licof_rootfs_relative<'a>(rootfs: &str, path: &'a str) -> &'a str {
+    if path == rootfs {
+        ""
+    } else if path.starts_with(rootfs) && path.as_bytes().get(rootfs.len()) == Some(&b'/') {
+        &path[rootfs.len() + 1..]
+    } else {
+        path.trim_start_matches('/')
+    }
+}
+
+fn licof_join_path(base: &str, component: &str) -> alloc::string::String {
+    if base == "/" {
+        alloc::format!("/{}", component)
+    } else if base.ends_with('/') {
+        alloc::format!("{}{}", base, component)
+    } else {
+        alloc::format!("{}/{}", base, component)
+    }
+}
+
+fn licof_parent_path(path: &str) -> alloc::string::String {
+    let normalized = crate::fs::path::normalize(path);
+    match normalized.rfind('/') {
+        Some(0) | None => alloc::string::String::from("/"),
+        Some(idx) => alloc::string::String::from(&normalized[..idx]),
+    }
+}
+
+fn licof_resolve_link_target(
+    rootfs: &str,
+    parent: &str,
+    target: &str,
+    remaining: &[&str],
+) -> alloc::string::String {
+    let mut path = if target.starts_with('/') {
+        if target == "/" {
+            alloc::string::String::from(rootfs)
+        } else {
+            alloc::format!("{}{}", rootfs, target)
+        }
+    } else {
+        licof_join_path(parent, target)
+    };
+    for component in remaining {
+        path = licof_join_path(&path, component);
+    }
+    crate::fs::path::normalize(&path)
+}
+
 fn copy_to_user_pd(pd_phys: crate::memory::address::PhysAddr, dst: u64, src: &[u8]) {
     unsafe {
         #[cfg(target_arch = "x86_64")]
@@ -1640,8 +1748,29 @@ fn load_and_run_with_args_abi(
         path
     };
 
+    let linux_load_rootfs = if abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
+        Some(licof_rootfs_for_binary(actual_path))
+    } else {
+        None
+    };
+    let load_path_storage = match linux_load_rootfs.as_ref() {
+        Some(rootfs) => match licof_resolve_rootfs_path(rootfs, actual_path) {
+            Ok(path) => Some(path),
+            Err(err) => {
+                crate::serial_println!(
+                    "licof loader: failed to resolve binary path='{}': {}",
+                    actual_path,
+                    err
+                );
+                return Err(err);
+            }
+        },
+        None => None,
+    };
+    let load_path = load_path_storage.as_deref().unwrap_or(actual_path);
+
     // Permission check: caller must have read permission on the binary
-    if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(actual_path) {
+    if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(load_path) {
         if !crate::fs::permissions::check_permission(
             uid,
             gid,
@@ -1653,12 +1782,12 @@ fn load_and_run_with_args_abi(
     }
 
     // Read the binary from the filesystem
-    let data = match crate::fs::vfs::read_file_to_vec(actual_path) {
+    let data = match crate::fs::vfs::read_file_to_vec(load_path) {
         Ok(d) => d,
         Err(e) => {
             crate::serial_verbose_println!(
                 "  load_and_run: read_file_to_vec('{}') failed: {:?}",
-                actual_path,
+                load_path,
                 e
             );
             return Err("Failed to read program file");
@@ -1678,11 +1807,8 @@ fn load_and_run_with_args_abi(
         virtual_mem::create_user_page_directory()
     }
     .ok_or("Failed to create user page directory")?;
-    let linux_rootfs = if abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
-        licof_rootfs_for_binary(actual_path)
-    } else {
-        alloc::string::String::from(LICOF_ROOTFS)
-    };
+    let linux_rootfs =
+        linux_load_rootfs.unwrap_or_else(|| alloc::string::String::from(LICOF_ROOTFS));
 
     let (mut entry_point, brk);
     let mut total_user_pages: u32 = 0;
@@ -1782,9 +1908,29 @@ fn load_and_run_with_args_abi(
                     .ok_or("licof: AT_PHDR load bias overflow")?;
             }
             if let Some(ref interp_path) = info.interp_path {
-                let resolved_interp = licof_resolve_interp_path(&linux_rootfs, interp_path);
-                let interp_data = crate::fs::vfs::read_file_to_vec(&resolved_interp)
-                    .map_err(|_| "licof: failed to read PT_INTERP from rootfs")?;
+                let translated_interp = licof_resolve_interp_path(&linux_rootfs, interp_path);
+                let resolved_interp =
+                    match licof_resolve_rootfs_path(&linux_rootfs, &translated_interp) {
+                        Ok(path) => path,
+                        Err(err) => {
+                            crate::serial_println!(
+                            "licof loader: failed to resolve PT_INTERP '{}' translated='{}': {}",
+                            interp_path,
+                            translated_interp,
+                            err
+                        );
+                            return Err(err);
+                        }
+                    };
+                let interp_data =
+                    crate::fs::vfs::read_file_to_vec(&resolved_interp).map_err(|_| {
+                        crate::serial_println!(
+                            "licof loader: failed to read PT_INTERP '{}' resolved='{}'",
+                            interp_path,
+                            resolved_interp
+                        );
+                        "licof: failed to read PT_INTERP from rootfs"
+                    })?;
                 let interp_info = inspect_linux_elf64(&interp_data)?;
                 if interp_info.interp_path.is_some() {
                     return Err("licof: nested PT_INTERP is not supported");

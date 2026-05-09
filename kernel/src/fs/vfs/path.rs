@@ -164,14 +164,7 @@ fn resolve_exfat_inner(
 
         if is_symlink && (!is_last || follow_last) {
             let target = exfat.readlink(inode, size)?;
-            let remaining = components[idx + 1..].join("/");
-            let next_path = if remaining.is_empty() {
-                target
-            } else if target.ends_with('/') {
-                format!("{}{}", target, remaining)
-            } else {
-                format!("{}/{}", target, remaining)
-            };
+            let next_path = resolve_symlink_target_path(&components, idx, &target);
             return resolve_exfat_inner(exfat, &next_path, true, depth + 1);
         }
 
@@ -197,4 +190,27 @@ fn resolve_exfat_inner(
     }
 
     Err(FsError::NotFound)
+}
+
+fn resolve_symlink_target_path(components: &[&str], idx: usize, target: &str) -> String {
+    let mut next_path = String::new();
+    if target.starts_with('/') {
+        next_path.push_str(target);
+    } else {
+        next_path.push('/');
+        for component in &components[..idx] {
+            next_path.push_str(component);
+            next_path.push('/');
+        }
+        next_path.push_str(target);
+    }
+
+    for component in &components[idx + 1..] {
+        if !next_path.ends_with('/') {
+            next_path.push('/');
+        }
+        next_path.push_str(component);
+    }
+
+    normalize_path(&next_path)
 }

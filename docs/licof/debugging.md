@@ -9,19 +9,19 @@ Start with:
 
 ```sh
 licof status
-licof rootfs list
+licof repair
 ```
 
-Then verify the binary path is inside the expected rootfs:
+Then verify the binary path resolves inside the active Linux base:
 
 ```sh
-licof run /System/var/licof/rootfs/debian/usr/bin/<tool> [args...]
+licof run /usr/bin/<tool> [args...]
 ```
 
 The CLI prints `PT_INTERP` diagnostics before spawning:
 
 ```text
-licof run: PT_INTERP /lib64/ld-linux-x86-64.so.2 -> /System/var/licof/rootfs/debian/lib64/ld-linux-x86-64.so.2
+licof run: PT_INTERP /lib64/ld-linux-x86-64.so.2 -> /System/var/licof/rootfs/lib64/ld-linux-x86-64.so.2
 ```
 
 If the target is missing, repair or reinstall the packages that provide the
@@ -78,6 +78,19 @@ Important flag examples:
 For anonymous mappings, Linux `fd = -1` can arrive as either
 `0xffffffffffffffff` or `0x00000000ffffffff`. Both must be accepted.
 
+### Path Resolution / `open`
+
+Linux `open()` and `openat()` failures print the Linux-visible path, the
+translated anyOS path and the final resolved path:
+
+```text
+licof linux open: failed errno=5 linux='/lib/x86_64-linux-gnu/libpam.so.0' translated='/System/var/licof/rootfs/lib/x86_64-linux-gnu/libpam.so.0' resolved='/System/var/licof/rootfs/lib/x86_64-linux-gnu/libpam.so.0.83.1'
+```
+
+Absolute symlink targets inside the Linux base are resolved relative to
+`/System/var/licof/rootfs`, not relative to the anyOS root. This keeps Debian
+links such as `/lib/...` inside the Linux base.
+
 ## Common Loader Errors
 
 ### `FATAL: kernel too old`
@@ -105,13 +118,15 @@ licof passwd: missing PT_INTERP /lib64/ld-linux-x86-64.so.2
 Check:
 
 ```sh
-ls /System/var/licof/rootfs/debian/lib64/
-ls /System/var/licof/rootfs/debian/lib/x86_64-linux-gnu/
+ls /System/var/licof/rootfs/lib64/
+ls /System/var/licof/rootfs/lib/x86_64-linux-gnu/
 ```
 
-`licof rootfs create` runs runtime repair after bootstrap. If the loader still
-is not materialized, reinstall `libc6` or inspect package extraction/link
-materialization.
+`licof init` does not run runtime repair after bootstrap. If the loader is
+present only as a symlink, the kernel loader must resolve that symlink inside
+`/System/var/licof/rootfs`. `licof repair` can recreate missing loader and
+SONAME symlinks, but it should not copy shared libraries over package
+metadata.
 
 ### `cannot create cache for search path: Cannot allocate memory`
 
@@ -187,16 +202,16 @@ If dynamic libraries are missing after extraction:
 
 1. Check the package installed count.
 2. Check whether the source ELF exists under `lib/x86_64-linux-gnu`.
-3. Check whether the SONAME link was materialized.
-4. Re-run rootfs runtime repair through another install or recreate the rootfs.
+3. Check whether the SONAME symlink exists and points to the versioned library.
+4. Re-run `licof repair` only to recreate missing symlinks, or reinstall the
+   package if the versioned library itself is absent.
 
-## Rootfs Debugging
+## Linux Base Debugging
 
 Default paths:
 
 ```text
-/System/var/licof/rootfs/default
-/System/var/licof/rootfs/debian
+/System/var/licof/rootfs
 /System/var/licof/cache
 /System/var/licof/db
 ```
@@ -204,14 +219,14 @@ Default paths:
 Check dynamic loader:
 
 ```sh
-ls /System/var/licof/rootfs/debian/lib64/
-ls /System/var/licof/rootfs/debian/lib/x86_64-linux-gnu/
+ls /System/var/licof/rootfs/lib64/
+ls /System/var/licof/rootfs/lib/x86_64-linux-gnu/
 ```
 
 Check minimal account files when debugging `passwd`:
 
 ```sh
-ls /System/var/licof/rootfs/debian/etc/
+ls /System/var/licof/rootfs/etc/
 ```
 
 Some Debian tools also require PAM, NSS or shadow files that may not yet be

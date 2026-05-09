@@ -108,7 +108,6 @@ fn init(config: &LicoConfig, configure_password: bool) {
     println!("licof: Linux base ready at {}", config.rootfs);
     println!("licof: bootstrapping minimal Debian userland with apt");
     let bootstrapped = bootstrap_rootfs(config, &config.rootfs);
-    repair_rootfs_runtime(&config.rootfs);
     fs::sync();
     if bootstrapped && configure_password {
         configure_root_password(config, &config.rootfs);
@@ -157,7 +156,9 @@ fn ensure_rootfs_layout(config: &LicoConfig) {
 }
 
 fn resolve_run_path(rootfs: &str, path: &str) -> String {
-    if path.starts_with("/System/") || path.starts_with("/Applications/") || path.starts_with("/Users/")
+    if path.starts_with("/System/")
+        || path.starts_with("/Applications/")
+        || path.starts_with("/Users/")
     {
         String::from(path)
     } else if path.starts_with('/') {
@@ -219,22 +220,22 @@ fn configure_root_password(config: &LicoConfig, rootfs: &str) {
         if path_exists(&fallback) {
             fallback
         } else {
-            println!("licof rootfs: passwd binary not found; root password not configured");
-            println!("licof rootfs: try later after 'licof apt install passwd'");
+            println!("licof init: passwd binary not found; root password not configured");
+            println!("licof init: try later after 'licof apt install passwd'");
             return;
         }
     };
 
     if fs::isatty(0) != 1 || fs::isatty(1) != 1 {
-        println!("licof rootfs: root password setup needs an interactive terminal");
-        println!("licof rootfs: run later: licof run {} root", passwd);
+        println!("licof init: root password setup needs an interactive terminal");
+        println!("licof init: run later: licof run {} root", passwd);
         return;
     }
 
-    println!("licof rootfs: starting passwd for root");
+    println!("licof init: starting passwd for root");
     let code = run_linux_process(config, "licof passwd", &passwd, "root");
     if code == Some(0) {
-        println!("licof rootfs: root password configured");
+        println!("licof init: root password configured");
     }
 }
 
@@ -679,7 +680,9 @@ fn dependency_name(raw: &str) -> Option<String> {
 }
 
 fn diagnose_linux_binary(config: &LicoConfig, label: &str, path: &str) {
-    let data = match fs::read_to_vec(path) {
+    let read_path =
+        resolve_rootfs_symlink_path(&config.rootfs, path).unwrap_or_else(|| String::from(path));
+    let data = match fs::read_to_vec(&read_path) {
         Ok(data) => data,
         Err(_) => {
             println!("{}: cannot read '{}'", label, path);
@@ -708,8 +711,10 @@ fn diagnose_linux_binary(config: &LicoConfig, label: &str, path: &str) {
     if let Some(interp) = info.interp_path {
         let rootfs = rootfs_for_path(config, path);
         let resolved = linux_path_in_rootfs(&rootfs, &interp);
-        if path_exists(&resolved) {
-            println!("{}: PT_INTERP {} -> {}", label, interp, resolved);
+        let final_path =
+            resolve_rootfs_symlink_path(&rootfs, &resolved).unwrap_or_else(|| resolved.clone());
+        if path_exists_no_follow(&resolved) || path_exists(&final_path) {
+            println!("{}: PT_INTERP {} -> {}", label, interp, final_path);
         } else {
             println!("{}: missing PT_INTERP {}", label, interp);
             println!("{}: expected interpreter at {}", label, resolved);
@@ -1095,7 +1100,8 @@ fn linux_path_in_rootfs(rootfs: &str, linux_path: &str) -> String {
 
 fn rootfs_for_path(config: &LicoConfig, path: &str) -> String {
     let rootfs = config.rootfs.trim_end_matches('/');
-    if path == rootfs || (path.starts_with(rootfs) && path.as_bytes().get(rootfs.len()) == Some(&b'/'))
+    if path == rootfs
+        || (path.starts_with(rootfs) && path.as_bytes().get(rootfs.len()) == Some(&b'/'))
     {
         return config.rootfs.clone();
     }
@@ -1111,6 +1117,109 @@ fn regular_file_exists(path: &str) -> bool {
     fs::stat(path, &mut stat_buf) == 0 && stat_buf[0] == FS_TYPE_REGULAR
 }
 
+fn path_exists_no_follow(path: &str) -> bool {
+    fs::lstat(path, &mut [0u32; 7]) == 0
+}
+
+fn path_is_symlink(path: &str) -> bool {
+    let mut stat_buf = [0u32; 7];
+    fs::lstat(path, &mut stat_buf) == 0 && (stat_buf[2] & 1) != 0
+}
+
+fn symlink_points_to(path: &str, target: &str) -> bool {
+    readlink_string(path).as_deref() == Some(target)
+}
+
+fn readlink_string(path: &str) -> Option<String> {
+    let mut buf = [0u8; 512];
+    let len = fs::readlink(path, &mut buf);
+    if len == u32::MAX {
+        return None;
+    }
+    core::str::from_utf8(&buf[..len as usize])
+        .ok()
+        .map(String::from)
+}
+
+fn resolve_rootfs_symlink_path(rootfs: &str, path: &str) -> Option<String> {
+    if !path_under_rootfs(rootfs, path) {
+        return Some(normalize_abs_path(path));
+    }
+    resolve_rootfs_symlink_path_inner(rootfs, path, 0)
+}
+
+fn resolve_rootfs_symlink_path_inner(rootfs: &str, path: &str, depth: u32) -> Option<String> {
+    if depth > 16 {
+        return None;
+    }
+    let normalized = normalize_abs_path(path);
+    let rel = rootfs_relative_path(rootfs, &normalized);
+    let components: Vec<&str> = rel
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect();
+    let mut current = String::from(rootfs);
+    if components.is_empty() {
+        return Some(current);
+    }
+
+    for (idx, component) in components.iter().enumerate() {
+        let candidate = join_path_component(&current, component);
+        if path_is_symlink(&candidate) {
+            let target = readlink_string(&candidate)?;
+            let parent = parent_path(&candidate);
+            let next = resolve_link_target(rootfs, &parent, &target, &components[idx + 1..]);
+            return resolve_rootfs_symlink_path_inner(rootfs, &next, depth + 1);
+        }
+        current = candidate;
+    }
+    Some(current)
+}
+
+fn rootfs_relative_path<'a>(rootfs: &str, path: &'a str) -> &'a str {
+    if path == rootfs {
+        ""
+    } else if path.starts_with(rootfs) && path.as_bytes().get(rootfs.len()) == Some(&b'/') {
+        &path[rootfs.len() + 1..]
+    } else {
+        path.trim_start_matches('/')
+    }
+}
+
+fn join_path_component(base: &str, component: &str) -> String {
+    if base == "/" {
+        alloc::format!("/{}", component)
+    } else if base.ends_with('/') {
+        alloc::format!("{}{}", base, component)
+    } else {
+        alloc::format!("{}/{}", base, component)
+    }
+}
+
+fn parent_path(path: &str) -> String {
+    let normalized = normalize_abs_path(path);
+    match normalized.rfind('/') {
+        Some(0) | None => String::from("/"),
+        Some(idx) => String::from(&normalized[..idx]),
+    }
+}
+
+fn resolve_link_target(rootfs: &str, parent: &str, target: &str, remaining: &[&str]) -> String {
+    let mut path = if target.starts_with('/') {
+        if target == "/" {
+            String::from(rootfs)
+        } else {
+            alloc::format!("{}{}", rootfs, target)
+        }
+    } else {
+        join_path_component(parent, target)
+    };
+    for component in remaining {
+        path = join_path_component(&path, component);
+    }
+    normalize_abs_path(&path)
+}
+
 fn repair_rootfs_runtime(rootfs: &str) {
     ensure_dir_recursive(&linux_path_in_rootfs(rootfs, "/lib64"));
     repair_dynamic_loader(rootfs);
@@ -1120,7 +1229,7 @@ fn repair_rootfs_runtime(rootfs: &str) {
 
 fn repair_dynamic_loader(rootfs: &str) {
     let interp = linux_path_in_rootfs(rootfs, "/lib64/ld-linux-x86-64.so.2");
-    if is_elf_file(&interp) {
+    if is_elf_file(&interp) || path_is_symlink(&interp) {
         return;
     }
     let candidates = [
@@ -1130,10 +1239,7 @@ fn repair_dynamic_loader(rootfs: &str) {
     for candidate in &candidates {
         let src = linux_path_in_rootfs(rootfs, candidate);
         if is_elf_file(&src) {
-            let _ = fs::unlink(&interp);
-            if copy_file(&src, &interp) {
-                println!("licof rootfs: repaired dynamic loader {}", interp);
-            }
+            repair_symlink(&interp, candidate, "dynamic loader");
             return;
         }
     }
@@ -1145,36 +1251,44 @@ fn repair_common_library_links(rootfs: &str, linux_dir: &str) {
     for name in &entries {
         if name.starts_with("ld-") && name.ends_with(".so") {
             let src = alloc::format!("{}/{}", dir, name);
-            materialize_known_library(&src, &alloc::format!("{}/ld-linux-x86-64.so.2", dir));
+            repair_known_library_symlink(
+                &src,
+                &alloc::format!("{}/ld-linux-x86-64.so.2", dir),
+                name,
+            );
         } else if name.starts_with("libc-") && name.ends_with(".so") {
             let src = alloc::format!("{}/{}", dir, name);
-            materialize_known_library(&src, &alloc::format!("{}/libc.so.6", dir));
+            repair_known_library_symlink(&src, &alloc::format!("{}/libc.so.6", dir), name);
         } else if let Some(pos) = name.find(".so.") {
             let src = alloc::format!("{}/{}", dir, name);
             let version = &name[pos + 4..];
             if let Some(first_dot) = version.find('.') {
                 let soname = alloc::format!("{}{}", &name[..pos + 4], &version[..first_dot]);
-                materialize_known_library(&src, &alloc::format!("{}/{}", dir, soname));
+                repair_known_library_symlink(&src, &alloc::format!("{}/{}", dir, soname), name);
                 if let Some(second_dot) = version[first_dot + 1..].find('.') {
                     let end = first_dot + 1 + second_dot;
                     let soname = alloc::format!("{}{}", &name[..pos + 4], &version[..end]);
-                    materialize_known_library(&src, &alloc::format!("{}/{}", dir, soname));
+                    repair_known_library_symlink(&src, &alloc::format!("{}/{}", dir, soname), name);
                 }
             }
         }
     }
 }
 
-fn materialize_known_library(src: &str, dest: &str) {
-    if !is_elf_file(src) || src == dest {
+fn repair_known_library_symlink(src: &str, dest: &str, target: &str) {
+    if !is_elf_file(src) || src == dest || path_exists_no_follow(dest) {
         return;
     }
-    if files_equal(src, dest) {
+    repair_symlink(dest, target, "library alias");
+}
+
+fn repair_symlink(dest: &str, target: &str, label: &str) {
+    if symlink_points_to(dest, target) {
         return;
     }
     let _ = fs::unlink(dest);
-    if copy_file(src, dest) {
-        println!("licof rootfs: repaired library alias {}", dest);
+    if fs::symlink(target, dest) == 0 {
+        println!("licof repair: repaired {} {} -> {}", label, dest, target);
     }
 }
 
@@ -1477,38 +1591,6 @@ fn copy_file(src: &str, dst: &str) -> bool {
         }
         if output.write_all(&buf[..n]).is_err() {
             return false;
-        }
-    }
-}
-
-fn files_equal(left: &str, right: &str) -> bool {
-    if file_size(left) != file_size(right) {
-        return false;
-    }
-    let mut left_file = match fs::File::open(left) {
-        Ok(file) => file,
-        Err(_) => return false,
-    };
-    let mut right_file = match fs::File::open(right) {
-        Ok(file) => file,
-        Err(_) => return false,
-    };
-    let mut left_buf = [0u8; 4096];
-    let mut right_buf = [0u8; 4096];
-    loop {
-        let left_n = match left_file.read(&mut left_buf) {
-            Ok(n) => n,
-            Err(_) => return false,
-        };
-        let right_n = match right_file.read(&mut right_buf) {
-            Ok(n) => n,
-            Err(_) => return false,
-        };
-        if left_n != right_n || left_buf[..left_n] != right_buf[..right_n] {
-            return false;
-        }
-        if left_n == 0 {
-            return true;
         }
     }
 }

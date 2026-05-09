@@ -5,6 +5,7 @@
 
 use super::{handlers, SyscallRegs};
 use alloc::string::String;
+use alloc::vec::Vec;
 
 const EINVAL: i32 = 22;
 const ENOMEM: i32 = 12;
@@ -16,6 +17,7 @@ const EACCES: i32 = 13;
 const EAGAIN: i32 = 11;
 const ENOTTY: i32 = 25;
 const EPERM: i32 = 1;
+const ELOOP: i32 = 40;
 
 const LINUX_SYS_READ: u64 = 0;
 const LINUX_SYS_WRITE: u64 = 1;
@@ -278,7 +280,7 @@ fn linux_openat(dirfd: u64, path_ptr: u64, linux_flags: u64) -> u64 {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
-    linux_open_translated(&path, linux_flags)
+    linux_open_translated(&path, linux_flags, raw_path)
 }
 
 fn linux_stat(path_ptr: u64, stat_ptr: u64, nofollow: bool) -> u64 {
@@ -317,7 +319,11 @@ fn linux_access(path_ptr: u64, _mode: u64) -> u64 {
     let Some(path) = linux_translate_user_path(path_ptr) else {
         return linux_err(EFAULT);
     };
-    match crate::fs::vfs::stat(&path) {
+    let resolved = match linux_resolve_translated_path(&path, true, false) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    match crate::fs::vfs::stat(&resolved) {
         Ok(_) => 0,
         Err(crate::fs::vfs::FsError::NotFound) => linux_err(ENOENT),
         Err(crate::fs::vfs::FsError::PermissionDenied) => linux_err(EACCES),
@@ -338,10 +344,10 @@ fn linux_open_linux_path(path: &str, linux_flags: u64) -> u64 {
         return fd as u64;
     }
     let translated = linux_translate_absolute_path(&abs);
-    linux_open_translated(&translated, linux_flags)
+    linux_open_translated(&translated, linux_flags, &abs)
 }
 
-fn linux_open_translated(path: &str, linux_flags: u64) -> u64 {
+fn linux_open_translated(path: &str, linux_flags: u64, linux_path: &str) -> u64 {
     let flags = map_open_flags(linux_flags);
     let cloexec = (flags & 0x10) != 0;
     let file_flags = crate::fs::file::FileFlags {
@@ -352,9 +358,20 @@ fn linux_open_translated(path: &str, linux_flags: u64) -> u64 {
         truncate: (flags & 8) != 0,
         sync: (flags & 0x20) != 0,
     };
-    let global_id = match crate::fs::vfs::open(path, file_flags) {
+    let resolved_path = match linux_resolve_translated_path(path, true, file_flags.create) {
+        Ok(path) => path,
+        Err(errno) => {
+            linux_log_path_error("open-resolve", linux_path, path, path, errno);
+            return linux_err(errno);
+        }
+    };
+    let global_id = match crate::fs::vfs::open(&resolved_path, file_flags) {
         Ok(id) => id,
-        Err(e) => return linux_fs_err(e),
+        Err(e) => {
+            let errno = fs_errno(e);
+            linux_log_path_error("open", linux_path, path, &resolved_path, errno);
+            return linux_err(errno);
+        }
     };
     let local_fd =
         match crate::task::scheduler::current_fd_alloc(crate::fs::fd_table::FdKind::File {
@@ -373,10 +390,14 @@ fn linux_open_translated(path: &str, linux_flags: u64) -> u64 {
 }
 
 fn linux_stat_translated(path: &str, stat_ptr: u64, nofollow: bool) -> u64 {
+    let path = match linux_resolve_translated_path(path, !nofollow, false) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
     let ret = if nofollow {
-        crate::fs::vfs::lstat(path)
+        crate::fs::vfs::lstat(&path)
     } else {
-        crate::fs::vfs::stat(path)
+        crate::fs::vfs::stat(&path)
     };
     match ret {
         Ok(st) => {
@@ -905,7 +926,11 @@ fn linux_faccessat(dirfd: u64, path_ptr: u64, mode: u64, _flags: u64) -> u64 {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
-    match crate::fs::vfs::stat(&path) {
+    let resolved = match linux_resolve_translated_path(&path, true, false) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    match crate::fs::vfs::stat(&resolved) {
         Ok(_) => {
             let _ = mode;
             0
@@ -1565,6 +1590,139 @@ fn linux_strip_rootfs(path: &str) -> String {
     } else {
         String::from(path)
     }
+}
+
+fn linux_resolve_translated_path(
+    path: &str,
+    follow_last: bool,
+    allow_missing_final: bool,
+) -> Result<String, i32> {
+    let rootfs = current_linux_rootfs();
+    let normalized = crate::fs::path::normalize(path);
+    if !linux_path_under_rootfs(&rootfs, &normalized) {
+        return Ok(normalized);
+    }
+    linux_resolve_translated_path_inner(&rootfs, &normalized, follow_last, allow_missing_final, 0)
+}
+
+fn linux_resolve_translated_path_inner(
+    rootfs: &str,
+    path: &str,
+    follow_last: bool,
+    allow_missing_final: bool,
+    depth: u32,
+) -> Result<String, i32> {
+    if depth > 16 {
+        return Err(ELOOP);
+    }
+    let normalized = crate::fs::path::normalize(path);
+    let rel = linux_rootfs_relative(rootfs, &normalized);
+    let components: Vec<&str> = rel
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect();
+    let mut current = String::from(rootfs);
+    if components.is_empty() {
+        return Ok(current);
+    }
+
+    for (idx, component) in components.iter().enumerate() {
+        let is_last = idx == components.len() - 1;
+        let candidate = linux_join_path(&current, component);
+        match crate::fs::vfs::lstat(&candidate) {
+            Ok(st) if st.is_symlink && (!is_last || follow_last) => {
+                let target = crate::fs::vfs::readlink(&candidate).map_err(fs_errno)?;
+                let parent = linux_parent_path(&candidate);
+                let next =
+                    linux_resolve_link_target(rootfs, &parent, &target, &components[idx + 1..]);
+                return linux_resolve_translated_path_inner(
+                    rootfs,
+                    &next,
+                    true,
+                    allow_missing_final,
+                    depth + 1,
+                );
+            }
+            Ok(_) => {
+                current = candidate;
+            }
+            Err(crate::fs::vfs::FsError::NotFound) if is_last && allow_missing_final => {
+                return Ok(candidate);
+            }
+            Err(e) => return Err(fs_errno(e)),
+        }
+    }
+    Ok(current)
+}
+
+fn linux_path_under_rootfs(rootfs: &str, path: &str) -> bool {
+    path == rootfs || (path.starts_with(rootfs) && path.as_bytes().get(rootfs.len()) == Some(&b'/'))
+}
+
+fn linux_rootfs_relative<'a>(rootfs: &str, path: &'a str) -> &'a str {
+    if path == rootfs {
+        ""
+    } else if path.starts_with(rootfs) && path.as_bytes().get(rootfs.len()) == Some(&b'/') {
+        &path[rootfs.len() + 1..]
+    } else {
+        path.trim_start_matches('/')
+    }
+}
+
+fn linux_join_path(base: &str, component: &str) -> String {
+    if base == "/" {
+        alloc::format!("/{}", component)
+    } else if base.ends_with('/') {
+        alloc::format!("{}{}", base, component)
+    } else {
+        alloc::format!("{}/{}", base, component)
+    }
+}
+
+fn linux_parent_path(path: &str) -> String {
+    let normalized = crate::fs::path::normalize(path);
+    match normalized.rfind('/') {
+        Some(0) | None => String::from("/"),
+        Some(idx) => String::from(&normalized[..idx]),
+    }
+}
+
+fn linux_resolve_link_target(
+    rootfs: &str,
+    parent: &str,
+    target: &str,
+    remaining: &[&str],
+) -> String {
+    let mut path = if target.starts_with('/') {
+        if target == "/" {
+            String::from(rootfs)
+        } else {
+            alloc::format!("{}{}", rootfs, target)
+        }
+    } else {
+        linux_join_path(parent, target)
+    };
+    for component in remaining {
+        path = linux_join_path(&path, component);
+    }
+    crate::fs::path::normalize(&path)
+}
+
+fn linux_log_path_error(
+    op: &str,
+    linux_path: &str,
+    translated_path: &str,
+    resolved_path: &str,
+    errno: i32,
+) {
+    crate::serial_println!(
+        "licof linux {}: failed errno={} linux='{}' translated='{}' resolved='{}'",
+        op,
+        errno,
+        linux_path,
+        translated_path,
+        resolved_path
+    );
 }
 
 fn current_linux_rootfs() -> String {

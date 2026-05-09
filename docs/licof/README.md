@@ -7,16 +7,17 @@ anyOS kernel without starting a Linux VM.
 ASL remains the VM-first Linux environment for full distributions, kernel
 modules, systemd-heavy workloads and high compatibility. `licof` is an
 opt-in, process-level ABI personality for smaller Linux programs and for
-incrementally bootstrapping a Debian userland inside an anyOS directory.
+incrementally bootstrapping one Debian-based Linux base inside an anyOS
+directory.
 
 ## Documents
 
 - [Kernel Extensions](kernel-extensions.md)
   describes the kernel-side ABI personality, Linux syscall dispatch, ELF64
-  loader, memory layout, rootfs path translation and current compatibility
+  loader, memory layout, Linux base path translation and current compatibility
   boundaries.
-- [CLI and Rootfs](cli.md)
-  describes `/System/bin/licof`, rootfs creation, Debian package installation,
+- [CLI and Linux Base](cli.md)
+  describes `/System/bin/licof`, Linux base initialization, Debian package installation,
   configuration keys and the download/extract pipeline.
 - [Debugging](debugging.md)
   describes the current diagnostics for missing syscalls, loader failures,
@@ -27,19 +28,19 @@ incrementally bootstrapping a Debian userland inside an anyOS directory.
 ## Current Scope
 
 The current implementation targets Linux x86_64 ELF64 binaries. The main
-supported path is a Debian Wheezy amd64 rootfs bootstrapped from
+supported path is one Debian Wheezy amd64 Linux base bootstrapped from
 `archive.debian.org`:
 
 ```sh
-licof rootfs create debian
+licof init
 licof apt install <package>
-licof run /System/var/licof/rootfs/debian/usr/bin/<tool> [args...]
+licof run /usr/bin/<tool> [args...]
 ```
 
 The kernel can load dynamic glibc binaries through `PT_INTERP`, build a
 Linux-style initial stack with `argc`/`argv`/`envp`/`auxv`, dispatch a growing
-subset of Linux syscalls and translate Linux paths into a selected licof
-rootfs.
+subset of Linux syscalls and translate Linux paths into the active licof Linux
+base.
 
 The implementation is still intentionally narrow. Unsupported syscalls return
 Linux `-ENOSYS`; known compatibility shims are added only when a real binary
@@ -64,12 +65,15 @@ needs them and when the anyOS behavior can be made explicit.
   by kernel thread ABI personality.
 - Linux compatibility uses Linux errno semantics: syscall errors are returned
   as negative errno values in `RAX`.
-- Linux paths are never allowed to escape the selected licof rootfs.
-- The rootfs is ordinary anyOS filesystem content under `/System/var/licof`.
+- Linux paths are never allowed to escape the active licof Linux base.
+- The Linux base is ordinary anyOS filesystem content under
+  `/System/var/licof/rootfs`.
 - Debian package maintainer scripts are not executed by `licof`.
-- Symlinks and hardlinks from packages are materialized best-effort. Important
-  runtime links such as `/lib64/ld-linux-x86-64.so.2` are repaired after
-  package extraction.
+- Package symlinks are preserved as symlinks. Hardlinks are materialized only
+  when the filesystem has no native hardlink operation.
+- `licof init` does not run runtime repair after bootstrap; broken Linux links
+  must be fixed in the symlink-aware loader/VFS path instead of by copying
+  libraries over package metadata.
 - The CLI reads policy and paths from `confd` via the `services/licof`
   manifest. Built-in defaults exist so a system can bootstrap without a
   pre-existing config tree.
@@ -78,8 +82,8 @@ needs them and when the anyOS behavior can be made explicit.
 
 ```sh
 licof status
-licof rootfs create debian
-licof run /System/var/licof/rootfs/debian/usr/bin/passwd root
+licof init
+licof run /usr/bin/passwd root
 ```
 
 During active development, also watch the serial log for lines beginning with:

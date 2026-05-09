@@ -13,8 +13,8 @@ anyOS threads carry an ABI personality. The relevant values are:
 | `LinuxX86_64` | Linux x86_64 syscall ABI, Linux path translation and Linux ELF64 startup. |
 
 `SYS_LICOF_SPAWN` creates a process with `LinuxX86_64` personality. Forked
-Linux children inherit Linux rootfs, FS base, mmap state and pipe state through
-the scheduler fork snapshot.
+Linux children inherit the active Linux base path, FS base, mmap state and pipe
+state through the scheduler fork snapshot.
 
 Normal anyOS `spawn` is unchanged. The Linux path is explicit so native apps do
 not accidentally enter Linux syscall semantics.
@@ -105,23 +105,32 @@ Examples:
 
 ## Linux Path Translation
 
-Each Linux thread stores a current licof rootfs path. Absolute Linux paths are
-translated by prefixing that rootfs:
+Each Linux thread stores the active licof Linux base path. Absolute Linux paths
+are translated by prefixing that base:
 
 ```text
 /usr/bin/passwd
-  -> /System/var/licof/rootfs/debian/usr/bin/passwd
+  -> /System/var/licof/rootfs/usr/bin/passwd
 ```
 
-The rootfs is selected from the executable path when it lives under
-`/System/var/licof/rootfs/<name>/...`. Otherwise the default rootfs is used:
+The kernel currently uses one Linux base:
 
 ```text
-/System/var/licof/rootfs/default
+/System/var/licof/rootfs
 ```
 
 Relative paths are resolved against the Linux thread CWD, then translated. At
 spawn time the Linux CWD is set to `/`.
+
+Symlinks inside the Linux base are resolved with Linux-rooted semantics:
+
+- relative symlink targets are resolved relative to the symlink's parent
+  directory.
+- absolute symlink targets such as `/lib/...` stay inside
+  `/System/var/licof/rootfs`, not the anyOS root.
+
+The ELF loader applies the same rule while resolving `PT_INTERP`, so
+`/lib64/ld-linux-x86-64.so.2` may be a real Debian symlink.
 
 Special path handling currently includes:
 
