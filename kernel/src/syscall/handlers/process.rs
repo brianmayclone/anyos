@@ -232,6 +232,11 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
 
     let old_brk = crate::task::scheduler::current_thread_brk();
     if old_brk == 0 {
+        if crate::task::scheduler::current_thread_abi()
+            == crate::task::abi::AbiPersonality::LinuxX86_64
+        {
+            crate::serial_println!("licof linux sbrk: reject old_brk=0 inc={}", increment);
+        }
         return u64::MAX;
     }
     if increment == 0 {
@@ -243,7 +248,18 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
     if increment > 0 {
         let new_brk = match old_brk.checked_add(increment as u64) {
             Some(v) => v,
-            None => return u64::MAX,
+            None => {
+                if crate::task::scheduler::current_thread_abi()
+                    == crate::task::abi::AbiPersonality::LinuxX86_64
+                {
+                    crate::serial_println!(
+                        "licof linux sbrk: reject overflow old={:#x} inc={}",
+                        old_brk,
+                        increment
+                    );
+                }
+                return u64::MAX;
+            }
         };
 
         if old_brk < HEAP_LIMIT {
@@ -251,6 +267,16 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
             // DLLs are demand-paged there; heap writes would corrupt their
             // export tables.
             if old_brk < DLIB_REGION_START && new_brk >= DLIB_REGION_START {
+                if crate::task::scheduler::current_thread_abi()
+                    == crate::task::abi::AbiPersonality::LinuxX86_64
+                {
+                    crate::serial_println!(
+                        "licof linux sbrk: reject dlib-cross old={:#x} new={:#x} inc={}",
+                        old_brk,
+                        new_brk,
+                        increment
+                    );
+                }
                 return u64::MAX;
             }
 
@@ -258,6 +284,17 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
             // (guard gap). Linux PIE/ET_DYN binaries have a high brk and are
             // handled by the high-heap guard below.
             if new_brk >= HEAP_LIMIT {
+                if crate::task::scheduler::current_thread_abi()
+                    == crate::task::abi::AbiPersonality::LinuxX86_64
+                {
+                    crate::serial_println!(
+                        "licof linux sbrk: reject low-limit old={:#x} new={:#x} inc={} limit={:#x}",
+                        old_brk,
+                        new_brk,
+                        increment,
+                        HEAP_LIMIT
+                    );
+                }
                 return u64::MAX;
             }
         } else {
@@ -266,6 +303,17 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
             // the fixed dynamic-loader area at 0x7000_0000_0000.
             const HIGH_HEAP_LIMIT: u64 = 0x0000_7000_0000_0000;
             if new_brk >= HIGH_HEAP_LIMIT {
+                if crate::task::scheduler::current_thread_abi()
+                    == crate::task::abi::AbiPersonality::LinuxX86_64
+                {
+                    crate::serial_println!(
+                        "licof linux sbrk: reject high-limit old={:#x} new={:#x} inc={} limit={:#x}",
+                        old_brk,
+                        new_brk,
+                        increment,
+                        HIGH_HEAP_LIMIT
+                    );
+                }
                 return u64::MAX;
             }
         }
@@ -282,14 +330,44 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
                 if let Some(phys) = physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
                     if !virtual_mem::zero_frame(phys) {
                         physical::free_frame(phys);
+                        if crate::task::scheduler::current_thread_abi()
+                            == crate::task::abi::AbiPersonality::LinuxX86_64
+                        {
+                            crate::serial_println!(
+                                "licof linux sbrk: reject zero-frame old={:#x} new={:#x} addr={:#x}",
+                                old_brk,
+                                new_brk,
+                                addr
+                            );
+                        }
                         return u64::MAX;
                     }
                     if !virtual_mem::map_page(VirtAddr::new(addr), phys, 0x02 | 0x04) {
                         physical::free_frame(phys);
+                        if crate::task::scheduler::current_thread_abi()
+                            == crate::task::abi::AbiPersonality::LinuxX86_64
+                        {
+                            crate::serial_println!(
+                                "licof linux sbrk: reject map-page old={:#x} new={:#x} addr={:#x}",
+                                old_brk,
+                                new_brk,
+                                addr
+                            );
+                        }
                         return u64::MAX;
                     }
                     pages_mapped += 1;
                 } else {
+                    if crate::task::scheduler::current_thread_abi()
+                        == crate::task::abi::AbiPersonality::LinuxX86_64
+                    {
+                        crate::serial_println!(
+                            "licof linux sbrk: reject phys-oom old={:#x} new={:#x} addr={:#x}",
+                            old_brk,
+                            new_brk,
+                            addr
+                        );
+                    }
                     return u64::MAX;
                 }
             }

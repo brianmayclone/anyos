@@ -446,56 +446,158 @@ fn linux_fstat(fd: u32, stat_ptr: u64) -> u64 {
 fn linux_brk(new_brk: u64) -> u64 {
     let current = crate::task::scheduler::current_thread_brk();
     if new_brk == 0 {
+        crate::serial_println!("licof linux brk: query -> {:#x}", current);
         return current;
     }
     let delta = new_brk as i64 - current as i64;
     let old = handlers::sys_sbrk_u64(delta);
     if old == u64::MAX {
+        crate::serial_println!(
+            "licof linux brk: failed current={:#x} requested={:#x} delta={}",
+            current,
+            new_brk,
+            delta
+        );
         current
     } else {
-        crate::task::scheduler::current_thread_brk()
+        let updated = crate::task::scheduler::current_thread_brk();
+        crate::serial_println!(
+            "licof linux brk: current={:#x} requested={:#x} delta={} -> {:#x}",
+            current,
+            new_brk,
+            delta,
+            updated
+        );
+        updated
     }
 }
 
-fn linux_mmap(addr: u64, len: u64, _prot: u64, flags: u64, fd: u64, offset: u64) -> u64 {
+fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, offset: u64) -> u64 {
     if len == 0 {
+        crate::serial_println!(
+            "licof linux mmap: reject zero len addr={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
+            addr,
+            prot,
+            flags,
+            fd,
+            offset
+        );
         return linux_err(EINVAL);
     }
     let anonymous = (flags & LINUX_MAP_ANONYMOUS) != 0;
     let private = (flags & LINUX_MAP_PRIVATE) != 0;
     let fixed = (flags & LINUX_MAP_FIXED) != 0;
     if !private {
+        crate::serial_println!(
+            "licof linux mmap: reject !private addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
+            addr,
+            len,
+            prot,
+            flags,
+            fd,
+            offset
+        );
         return linux_err(ENOSYS);
     }
-    if anonymous && fd as i64 != -1 {
+    if anonymous && !linux_fd_is_minus_one(fd) {
+        crate::serial_println!(
+            "licof linux mmap: reject anon fd addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
+            addr,
+            len,
+            prot,
+            flags,
+            fd,
+            offset
+        );
         return linux_err(EINVAL);
     }
-    if !anonymous && fd as i64 == -1 {
+    if !anonymous && linux_fd_is_minus_one(fd) {
+        crate::serial_println!(
+            "licof linux mmap: reject file fd addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
+            addr,
+            len,
+            prot,
+            flags,
+            fd,
+            offset
+        );
         return linux_err(EBADF);
     }
 
     let mapped = if fixed {
         if addr == 0 {
+            crate::serial_println!(
+                "licof linux mmap: reject fixed-null len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
+                len,
+                prot,
+                flags,
+                fd,
+                offset
+            );
             return linux_err(EINVAL);
         }
         match linux_map_fixed(addr, len) {
             Some(addr) => addr,
-            None => return linux_err(ENOMEM),
+            None => {
+                crate::serial_println!(
+                    "licof linux mmap: fixed failed addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
+                    addr,
+                    len,
+                    prot,
+                    flags,
+                    fd,
+                    offset
+                );
+                return linux_err(ENOMEM);
+            }
         }
     } else {
         handlers::sys_mmap_u64(len)
     };
     if mapped == u64::MAX {
+        crate::serial_println!(
+            "licof linux mmap: alloc failed addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
+            addr,
+            len,
+            prot,
+            flags,
+            fd,
+            offset
+        );
         return linux_err(ENOMEM);
     }
 
     if !anonymous {
         if let Err(errno) = linux_fill_mapping_from_fd(fd as u32, mapped, len, offset) {
             let _ = handlers::sys_munmap_u64(mapped, len);
+            crate::serial_println!(
+                "licof linux mmap: fill failed mapped={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x} errno={}",
+                mapped,
+                len,
+                prot,
+                flags,
+                fd,
+                offset,
+                errno
+            );
             return linux_err(errno);
         }
     }
+    crate::serial_println!(
+        "licof linux mmap: ok addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x} -> {:#x}",
+        addr,
+        len,
+        prot,
+        flags,
+        fd,
+        offset,
+        mapped
+    );
     mapped
+}
+
+fn linux_fd_is_minus_one(fd: u64) -> bool {
+    fd == u64::MAX || fd == u32::MAX as u64
 }
 
 fn linux_munmap(addr: u64, len: u64) -> u64 {
