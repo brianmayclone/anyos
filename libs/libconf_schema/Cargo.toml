@@ -5,3 +5,7 @@ edition = "2021"
 
 [dependencies]
 libconf = { path = "../libconf" }
+
+[features]
+default = []
+host = ["libconf/host"]

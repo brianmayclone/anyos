@@ -67,6 +67,7 @@ pub mod env;
 
 pub mod args;
 pub mod collections;
+pub mod crypto;
 pub mod error;
 pub mod fmt;
 pub mod hashmap;
@@ -82,8 +83,6 @@ pub mod anim;
 pub mod audio;
 #[cfg(not(feature = "host"))]
 pub mod bundle;
-#[cfg(not(feature = "host"))]
-pub mod crypto;
 #[cfg(not(feature = "host"))]
 pub mod debug;
 #[cfg(not(feature = "host"))]

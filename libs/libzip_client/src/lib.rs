@@ -149,6 +149,9 @@ mod host {
             let data = std::fs::read(path).ok()?;
             libzip::tar::TarReader::parse(data).map(|inner| TarReader { inner })
         }
+        pub fn from_bytes(data: &[u8]) -> Option<TarReader> {
+            libzip::tar::TarReader::parse(data.to_vec()).map(|inner| TarReader { inner })
+        }
         pub fn entry_count(&self) -> u32 {
             self.inner.entry_count() as u32
         }
@@ -281,6 +284,7 @@ mod imp {
             libzip_xz_decompress_file(in_path: *const u8, in_len: u32, out_path: *const u8, out_len: u32) -> u32,
             // Tar functions
             libzip_tar_open(path: *const u8, len: u32) -> u32,
+            libzip_tar_open_bytes(data: *const u8, data_len: u32) -> u32,
             libzip_tar_create() -> u32,
             libzip_tar_close(handle: u32) -> (),
             libzip_tar_entry_count(handle: u32) -> u32,
@@ -561,6 +565,16 @@ mod imp {
         /// Open a tar (or .tar.gz) archive for reading.
         pub fn open(path: &str) -> Option<TarReader> {
             let h = (lib().libzip_tar_open)(path.as_ptr(), path.len() as u32);
+            if h == 0 {
+                None
+            } else {
+                Some(TarReader { handle: h })
+            }
+        }
+
+        /// Open a tar (or .tar.gz) archive from bytes already in memory.
+        pub fn from_bytes(data: &[u8]) -> Option<TarReader> {
+            let h = (lib().libzip_tar_open_bytes)(data.as_ptr(), data.len() as u32);
             if h == 0 {
                 None
             } else {

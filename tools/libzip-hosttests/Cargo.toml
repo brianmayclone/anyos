@@ -1,0 +1,9 @@
+[package]
+name = "libzip-hosttests"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+libzip = { path = "../../libs/libzip", features = ["host"] }

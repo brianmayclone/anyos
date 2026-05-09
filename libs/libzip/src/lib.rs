@@ -722,6 +722,19 @@ pub extern "C" fn libzip_tar_open(path_ptr: *const u8, path_len: u32) -> u32 {
     }
 }
 
+/// Open a tar (or tar.gz) archive from an in-memory byte buffer.
+#[no_mangle]
+pub extern "C" fn libzip_tar_open_bytes(data_ptr: *const u8, data_len: u32) -> u32 {
+    if data_ptr.is_null() {
+        return 0;
+    }
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) }.to_vec();
+    match TarReader::parse(data) {
+        Some(reader) => alloc_handle(ZipHandle::TarReader(reader)),
+        None => 0,
+    }
+}
+
 /// Create a new tar archive for writing.
 #[no_mangle]
 pub extern "C" fn libzip_tar_create() -> u32 {

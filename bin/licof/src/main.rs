@@ -6,42 +6,16 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::{
+    crypto,
     fs::{self, Read, Write},
     println, process,
 };
 
-const ROOT: &str = "/System/var/licof";
-const ROOTFS_DEFAULT: &str = "/System/var/licof/rootfs/default";
-const CACHE: &str = "/System/var/licof/cache";
-const DB: &str = "/System/var/licof/db";
-const INSTALLED_DB: &str = "/System/var/licof/db/installed";
-const APT_BASE: &str = "http://archive.debian.org/debian";
-const APT_DIST: &str = "wheezy";
-const APT_ARCH: &str = "amd64";
-const PACKAGES_GZ: &str = "/System/var/licof/cache/debian-wheezy-amd64-Packages.gz";
-const PACKAGES_TXT: &str = "/System/var/licof/cache/debian-wheezy-amd64-Packages";
-const WGET: &str = "/System/bin/wget";
-const DOWNLOAD_ATTEMPTS: u8 = 4;
-const INDEX_REQUIRED_PACKAGES: &[&str] = &[
-    "apt",
-    "libc6",
-    "libgcc1",
-    "libstdc++6",
-    "multiarch-support",
-    "passwd",
-    "zlib1g",
-];
-const BOOTSTRAP_SEED: &[&str] = &[
-    "base-files",
-    "base-passwd",
-    "libc6",
-    "libgcc1",
-    "libstdc++6",
-    "zlib1g",
-    "libapt-pkg4.12",
-    "apt",
-    "passwd",
-];
+mod config;
+mod model;
+
+use config::LicoConfig;
+use model::{Elf64Diag, PackageInfo};
 
 const EI_CLASS: usize = 4;
 const ELFCLASS64: u8 = 2;
@@ -62,17 +36,18 @@ const ELF64_PH_SIZE: usize = 56;
 anyos_std::entry!(main);
 
 fn main() {
+    let config = LicoConfig::load();
     let mut args_buf = [0u8; 256];
     let raw = process::args(&mut args_buf);
     let argv: Vec<&str> = raw.split_ascii_whitespace().collect();
 
     match argv.first().copied() {
         None | Some("help") | Some("--help") | Some("-h") => usage(),
-        Some("status") => status(),
-        Some("run") => run(&argv[1..]),
-        Some("rootfs") => rootfs(&argv[1..]),
-        Some("pkg") => pkg(&argv[1..]),
-        Some("apt") => apt(&argv[1..]),
+        Some("status") => status(&config),
+        Some("run") => run(&config, &argv[1..]),
+        Some("rootfs") => rootfs(&config, &argv[1..]),
+        Some("pkg") => pkg(&config, &argv[1..]),
+        Some("apt") => apt(&config, &argv[1..]),
         Some(cmd) => {
             println!("licof: unknown command '{}'", cmd);
             usage();
@@ -92,19 +67,20 @@ fn usage() {
     println!("  licof apt install <package> [package...]");
 }
 
-fn status() {
+fn status(config: &LicoConfig) {
     println!("licof status");
     println!("  abi: linux-x86_64 tier-0");
-    println!("  root: {}", ROOT);
-    println!("  default-rootfs: {}", ROOTFS_DEFAULT);
+    println!("  root: {}", config.root);
+    println!("  default-rootfs: {}", config.default_rootfs);
     println!(
-        "  apt-source: {}/dists/{}/main/binary-{}/Packages.gz",
-        APT_BASE, APT_DIST, APT_ARCH
+        "  apt-source: {}/dists/{}/{}/binary-{}/Packages.gz",
+        config.apt_base, config.apt_dist, config.apt_component, config.apt_arch
     );
+    println!("  config: confd system/services/licof");
     println!("  supported-package-data: data.tar.gz, data.tar.xz");
 }
 
-fn run(args: &[&str]) {
+fn run(config: &LicoConfig, args: &[&str]) {
     if args.is_empty() {
         println!("licof run: missing Linux ELF64 path");
         return;
@@ -112,17 +88,17 @@ fn run(args: &[&str]) {
 
     let path = args[0];
     let child_args = join_args(&args[1..]);
-    run_linux_process("licof run", path, &child_args);
+    run_linux_process(config, "licof run", path, &child_args);
 }
 
-fn rootfs(args: &[&str]) {
+fn rootfs(config: &LicoConfig, args: &[&str]) {
     match args.first().copied() {
         Some("create") => {
             let name = args.get(1).copied().unwrap_or("default");
-            create_rootfs(name, true);
+            create_rootfs(config, name, true);
         }
         Some("list") => {
-            println!("default  {}", ROOTFS_DEFAULT);
+            println!("default  {}", config.default_rootfs);
         }
         _ => {
             println!("licof rootfs: expected create or list");
@@ -130,18 +106,14 @@ fn rootfs(args: &[&str]) {
     }
 }
 
-fn create_rootfs(name: &str, configure_password: bool) {
-    ensure_dir(ROOT);
-    ensure_dir("/System/var/licof/rootfs");
-    ensure_dir(CACHE);
-    ensure_dir(DB);
-    ensure_dir(INSTALLED_DB);
+fn create_rootfs(config: &LicoConfig, name: &str, configure_password: bool) {
+    ensure_dir(&config.root);
+    ensure_dir(&config.rootfs_dir);
+    ensure_dir(&config.cache);
+    ensure_dir(&config.db);
+    ensure_dir(&config.installed_db);
 
-    let rootfs = if name == "default" {
-        String::from(ROOTFS_DEFAULT)
-    } else {
-        alloc::format!("/System/var/licof/rootfs/{}", name)
-    };
+    let rootfs = config.rootfs_path(name);
     ensure_dir(&rootfs);
     ensure_dir(&alloc::format!("{}/bin", rootfs));
     ensure_dir(&alloc::format!("{}/lib", rootfs));
@@ -153,7 +125,13 @@ fn create_rootfs(name: &str, configure_password: bool) {
     ensure_dir(&alloc::format!("{}/etc/apt/apt.conf.d", rootfs));
     let _ = fs::write_bytes(
         &alloc::format!("{}/etc/apt/sources.list", rootfs),
-        alloc::format!("deb {} {} main\n", APT_BASE, APT_DIST).as_bytes(),
+        alloc::format!(
+            "deb {} {} {}\n",
+            config.apt_base,
+            config.apt_dist,
+            config.apt_component
+        )
+        .as_bytes(),
     );
     let _ = fs::write_bytes(
         &alloc::format!("{}/etc/apt/apt.conf.d/99licof", rootfs),
@@ -162,19 +140,19 @@ fn create_rootfs(name: &str, configure_password: bool) {
 
     println!("licof: rootfs '{}' ready at {}", name, rootfs);
     println!("licof: bootstrapping minimal Debian userland with apt");
-    if bootstrap_rootfs(&rootfs) && configure_password {
-        configure_root_password(&rootfs);
+    if bootstrap_rootfs(config, &rootfs) && configure_password {
+        configure_root_password(config, &rootfs);
     } else if configure_password {
         println!("licof rootfs: bootstrap incomplete; skipping root password setup");
     }
 }
 
-fn pkg(args: &[&str]) {
+fn pkg(config: &LicoConfig, args: &[&str]) {
     match args.first().copied() {
         Some("install") => {
             if let Some(path) = args.get(1) {
-                create_rootfs("default", false);
-                if install_deb(path, ROOTFS_DEFAULT, None) {
+                create_rootfs(config, "default", false);
+                if install_deb(config, path, &config.default_rootfs, None) {
                     println!("licof pkg: installed '{}'", path);
                 }
             } else {
@@ -185,33 +163,33 @@ fn pkg(args: &[&str]) {
     }
 }
 
-fn apt(args: &[&str]) {
+fn apt(config: &LicoConfig, args: &[&str]) {
     match args.first().copied() {
         Some("install") => {
             if args.len() < 2 {
                 println!("licof apt install: missing package name");
                 return;
             }
-            create_rootfs("default", false);
+            create_rootfs(config, "default", false);
             for pkg in &args[1..] {
-                install_package(pkg, ROOTFS_DEFAULT, 0);
+                install_package(config, pkg, &config.default_rootfs, 0);
             }
         }
         _ => println!("licof apt: expected install <package>"),
     }
 }
 
-fn bootstrap_rootfs(rootfs: &str) -> bool {
+fn bootstrap_rootfs(config: &LicoConfig, rootfs: &str) -> bool {
     let mut ok = true;
-    for pkg in BOOTSTRAP_SEED {
-        if !install_package(pkg, rootfs, 0) {
+    for pkg in &config.bootstrap_seed {
+        if !install_package(config, pkg, rootfs, 0) {
             ok = false;
         }
     }
     ok
 }
 
-fn configure_root_password(rootfs: &str) {
+fn configure_root_password(config: &LicoConfig, rootfs: &str) {
     let passwd = linux_path_in_rootfs(rootfs, "/usr/bin/passwd");
     let passwd = if path_exists(&passwd) {
         passwd
@@ -233,14 +211,14 @@ fn configure_root_password(rootfs: &str) {
     }
 
     println!("licof rootfs: starting passwd for root");
-    let code = run_linux_process("licof passwd", &passwd, "root");
+    let code = run_linux_process(config, "licof passwd", &passwd, "root");
     if code == Some(0) {
         println!("licof rootfs: root password configured");
     }
 }
 
-fn run_linux_process(label: &str, path: &str, args: &str) -> Option<u32> {
-    diagnose_linux_binary(label, path);
+fn run_linux_process(config: &LicoConfig, label: &str, path: &str, args: &str) -> Option<u32> {
+    diagnose_linux_binary(config, label, path);
     let tid = process::licof_spawn(path, args);
     if tid == u32::MAX {
         println!("{}: failed to start '{}'", label, path);
@@ -263,35 +241,33 @@ fn run_linux_process(label: &str, path: &str, args: &str) -> Option<u32> {
     }
 }
 
-#[derive(Clone)]
-struct PackageInfo {
-    package: String,
-    version: String,
-    filename: String,
-    depends: String,
-    pre_depends: String,
-}
-
-fn install_package(pkg: &str, rootfs: &str, depth: u8) -> bool {
+fn install_package(config: &LicoConfig, pkg: &str, rootfs: &str, depth: u8) -> bool {
     let mut pending = Vec::new();
-    install_package_inner(pkg, rootfs, depth, &mut pending)
+    install_package_inner(config, pkg, rootfs, depth, &mut pending)
 }
 
-fn install_package_inner(pkg: &str, rootfs: &str, depth: u8, pending: &mut Vec<String>) -> bool {
+fn install_package_inner(
+    config: &LicoConfig,
+    pkg: &str,
+    rootfs: &str,
+    depth: u8,
+    pending: &mut Vec<String>,
+) -> bool {
     if depth > 32 {
         println!("licof apt: dependency recursion too deep at '{}'", pkg);
         return false;
     }
-    if is_installed(pkg, rootfs) {
+    if is_installed(config, pkg, rootfs) {
         return true;
     }
-    if !ensure_apt_index() {
+    if !ensure_apt_index(config) {
         return false;
     }
 
-    let Some(info) = find_package_in_index(pkg) else {
+    let package_index_txt = config.package_index_txt();
+    let Some(info) = find_package_in_index(config, pkg) else {
         println!("licof apt: package '{}' not found", pkg);
-        if package_name_present(PACKAGES_TXT, pkg) {
+        if package_name_present(&package_index_txt, pkg) {
             println!(
                 "licof apt: package '{}' exists in raw index but could not be parsed",
                 pkg
@@ -300,12 +276,12 @@ fn install_package_inner(pkg: &str, rootfs: &str, depth: u8, pending: &mut Vec<S
             println!(
                 "licof apt: package '{}' is absent from cached index ({} bytes)",
                 pkg,
-                file_size(PACKAGES_TXT)
+                file_size(&package_index_txt)
             );
         }
         return false;
     };
-    if is_installed(&info.package, rootfs) {
+    if is_installed(config, &info.package, rootfs) {
         return true;
     }
     if dependency_pending(pkg, pending) || dependency_pending(&info.package, pending) {
@@ -319,14 +295,14 @@ fn install_package_inner(pkg: &str, rootfs: &str, depth: u8, pending: &mut Vec<S
     pending.push(info.package.clone());
 
     for dep_group in parse_depends(&info.pre_depends) {
-        if !install_dependency_group(&dep_group, rootfs, depth + 1, pending) {
+        if !install_dependency_group(config, &dep_group, rootfs, depth + 1, pending) {
             println!("licof apt: dependency for '{}' not satisfied", info.package);
             pending.pop();
             return false;
         }
     }
     for dep_group in parse_depends(&info.depends) {
-        if !install_dependency_group(&dep_group, rootfs, depth + 1, pending) {
+        if !install_dependency_group(config, &dep_group, rootfs, depth + 1, pending) {
             println!("licof apt: dependency for '{}' not satisfied", info.package);
             pending.pop();
             return false;
@@ -335,40 +311,41 @@ fn install_package_inner(pkg: &str, rootfs: &str, depth: u8, pending: &mut Vec<S
 
     let deb_path = alloc::format!(
         "{}/{}",
-        CACHE,
+        config.cache,
         cache_deb_name(&info.package, &info.version, &info.filename)
     );
+    if fs::stat(&deb_path, &mut [0u32; 7]) == 0 && !verify_package_file(&info, &deb_path) {
+        let _ = fs::unlink(&deb_path);
+    }
     if fs::stat(&deb_path, &mut [0u32; 7]) != 0 {
-        let url = alloc::format!("{}/{}", APT_BASE, info.filename);
+        let url = alloc::format!("{}/{}", config.apt_base, info.filename);
         println!("licof apt: downloading {} {}", info.package, info.version);
-        if !download_url(&url, &deb_path) {
+        if !download_url(config, &url, &deb_path) {
             println!("licof apt: download failed: {}", url);
             pending.pop();
             return false;
         }
-        if !looks_like_deb(&deb_path) {
-            println!(
-                "licof apt: downloaded file is not a Debian archive: {}",
-                deb_path
-            );
+        if !verify_package_file(&info, &deb_path) {
+            let _ = fs::unlink(&deb_path);
             pending.pop();
             return false;
         }
     }
 
-    let ok = install_deb(&deb_path, rootfs, Some(&info));
+    let ok = install_deb(config, &deb_path, rootfs, Some(&info));
     pending.pop();
     ok
 }
 
 fn install_dependency_group(
+    config: &LicoConfig,
     alternatives: &[String],
     rootfs: &str,
     depth: u8,
     pending: &mut Vec<String>,
 ) -> bool {
     for dep in alternatives {
-        if install_package_inner(dep, rootfs, depth, pending) {
+        if install_package_inner(config, dep, rootfs, depth, pending) {
             return true;
         }
     }
@@ -385,78 +362,78 @@ fn dependency_pending(pkg: &str, pending: &[String]) -> bool {
     pending.iter().any(|p| p == pkg)
 }
 
-fn ensure_apt_index() -> bool {
+fn ensure_apt_index(config: &LicoConfig) -> bool {
     if !libzip_client::init() {
         println!("licof apt: libzip unavailable");
         return false;
     }
-    ensure_dir(CACHE);
-    if file_size(PACKAGES_TXT) > 0 {
-        if looks_like_plain_packages_index(PACKAGES_TXT) && packages_index_has_required_entries() {
+    ensure_dir(&config.cache);
+    let packages_gz = config.package_index_gz();
+    let packages_txt = config.package_index_txt();
+    if file_size(&packages_txt) > 0 {
+        if looks_like_plain_packages_index(&packages_txt)
+            && packages_index_has_required_entries(config)
+        {
             return true;
         }
         println!("licof apt: cached package index is invalid; refreshing");
-        let _ = fs::unlink(PACKAGES_TXT);
+        let _ = fs::unlink(&packages_txt);
     }
-    let url = alloc::format!(
-        "{}/dists/{}/main/binary-{}/Packages.gz",
-        APT_BASE,
-        APT_DIST,
-        APT_ARCH
-    );
+    let url = config.package_index_url();
 
-    for attempt in 1..=DOWNLOAD_ATTEMPTS {
-        let _ = fs::unlink(PACKAGES_GZ);
-        let _ = fs::unlink(PACKAGES_TXT);
+    for attempt in 1..=config.download_attempts {
+        let _ = fs::unlink(&packages_gz);
+        let _ = fs::unlink(&packages_txt);
         println!(
             "licof apt: fetching package index (attempt {}/{})",
-            attempt, DOWNLOAD_ATTEMPTS
+            attempt, config.download_attempts
         );
-        if !download_url(&url, PACKAGES_GZ) {
+        if !download_url(config, &url, &packages_gz) {
             println!("licof apt: failed to download {}", url);
             continue;
         }
-        let downloaded = file_size(PACKAGES_GZ);
+        let downloaded = file_size(&packages_gz);
         if downloaded == 0 {
             println!("licof apt: downloaded package index is empty");
             continue;
         }
-        if looks_like_plain_packages_index(PACKAGES_GZ) {
+        if looks_like_plain_packages_index(&packages_gz) {
             println!(
                 "licof apt: package index arrived uncompressed ({} bytes)",
                 downloaded
             );
-            if !copy_file(PACKAGES_GZ, PACKAGES_TXT) {
+            if !copy_file(&packages_gz, &packages_txt) {
                 println!("licof apt: cannot store uncompressed package index");
                 continue;
             }
         } else {
-            if !looks_like_gzip(PACKAGES_GZ) {
-                print_index_download_diagnostic(PACKAGES_GZ, downloaded);
+            if !looks_like_gzip(&packages_gz) {
+                print_index_download_diagnostic(&packages_gz, downloaded);
                 continue;
             }
-            let gzip_status = libzip_client::gzip_decompress_file_status(PACKAGES_GZ, PACKAGES_TXT);
+            let gzip_status =
+                libzip_client::gzip_decompress_file_status(&packages_gz, &packages_txt);
             if gzip_status != libzip_client::GZIP_STATUS_OK {
                 println!(
                     "licof apt: failed to decompress package index: {} (downloaded {} bytes)",
                     gzip_status_text(gzip_status),
                     downloaded
                 );
-                print_gzip_diagnostic(PACKAGES_GZ, downloaded);
+                print_gzip_diagnostic(&packages_gz, downloaded);
                 continue;
             }
         }
 
-        let unpacked = file_size(PACKAGES_TXT);
+        let unpacked = file_size(&packages_txt);
         if unpacked == 0 {
             println!("licof apt: decompressed package index is empty");
             continue;
         }
-        if !looks_like_plain_packages_index(PACKAGES_TXT) {
+        if !looks_like_plain_packages_index(&packages_txt) {
             println!("licof apt: decompressed package index is not a Packages file");
             continue;
         }
-        if !packages_index_has_required_entries() {
+        if !packages_index_has_required_entries(config) {
             println!("licof apt: decompressed package index is missing bootstrap entries");
             continue;
         }
@@ -464,17 +441,18 @@ fn ensure_apt_index() -> bool {
         return true;
     }
 
-    let _ = fs::unlink(PACKAGES_TXT);
+    let _ = fs::unlink(&packages_txt);
     false
 }
 
-fn find_package_in_index(wanted: &str) -> Option<PackageInfo> {
+fn find_package_in_index(config: &LicoConfig, wanted: &str) -> Option<PackageInfo> {
     let wanted = preferred_package(wanted).unwrap_or(wanted);
-    let mut file = match fs::File::open(PACKAGES_TXT) {
+    let packages_txt = config.package_index_txt();
+    let mut file = match fs::File::open(&packages_txt) {
         Ok(file) => file,
         Err(_) => {
-            println!("licof apt: cannot open package index '{}'", PACKAGES_TXT);
-            return find_package_in_compressed_index(wanted);
+            println!("licof apt: cannot open package index '{}'", packages_txt);
+            return find_package_in_compressed_index(config, wanted);
         }
     };
     let mut chunk = [0u8; 4096];
@@ -485,8 +463,8 @@ fn find_package_in_index(wanted: &str) -> Option<PackageInfo> {
         let n = match file.read(&mut chunk) {
             Ok(n) => n,
             Err(_) => {
-                println!("licof apt: cannot read package index '{}'", PACKAGES_TXT);
-                return find_package_in_compressed_index(wanted);
+                println!("licof apt: cannot read package index '{}'", packages_txt);
+                return find_package_in_compressed_index(config, wanted);
             }
         };
         if n == 0 {
@@ -497,7 +475,7 @@ fn find_package_in_index(wanted: &str) -> Option<PackageInfo> {
             if b == b'\n' {
                 newline_run += 1;
                 if newline_run >= 2 {
-                    if let Some(info) = package_info_from_para(&para, wanted) {
+                    if let Some(info) = package_info_from_para(config, &para, wanted) {
                         return Some(info);
                     }
                     para.clear();
@@ -510,22 +488,22 @@ fn find_package_in_index(wanted: &str) -> Option<PackageInfo> {
     }
 
     let found = if !para.is_empty() {
-        package_info_from_para(&para, wanted)
+        package_info_from_para(config, &para, wanted)
     } else {
         None
     };
     if found.is_some() {
         found
     } else {
-        find_package_in_compressed_index(wanted)
+        find_package_in_compressed_index(config, wanted)
     }
 }
 
-fn find_package_in_compressed_index(wanted: &str) -> Option<PackageInfo> {
-    let Some(index) = read_compressed_package_index() else {
+fn find_package_in_compressed_index(config: &LicoConfig, wanted: &str) -> Option<PackageInfo> {
+    let Some(index) = read_compressed_package_index(config) else {
         return None;
     };
-    let found = find_package_in_bytes(&index, wanted);
+    let found = find_package_in_bytes(config, &index, wanted);
     if found.is_some() {
         println!(
             "licof apt: resolved '{}' from compressed package index",
@@ -535,7 +513,7 @@ fn find_package_in_compressed_index(wanted: &str) -> Option<PackageInfo> {
     found
 }
 
-fn find_package_in_bytes(index: &[u8], wanted: &str) -> Option<PackageInfo> {
+fn find_package_in_bytes(config: &LicoConfig, index: &[u8], wanted: &str) -> Option<PackageInfo> {
     let mut start = 0usize;
     let mut pos = 0usize;
     let mut newline_run = 0usize;
@@ -545,7 +523,7 @@ fn find_package_in_bytes(index: &[u8], wanted: &str) -> Option<PackageInfo> {
         if b == b'\n' {
             newline_run += 1;
             if newline_run >= 2 {
-                if let Some(info) = package_info_from_para(&index[start..=pos], wanted) {
+                if let Some(info) = package_info_from_para(config, &index[start..=pos], wanted) {
                     return Some(info);
                 }
                 start = pos + 1;
@@ -558,26 +536,30 @@ fn find_package_in_bytes(index: &[u8], wanted: &str) -> Option<PackageInfo> {
     }
 
     if start < index.len() {
-        package_info_from_para(&index[start..], wanted)
+        package_info_from_para(config, &index[start..], wanted)
     } else {
         None
     }
 }
 
-fn package_info_from_para(para: &[u8], wanted: &str) -> Option<PackageInfo> {
+fn package_info_from_para(config: &LicoConfig, para: &[u8], wanted: &str) -> Option<PackageInfo> {
     let package = field_value(para, b"Package")?;
     let exact = package == wanted;
     if !exact && !provides_package_bytes(para, wanted) {
         return None;
     }
     let arch = field_value(para, b"Architecture").unwrap_or_default();
-    if arch != APT_ARCH && arch != "all" {
+    if arch != config.apt_arch && arch != "all" {
         return None;
     }
     Some(PackageInfo {
         package,
         version: field_value(para, b"Version").unwrap_or_else(|| String::from("unknown")),
         filename: field_value(para, b"Filename")?,
+        size: field_value(para, b"Size")
+            .and_then(|s| parse_decimal(&s))
+            .unwrap_or(0),
+        md5: field_value(para, b"MD5sum").unwrap_or_default(),
         depends: field_value(para, b"Depends").unwrap_or_default(),
         pre_depends: field_value(para, b"Pre-Depends").unwrap_or_default(),
     })
@@ -675,7 +657,7 @@ fn dependency_name(raw: &str) -> Option<String> {
     }
 }
 
-fn diagnose_linux_binary(label: &str, path: &str) {
+fn diagnose_linux_binary(config: &LicoConfig, label: &str, path: &str) {
     let data = match fs::read_to_vec(path) {
         Ok(data) => data,
         Err(_) => {
@@ -703,7 +685,7 @@ fn diagnose_linux_binary(label: &str, path: &str) {
         );
     }
     if let Some(interp) = info.interp_path {
-        let resolved = linux_path_in_rootfs(ROOTFS_DEFAULT, &interp);
+        let resolved = linux_path_in_rootfs(&config.default_rootfs, &interp);
         if path_exists(&resolved) {
             println!("{}: PT_INTERP {} -> {}", label, interp, resolved);
         } else {
@@ -725,12 +707,6 @@ fn diagnose_linux_binary(label: &str, path: &str) {
             label
         );
     }
-}
-
-struct Elf64Diag {
-    entry: u64,
-    is_dyn: bool,
-    interp_path: Option<String>,
 }
 
 fn inspect_elf64(data: &[u8]) -> Option<Elf64Diag> {
@@ -816,7 +792,7 @@ fn read_u64(data: &[u8], off: usize) -> Option<u64> {
     ]))
 }
 
-fn install_deb(path: &str, rootfs: &str, info: Option<&PackageInfo>) -> bool {
+fn install_deb(config: &LicoConfig, path: &str, rootfs: &str, info: Option<&PackageInfo>) -> bool {
     if !libzip_client::init() {
         println!("licof pkg: libzip unavailable");
         return false;
@@ -828,28 +804,8 @@ fn install_deb(path: &str, rootfs: &str, info: Option<&PackageInfo>) -> bool {
             return false;
         }
     };
-    let tar_path = alloc::format!("{}/licof-data.tar", CACHE);
-    if let Some(tar_data) = ar_entry(&data, "data.tar.gz") {
-        if fs::write_bytes(&tar_path, &tar_data).is_err() {
-            println!("licof pkg: cannot stage data archive");
-            return false;
-        }
-    } else if let Some(xz_data) = ar_entry(&data, "data.tar.xz") {
-        let xz_path = alloc::format!("{}/licof-data.tar.xz", CACHE);
-        if fs::write_bytes(&xz_path, &xz_data).is_err() {
-            println!("licof pkg: cannot stage XZ data archive");
-            return false;
-        }
-        if !libzip_client::xz_decompress_file(&xz_path, &tar_path) {
-            println!("licof pkg: cannot decompress data.tar.xz from '{}'", path);
-            return false;
-        }
-    } else {
-        println!("licof pkg: '{}' has no supported data.tar.* member", path);
-        return false;
-    }
-    let Some(reader) = libzip_client::TarReader::open(&tar_path) else {
-        println!("licof pkg: cannot open staged data archive");
+    let Some(reader) = data_tar_reader(&data, path) else {
+        println!("licof pkg: cannot open package data archive: {}", path);
         return false;
     };
     if reader.entry_count() == 0 {
@@ -901,7 +857,7 @@ fn install_deb(path: &str, rootfs: &str, info: Option<&PackageInfo>) -> bool {
     }
 
     if let Some(info) = info {
-        mark_installed(info, rootfs, files);
+        mark_installed(config, info, rootfs, files);
         println!(
             "licof apt: installed {} {} ({} files)",
             info.package, info.version, files
@@ -922,6 +878,21 @@ fn apply_tar_metadata(reader: &libzip_client::TarReader, index: u32, path: &str)
     if uid != 0 || gid != 0 {
         let _ = fs::chown(path, uid, gid);
     }
+}
+
+fn data_tar_reader(data: &[u8], path: &str) -> Option<libzip_client::TarReader> {
+    if let Some(tar_data) = ar_entry(data, "data.tar.gz") {
+        return libzip_client::TarReader::from_bytes(&tar_data);
+    }
+    if let Some(xz_data) = ar_entry(data, "data.tar.xz") {
+        let Some(tar_data) = libzip_client::unxz(&xz_data) else {
+            println!("licof pkg: cannot decompress data.tar.xz from '{}'", path);
+            return None;
+        };
+        return libzip_client::TarReader::from_bytes(&tar_data);
+    }
+    println!("licof pkg: '{}' has no supported data.tar.* member", path);
+    None
 }
 
 fn ar_entry(data: &[u8], wanted: &str) -> Option<Vec<u8>> {
@@ -970,8 +941,8 @@ fn sanitize_tar_path(name: &str) -> Option<String> {
     Some(String::from(rel))
 }
 
-fn mark_installed(info: &PackageInfo, rootfs: &str, files: u32) {
-    let db_dir = installed_db_dir(rootfs);
+fn mark_installed(config: &LicoConfig, info: &PackageInfo, rootfs: &str, files: u32) {
+    let db_dir = installed_db_dir(config, rootfs);
     ensure_dir(&db_dir);
     let path = alloc::format!("{}/{}", db_dir, info.package);
     let body = alloc::format!(
@@ -985,15 +956,15 @@ fn mark_installed(info: &PackageInfo, rootfs: &str, files: u32) {
     let _ = fs::write_bytes(&path, body.as_bytes());
 }
 
-fn is_installed(pkg: &str, rootfs: &str) -> bool {
-    let path = alloc::format!("{}/{}", installed_db_dir(rootfs), pkg);
+fn is_installed(config: &LicoConfig, pkg: &str, rootfs: &str) -> bool {
+    let path = alloc::format!("{}/{}", installed_db_dir(config, rootfs), pkg);
     fs::stat(&path, &mut [0u32; 7]) == 0
 }
 
-fn installed_db_dir(rootfs: &str) -> String {
+fn installed_db_dir(config: &LicoConfig, rootfs: &str) -> String {
     let mut key = String::new();
     push_cache_safe(&mut key, rootfs);
-    alloc::format!("{}/{}", INSTALLED_DB, key)
+    alloc::format!("{}/{}", config.installed_db, key)
 }
 
 fn deb_basename(path: &str) -> &str {
@@ -1035,6 +1006,45 @@ fn file_size(path: &str) -> u32 {
     }
 }
 
+fn verify_package_file(info: &PackageInfo, path: &str) -> bool {
+    let actual_size = file_size(path) as usize;
+    if info.size > 0 && actual_size != info.size {
+        println!(
+            "licof apt: invalid package size for {}: got {}, expected {}",
+            info.package, actual_size, info.size
+        );
+        return false;
+    }
+
+    let data = match fs::read_to_vec(path) {
+        Ok(data) => data,
+        Err(_) => {
+            println!("licof apt: cannot read downloaded package '{}'", path);
+            return false;
+        }
+    };
+    if !looks_like_deb_bytes(&data) {
+        println!(
+            "licof apt: downloaded file is not a Debian archive: {}",
+            path
+        );
+        return false;
+    }
+
+    if !info.md5.is_empty() {
+        let actual = crypto::md5_hex(&data);
+        let actual = core::str::from_utf8(&actual).unwrap_or("");
+        if actual != info.md5 {
+            println!(
+                "licof apt: checksum mismatch for {}: got {}, expected {}",
+                info.package, actual, info.md5
+            );
+            return false;
+        }
+    }
+    true
+}
+
 fn looks_like_gzip(path: &str) -> bool {
     let prefix = read_prefix(path);
     prefix[0] == 0x1f && prefix[1] == 0x8b && prefix[2] == 0x08
@@ -1045,9 +1055,8 @@ fn looks_like_plain_packages_index(path: &str) -> bool {
     prefix.starts_with(b"Package:")
 }
 
-fn looks_like_deb(path: &str) -> bool {
-    let prefix = read_prefix(path);
-    prefix.starts_with(b"!<arch>\n")
+fn looks_like_deb_bytes(data: &[u8]) -> bool {
+    data.starts_with(b"!<arch>\n")
 }
 
 fn read_prefix(path: &str) -> [u8; 16] {
@@ -1119,15 +1128,15 @@ fn gzip_status_text(status: u32) -> &'static str {
     }
 }
 
-fn download_url(url: &str, dest: &str) -> bool {
-    if !path_exists(WGET) {
-        println!("licof download: wget not found at {}", WGET);
+fn download_url(config: &LicoConfig, url: &str, dest: &str) -> bool {
+    if !path_exists(&config.wget) {
+        println!("licof download: wget not found at {}", config.wget);
         return false;
     }
-    for attempt in 1..=DOWNLOAD_ATTEMPTS {
+    for attempt in 1..=config.download_attempts {
         let _ = fs::unlink(dest);
         let args = alloc::format!("-q -O {} {}", dest, url);
-        let tid = process::spawn(WGET, &args);
+        let tid = process::spawn(&config.wget, &args);
         if tid == u32::MAX {
             println!("licof download: failed to start wget");
             return false;
@@ -1158,23 +1167,24 @@ fn download_url(url: &str, dest: &str) -> bool {
     false
 }
 
-fn packages_index_has_required_entries() -> bool {
+fn packages_index_has_required_entries(config: &LicoConfig) -> bool {
+    let packages_txt = config.package_index_txt();
     let mut missing = Vec::new();
-    for pkg in INDEX_REQUIRED_PACKAGES {
-        if !package_name_present(PACKAGES_TXT, pkg) {
-            missing.push(*pkg);
+    for pkg in &config.index_required_packages {
+        if !package_name_present(&packages_txt, pkg) {
+            missing.push(pkg.clone());
         }
     }
     if missing.is_empty() {
         return true;
     }
 
-    let compressed = match read_compressed_package_index() {
+    let compressed = match read_compressed_package_index(config) {
         Some(index) => index,
         None => return false,
     };
     for pkg in missing {
-        if find_package_in_bytes(&compressed, pkg)
+        if find_package_in_bytes(config, &compressed, &pkg)
             .map(|info| info.package == pkg)
             .unwrap_or(false)
         {
@@ -1186,8 +1196,9 @@ fn packages_index_has_required_entries() -> bool {
     true
 }
 
-fn read_compressed_package_index() -> Option<Vec<u8>> {
-    let gz = match fs::read_to_vec(PACKAGES_GZ) {
+fn read_compressed_package_index(config: &LicoConfig) -> Option<Vec<u8>> {
+    let packages_gz = config.package_index_gz();
+    let gz = match fs::read_to_vec(&packages_gz) {
         Ok(data) => data,
         Err(_) => return None,
     };

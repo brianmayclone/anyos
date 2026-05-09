@@ -5,7 +5,22 @@ edition = "2021"
 
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
+libconf_schema = { path = "../../libs/libconf_schema" }
 libzip_client = { path = "../../libs/libzip_client" }
+
+[features]
+default = ["anyos-bin"]
+anyos-bin = []
+host = ["anyos_std/host", "libconf_schema/host", "libzip_client/host"]
+
+[lib]
+name = "licof"
+path = "src/lib.rs"
+
+[[bin]]
+name = "licof"
+path = "src/main.rs"
+required-features = ["anyos-bin"]
 
 [profile.dev]
 panic = "abort"
