@@ -215,7 +215,7 @@ fn cleanup_killed_children(children: &[u32]) {
                 FdKind::File { global_id } => crate::fs::vfs::decref(*global_id),
                 FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::decref_read(*pipe_id),
                 FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::decref_write(*pipe_id),
-                FdKind::Tty | FdKind::None => {}
+                FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
             }
         }
         // Clean up network state
@@ -678,7 +678,7 @@ pub fn kill_thread(tid: u32) -> u32 {
                 FdKind::PipeWrite { pipe_id } => {
                     crate::ipc::anon_pipe::decref_write(*pipe_id);
                 }
-                FdKind::Tty | FdKind::None => {}
+                FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
             }
         }
     }

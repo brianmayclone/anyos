@@ -40,7 +40,7 @@ pub fn sys_exit(status: u32) -> u32 {
                 FdKind::PipeWrite { pipe_id } => {
                     crate::ipc::anon_pipe::decref_write(*pipe_id);
                 }
-                FdKind::Tty | FdKind::None => {}
+                FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
             }
         }
     }
@@ -1060,7 +1060,7 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
                 FdKind::PipeWrite { pipe_id } => {
                     crate::ipc::anon_pipe::incref_write(pipe_id);
                 }
-                FdKind::Tty | FdKind::None => {}
+                FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
             }
         }
         scheduler::set_thread_fd_table(child_tid, fd_table);
@@ -1214,7 +1214,7 @@ pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
                 FdKind::File { global_id } => crate::fs::vfs::incref(global_id),
                 FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::incref_read(pipe_id),
                 FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::incref_write(pipe_id),
-                FdKind::Tty | FdKind::None => {}
+                FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
             }
         }
         scheduler::set_thread_fd_table(child_tid, fd_table);

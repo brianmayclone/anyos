@@ -99,6 +99,23 @@ pub fn current_fd_set_nonblock(fd: u32, nonblock: bool) {
     }
 }
 
+/// Update the cursor for a licof Linux proc pseudo-file in the current FD table.
+pub fn current_fd_set_linux_proc_position(fd: u32, position: u32) -> bool {
+    let mut guard = SCHEDULER.lock();
+    let sched = match guard.as_mut() {
+        Some(sched) => sched,
+        None => return false,
+    };
+    let cpu = get_cpu_id();
+    let idx = match sched.current_idx(cpu) {
+        Some(idx) => idx,
+        None => return false,
+    };
+    sched.threads[idx]
+        .fd_table
+        .set_linux_proc_position(fd, position)
+}
+
 /// Set the FD table on a thread (for fork child setup).
 pub fn set_thread_fd_table(tid: u32, table: FdTable) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);

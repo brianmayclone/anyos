@@ -124,6 +124,10 @@ const LINUX_MAP_FIXED: u64 = 0x10;
 const LINUX_ARCH_SET_FS: u64 = 0x1002;
 const LINUX_ARCH_GET_FS: u64 = 0x1003;
 const LICOF_ROOTFS: &str = "/System/var/licof/rootfs";
+const LINUX_PROC_FILESYSTEMS: u8 = 1;
+const LINUX_PROC_MOUNTS: u8 = 2;
+const LINUX_PROC_LOGINUID: u8 = 3;
+const LINUX_PROC_STATUS: u8 = 4;
 
 pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
     let nr = regs.rax;
@@ -135,7 +139,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
     let a6 = regs.r9;
 
     match nr {
-        LINUX_SYS_READ => anyos_u32_ret(handlers::sys_read(a1 as u32, a2, a3 as u32)),
+        LINUX_SYS_READ => linux_read(a1 as u32, a2, a3),
         LINUX_SYS_WRITE => anyos_u32_ret(handlers::sys_write(a1 as u32, a2, a3 as u32)),
         LINUX_SYS_OPEN => linux_open(a1, a2),
         LINUX_SYS_OPENAT => linux_openat(a1, a2, a3),
@@ -144,7 +148,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_LSTAT => linux_stat(a1, a2, true),
         LINUX_SYS_FSTAT => linux_fstat(a1 as u32, a2),
         LINUX_SYS_POLL => linux_poll(a1, a2, a3),
-        LINUX_SYS_LSEEK => anyos_u32_ret(handlers::sys_lseek(a1 as u32, a2 as u32, a3 as u32)),
+        LINUX_SYS_LSEEK => linux_lseek(a1 as u32, a2, a3),
         LINUX_SYS_BRK => linux_brk(a1),
         LINUX_SYS_MMAP => linux_mmap(a1, a2, a3, a4, a5, a6),
         LINUX_SYS_MPROTECT => linux_mprotect(a1, a2, a3),
@@ -287,9 +291,15 @@ fn linux_stat(path_ptr: u64, stat_ptr: u64, nofollow: bool) -> u64 {
     if path_ptr == 0 || stat_ptr == 0 {
         return linux_err(EFAULT);
     }
-    let Some(path) = linux_translate_user_path(path_ptr) else {
-        return linux_err(EFAULT);
+    let raw_path = match super::handlers::helpers::read_user_str_safe(path_ptr) {
+        Some(path) => path,
+        None => return linux_err(EFAULT),
     };
+    let abs = linux_absolute_path(raw_path);
+    if let Some(file) = linux_proc_file_id(&abs) {
+        return linux_write_proc_stat(stat_ptr, file);
+    }
+    let path = linux_translate_path(&abs);
     linux_stat_translated(&path, stat_ptr, nofollow)
 }
 
@@ -308,6 +318,12 @@ fn linux_newfstatat(dirfd: u64, path_ptr: u64, stat_ptr: u64, flags: u64) -> u64
     if raw_path.is_empty() && (flags & LINUX_AT_EMPTY_PATH) != 0 {
         return linux_fstat(dirfd as u32, stat_ptr);
     }
+    if raw_path.starts_with('/') || (dirfd as i32) == LINUX_AT_FDCWD {
+        let abs = linux_absolute_path(&raw_path);
+        if let Some(file) = linux_proc_file_id(&abs) {
+            return linux_write_proc_stat(stat_ptr, file);
+        }
+    }
     let path = match linux_translate_at_path(dirfd, path_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
@@ -316,9 +332,15 @@ fn linux_newfstatat(dirfd: u64, path_ptr: u64, stat_ptr: u64, flags: u64) -> u64
 }
 
 fn linux_access(path_ptr: u64, _mode: u64) -> u64 {
-    let Some(path) = linux_translate_user_path(path_ptr) else {
-        return linux_err(EFAULT);
+    let raw_path = match super::handlers::helpers::read_user_str_safe(path_ptr) {
+        Some(path) => path,
+        None => return linux_err(EFAULT),
     };
+    let abs = linux_absolute_path(raw_path);
+    if linux_proc_file_id(&abs).is_some() {
+        return 0;
+    }
+    let path = linux_translate_path(&abs);
     let resolved = match linux_resolve_translated_path(&path, true, false) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
@@ -343,8 +365,31 @@ fn linux_open_linux_path(path: &str, linux_flags: u64) -> u64 {
         }
         return fd as u64;
     }
+    if let Some(proc_file) = linux_proc_file_id(&abs) {
+        return linux_open_proc_file(&abs, proc_file, linux_flags);
+    }
     let translated = linux_translate_absolute_path(&abs);
     linux_open_translated(&translated, linux_flags, &abs)
+}
+
+fn linux_open_proc_file(abs: &str, file: u8, linux_flags: u64) -> u64 {
+    let flags = map_open_flags(linux_flags);
+    if (flags & 1) != 0 || (flags & 4) != 0 || (flags & 8) != 0 {
+        return linux_err(EACCES);
+    }
+    let fd =
+        match crate::task::scheduler::current_fd_alloc(crate::fs::fd_table::FdKind::LinuxProc {
+            file,
+            position: 0,
+        }) {
+            Some(fd) => fd,
+            None => return linux_err(EBADF),
+        };
+    if (linux_flags & 0o2000000) != 0 {
+        crate::task::scheduler::current_fd_set_cloexec(fd, true);
+    }
+    crate::serial_println!("licof linux open-proc: ok linux='{}' fd={}", abs, fd);
+    fd as u64
 }
 
 fn linux_open_translated(path: &str, linux_flags: u64, linux_path: &str) -> u64 {
@@ -498,6 +543,7 @@ fn linux_fstat(fd: u32, stat_ptr: u64) -> u64 {
                 write_linux_stat(stat_ptr, 0, 2, 2, 0, 0, 0, 0o666, 0);
                 0
             }
+            FdKind::LinuxProc { file, .. } => linux_write_proc_stat(stat_ptr, file),
             FdKind::None => linux_err(EBADF),
         },
         None if fd < 3 => {
@@ -1106,9 +1152,52 @@ fn linux_getrandom(buf_ptr: u64, len: u64) -> u64 {
     len
 }
 
+fn linux_read(fd: u32, buf_ptr: u64, len: u64) -> u64 {
+    if len > u32::MAX as u64 {
+        return linux_err(EINVAL);
+    }
+    if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
+        if let crate::fs::fd_table::FdKind::LinuxProc { file, position } = entry.kind {
+            return linux_read_proc_file(fd, file, position, buf_ptr, len as u32);
+        }
+    }
+    anyos_u32_ret(handlers::sys_read(fd, buf_ptr, len as u32))
+}
+
+fn linux_lseek(fd: u32, offset: u64, whence: u64) -> u64 {
+    if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
+        if let crate::fs::fd_table::FdKind::LinuxProc { file, position } = entry.kind {
+            let size = linux_proc_content(file).len() as i64;
+            let base = match whence {
+                0 => 0,
+                1 => position as i64,
+                2 => size,
+                _ => return linux_err(EINVAL),
+            };
+            let next = base.saturating_add(offset as i64);
+            if next < 0 || next > u32::MAX as i64 {
+                return linux_err(EINVAL);
+            }
+            if !crate::task::scheduler::current_fd_set_linux_proc_position(fd, next as u32) {
+                return linux_err(EBADF);
+            }
+            return next as u64;
+        }
+    }
+    anyos_u32_ret(handlers::sys_lseek(fd, offset as u32, whence as u32))
+}
+
 fn linux_pread64(fd: u32, buf_ptr: u64, len: u64, offset: u64) -> u64 {
     if buf_ptr == 0 || len > usize::MAX as u64 {
         return linux_err(EFAULT);
+    }
+    if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
+        if let crate::fs::fd_table::FdKind::LinuxProc { file, .. } = entry.kind {
+            if offset > u32::MAX as u64 || len > u32::MAX as u64 {
+                return linux_err(EINVAL);
+            }
+            return linux_copy_proc_content(file, offset as u32, buf_ptr, len as u32);
+        }
     }
     match linux_read_fd_at(fd, buf_ptr, len as usize, offset) {
         Ok(n) => n as u64,
@@ -1122,6 +1211,77 @@ fn linux_readv(fd: u32, iov_ptr: u64, iovcnt: u64) -> u64 {
 
 fn linux_writev(fd: u32, iov_ptr: u64, iovcnt: u64) -> u64 {
     linux_iov_io(fd, iov_ptr, iovcnt, true)
+}
+
+fn linux_read_proc_file(fd: u32, file: u8, position: u32, buf_ptr: u64, len: u32) -> u64 {
+    let copied = linux_copy_proc_content(file, position, buf_ptr, len);
+    if (copied as i64) < 0 {
+        return copied;
+    }
+    let next = position.saturating_add(copied as u32);
+    if !crate::task::scheduler::current_fd_set_linux_proc_position(fd, next) {
+        return linux_err(EBADF);
+    }
+    copied
+}
+
+fn linux_copy_proc_content(file: u8, offset: u32, buf_ptr: u64, len: u32) -> u64 {
+    if len == 0 {
+        return 0;
+    }
+    if buf_ptr == 0 {
+        return linux_err(EFAULT);
+    }
+    let content = linux_proc_content(file);
+    let start = offset as usize;
+    if start >= content.len() {
+        return 0;
+    }
+    let count = (content.len() - start).min(len as usize);
+    if !super::handlers::helpers::copy_to_user_bytes(buf_ptr, &content[start..start + count], count)
+    {
+        return linux_err(EFAULT);
+    }
+    count as u64
+}
+
+fn linux_proc_file_id(path: &str) -> Option<u8> {
+    match path {
+        "/proc/filesystems" => Some(LINUX_PROC_FILESYSTEMS),
+        "/proc/mounts" | "/proc/self/mounts" => Some(LINUX_PROC_MOUNTS),
+        "/proc/self/loginuid" => Some(LINUX_PROC_LOGINUID),
+        "/proc/self/status" => Some(LINUX_PROC_STATUS),
+        _ => None,
+    }
+}
+
+fn linux_proc_content(file: u8) -> &'static [u8] {
+    match file {
+        LINUX_PROC_FILESYSTEMS => {
+            b"nodev\tsysfs\nnodev\trootfs\nnodev\tproc\nnodev\tdevtmpfs\nnodev\tdevpts\nnodev\ttmpfs\nnodev\texfat\nnodev\tcorefs\n"
+        }
+        LINUX_PROC_MOUNTS => {
+            b"rootfs / rootfs rw 0 0\nproc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"
+        }
+        LINUX_PROC_LOGINUID => b"4294967295\n",
+        LINUX_PROC_STATUS => b"Name:\tlicof\nState:\tR (running)\nTgid:\t1\nPid:\t1\nPPid:\t0\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n",
+        _ => b"",
+    }
+}
+
+fn linux_write_proc_stat(stat_ptr: u64, file: u8) -> u64 {
+    write_linux_stat(
+        stat_ptr,
+        0x1cf,
+        0x7000 + file as u64,
+        0,
+        linux_proc_content(file).len() as u64,
+        handlers::sys_getuid(),
+        handlers::sys_getgid(),
+        0o444,
+        0,
+    );
+    0
 }
 
 fn linux_iov_io(fd: u32, iov_ptr: u64, iovcnt: u64, write: bool) -> u64 {
@@ -1142,7 +1302,12 @@ fn linux_iov_io(fd: u32, iov_ptr: u64, iovcnt: u64, write: bool) -> u64 {
         let ret = if write {
             handlers::sys_write(fd, base, len as u32)
         } else {
-            handlers::sys_read(fd, base, len as u32)
+            let ret = linux_read(fd, base, len);
+            if (ret as i64) < 0 {
+                ret as u32
+            } else {
+                ret as u32
+            }
         };
         if (ret as i32) < 0 {
             return if total == 0 {

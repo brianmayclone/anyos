@@ -211,7 +211,7 @@ fn incref_fd_table(table: &FdTable) {
             FdKind::File { global_id } => crate::fs::vfs::incref(global_id),
             FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::incref_read(pipe_id),
             FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::incref_write(pipe_id),
-            FdKind::Tty | FdKind::None => {}
+            FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
         }
     }
 }

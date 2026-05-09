@@ -21,6 +21,8 @@ pub enum FdKind {
     /// Terminal I/O — uses legacy stdout_pipe / stdin_pipe on the Thread.
     /// Reserves fd 0/1/2 so pipe()/open() start at fd 3.
     Tty,
+    /// Small read-only pseudo-file exposed by the licof Linux ABI.
+    LinuxProc { file: u8, position: u32 },
 }
 
 /// Per-FD flags (POSIX).
@@ -168,6 +170,20 @@ impl FdTable {
     pub fn set_nonblock(&mut self, fd: u32, nonblock: bool) {
         if (fd as usize) < MAX_FDS {
             self.entries[fd as usize].flags.nonblock = nonblock;
+        }
+    }
+
+    /// Update the read cursor for a licof Linux proc pseudo-file.
+    pub fn set_linux_proc_position(&mut self, fd: u32, position: u32) -> bool {
+        if (fd as usize) >= MAX_FDS {
+            return false;
+        }
+        match &mut self.entries[fd as usize].kind {
+            FdKind::LinuxProc { position: pos, .. } => {
+                *pos = position;
+                true
+            }
+            _ => false,
         }
     }
 
