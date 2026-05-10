@@ -14,7 +14,7 @@ mod package;
 mod rootfs;
 
 use config::LicoConfig;
-use package::{install_deb, install_package, package_installed};
+use package::{install_deb, install_package, package_installed, InstallProgress};
 use rootfs::{
     ensure_rootfs_layout, find_linux_shell, linux_path_in_rootfs, path_exists, print_path_probe,
     repair_rootfs_runtime,
@@ -26,17 +26,28 @@ fn main() {
     let config = LicoConfig::load();
     let mut args_buf = [0u8; 256];
     let raw = process::args(&mut args_buf);
-    let argv: Vec<&str> = raw.split_ascii_whitespace().collect();
+    let mut verbose = false;
+    let argv: Vec<&str> = raw
+        .split_ascii_whitespace()
+        .filter(|arg| {
+            if *arg == "--verbose" || *arg == "-v" {
+                verbose = true;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
 
     match argv.first().copied() {
         None | Some("help") | Some("--help") | Some("-h") => usage(),
         Some("status") => status(&config),
-        Some("init") => init(&config, true),
+        Some("init") => init(&config, true, verbose),
         Some("repair") => repair(&config),
         Some("run") => run(&config, &argv[1..]),
         Some("shell") => shell(&config, &argv[1..]),
-        Some("pkg") => pkg(&config, &argv[1..]),
-        Some("apt") => apt(&config, &argv[1..]),
+        Some("pkg") => pkg(&config, &argv[1..], verbose),
+        Some("apt") => apt(&config, &argv[1..], verbose),
         Some(cmd) => {
             println!("licof: unknown command '{}'", cmd);
             usage();
@@ -48,13 +59,13 @@ fn usage() {
     println!("licof - Linux Compatibility Framework");
     println!();
     println!("Usage:");
-    println!("  licof status");
-    println!("  licof init");
-    println!("  licof repair");
-    println!("  licof run <linux-elf64> [args...]");
-    println!("  licof shell [shell-args...]");
-    println!("  licof pkg install <file.deb>");
-    println!("  licof apt install <package> [package...]");
+    println!("  licof [--verbose] status");
+    println!("  licof [--verbose] init");
+    println!("  licof [--verbose] repair");
+    println!("  licof [--verbose] run <linux-elf64> [args...]");
+    println!("  licof [--verbose] shell [shell-args...]");
+    println!("  licof [--verbose] pkg install <file.deb>");
+    println!("  licof [--verbose] apt install <package> [package...]");
 }
 
 fn status(config: &LicoConfig) {
@@ -96,12 +107,12 @@ fn shell(config: &LicoConfig, args: &[&str]) {
     run_linux_process(config, "licof shell", &path, &child_args);
 }
 
-fn init(config: &LicoConfig, configure_password: bool) {
+fn init(config: &LicoConfig, configure_password: bool, verbose: bool) {
     ensure_rootfs_layout(config);
 
     println!("licof: Linux base ready at {}", config.rootfs);
     println!("licof: bootstrapping minimal Debian userland with apt");
-    let bootstrapped = bootstrap_rootfs(config, &config.rootfs);
+    let bootstrapped = bootstrap_rootfs(config, &config.rootfs, verbose);
     fs::sync();
     if bootstrapped && configure_password {
         configure_root_password(config, &config.rootfs);
@@ -130,13 +141,19 @@ fn resolve_run_path(rootfs: &str, path: &str) -> String {
     }
 }
 
-fn pkg(config: &LicoConfig, args: &[&str]) {
+fn pkg(config: &LicoConfig, args: &[&str], verbose: bool) {
     match args.first().copied() {
         Some("install") => {
             if let Some(path) = args.get(1) {
                 ensure_rootfs_layout(config);
-                if install_deb(config, path, &config.rootfs, None) {
+                let mut progress = InstallProgress::new(verbose, 1, "package");
+                progress.set_overall(0, 1);
+                if install_deb(config, path, &config.rootfs, None, &mut progress) {
+                    progress.set_overall(1, 1);
+                    progress.finish();
                     println!("licof pkg: installed '{}'", path);
+                } else {
+                    progress.finish();
                 }
             } else {
                 println!("licof pkg install: missing .deb path");
@@ -146,7 +163,7 @@ fn pkg(config: &LicoConfig, args: &[&str]) {
     }
 }
 
-fn apt(config: &LicoConfig, args: &[&str]) {
+fn apt(config: &LicoConfig, args: &[&str], verbose: bool) {
     match args.first().copied() {
         Some("install") => {
             let packages = &args[1..];
@@ -155,28 +172,48 @@ fn apt(config: &LicoConfig, args: &[&str]) {
                 return;
             }
             ensure_rootfs_layout(config);
+            let mut progress = InstallProgress::new(verbose, packages.len() as u32, "packages");
+            progress.set_overall(0, packages.len() as u32);
+            let mut done = 0u32;
             for pkg in packages {
-                install_package(config, pkg, &config.rootfs, 0);
+                if install_package(config, pkg, &config.rootfs, 0, &mut progress) {
+                    done += 1;
+                } else {
+                    progress.finish();
+                }
+                progress.set_overall(done, packages.len() as u32);
             }
+            progress.finish();
         }
         _ => println!("licof apt: expected install <package>"),
     }
 }
 
-fn bootstrap_rootfs(config: &LicoConfig, rootfs: &str) -> bool {
+fn bootstrap_rootfs(config: &LicoConfig, rootfs: &str, verbose: bool) -> bool {
     let mut failed = Vec::new();
+    let mut progress = InstallProgress::new(verbose, config.bootstrap_seed.len() as u32, "seeds");
+    progress.set_overall(0, config.bootstrap_seed.len() as u32);
     write_bootstrap_state(config, rootfs, "running", &failed);
 
+    let mut done = 0u32;
     for pkg in &config.bootstrap_seed {
         if package_installed(config, pkg, rootfs) {
+            done += 1;
+            progress.set_overall(done, config.bootstrap_seed.len() as u32);
             write_bootstrap_state(config, rootfs, "running", &failed);
             continue;
         }
-        println!("licof init: bootstrap installing missing seed '{}'", pkg);
-        if !install_package(config, pkg, rootfs, 0) {
+        if progress.verbose() {
+            println!("licof init: bootstrap installing missing seed '{}'", pkg);
+        }
+        if install_package(config, pkg, rootfs, 0, &mut progress) {
+            done += 1;
+        } else {
+            progress.finish();
             println!("licof init: bootstrap seed '{}' failed", pkg);
             failed.push(pkg.clone());
         }
+        progress.set_overall(done, config.bootstrap_seed.len() as u32);
         write_bootstrap_state(config, rootfs, "running", &failed);
     }
 
@@ -191,8 +228,14 @@ fn bootstrap_rootfs(config: &LicoConfig, rootfs: &str) -> bool {
         &failed,
     );
     if ok {
+        progress.set_overall(
+            config.bootstrap_seed.len() as u32,
+            config.bootstrap_seed.len() as u32,
+        );
+        progress.finish();
         println!("licof init: bootstrap complete");
     } else {
+        progress.finish();
         println!("licof init: bootstrap incomplete; see diagnostics above");
     }
     ok

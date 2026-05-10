@@ -10,10 +10,11 @@ use alloc::vec::Vec;
 use anyos_std::{
     crypto,
     fs::{self, Read},
-    println, process,
+    print, println, process,
 };
 
 const FS_TYPE_DIRECTORY: u32 = 1;
+const PROGRESS_BAR_WIDTH: usize = 28;
 
 struct PackageLink {
     index: u32,
@@ -23,9 +24,141 @@ struct PackageLink {
     symlink: bool,
 }
 
-pub(crate) fn install_package(config: &LicoConfig, pkg: &str, rootfs: &str, depth: u8) -> bool {
+pub(crate) struct InstallProgress {
+    verbose: bool,
+    bars_active: bool,
+    overall_done: u32,
+    overall_total: u32,
+    overall_unit: &'static str,
+    package_name: String,
+    package_version: String,
+    package_done: u32,
+    package_total: u32,
+    files_written: u32,
+}
+
+impl InstallProgress {
+    pub(crate) fn new(verbose: bool, overall_total: u32, overall_unit: &'static str) -> Self {
+        Self {
+            verbose,
+            bars_active: false,
+            overall_done: 0,
+            overall_total,
+            overall_unit,
+            package_name: String::from("preparing"),
+            package_version: String::new(),
+            package_done: 0,
+            package_total: 0,
+            files_written: 0,
+        }
+    }
+
+    pub(crate) fn verbose(&self) -> bool {
+        self.verbose
+    }
+
+    pub(crate) fn set_overall(&mut self, done: u32, total: u32) {
+        self.overall_done = done;
+        self.overall_total = total;
+        self.render();
+    }
+
+    fn package_start(&mut self, name: &str, version: &str, total: u32) {
+        self.package_name.clear();
+        self.package_name.push_str(name);
+        self.package_version.clear();
+        self.package_version.push_str(version);
+        self.package_done = 0;
+        self.package_total = total;
+        self.files_written = 0;
+        self.render();
+    }
+
+    fn package_file(&mut self, done: u32, files_written: u32) {
+        self.package_done = done;
+        self.files_written = files_written;
+        self.render();
+    }
+
+    fn package_done(&mut self, files_written: u32) {
+        self.package_done = self.package_total;
+        self.files_written = files_written;
+        self.render();
+    }
+
+    pub(crate) fn finish(&mut self) {
+        if self.verbose || !self.bars_active {
+            return;
+        }
+        print!("\n");
+        self.bars_active = false;
+    }
+
+    fn render(&mut self) {
+        if self.verbose {
+            return;
+        }
+        if self.bars_active {
+            print!("\x1B[2A");
+        } else {
+            self.bars_active = true;
+        }
+        print!("\r\x1B[K");
+        print_progress_line(
+            "Overall",
+            self.overall_done,
+            self.overall_total,
+            self.overall_unit,
+        );
+        print!("\n\r\x1B[K");
+        let mut label = String::from("Package ");
+        label.push_str(&self.package_name);
+        if !self.package_version.is_empty() {
+            label.push(' ');
+            label.push_str(&self.package_version);
+        }
+        print_progress_line(&label, self.package_done, self.package_total, "entries");
+        print!("  files {}", self.files_written);
+        print!("\n");
+    }
+}
+
+fn print_progress_line(label: &str, done: u32, total: u32, unit: &str) {
+    let pct = if total == 0 {
+        0
+    } else {
+        done.saturating_mul(100).min(total.saturating_mul(100)) / total
+    };
+    print!("{:<32} {:>3}%[", label, pct);
+    let filled = if total == 0 {
+        0
+    } else {
+        (done as usize)
+            .saturating_mul(PROGRESS_BAR_WIDTH)
+            .min(total as usize * PROGRESS_BAR_WIDTH)
+            / total as usize
+    };
+    for i in 0..PROGRESS_BAR_WIDTH {
+        if i < filled {
+            print!("=");
+        } else if i == filled && done < total {
+            print!(">");
+        } else {
+            print!(" ");
+        }
+    }
+    print!("] {}/{} {}", done, total, unit);
+}
+
+pub(crate) fn install_package(
+    config: &LicoConfig,
+    pkg: &str,
+    rootfs: &str,
+    depth: u8,
+    progress: &mut InstallProgress,
+) -> bool {
     let mut pending = Vec::new();
-    install_package_inner(config, pkg, rootfs, depth, &mut pending)
+    install_package_inner(config, pkg, rootfs, depth, &mut pending, progress)
 }
 
 pub(crate) fn package_installed(config: &LicoConfig, pkg: &str, rootfs: &str) -> bool {
@@ -38,20 +171,23 @@ fn install_package_inner(
     rootfs: &str,
     depth: u8,
     pending: &mut Vec<String>,
+    progress: &mut InstallProgress,
 ) -> bool {
     if depth > 32 {
+        progress.finish();
         println!("licof apt: dependency recursion too deep at '{}'", pkg);
         return false;
     }
     if is_installed(config, pkg, rootfs) {
         return true;
     }
-    if !ensure_apt_index(config) {
+    if !ensure_apt_index(config, progress) {
         return false;
     }
 
     let package_index_txt = config.package_index_txt();
     let Some(info) = find_package_in_index(config, pkg) else {
+        progress.finish();
         println!("licof apt: package '{}' not found", pkg);
         if package_name_present(&package_index_txt, pkg) {
             println!(
@@ -71,24 +207,28 @@ fn install_package_inner(
         return true;
     }
     if dependency_pending(pkg, pending) || dependency_pending(&info.package, pending) {
-        println!(
-            "licof apt: dependency '{}' is already scheduled; continuing",
-            pkg
-        );
+        if progress.verbose() {
+            println!(
+                "licof apt: dependency '{}' is already scheduled; continuing",
+                pkg
+            );
+        }
         return true;
     }
 
     pending.push(info.package.clone());
 
     for dep_group in parse_depends(&info.pre_depends) {
-        if !install_dependency_group(config, &dep_group, rootfs, depth + 1, pending) {
+        if !install_dependency_group(config, &dep_group, rootfs, depth + 1, pending, progress) {
+            progress.finish();
             println!("licof apt: dependency for '{}' not satisfied", info.package);
             pending.pop();
             return false;
         }
     }
     for dep_group in parse_depends(&info.depends) {
-        if !install_dependency_group(config, &dep_group, rootfs, depth + 1, pending) {
+        if !install_dependency_group(config, &dep_group, rootfs, depth + 1, pending, progress) {
+            progress.finish();
             println!("licof apt: dependency for '{}' not satisfied", info.package);
             pending.pop();
             return false;
@@ -105,13 +245,13 @@ fn install_package_inner(
     }
     if fs::stat(&deb_path, &mut [0u32; 7]) != 0 {
         let url = alloc::format!("{}/{}", config.apt_base, info.filename);
-        if !download_verified_package(config, &info, &url, &deb_path) {
+        if !download_verified_package(config, &info, &url, &deb_path, progress) {
             pending.pop();
             return false;
         }
     }
 
-    let ok = install_deb(config, &deb_path, rootfs, Some(&info));
+    let ok = install_deb(config, &deb_path, rootfs, Some(&info), progress);
     pending.pop();
     ok
 }
@@ -122,13 +262,15 @@ fn install_dependency_group(
     rootfs: &str,
     depth: u8,
     pending: &mut Vec<String>,
+    progress: &mut InstallProgress,
 ) -> bool {
     for dep in alternatives {
-        if install_package_inner(config, dep, rootfs, depth, pending) {
+        if install_package_inner(config, dep, rootfs, depth, pending, progress) {
             return true;
         }
     }
     if !alternatives.is_empty() {
+        progress.finish();
         println!(
             "licof apt: no dependency alternative worked: {}",
             alternatives[0]
@@ -142,14 +284,18 @@ fn download_verified_package(
     info: &PackageInfo,
     url: &str,
     dest: &str,
+    progress: &mut InstallProgress,
 ) -> bool {
     for attempt in 1..=config.download_attempts {
         let _ = fs::unlink(dest);
-        println!(
-            "licof apt: downloading {} {} (attempt {}/{})",
-            info.package, info.version, attempt, config.download_attempts
-        );
+        if progress.verbose() {
+            println!(
+                "licof apt: downloading {} {} (attempt {}/{})",
+                info.package, info.version, attempt, config.download_attempts
+            );
+        }
         if !download_url(config, url, dest) {
+            progress.finish();
             println!("licof apt: download failed: {}", url);
             return false;
         }
@@ -158,12 +304,14 @@ fn download_verified_package(
         }
         let _ = fs::unlink(dest);
         if attempt < config.download_attempts {
+            progress.finish();
             println!(
                 "licof apt: package verification failed for {}; retrying download",
                 info.package
             );
         }
     }
+    progress.finish();
     println!(
         "licof apt: package verification failed for {} after {} attempts",
         info.package, config.download_attempts
@@ -175,8 +323,9 @@ fn dependency_pending(pkg: &str, pending: &[String]) -> bool {
     pending.iter().any(|p| p == pkg)
 }
 
-fn ensure_apt_index(config: &LicoConfig) -> bool {
+fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool {
     if !libzip_client::init() {
+        progress.finish();
         println!("licof apt: libzip unavailable");
         return false;
     }
@@ -189,7 +338,9 @@ fn ensure_apt_index(config: &LicoConfig) -> bool {
         {
             return true;
         }
-        println!("licof apt: cached package index is invalid; refreshing");
+        if progress.verbose() {
+            println!("licof apt: cached package index is invalid; refreshing");
+        }
         let _ = fs::unlink(&packages_txt);
     }
     let url = config.package_index_url();
@@ -197,36 +348,44 @@ fn ensure_apt_index(config: &LicoConfig) -> bool {
     for attempt in 1..=config.download_attempts {
         let _ = fs::unlink(&packages_gz);
         let _ = fs::unlink(&packages_txt);
-        println!(
-            "licof apt: fetching package index (attempt {}/{})",
-            attempt, config.download_attempts
-        );
+        if progress.verbose() {
+            println!(
+                "licof apt: fetching package index (attempt {}/{})",
+                attempt, config.download_attempts
+            );
+        }
         if !download_url(config, &url, &packages_gz) {
+            progress.finish();
             println!("licof apt: failed to download {}", url);
             continue;
         }
         let downloaded = file_size(&packages_gz);
         if downloaded == 0 {
+            progress.finish();
             println!("licof apt: downloaded package index is empty");
             continue;
         }
         if looks_like_plain_packages_index(&packages_gz) {
+            progress.finish();
             println!(
                 "licof apt: package index arrived uncompressed ({} bytes)",
                 downloaded
             );
             if !copy_file(&packages_gz, &packages_txt) {
+                progress.finish();
                 println!("licof apt: cannot store uncompressed package index");
                 continue;
             }
         } else {
             if !looks_like_gzip(&packages_gz) {
+                progress.finish();
                 print_index_download_diagnostic(&packages_gz, downloaded);
                 continue;
             }
             let gzip_status =
                 libzip_client::gzip_decompress_file_status(&packages_gz, &packages_txt);
             if gzip_status != libzip_client::GZIP_STATUS_OK {
+                progress.finish();
                 println!(
                     "licof apt: failed to decompress package index: {} (downloaded {} bytes)",
                     gzip_status_text(gzip_status),
@@ -239,18 +398,23 @@ fn ensure_apt_index(config: &LicoConfig) -> bool {
 
         let unpacked = file_size(&packages_txt);
         if unpacked == 0 {
+            progress.finish();
             println!("licof apt: decompressed package index is empty");
             continue;
         }
         if !looks_like_plain_packages_index(&packages_txt) {
+            progress.finish();
             println!("licof apt: decompressed package index is not a Packages file");
             continue;
         }
         if !packages_index_has_required_entries(config) {
+            progress.finish();
             println!("licof apt: decompressed package index is missing bootstrap entries");
             continue;
         }
-        println!("licof apt: package index ready ({} bytes)", unpacked);
+        if progress.verbose() {
+            println!("licof apt: package index ready ({} bytes)", unpacked);
+        }
         return true;
     }
 
@@ -475,26 +639,36 @@ pub(crate) fn install_deb(
     path: &str,
     rootfs: &str,
     info: Option<&PackageInfo>,
+    progress: &mut InstallProgress,
 ) -> bool {
     if !libzip_client::init() {
+        progress.finish();
         println!("licof pkg: libzip unavailable");
         return false;
     }
     let data = match fs::read_to_vec(path) {
         Ok(d) => d,
         Err(_) => {
+            progress.finish();
             println!("licof pkg: cannot read '{}'", path);
             return false;
         }
     };
     let Some(reader) = data_tar_reader(&data, path) else {
+        progress.finish();
         println!("licof pkg: cannot open package data archive: {}", path);
         return false;
     };
     if reader.entry_count() == 0 {
+        progress.finish();
         println!("licof pkg: staged data archive has no entries: {}", path);
         return false;
     }
+    let package_name = info
+        .map(|i| i.package.as_str())
+        .unwrap_or(deb_basename(path));
+    let package_version = info.map(|i| i.version.as_str()).unwrap_or("");
+    progress.package_start(package_name, package_version, reader.entry_count());
 
     let mut files = 0u32;
     let mut complete = true;
@@ -510,6 +684,7 @@ pub(crate) fn install_deb(
         if reader.entry_is_dir(i) || typeflag == b'5' {
             ensure_dir_recursive(&dest);
             apply_tar_metadata(&reader, i, &dest);
+            progress.package_file(i + 1, files);
         } else if typeflag == b'2' {
             links.push(PackageLink {
                 index: i,
@@ -518,6 +693,7 @@ pub(crate) fn install_deb(
                 target: reader.entry_link_name(i),
                 symlink: true,
             });
+            progress.package_file(i + 1, files);
         } else if typeflag == b'1' {
             links.push(PackageLink {
                 index: i,
@@ -526,30 +702,38 @@ pub(crate) fn install_deb(
                 target: reader.entry_link_name(i),
                 symlink: false,
             });
+            progress.package_file(i + 1, files);
         } else {
             ensure_parent_dirs(&dest);
-            println!("licof pkg: extracting {}", rel);
+            if progress.verbose() {
+                println!("licof pkg: extracting {}", rel);
+            }
             if reader.extract_to_file(i, &dest) {
                 apply_tar_metadata(&reader, i, &dest);
                 files += 1;
                 append_manifest_path(&mut manifest, &rel);
+                progress.package_file(i + 1, files);
             } else {
+                progress.finish();
                 println!("licof pkg: failed to extract {}", rel);
                 complete = false;
             }
         }
     }
     for link in &links {
-        if install_package_link(rootfs, &reader, link) {
+        if install_package_link(rootfs, &reader, link, progress.verbose()) {
             files += 1;
             append_manifest_path(&mut manifest, &link.rel);
+            progress.package_file(reader.entry_count(), files);
         } else if link.symlink {
+            progress.finish();
             println!(
                 "licof pkg: failed to create symlink {} -> {}",
                 link.rel, link.target
             );
             complete = false;
         } else {
+            progress.finish();
             println!(
                 "licof pkg: failed to materialize hardlink {} -> {}",
                 link.rel, link.target
@@ -558,24 +742,31 @@ pub(crate) fn install_deb(
         }
     }
     if files == 0 {
+        progress.finish();
         println!("licof pkg: extracted no files from '{}'", path);
         return false;
     }
     if !complete {
+        progress.finish();
         println!("licof pkg: package '{}' extracted incompletely", path);
         return false;
     }
 
     if let Some(info) = info {
         if !validate_installed_package(rootfs, info) {
+            progress.finish();
             return false;
         }
         mark_installed(config, info, rootfs, files, &manifest);
-        println!(
-            "licof apt: installed {} {} ({} files)",
-            info.package, info.version, files
-        );
+        progress.package_done(files);
+        if progress.verbose() {
+            println!(
+                "licof apt: installed {} {} ({} files)",
+                info.package, info.version, files
+            );
+        }
     } else {
+        progress.package_done(files);
         println!("licof pkg: extracted {} files", files);
     }
     true
@@ -597,13 +788,16 @@ fn install_package_link(
     rootfs: &str,
     reader: &libzip_client::TarReader,
     link: &PackageLink,
+    verbose: bool,
 ) -> bool {
     if link.target.is_empty() {
         return false;
     }
     ensure_parent_dirs(&link.dest);
     if link.symlink {
-        println!("licof pkg: linking {} -> {}", link.rel, link.target);
+        if verbose {
+            println!("licof pkg: linking {} -> {}", link.rel, link.target);
+        }
         let _ = fs::unlink(&link.dest);
         if fs::symlink(&link.target, &link.dest) == 0 {
             if symlink_points_to(&link.dest, &link.target) {
@@ -617,7 +811,9 @@ fn install_package_link(
         }
         return false;
     } else {
-        println!("licof pkg: hardlink {} -> {}", link.rel, link.target);
+        if verbose {
+            println!("licof pkg: hardlink {} -> {}", link.rel, link.target);
+        }
     }
     if materialize_hardlink_target(rootfs, &link.dest, &link.target) {
         apply_tar_metadata(reader, link.index, &link.dest);
