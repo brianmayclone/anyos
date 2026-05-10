@@ -65,6 +65,12 @@ etc/apt/apt.conf.d/99licof
 `99licof` disables valid-until checks because the default archive target is an
 old Debian suite on `archive.debian.org`.
 
+After package installation, `licof init` verifies that the Linux base contains
+an executable shell candidate (`/bin/bash`, `/bin/dash` or `/bin/sh`) and a
+`passwd` binary before it reports bootstrap success. Missing paths are printed
+with path probes so stale package markers cannot silently turn into a false
+`bootstrap complete`.
+
 ## `licof repair`
 
 Recreates the base directory layout, repairs runtime links and syncs the
@@ -125,6 +131,11 @@ libstdc++6
 zlib1g
 libapt-pkg4.12
 apt
+dash
+bash
+coreutils
+libpam-runtime
+login
 passwd
 ```
 
@@ -239,9 +250,9 @@ Defaults:
 | `apt/suite` | `wheezy` |
 | `apt/component` | `main` |
 | `apt/arch` | `amd64` |
-| `apt/index_required_packages_csv` | `apt,libc6,libgcc1,libstdc++6,multiarch-support,passwd,zlib1g` |
+| `apt/index_required_packages_csv` | `apt,base-files,base-passwd,bash,coreutils,dash,libc6,libgcc1,libpam-runtime,libstdc++6,login,multiarch-support,passwd,zlib1g` |
 | `apt/download_attempts` | `4` |
-| `bootstrap/packages_csv` | `base-files,base-passwd,libc6,libgcc1,libstdc++6,zlib1g,libapt-pkg4.12,apt,passwd` |
+| `bootstrap/packages_csv` | `base-files,base-passwd,libc6,libgcc1,libstdc++6,zlib1g,libapt-pkg4.12,apt,dash,bash,coreutils,libpam-runtime,login,passwd` |
 | `tools/wget` | `/System/bin/wget` |
 
 All path values are normalized by trimming trailing slashes.
@@ -255,8 +266,12 @@ Installed package markers are stored under:
 ```
 
 The rootfs key is a filesystem-safe encoding of the active Linux base path.
-This database is intentionally minimal: it prevents repeated installs and
-records enough state for bootstrap progress. It is not a full dpkg database.
+Each marker records the package version, source filename, file count and the
+extracted payload paths. A marker is accepted only when at least one payload
+path is recorded and all recorded files or links still exist in the active
+Linux base. Stale or legacy markers are ignored and the package is installed
+again. This is still not a full dpkg database; it is a bootstrap integrity
+cache.
 
 ## Current Operational Notes
 

@@ -76,6 +76,9 @@ needs them and when the anyOS behavior can be made explicit.
 - `licof init` does not run runtime repair after bootstrap; broken Linux links
   must be fixed in the symlink-aware loader/VFS path instead of by copying
   libraries over package metadata.
+- Installed-package markers must prove their payload paths still exist. Stale
+  markers are ignored so a half-written Linux base cannot be reported as a
+  complete bootstrap.
 - The CLI reads policy and paths from `confd` via the `services/licof`
   manifest. Built-in defaults exist so a system can bootstrap without a
   pre-existing config tree.

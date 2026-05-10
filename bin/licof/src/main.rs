@@ -14,9 +14,9 @@ mod package;
 mod rootfs;
 
 use config::LicoConfig;
-use package::{install_deb, install_package};
+use package::{install_deb, install_package, package_installed};
 use rootfs::{
-    ensure_rootfs_layout, find_linux_shell, linux_path_in_rootfs, path_exists,
+    ensure_rootfs_layout, find_linux_shell, linux_path_in_rootfs, path_exists, print_path_probe,
     repair_rootfs_runtime,
 };
 
@@ -160,34 +160,112 @@ fn apt(config: &LicoConfig, args: &[&str]) {
 }
 
 fn bootstrap_rootfs(config: &LicoConfig, rootfs: &str) -> bool {
-    let mut ok = true;
+    let mut failed = Vec::new();
+    write_bootstrap_state(config, rootfs, "running", &failed);
+
     for pkg in &config.bootstrap_seed {
+        if package_installed(config, pkg, rootfs) {
+            write_bootstrap_state(config, rootfs, "running", &failed);
+            continue;
+        }
+        println!("licof init: bootstrap installing missing seed '{}'", pkg);
         if !install_package(config, pkg, rootfs, 0) {
             println!("licof init: bootstrap seed '{}' failed", pkg);
-            ok = false;
+            failed.push(pkg.clone());
         }
+        write_bootstrap_state(config, rootfs, "running", &failed);
     }
+
+    let mut ok = bootstrap_packages_complete(config, rootfs);
+    if ok && !verify_bootstrap_integrity(rootfs) {
+        ok = false;
+    }
+    write_bootstrap_state(
+        config,
+        rootfs,
+        if ok { "complete" } else { "incomplete" },
+        &failed,
+    );
     if ok {
         println!("licof init: bootstrap complete");
     } else {
-        println!("licof init: bootstrap incomplete; see failed seed package above");
+        println!("licof init: bootstrap incomplete; see diagnostics above");
+    }
+    ok
+}
+
+fn bootstrap_packages_complete(config: &LicoConfig, rootfs: &str) -> bool {
+    for pkg in &config.bootstrap_seed {
+        if !package_installed(config, pkg, rootfs) {
+            return false;
+        }
+    }
+    true
+}
+
+fn write_bootstrap_state(
+    config: &LicoConfig,
+    rootfs: &str,
+    status: &str,
+    failed_this_run: &[String],
+) {
+    let mut body = String::new();
+    body.push_str("Status: ");
+    body.push_str(status);
+    body.push('\n');
+    body.push_str("RootFS: ");
+    body.push_str(rootfs);
+    body.push('\n');
+
+    for pkg in &config.bootstrap_seed {
+        if package_installed(config, pkg, rootfs) {
+            body.push_str("Installed: ");
+        } else {
+            body.push_str("Missing: ");
+        }
+        body.push_str(pkg);
+        body.push('\n');
+    }
+
+    for pkg in failed_this_run {
+        if !package_installed(config, pkg, rootfs) {
+            body.push_str("Failed: ");
+            body.push_str(pkg);
+            body.push('\n');
+        }
+    }
+
+    let state_path = alloc::format!("{}/bootstrap-state", config.db);
+    let _ = fs::write_bytes(&state_path, body.as_bytes());
+    fs::sync();
+}
+
+fn verify_bootstrap_integrity(rootfs: &str) -> bool {
+    let mut ok = true;
+    if find_linux_shell(rootfs).is_none() {
+        println!("licof init: bootstrap missing Linux shell (/bin/bash, /bin/dash or /bin/sh)");
+        for linux_path in ["/bin/bash", "/usr/bin/bash", "/bin/dash", "/bin/sh"] {
+            let path = linux_path_in_rootfs(rootfs, linux_path);
+            print_path_probe("licof init", &path);
+        }
+        ok = false;
+    }
+    if find_passwd_binary(rootfs).is_none() {
+        println!("licof init: bootstrap missing passwd binary");
+        for linux_path in ["/usr/bin/passwd", "/bin/passwd"] {
+            let path = linux_path_in_rootfs(rootfs, linux_path);
+            print_path_probe("licof init", &path);
+        }
+        ok = false;
     }
     ok
 }
 
 fn configure_root_password(config: &LicoConfig, rootfs: &str) {
-    let passwd = linux_path_in_rootfs(rootfs, "/usr/bin/passwd");
-    let passwd = if path_exists(&passwd) {
-        passwd
-    } else {
-        let fallback = linux_path_in_rootfs(rootfs, "/bin/passwd");
-        if path_exists(&fallback) {
-            fallback
-        } else {
-            println!("licof init: passwd binary not found; root password not configured");
-            println!("licof init: try later after 'licof apt install passwd'");
-            return;
-        }
+    let Some(passwd) = find_passwd_binary(rootfs) else {
+        println!("licof init: passwd binary not found; root password not configured");
+        println!("licof init: try later after 'licof apt install passwd'");
+        return;
     };
 
     if fs::isatty(0) != 1 || fs::isatty(1) != 1 {
@@ -203,12 +281,22 @@ fn configure_root_password(config: &LicoConfig, rootfs: &str) {
     }
 }
 
+fn find_passwd_binary(rootfs: &str) -> Option<String> {
+    for linux_path in ["/usr/bin/passwd", "/bin/passwd"] {
+        let path = linux_path_in_rootfs(rootfs, linux_path);
+        if path_exists(&path) {
+            return Some(path);
+        }
+    }
+    None
+}
+
 fn run_linux_process(config: &LicoConfig, label: &str, path: &str, args: &str) -> Option<u32> {
     elf::diagnose_linux_binary(config, label, path);
     let tid = process::licof_spawn(path, args);
     if tid == u32::MAX {
         println!("{}: failed to start '{}'", label, path);
-        println!("{}: check the diagnostics above and missing Linux syscalls in kernel/src/syscall/linux.rs", label);
+        println!("{}: check the diagnostics above and missing Linux syscalls in kernel/src/syscall/linux/", label);
         return None;
     }
 

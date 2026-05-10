@@ -174,6 +174,7 @@ licof apt: response looks like HTML; archive server returned an error page
 licof apt: failed to decompress package index: ...
 licof apt: checksum mismatch ...
 licof apt: invalid package size ...
+licof apt: installed marker for '<package>' is stale; reinstalling
 ```
 
 If the first bytes are `00 00 00 00`, suspect a write/flush/filesystem issue or
@@ -210,6 +211,13 @@ licof must not materialize shared-library symlinks as regular files. If a
 package symlink cannot be created or verified, fix the filesystem/VFS symlink
 path and reinstall the package. Copying over SONAME links can make the dynamic
 loader read the wrong ELF metadata and produces misleading version errors.
+
+Installed package markers contain `Path:` entries for extracted payload files
+and links. When `licof apt` sees a marker without payload paths, or a payload
+path no longer exists, it deletes the marker and reinstalls the package. This
+guards against crashes, interrupted flushes, filesystem regressions and older
+marker formats that claimed a package was installed without proving its files
+are still present.
 
 ## Linux Base Debugging
 

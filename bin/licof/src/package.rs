@@ -28,6 +28,10 @@ pub(crate) fn install_package(config: &LicoConfig, pkg: &str, rootfs: &str, dept
     install_package_inner(config, pkg, rootfs, depth, &mut pending)
 }
 
+pub(crate) fn package_installed(config: &LicoConfig, pkg: &str, rootfs: &str) -> bool {
+    is_installed(config, pkg, rootfs)
+}
+
 fn install_package_inner(
     config: &LicoConfig,
     pkg: &str,
@@ -494,6 +498,7 @@ pub(crate) fn install_deb(
 
     let mut files = 0u32;
     let mut complete = true;
+    let mut manifest = String::new();
     let mut links = Vec::new();
     for i in 0..reader.entry_count() {
         let name = reader.entry_name(i);
@@ -527,6 +532,7 @@ pub(crate) fn install_deb(
             if reader.extract_to_file(i, &dest) {
                 apply_tar_metadata(&reader, i, &dest);
                 files += 1;
+                append_manifest_path(&mut manifest, &rel);
             } else {
                 println!("licof pkg: failed to extract {}", rel);
                 complete = false;
@@ -536,6 +542,7 @@ pub(crate) fn install_deb(
     for link in &links {
         if install_package_link(rootfs, &reader, link) {
             files += 1;
+            append_manifest_path(&mut manifest, &link.rel);
         } else if link.symlink {
             println!(
                 "licof pkg: failed to create symlink {} -> {}",
@@ -563,7 +570,7 @@ pub(crate) fn install_deb(
         if !validate_installed_package(rootfs, info) {
             return false;
         }
-        mark_installed(config, info, rootfs, files);
+        mark_installed(config, info, rootfs, files, &manifest);
         println!(
             "licof apt: installed {} {} ({} files)",
             info.package, info.version, files
@@ -848,24 +855,79 @@ fn sanitize_tar_path(name: &str) -> Option<String> {
     Some(String::from(rel))
 }
 
-fn mark_installed(config: &LicoConfig, info: &PackageInfo, rootfs: &str, files: u32) {
+fn append_manifest_path(manifest: &mut String, rel: &str) {
+    manifest.push_str("Path: ");
+    manifest.push_str(rel);
+    manifest.push('\n');
+}
+
+fn mark_installed(
+    config: &LicoConfig,
+    info: &PackageInfo,
+    rootfs: &str,
+    files: u32,
+    manifest: &str,
+) {
     let db_dir = installed_db_dir(config, rootfs);
     ensure_dir(&db_dir);
     let path = installed_package_path(config, &info.package, rootfs);
     let body = alloc::format!(
-        "Package: {}\nVersion: {}\nRootFS: {}\nFilename: {}\nFiles: {}\n",
+        "Package: {}\nVersion: {}\nRootFS: {}\nFilename: {}\nFiles: {}\n{}",
         info.package,
         info.version,
         rootfs,
         info.filename,
-        files
+        files,
+        manifest
     );
     let _ = fs::write_bytes(&path, body.as_bytes());
 }
 
 fn is_installed(config: &LicoConfig, pkg: &str, rootfs: &str) -> bool {
     let path = installed_package_path(config, pkg, rootfs);
-    fs::stat(&path, &mut [0u32; 7]) == 0
+    let Ok(data) = fs::read_to_vec(&path) else {
+        return false;
+    };
+    if installed_manifest_valid(rootfs, &data) {
+        return true;
+    }
+    println!(
+        "licof apt: installed marker for '{}' is stale; reinstalling",
+        pkg
+    );
+    let _ = fs::unlink(&path);
+    false
+}
+
+fn installed_manifest_valid(rootfs: &str, data: &[u8]) -> bool {
+    let Ok(text) = core::str::from_utf8(data) else {
+        return false;
+    };
+    let mut paths = 0u32;
+    for line in text.lines() {
+        let Some(rel) = line.strip_prefix("Path: ") else {
+            continue;
+        };
+        if rel.is_empty() || rel.starts_with('/') || rel.contains("..") {
+            return false;
+        }
+        paths += 1;
+        if !installed_payload_path_exists(rootfs, rel) {
+            return false;
+        }
+    }
+    paths > 0
+}
+
+fn installed_payload_path_exists(rootfs: &str, rel: &str) -> bool {
+    let path = normalize_abs_path(&alloc::format!("{}/{}", rootfs, rel));
+    if !path_under_rootfs(rootfs, &path) || !path_exists_no_follow(&path) {
+        return false;
+    }
+    if !path_is_symlink(&path) {
+        return path_exists(&path);
+    }
+    true
 }
 
 fn installed_package_path(config: &LicoConfig, pkg: &str, rootfs: &str) -> String {
