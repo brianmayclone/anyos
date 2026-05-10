@@ -63,8 +63,7 @@ pub(super) fn linux_clone(
     }
 
     if (flags & CLONE_PARENT_SETTID) != 0
-        && (parent_tidptr == 0
-            || !handlers::helpers::is_user_range_accessible(parent_tidptr, 4))
+        && (parent_tidptr == 0 || !handlers::helpers::is_user_range_accessible(parent_tidptr, 4))
     {
         return linux_err(EFAULT);
     }
@@ -86,11 +85,7 @@ pub(super) fn linux_clone(
     };
 
     #[cfg(target_arch = "x86_64")]
-    let child_tid = handlers::sys_fork_with_child_tidptr(
-        regs,
-        child_tidptr,
-        clear_child_tidptr,
-    );
+    let child_tid = handlers::sys_fork_with_child_tidptr(regs, child_tidptr, clear_child_tidptr);
     #[cfg(not(target_arch = "x86_64"))]
     let child_tid = handlers::sys_fork(regs);
     if child_tid == u32::MAX {
@@ -198,9 +193,15 @@ pub(super) fn linux_wait4(pid: i64, status_ptr: u64, options: u64, rusage_ptr: u
     if (options & !WNOHANG) != 0 {
         return linux_err(EINVAL);
     }
+    if status_ptr != 0 && !handlers::helpers::is_user_range_accessible(status_ptr, 4) {
+        return linux_err(EFAULT);
+    }
+    if rusage_ptr != 0 && !handlers::helpers::is_user_range_accessible(rusage_ptr, 144) {
+        return linux_err(EFAULT);
+    }
 
     let wnohang = (options & WNOHANG) != 0;
-    let (child_tid, code) = if pid == -1 {
+    let (child_tid, code) = if pid == -1 || pid == 0 || pid < -1 {
         if wnohang {
             crate::task::scheduler::try_waitpid_any()
         } else {

@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 mod abi;
 mod fs;
 mod io;
+mod ipc;
 mod memory;
 mod path;
 mod process;
@@ -19,6 +20,7 @@ mod socket;
 use abi::*;
 use fs::*;
 use io::*;
+use ipc::*;
 use memory::*;
 use path::*;
 use process::*;
@@ -43,6 +45,7 @@ const E2BIG: i32 = 7;
 const ENOEXEC: i32 = 8;
 const ECHILD: i32 = 10;
 const ELOOP: i32 = 40;
+const ENOMSG: i32 = 42;
 const EAFNOSUPPORT: i32 = 97;
 const ECONNREFUSED: i32 = 111;
 const ENOTCONN: i32 = 107;
@@ -72,9 +75,14 @@ const LINUX_SYS_PIPE: u64 = 22;
 const LINUX_SYS_SELECT: u64 = 23;
 const LINUX_SYS_SCHED_YIELD: u64 = 24;
 const LINUX_SYS_MADVISE: u64 = 28;
+const LINUX_SYS_SHMGET: u64 = 29;
+const LINUX_SYS_SHMAT: u64 = 30;
+const LINUX_SYS_SHMCTL: u64 = 31;
+const LINUX_SYS_PAUSE: u64 = 34;
 const LINUX_SYS_DUP: u64 = 32;
 const LINUX_SYS_DUP2: u64 = 33;
 const LINUX_SYS_NANOSLEEP: u64 = 35;
+const LINUX_SYS_ALARM: u64 = 37;
 const LINUX_SYS_GETPID: u64 = 39;
 const LINUX_SYS_SOCKET: u64 = 41;
 const LINUX_SYS_CONNECT: u64 = 42;
@@ -99,12 +107,21 @@ const LINUX_SYS_EXIT: u64 = 60;
 const LINUX_SYS_WAIT4: u64 = 61;
 const LINUX_SYS_KILL: u64 = 62;
 const LINUX_SYS_UNAME: u64 = 63;
+const LINUX_SYS_SEMGET: u64 = 64;
+const LINUX_SYS_SEMOP: u64 = 65;
+const LINUX_SYS_SEMCTL: u64 = 66;
+const LINUX_SYS_SHMDT: u64 = 67;
+const LINUX_SYS_MSGGET: u64 = 68;
+const LINUX_SYS_MSGSND: u64 = 69;
+const LINUX_SYS_MSGRCV: u64 = 70;
+const LINUX_SYS_MSGCTL: u64 = 71;
 const LINUX_SYS_FSYNC: u64 = 74;
 const LINUX_SYS_FDATASYNC: u64 = 75;
 const LINUX_SYS_TRUNCATE: u64 = 76;
 const LINUX_SYS_FTRUNCATE: u64 = 77;
 const LINUX_SYS_GETDENTS: u64 = 78;
 const LINUX_SYS_FCNTL: u64 = 72;
+const LINUX_SYS_FLOCK: u64 = 73;
 const LINUX_SYS_GETCWD: u64 = 79;
 const LINUX_SYS_CHDIR: u64 = 80;
 const LINUX_SYS_RENAME: u64 = 82;
@@ -203,6 +220,8 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
     let a5 = regs.r8;
     let a6 = regs.r9;
 
+    crate::task::scheduler::set_last_syscall(crate::arch::hal::cpu_id(), nr as u32);
+
     match nr {
         LINUX_SYS_READ => linux_read(a1 as u32, a2, a3),
         LINUX_SYS_WRITE => linux_write(a1 as u32, a2, a3),
@@ -218,6 +237,9 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_MMAP => linux_mmap(a1, a2, a3, a4, a5, a6),
         LINUX_SYS_MPROTECT => linux_mprotect(a1, a2, a3),
         LINUX_SYS_MUNMAP => linux_munmap(a1, a2),
+        LINUX_SYS_SHMGET => linux_shmget(a1, a2, a3),
+        LINUX_SYS_SHMAT => linux_shmat(a1, a2, a3),
+        LINUX_SYS_SHMCTL => linux_shmctl(a1, a2, a3),
         LINUX_SYS_RT_SIGACTION => linux_rt_sigaction(a1, a2, a3, a4),
         LINUX_SYS_RT_SIGPROCMASK => linux_rt_sigprocmask(a1, a2, a3, a4),
         LINUX_SYS_IOCTL => linux_ioctl(a1 as u32, a2, a3),
@@ -239,7 +261,9 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         }
         LINUX_SYS_MADVISE => 0,
         LINUX_SYS_SCHED_YIELD => linux_sched_yield(),
+        LINUX_SYS_PAUSE => linux_err(EINTR),
         LINUX_SYS_NANOSLEEP => 0,
+        LINUX_SYS_ALARM => 0,
         LINUX_SYS_ARCH_PRCTL => linux_arch_prctl(a1, a2),
         LINUX_SYS_GETPID => handlers::sys_getpid() as u64,
         LINUX_SYS_SOCKET => linux_socket(a1, a2, a3),
@@ -264,10 +288,19 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_UNAME => linux_uname(a1),
         LINUX_SYS_WAIT4 => linux_wait4(a1 as i64, a2, a3, a4),
         LINUX_SYS_KILL => linux_kill(a1 as i64, a2),
+        LINUX_SYS_SEMGET => linux_semget(a1, a2, a3),
+        LINUX_SYS_SEMOP => linux_semop(a1, a2, a3),
+        LINUX_SYS_SEMCTL => linux_semctl(a1, a2, a3, a4),
+        LINUX_SYS_SHMDT => linux_shmdt(a1),
+        LINUX_SYS_MSGGET => linux_msgget(a1, a2),
+        LINUX_SYS_MSGSND => linux_msgsnd(a1, a2, a3, a4),
+        LINUX_SYS_MSGRCV => linux_msgrcv(a1, a2, a3, a4, a5),
+        LINUX_SYS_MSGCTL => linux_msgctl(a1, a2, a3),
         LINUX_SYS_FSYNC | LINUX_SYS_FDATASYNC => anyos_u32_ret(handlers::sys_fsync(a1 as u32)),
         LINUX_SYS_TRUNCATE => linux_truncate(a1, a2),
         LINUX_SYS_FTRUNCATE => linux_ftruncate(a1 as u32, a2),
         LINUX_SYS_FCNTL => linux_fcntl(a1 as u32, a2 as u32, a3),
+        LINUX_SYS_FLOCK => linux_flock(a1 as u32, a2),
         LINUX_SYS_GETCWD => linux_getcwd(a1, a2),
         LINUX_SYS_CHDIR => linux_chdir(a1),
         LINUX_SYS_RENAME => linux_rename(a1, a2),

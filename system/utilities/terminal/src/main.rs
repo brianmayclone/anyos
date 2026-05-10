@@ -524,6 +524,7 @@ fn shell_join(tokens: &[String]) -> String {
 
 struct TerminalBuffer {
     lines: Vec<Vec<Cell>>,
+    soft_wraps: Vec<bool>,
     cols: usize,
     visible_rows: usize,
     cursor_row: usize,
@@ -542,6 +543,7 @@ struct TerminalBuffer {
     cursor_visible: bool,
     // Alternate screen buffer
     alt_lines: Option<Vec<Vec<Cell>>>,
+    alt_soft_wraps: Option<Vec<bool>>,
     alt_cursor_row: usize,
     alt_cursor_col: usize,
     alt_scroll_offset: usize,
@@ -566,8 +568,11 @@ impl TerminalBuffer {
     fn new(cols: usize, rows: usize) -> Self {
         let mut lines = Vec::new();
         lines.push(Vec::new());
+        let mut soft_wraps = Vec::new();
+        soft_wraps.push(false);
         TerminalBuffer {
             lines,
+            soft_wraps,
             cols,
             visible_rows: rows,
             cursor_row: 0,
@@ -582,6 +587,7 @@ impl TerminalBuffer {
             capture: None,
             cursor_visible: true,
             alt_lines: None,
+            alt_soft_wraps: None,
             alt_cursor_row: 0,
             alt_cursor_col: 0,
             alt_scroll_offset: 0,
@@ -600,6 +606,57 @@ impl TerminalBuffer {
     fn ensure_line(&mut self, row: usize) {
         while self.lines.len() <= row {
             self.lines.push(Vec::new());
+            self.soft_wraps.push(false);
+        }
+        while self.soft_wraps.len() < self.lines.len() {
+            self.soft_wraps.push(false);
+        }
+    }
+
+    fn set_soft_wrap(&mut self, row: usize, wrapped: bool) {
+        self.ensure_line(row);
+        if row < self.soft_wraps.len() {
+            self.soft_wraps[row] = wrapped;
+        }
+    }
+
+    fn clear_soft_wrap(&mut self, row: usize) {
+        if row < self.soft_wraps.len() {
+            self.soft_wraps[row] = false;
+        }
+    }
+
+    fn clear_soft_wrap_tail(&mut self, row: usize) {
+        let mut r = row;
+        while self.soft_wraps.get(r).copied().unwrap_or(false) {
+            self.soft_wraps[r] = false;
+            r += 1;
+            if r < self.lines.len() {
+                self.lines[r].clear();
+            }
+        }
+    }
+
+    fn cursor_up(&mut self, n: usize) {
+        if self.alt_lines.is_some() {
+            self.cursor_row = self.cursor_row.saturating_sub(n);
+            return;
+        }
+
+        for _ in 0..n {
+            if self.cursor_row == 0 {
+                break;
+            }
+            self.cursor_row -= 1;
+            while self.cursor_row > 0
+                && self
+                    .soft_wraps
+                    .get(self.cursor_row - 1)
+                    .copied()
+                    .unwrap_or(false)
+            {
+                self.cursor_row -= 1;
+            }
         }
     }
 
@@ -618,10 +675,15 @@ impl TerminalBuffer {
         let bot = self.effective_scroll_bottom() + self.scroll_offset;
         if top < self.lines.len() && bot < self.lines.len() && top < bot {
             self.lines.remove(top);
+            if top < self.soft_wraps.len() {
+                self.soft_wraps.remove(top);
+            }
             while self.lines.len() <= bot {
                 self.lines.push(Vec::new());
+                self.soft_wraps.push(false);
             }
             self.lines.insert(bot, Vec::new());
+            self.soft_wraps.insert(bot, false);
         }
     }
 
@@ -632,8 +694,12 @@ impl TerminalBuffer {
         if top < self.lines.len() && bot < self.lines.len() && top < bot {
             if bot < self.lines.len() {
                 self.lines.remove(bot);
+                if bot < self.soft_wraps.len() {
+                    self.soft_wraps.remove(bot);
+                }
             }
             self.lines.insert(top, Vec::new());
+            self.soft_wraps.insert(top, false);
         }
     }
 
@@ -646,10 +712,13 @@ impl TerminalBuffer {
         self.alt_cursor_col = self.cursor_col;
         self.alt_scroll_offset = self.scroll_offset;
         let saved = core::mem::replace(&mut self.lines, Vec::new());
+        let saved_soft_wraps = core::mem::replace(&mut self.soft_wraps, Vec::new());
         self.alt_lines = Some(saved);
+        self.alt_soft_wraps = Some(saved_soft_wraps);
         // Initialize alt screen with empty lines
         for _ in 0..self.visible_rows {
             self.lines.push(Vec::new());
+            self.soft_wraps.push(false);
         }
         self.cursor_row = 0;
         self.cursor_col = 0;
@@ -660,9 +729,13 @@ impl TerminalBuffer {
     fn leave_alt_screen(&mut self) {
         if let Some(saved) = self.alt_lines.take() {
             self.lines = saved;
+            self.soft_wraps = self.alt_soft_wraps.take().unwrap_or_else(Vec::new);
             self.cursor_row = self.alt_cursor_row;
             self.cursor_col = self.alt_cursor_col;
             self.scroll_offset = self.alt_scroll_offset;
+            while self.soft_wraps.len() < self.lines.len() {
+                self.soft_wraps.push(false);
+            }
         }
     }
 
@@ -862,6 +935,11 @@ impl TerminalBuffer {
                 if self.alt_lines.is_none() && self.lines.len() > self.max_scrollback {
                     let excess = self.lines.len() - self.max_scrollback;
                     self.lines.drain(0..excess);
+                    if self.soft_wraps.len() >= excess {
+                        self.soft_wraps.drain(0..excess);
+                    } else {
+                        self.soft_wraps.clear();
+                    }
                     self.cursor_row = self.cursor_row.saturating_sub(excess);
                     self.scroll_offset = self.scroll_offset.saturating_sub(excess);
                 }
@@ -908,6 +986,7 @@ impl TerminalBuffer {
                         line.push(blank);
                     }
                     line[self.cursor_col] = Cell::blank(self.current_fg, self.current_bg);
+                    self.set_soft_wrap(self.cursor_row, true);
                     self.cursor_col = 0;
                     self.cursor_row += 1;
                     self.ensure_line(self.cursor_row);
@@ -952,6 +1031,7 @@ impl TerminalBuffer {
                 }
 
                 if self.cursor_col >= self.cols {
+                    self.set_soft_wrap(self.cursor_row, true);
                     self.cursor_col = 0;
                     self.cursor_row += 1;
                     self.ensure_line(self.cursor_row);
@@ -1003,10 +1083,12 @@ impl TerminalBuffer {
                         self.ensure_line(self.cursor_row);
                         let line = &mut self.lines[self.cursor_row];
                         line.truncate(self.cursor_col);
+                        self.clear_soft_wrap(self.cursor_row);
                         let last = self.lines.len();
                         if self.cursor_row + 1 < last {
                             for r in (self.cursor_row + 1)..last {
                                 self.lines[r].clear();
+                                self.clear_soft_wrap(r);
                             }
                         }
                     }
@@ -1016,6 +1098,7 @@ impl TerminalBuffer {
                         for r in 0..self.cursor_row {
                             if r < self.lines.len() {
                                 self.lines[r].clear();
+                                self.clear_soft_wrap(r);
                             }
                         }
                         self.ensure_line(self.cursor_row);
@@ -1032,11 +1115,16 @@ impl TerminalBuffer {
                             for line in &mut self.lines {
                                 line.clear();
                             }
+                            for wrapped in &mut self.soft_wraps {
+                                *wrapped = false;
+                            }
                             self.cursor_row = self.scroll_offset;
                             self.cursor_col = 0;
                         } else {
                             self.lines.clear();
                             self.lines.push(Vec::new());
+                            self.soft_wraps.clear();
+                            self.soft_wraps.push(false);
                             self.cursor_row = 0;
                             self.cursor_col = 0;
                             self.scroll_offset = 0;
@@ -1068,6 +1156,7 @@ impl TerminalBuffer {
                 match mode {
                     0 => {
                         line.truncate(self.cursor_col);
+                        self.clear_soft_wrap_tail(self.cursor_row);
                     }
                     1 => {
                         for i in 0..=self.cursor_col.min(line.len().saturating_sub(1)) {
@@ -1078,6 +1167,7 @@ impl TerminalBuffer {
                     }
                     2 => {
                         line.clear();
+                        self.clear_soft_wrap_tail(self.cursor_row);
                     }
                     _ => {}
                 }
@@ -1088,7 +1178,7 @@ impl TerminalBuffer {
                 } else {
                     1
                 };
-                self.cursor_row = self.cursor_row.saturating_sub(n);
+                self.cursor_up(n);
             }
             'B' => {
                 let n = if num_count > 0 && nums[0] > 0 {
@@ -1133,7 +1223,7 @@ impl TerminalBuffer {
                 } else {
                     1
                 };
-                self.cursor_row = self.cursor_row.saturating_sub(n);
+                self.cursor_up(n);
                 self.cursor_col = 0;
             }
             'G' => {
@@ -1166,9 +1256,13 @@ impl TerminalBuffer {
                 for _ in 0..n {
                     if bot < self.lines.len() {
                         self.lines.remove(bot);
+                        if bot < self.soft_wraps.len() {
+                            self.soft_wraps.remove(bot);
+                        }
                     }
                     if self.cursor_row <= self.lines.len() {
                         self.lines.insert(self.cursor_row, Vec::new());
+                        self.soft_wraps.insert(self.cursor_row, false);
                     }
                 }
                 self.cursor_col = 0;
@@ -1184,11 +1278,16 @@ impl TerminalBuffer {
                 for _ in 0..n {
                     if self.cursor_row < self.lines.len() {
                         self.lines.remove(self.cursor_row);
+                        if self.cursor_row < self.soft_wraps.len() {
+                            self.soft_wraps.remove(self.cursor_row);
+                        }
                     }
                     while self.lines.len() <= bot {
                         self.lines.push(Vec::new());
+                        self.soft_wraps.push(false);
                     }
                     self.lines.insert(bot, Vec::new());
+                    self.soft_wraps.insert(bot, false);
                 }
                 self.cursor_col = 0;
             }
@@ -1574,6 +1673,8 @@ impl TerminalBuffer {
     fn clear(&mut self) {
         self.lines.clear();
         self.lines.push(Vec::new());
+        self.soft_wraps.clear();
+        self.soft_wraps.push(false);
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.scroll_offset = 0;

@@ -9,4 +9,3 @@ pub enum AbiPersonality {
     AnyOs,
     LinuxX86_64,
 }
-

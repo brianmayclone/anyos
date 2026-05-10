@@ -270,15 +270,15 @@ pub(super) fn linux_accept(fd: u32, addr_ptr: u64, addrlen_ptr: u64) -> u64 {
             return linux_err(ENOMEM);
         }
     };
-    let accepted_fd =
-        match crate::task::scheduler::current_fd_alloc(FdKind::LinuxSocket { socket_id: accepted_id })
-        {
-            Some(fd) => fd,
-            None => {
-                socket_decref(accepted_id);
-                return linux_err(ENOMEM);
-            }
-        };
+    let accepted_fd = match crate::task::scheduler::current_fd_alloc(FdKind::LinuxSocket {
+        socket_id: accepted_id,
+    }) {
+        Some(fd) => fd,
+        None => {
+            socket_decref(accepted_id);
+            return linux_err(ENOMEM);
+        }
+    };
     let _ = write_sockaddr_in(addr_ptr, addrlen_ptr, remote_ip, remote_port);
     accepted_fd as u64
 }
@@ -372,7 +372,11 @@ pub(super) fn linux_recvfrom(
             };
             let copy_len = dgram.data.len().min(len as usize);
             if copy_len != 0
-                && !handlers::helpers::copy_to_user_bytes(buf_ptr, &dgram.data[..copy_len], copy_len)
+                && !handlers::helpers::copy_to_user_bytes(
+                    buf_ptr,
+                    &dgram.data[..copy_len],
+                    copy_len,
+                )
             {
                 return linux_err(EFAULT);
             }
@@ -439,9 +443,7 @@ pub(super) fn linux_getsockname(fd: u32, addr_ptr: u64, addrlen_ptr: u64) -> u64
     let port = match socket_entry(socket_id).map(|entry| entry.state) {
         Some(LinuxSocketState::TcpBound { local_port })
         | Some(LinuxSocketState::TcpListener { local_port, .. })
-        | Some(LinuxSocketState::Udp {
-            local_port, ..
-        }) => local_port,
+        | Some(LinuxSocketState::Udp { local_port, .. }) => local_port,
         _ => 0,
     };
     write_sockaddr_in(addr_ptr, addrlen_ptr, local_ip, port)
@@ -492,13 +494,7 @@ pub(super) fn linux_setsockopt(
     0
 }
 
-pub(super) fn linux_getsockopt(
-    fd: u32,
-    level: u64,
-    optname: u64,
-    optval: u64,
-    optlen: u64,
-) -> u64 {
+pub(super) fn linux_getsockopt(fd: u32, level: u64, optname: u64, optval: u64, optlen: u64) -> u64 {
     if fd_socket_id(fd).is_err() {
         return linux_err(EBADF);
     }
@@ -581,11 +577,21 @@ pub(super) fn socket_write(fd: u32, buf_ptr: u64, len: u64) -> u64 {
                     64 * 1024,
                 ) {
                     Some(data) => data,
-                    None => return if total > 0 { total as u64 } else { linux_err(EFAULT) },
+                    None => {
+                        return if total > 0 {
+                            total as u64
+                        } else {
+                            linux_err(EFAULT)
+                        }
+                    }
                 };
                 let sent = crate::net::tcp::send(tcp_id, &data, 10_000);
                 if sent == u32::MAX {
-                    return if total > 0 { total as u64 } else { linux_err(EAGAIN) };
+                    return if total > 0 {
+                        total as u64
+                    } else {
+                        linux_err(EAGAIN)
+                    };
                 }
                 crate::task::scheduler::record_net_tx(sent as u64);
                 total += sent as usize;
@@ -596,8 +602,7 @@ pub(super) fn socket_write(fd: u32, buf_ptr: u64, len: u64) -> u64 {
             total as u64
         }
         LinuxSocketState::Udp {
-            connected: true,
-            ..
+            connected: true, ..
         } => linux_sendto(fd, buf_ptr, len, 0, 0, 0),
         _ => linux_err(ENOTCONN),
     }
@@ -816,7 +821,8 @@ fn read_sockaddr_in(addr_ptr: u64, addr_len: u64) -> Result<(Ipv4Addr, u16), i32
     {
         return Err(EFAULT);
     }
-    let family = unsafe { u16::from_le_bytes([*(addr_ptr as *const u8), *((addr_ptr + 1) as *const u8)]) };
+    let family =
+        unsafe { u16::from_le_bytes([*(addr_ptr as *const u8), *((addr_ptr + 1) as *const u8)]) };
     if family as u64 != AF_INET {
         return Err(EAFNOSUPPORT);
     }
@@ -880,14 +886,7 @@ fn read_msghdr(msg_ptr: u64) -> Result<(u64, u64, u64, u64), i32> {
     Ok((name, namelen, iov, iovlen))
 }
 
-fn socket_send_iov(
-    fd: u32,
-    name: u64,
-    namelen: u64,
-    iov: u64,
-    iovlen: u64,
-    flags: u64,
-) -> u64 {
+fn socket_send_iov(fd: u32, name: u64, namelen: u64, iov: u64, iovlen: u64, flags: u64) -> u64 {
     if iovlen == 0 {
         return 0;
     }
@@ -914,11 +913,10 @@ fn socket_send_iov(
             if datagram.len().saturating_add(len as usize) > 1472 {
                 return linux_err(EINVAL);
             }
-            let chunk =
-                match handlers::helpers::copy_user_bytes(base, len as usize, 1472) {
-                    Some(chunk) => chunk,
-                    None => return linux_err(EFAULT),
-                };
+            let chunk = match handlers::helpers::copy_user_bytes(base, len as usize, 1472) {
+                Some(chunk) => chunk,
+                None => return linux_err(EFAULT),
+            };
             datagram.extend_from_slice(&chunk);
             total += len;
         } else {

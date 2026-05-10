@@ -31,6 +31,22 @@ pub(super) fn linux_fcntl(fd: u32, cmd: u32, arg: u64) -> u64 {
     }
 }
 
+pub(super) fn linux_flock(fd: u32, operation: u64) -> u64 {
+    const LOCK_SH: u64 = 1;
+    const LOCK_EX: u64 = 2;
+    const LOCK_NB: u64 = 4;
+    const LOCK_UN: u64 = 8;
+
+    if crate::task::scheduler::current_fd_get(fd).is_none() {
+        return linux_err(EBADF);
+    }
+
+    match operation & !(LOCK_NB) {
+        LOCK_SH | LOCK_EX | LOCK_UN => 0,
+        _ => linux_err(EINVAL),
+    }
+}
+
 pub(super) fn linux_read(fd: u32, buf_ptr: u64, len: u64) -> u64 {
     if len > u32::MAX as u64 {
         return linux_err(EINVAL);
