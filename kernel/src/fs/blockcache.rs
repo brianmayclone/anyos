@@ -149,6 +149,23 @@ impl BlockCache {
         found
     }
 
+    /// Overlay all cached sectors in a range onto `buf`, without stopping at
+    /// the first miss. This keeps disk reads coherent with dirty write-back
+    /// entries that may live later in the requested range.
+    pub fn overlay_range(&mut self, disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> u32 {
+        let mut found = 0u32;
+        for i in 0..count {
+            let offset = i as usize * 512;
+            if offset + 512 > buf.len() {
+                break;
+            }
+            if self.lookup(disk_id, lba + i, &mut buf[offset..offset + 512]) {
+                found += 1;
+            }
+        }
+        found
+    }
+
     /// Insert a sector into the cache (clean, read-cache entry).
     pub fn insert(&mut self, disk_id: u8, lba: u32, data: &[u8]) {
         if self.slots.is_empty() {
@@ -434,6 +451,18 @@ pub fn cached_read(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> u32 {
         return 0;
     }
     BLOCK_CACHE.lock().lookup_range(disk_id, lba, count, buf)
+}
+
+/// Overlay cached sectors anywhere in the range onto `buf`.
+///
+/// Unlike `cached_read`, this intentionally scans the whole range. It is used
+/// after a backend read to restore read-after-write coherence for dirty
+/// write-back sectors when the range had an earlier cache miss.
+pub fn overlay_cached(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> u32 {
+    if !CACHE_READY.load(Ordering::Acquire) {
+        return 0;
+    }
+    BLOCK_CACHE.lock().overlay_range(disk_id, lba, count, buf)
 }
 
 /// Insert sectors into cache after a disk read.

@@ -15,6 +15,11 @@ use core::sync::atomic::Ordering;
 /// Active open: connect to a remote host. Returns socket ID or u32::MAX on error.
 pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32 {
     let cfg = crate::net::config();
+    let local_ip = if remote_ip.0[0] == 127 {
+        Ipv4Addr([127, 0, 0, 1])
+    } else {
+        cfg.ip
+    };
     let local_port = alloc_ephemeral_port();
     let tid = crate::task::scheduler::current_tid();
 
@@ -28,7 +33,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
         let mut found = None;
         for (i, slot) in table.iter_mut().enumerate() {
             if slot.is_none() {
-                let mut tcb = Tcb::new(cfg.ip, local_port, remote_ip, remote_port);
+                let mut tcb = Tcb::new(local_ip, local_port, remote_ip, remote_port);
                 tcb.state = TcpState::SynSent;
                 tcb.snd_nxt = tcb.snd_iss.wrapping_add(1);
                 tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
@@ -65,7 +70,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
         local_port
     );
     TCP_ACTIVE_OPENS.fetch_add(1, Ordering::Relaxed);
-    send_syn_segment(cfg.ip, local_port, remote_ip, remote_port, iss, 0, SYN);
+    send_syn_segment(local_ip, local_port, remote_ip, remote_port, iss, 0, SYN);
 
     // Wait for connection to establish (blocking)
     let start = crate::arch::hal::timer_current_ticks();

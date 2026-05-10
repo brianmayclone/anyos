@@ -8,7 +8,11 @@ use super::helpers::{
 };
 use crate::fs::permissions::{check_permission, PERM_CREATE};
 
-const WRITE_COPY_CHUNK: usize = 64 * 1024;
+// Keep VFS writes small. CoreFS currently shows intermittent corruption when a
+// single userspace write is forwarded as several large 64 KiB appends before
+// metadata is flushed; 16 KiB matches the stable download/write path.
+const WRITE_COPY_CHUNK: usize = 16 * 1024;
+const READ_COPY_CHUNK: usize = 16 * 1024;
 
 /// sys_write - Write to a file descriptor
 /// fd=1 -> stdout (pipe if configured, else serial), fd=2 -> stderr (same), fd>=3 -> VFS file
@@ -143,13 +147,28 @@ pub fn sys_read(fd: u32, buf_ptr: u64, len: u32) -> u32 {
         Some(entry) => {
             let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
             match entry.kind {
-                FdKind::File { global_id } => match crate::fs::vfs::read(global_id, buf) {
-                    Ok(n) => {
-                        crate::task::scheduler::record_io_read(n as u64);
-                        n as u32
+                FdKind::File { global_id } => {
+                    let mut total = 0usize;
+                    while total < len as usize {
+                        let chunk_len = ((len as usize) - total).min(READ_COPY_CHUNK);
+                        let end = (total + chunk_len).min(buf.len());
+                        let chunk = &mut buf[total..end];
+                        match crate::fs::vfs::read(global_id, chunk) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                crate::task::scheduler::record_io_read(n as u64);
+                                total += n;
+                                if n < chunk_len {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                return if total > 0 { total as u32 } else { fs_err(e) };
+                            }
+                        }
                     }
-                    Err(e) => fs_err(e),
-                },
+                    total as u32
+                }
                 FdKind::PipeRead { pipe_id } => {
                     if entry.flags.nonblock {
                         // O_NONBLOCK: return EAGAIN (-11 as u32) if pipe is empty and open

@@ -10,8 +10,10 @@ const URL_10MB: &str = "http://speedtest.tele2.net/10MB.zip";
 const URL_100MB: &str = "http://speedtest.tele2.net/100MB.zip";
 const VERSION: &str = "1.0";
 
-/// ~512 KB per sample chunk
-const CHUNK_SIZE: u32 = 512 * 1024;
+/// 2 MB per stability sample to smooth socket-buffer bursts.
+const CHUNK_SIZE: u32 = 2 * 1024 * 1024;
+/// Ignore the initial transfer ramp-up for stability samples.
+const WARMUP_BYTES: u32 = 2 * 1024 * 1024;
 /// Max samples we track
 const MAX_SAMPLES: usize = 512;
 
@@ -29,6 +31,10 @@ struct SpeedState {
     chunk_start_bytes: u32,
     /// Timestamp at last chunk boundary
     chunk_start_ms: u32,
+    /// True once warmup bytes have been skipped for stability sampling
+    sampling_started: bool,
+    /// Bytes skipped before stability sampling started
+    ignored_bytes: u32,
     /// Collected chunk samples
     samples: Vec<ChunkSample>,
     /// Last progress display threshold (MB)
@@ -51,23 +57,6 @@ extern "C" fn progress_callback(received: u32, total: u32, _userdata: u64) {
     s.received = received;
     if s.total_size == 0 && total > 0 {
         s.total_size = total;
-    }
-
-    // How many bytes since last chunk boundary
-    let chunk_bytes = received - s.chunk_start_bytes;
-
-    // Emit sample when chunk is full
-    if chunk_bytes >= CHUNK_SIZE && s.samples.len() < MAX_SAMPLES {
-        let now = sys::uptime_ms();
-        let elapsed = now.wrapping_sub(s.chunk_start_ms);
-        if elapsed > 0 {
-            s.samples.push(ChunkSample {
-                bytes: chunk_bytes,
-                elapsed_ms: elapsed,
-            });
-        }
-        s.chunk_start_bytes = received;
-        s.chunk_start_ms = now;
     }
 
     // Progress display every 1 MB
@@ -93,6 +82,38 @@ extern "C" fn progress_callback(received: u32, total: u32, _userdata: u64) {
         } else {
             print!("\r  Download: {} MB  {} kbit/s   ", mb, speed_kbps);
         }
+    }
+
+    // Do not treat TCP slow start, connect latency, or server response ramp-up
+    // as driver instability. Start per-chunk stability sampling after warmup.
+    if !s.sampling_started {
+        if received < WARMUP_BYTES {
+            s.ignored_bytes = received;
+            return;
+        }
+        let now = sys::uptime_ms();
+        s.sampling_started = true;
+        s.ignored_bytes = received;
+        s.chunk_start_bytes = received;
+        s.chunk_start_ms = now;
+        return;
+    }
+
+    // How many bytes since last chunk boundary
+    let chunk_bytes = received - s.chunk_start_bytes;
+
+    // Emit sample when chunk is full
+    if chunk_bytes >= CHUNK_SIZE && s.samples.len() < MAX_SAMPLES {
+        let now = sys::uptime_ms();
+        let elapsed = now.wrapping_sub(s.chunk_start_ms);
+        if elapsed > 0 {
+            s.samples.push(ChunkSample {
+                bytes: chunk_bytes,
+                elapsed_ms: elapsed,
+            });
+        }
+        s.chunk_start_bytes = received;
+        s.chunk_start_ms = now;
     }
 }
 
@@ -175,8 +196,19 @@ fn analyze(total_bytes: u32, total_ms: u32, samples: &[ChunkSample]) {
         (total_ms % 1000) / 100
     );
 
+    let mut sample_bytes = 0u32;
+    for s in samples.iter() {
+        sample_bytes = sample_bytes.saturating_add(s.bytes);
+    }
+    if sample_bytes < total_bytes {
+        println!(
+            "  Stabilitaet:   {} KB analysiert (Warmup ignoriert)",
+            sample_bytes / 1024
+        );
+    }
+
     if samples.len() < 2 {
-        println!("  (Zu wenige Samples fuer Jitter/Stabilitaet)");
+        println!("  (Zu wenige Samples fuer Jitter/Stabilitaet nach Warmup)");
         return;
     }
 
@@ -331,7 +363,7 @@ fn analyze(total_bytes: u32, total_ms: u32, samples: &[ChunkSample]) {
 
     // Per-chunk detail (max 20 samples shown)
     println!();
-    println!("=== Chunk-Details (je ~512 KB) ===");
+    println!("=== Chunk-Details (je ~2 MB) ===");
     println!();
     let show = if speeds.len() > 20 { 20 } else { speeds.len() };
     for i in 0..show {
@@ -439,6 +471,8 @@ fn main() {
             start_ms: now,
             chunk_start_bytes: 0,
             chunk_start_ms: now,
+            sampling_started: false,
+            ignored_bytes: 0,
             samples: Vec::new(),
             last_progress_mb: 0,
             total_size: 0,
@@ -484,7 +518,7 @@ fn main() {
     println!("  Empfangen: {} KB", total_bytes / 1024);
 
     // Flush final partial chunk
-    if total_bytes > s.chunk_start_bytes {
+    if s.sampling_started && total_bytes > s.chunk_start_bytes {
         let remaining = total_bytes - s.chunk_start_bytes;
         if remaining > 0 {
             let elapsed = end_ms.wrapping_sub(s.chunk_start_ms);

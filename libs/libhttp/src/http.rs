@@ -35,9 +35,10 @@ const MAX_REDIRECTS: usize = 10;
 const CONNECT_TIMEOUT_MS: u32 = 10_000;
 const MAX_HEADER_SIZE: usize = 16384;
 const RECV_BUF_SIZE: usize = 64 * 1024;
-const FILE_WRITE_BUF_SIZE: usize = 256 * 1024;
+const FILE_WRITE_BUF_SIZE: usize = 16 * 1024;
 const FILE_PROGRESS_STEP: u32 = FILE_WRITE_BUF_SIZE as u32;
 const DRAIN_PROGRESS_STEP: u32 = 256 * 1024;
+const FIRST_RESPONSE_RETRIES: u32 = 2;
 
 struct Connection {
     sock: u32,
@@ -294,29 +295,47 @@ fn fetch_get(url: &Url, raw: bool) -> Result<(u16, Vec<u8>), u32> {
     let mut current = clone_url(url);
 
     for _redirect_n in 0..MAX_REDIRECTS {
-        let is_https = current.scheme == "https";
+        for attempt in 0..=FIRST_RESPONSE_RETRIES {
+            let is_https = current.scheme == "https";
 
-        // 1. Connect
-        let conn = connect_to(&current.host, current.port, is_https)?;
+            // 1. Connect
+            let conn = connect_to(&current.host, current.port, is_https)?;
 
-        // 2. Build and send GET request
-        let request = build_get_request(&current, raw);
-        if !send_data(&conn, request.as_bytes(), is_https) {
-            close_conn(conn);
-            return Err(ERR_SEND_FAILURE);
+            // 2. Build and send GET request
+            let request = build_get_request(&current, raw);
+            if !send_data(&conn, request.as_bytes(), is_https) {
+                close_conn(conn);
+                return Err(ERR_SEND_FAILURE);
+            }
+
+            // 3. Receive and parse response
+            match receive_response(&conn, is_https, raw) {
+                Ok(ResponseAction::Redirect(_status, location)) => {
+                    close_conn(conn);
+                    current = resolve_url(&current, &location);
+                    break;
+                }
+                Ok(ResponseAction::Complete(status, body)) => {
+                    close_conn(conn);
+                    return Ok((status, body));
+                }
+                Err(ERR_NO_RESPONSE) if last_status() == 0 && attempt < FIRST_RESPONSE_RETRIES => {
+                    close_conn(conn);
+                    syscall::sleep(100);
+                    continue;
+                }
+                Err(err) => {
+                    close_conn(conn);
+                    return Err(err);
+                }
+            }
         }
 
-        // 3. Receive and parse response
-        match receive_response(&conn, is_https, raw)? {
-            ResponseAction::Redirect(_status, location) => {
-                close_conn(conn);
-                current = resolve_url(&current, &location);
-                continue;
-            }
-            ResponseAction::Complete(status, body) => {
-                close_conn(conn);
-                return Ok((status, body));
-            }
+        if last_status() >= 300 && last_status() < 400 {
+            continue;
+        }
+        if last_status() == 0 {
+            return Err(ERR_NO_RESPONSE);
         }
     }
 
@@ -329,30 +348,44 @@ fn fetch_get_to_file(url: &Url, path: &str, resume_from: u32) -> Result<u16, u32
     let mut current = clone_url(url);
 
     for _redirect_n in 0..MAX_REDIRECTS {
-        let is_https = current.scheme == "https";
+        for attempt in 0..=FIRST_RESPONSE_RETRIES {
+            let is_https = current.scheme == "https";
 
-        let conn = connect_to(&current.host, current.port, is_https)?;
+            let conn = connect_to(&current.host, current.port, is_https)?;
 
-        let request = build_get_request_range(&current, true, resume_from);
-        if !send_data(&conn, request.as_bytes(), is_https) {
-            close_conn(conn);
-            return Err(ERR_SEND_FAILURE);
+            let request = build_get_request_range(&current, true, resume_from);
+            if !send_data(&conn, request.as_bytes(), is_https) {
+                close_conn(conn);
+                return Err(ERR_SEND_FAILURE);
+            }
+
+            match receive_response_to_file(&conn, is_https, path, resume_from) {
+                Ok(ResponseFileAction::Redirect(_status, location)) => {
+                    close_conn(conn);
+                    current = resolve_url(&current, &location);
+                    break;
+                }
+                Ok(ResponseFileAction::Complete(status)) => {
+                    close_conn(conn);
+                    return Ok(status);
+                }
+                Err(ERR_NO_RESPONSE) if last_status() == 0 && attempt < FIRST_RESPONSE_RETRIES => {
+                    close_conn(conn);
+                    syscall::sleep(100);
+                    continue;
+                }
+                Err(err) => {
+                    close_conn(conn);
+                    return Err(err);
+                }
+            }
         }
 
-        match receive_response_to_file(&conn, is_https, path, resume_from) {
-            Ok(ResponseFileAction::Redirect(_status, location)) => {
-                close_conn(conn);
-                current = resolve_url(&current, &location);
-                continue;
-            }
-            Ok(ResponseFileAction::Complete(status)) => {
-                close_conn(conn);
-                return Ok(status);
-            }
-            Err(err) => {
-                close_conn(conn);
-                return Err(err);
-            }
+        if last_status() >= 300 && last_status() < 400 {
+            continue;
+        }
+        if last_status() == 0 {
+            return Err(ERR_NO_RESPONSE);
         }
     }
 
@@ -364,30 +397,44 @@ fn fetch_get_drain(url: &Url) -> Result<(u16, u32), u32> {
     let mut current = clone_url(url);
 
     for _redirect_n in 0..MAX_REDIRECTS {
-        let is_https = current.scheme == "https";
+        for attempt in 0..=FIRST_RESPONSE_RETRIES {
+            let is_https = current.scheme == "https";
 
-        let conn = connect_to(&current.host, current.port, is_https)?;
+            let conn = connect_to(&current.host, current.port, is_https)?;
 
-        let request = build_get_request(&current, true);
-        if !send_data(&conn, request.as_bytes(), is_https) {
-            close_conn(conn);
-            return Err(ERR_SEND_FAILURE);
+            let request = build_get_request(&current, true);
+            if !send_data(&conn, request.as_bytes(), is_https) {
+                close_conn(conn);
+                return Err(ERR_SEND_FAILURE);
+            }
+
+            match receive_response_drain(&conn, is_https) {
+                Ok(ResponseDrainAction::Redirect(_status, location)) => {
+                    close_conn(conn);
+                    current = resolve_url(&current, &location);
+                    break;
+                }
+                Ok(ResponseDrainAction::Complete(status, received)) => {
+                    close_conn(conn);
+                    return Ok((status, received));
+                }
+                Err(ERR_NO_RESPONSE) if last_status() == 0 && attempt < FIRST_RESPONSE_RETRIES => {
+                    close_conn(conn);
+                    syscall::sleep(100);
+                    continue;
+                }
+                Err(err) => {
+                    close_conn(conn);
+                    return Err(err);
+                }
+            }
         }
 
-        match receive_response_drain(&conn, is_https) {
-            Ok(ResponseDrainAction::Redirect(_status, location)) => {
-                close_conn(conn);
-                current = resolve_url(&current, &location);
-                continue;
-            }
-            Ok(ResponseDrainAction::Complete(status, received)) => {
-                close_conn(conn);
-                return Ok((status, received));
-            }
-            Err(err) => {
-                close_conn(conn);
-                return Err(err);
-            }
+        if last_status() >= 300 && last_status() < 400 {
+            continue;
+        }
+        if last_status() == 0 {
+            return Err(ERR_NO_RESPONSE);
         }
     }
 
@@ -655,6 +702,7 @@ fn receive_response(conn: &Connection, is_https: bool, raw: bool) -> Result<Resp
     let header_str = core::str::from_utf8(&response_buf[..header_end]).unwrap_or("");
     set_headers(header_str);
     let (status, _reason) = parse_status_line(header_str);
+    set_status(status as u32);
 
     // Handle redirects
     if is_redirect(status) {
@@ -723,6 +771,7 @@ fn receive_response_to_file(
     let header_str = core::str::from_utf8(&response_buf[..header_end]).unwrap_or("");
     set_headers(header_str);
     let (status, _reason) = parse_status_line(header_str);
+    set_status(status as u32);
 
     if is_redirect(status) {
         if let Some(location) = find_header_value(header_str, "location") {
@@ -760,11 +809,27 @@ fn receive_response_to_file(
     let read_result = if is_chunked {
         read_chunked_body_to_file(conn, fd, &trailing, is_https, initial_received)
     } else {
-        read_body_to_file(conn, fd, &trailing, content_length, is_https, initial_received)
+        read_body_to_file(
+            conn,
+            fd,
+            &trailing,
+            content_length,
+            is_https,
+            initial_received,
+        )
     };
 
+    let received = read_result?;
+    if syscall::fsync(fd) == u32::MAX {
+        syscall::close(fd);
+        return Err(ERR_FILE_WRITE);
+    }
+    let size = syscall::file_size(fd);
+    if size != received {
+        syscall::close(fd);
+        return Err(ERR_FILE_WRITE);
+    }
     syscall::close(fd);
-    read_result?;
 
     Ok(ResponseFileAction::Complete(status))
 }
@@ -794,6 +859,7 @@ fn receive_response_drain(conn: &Connection, is_https: bool) -> Result<ResponseD
     let header_str = core::str::from_utf8(&response_buf[..header_end]).unwrap_or("");
     set_headers(header_str);
     let (status, _reason) = parse_status_line(header_str);
+    set_status(status as u32);
 
     if is_redirect(status) {
         if let Some(location) = find_header_value(header_str, "location") {
@@ -1236,7 +1302,9 @@ fn read_body_to_file(
             body_received = body_received.saturating_add(write_len as u32);
         }
 
-        let done = content_length.map(|cl| body_received >= cl).unwrap_or(false);
+        let done = content_length
+            .map(|cl| body_received >= cl)
+            .unwrap_or(false);
         report_file_progress(received, total, &mut reported, done);
     }
 
@@ -1660,27 +1728,38 @@ fn contains_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
 fn write_all(fd: u32, data: &[u8]) -> bool {
     let mut written = 0usize;
     while written < data.len() {
-        let n = syscall::write(fd, &data[written..]);
+        let end = (written + FILE_WRITE_BUF_SIZE).min(data.len());
+        let n = syscall::write(fd, &data[written..end]);
         if n == u32::MAX {
             return false;
         }
+        if n == 0 {
+            return false;
+        }
         written += n as usize;
+        syscall::yield_cpu();
     }
     true
 }
 
 fn buffer_file_write(fd: u32, file_buf: &mut Vec<u8>, data: &[u8]) -> bool {
-    if data.len() >= FILE_WRITE_BUF_SIZE {
-        return flush_file_buffer(fd, file_buf) && write_all(fd, data);
-    }
+    let mut offset = 0usize;
+    while offset < data.len() {
+        if file_buf.len() >= FILE_WRITE_BUF_SIZE && !flush_file_buffer(fd, file_buf) {
+            return false;
+        }
 
-    if file_buf.len() + data.len() > FILE_WRITE_BUF_SIZE && !flush_file_buffer(fd, file_buf) {
-        return false;
-    }
+        let space = FILE_WRITE_BUF_SIZE.saturating_sub(file_buf.len());
+        if space == 0 {
+            continue;
+        }
+        let end = (offset + space).min(data.len());
+        file_buf.extend_from_slice(&data[offset..end]);
+        offset = end;
 
-    file_buf.extend_from_slice(data);
-    if file_buf.len() >= FILE_WRITE_BUF_SIZE {
-        return flush_file_buffer(fd, file_buf);
+        if file_buf.len() >= FILE_WRITE_BUF_SIZE && !flush_file_buffer(fd, file_buf) {
+            return false;
+        }
     }
     true
 }

@@ -250,20 +250,15 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
                     }
                     let data_ack = accept_data_deferred(tcb, &seg);
                     if seg.flags & FIN != 0 {
-                        tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
-                        tcb.fin_received = true;
-                        tcb.state = TcpState::TimeWait;
-                        tcb.time_wait_start = now;
-                        Some(DeferredSend {
-                            local_ip: tcb.local_ip,
-                            local_port: tcb.local_port,
-                            remote_ip: tcb.remote_ip,
-                            remote_port: tcb.remote_port,
-                            seq: tcb.snd_nxt,
-                            ack_num: tcb.rcv_nxt,
-                            flags: ACK,
-                            window: tcb.advertised_window(),
-                        })
+                        if fin_is_next(tcb, &seg) {
+                            tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
+                            tcb.fin_received = true;
+                            tcb.state = TcpState::TimeWait;
+                            tcb.time_wait_start = now;
+                            Some(ack_current(tcb))
+                        } else {
+                            Some(ack_current(tcb))
+                        }
                     } else {
                         data_ack
                     }
@@ -272,20 +267,15 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
                 TcpState::FinWait2 => {
                     let data_ack = accept_data_deferred(tcb, &seg);
                     if seg.flags & FIN != 0 {
-                        tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
-                        tcb.fin_received = true;
-                        tcb.state = TcpState::TimeWait;
-                        tcb.time_wait_start = now;
-                        Some(DeferredSend {
-                            local_ip: tcb.local_ip,
-                            local_port: tcb.local_port,
-                            remote_ip: tcb.remote_ip,
-                            remote_port: tcb.remote_port,
-                            seq: tcb.snd_nxt,
-                            ack_num: tcb.rcv_nxt,
-                            flags: ACK,
-                            window: tcb.advertised_window(),
-                        })
+                        if fin_is_next(tcb, &seg) {
+                            tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
+                            tcb.fin_received = true;
+                            tcb.state = TcpState::TimeWait;
+                            tcb.time_wait_start = now;
+                            Some(ack_current(tcb))
+                        } else {
+                            Some(ack_current(tcb))
+                        }
                     } else {
                         data_ack
                     }
@@ -478,21 +468,37 @@ fn handle_established(tcb: &mut Tcb, seg: &TcpSegment) -> Option<DeferredSend> {
 
     // ── Handle FIN ──
     if seg.flags & FIN != 0 {
-        tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
-        tcb.fin_received = true;
-        tcb.state = TcpState::CloseWait;
-        Some(DeferredSend {
-            local_ip: tcb.local_ip,
-            local_port: tcb.local_port,
-            remote_ip: tcb.remote_ip,
-            remote_port: tcb.remote_port,
-            seq: tcb.snd_nxt,
-            ack_num: tcb.rcv_nxt,
-            flags: ACK,
-            window: tcb.advertised_window(),
-        })
+        if fin_is_next(tcb, seg) {
+            tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
+            tcb.fin_received = true;
+            tcb.state = TcpState::CloseWait;
+            Some(ack_current(tcb))
+        } else {
+            Some(ack_current(tcb))
+        }
     } else {
         data_ack
+    }
+}
+
+fn fin_seq(seg: &TcpSegment) -> u32 {
+    seg.seq.wrapping_add(seg.payload.len() as u32)
+}
+
+fn fin_is_next(tcb: &Tcb, seg: &TcpSegment) -> bool {
+    fin_seq(seg) == tcb.rcv_nxt
+}
+
+fn ack_current(tcb: &Tcb) -> DeferredSend {
+    DeferredSend {
+        local_ip: tcb.local_ip,
+        local_port: tcb.local_port,
+        remote_ip: tcb.remote_ip,
+        remote_port: tcb.remote_port,
+        seq: tcb.snd_nxt,
+        ack_num: tcb.rcv_nxt,
+        flags: ACK,
+        window: tcb.advertised_window(),
     }
 }
 
@@ -819,20 +825,15 @@ fn handle_fin_states(tcb: &mut Tcb, seg: &TcpSegment) -> Option<DeferredSend> {
             }
             let data_ack = accept_data_deferred(tcb, seg);
             if seg.flags & FIN != 0 {
-                tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
-                tcb.fin_received = true;
-                tcb.state = TcpState::TimeWait;
-                tcb.time_wait_start = now;
-                Some(DeferredSend {
-                    local_ip: tcb.local_ip,
-                    local_port: tcb.local_port,
-                    remote_ip: tcb.remote_ip,
-                    remote_port: tcb.remote_port,
-                    seq: tcb.snd_nxt,
-                    ack_num: tcb.rcv_nxt,
-                    flags: ACK,
-                    window: tcb.advertised_window(),
-                })
+                if fin_is_next(tcb, seg) {
+                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
+                    tcb.fin_received = true;
+                    tcb.state = TcpState::TimeWait;
+                    tcb.time_wait_start = now;
+                    Some(ack_current(tcb))
+                } else {
+                    Some(ack_current(tcb))
+                }
             } else {
                 data_ack
             }
@@ -840,20 +841,15 @@ fn handle_fin_states(tcb: &mut Tcb, seg: &TcpSegment) -> Option<DeferredSend> {
         TcpState::FinWait2 => {
             let data_ack = accept_data_deferred(tcb, seg);
             if seg.flags & FIN != 0 {
-                tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
-                tcb.fin_received = true;
-                tcb.state = TcpState::TimeWait;
-                tcb.time_wait_start = now;
-                Some(DeferredSend {
-                    local_ip: tcb.local_ip,
-                    local_port: tcb.local_port,
-                    remote_ip: tcb.remote_ip,
-                    remote_port: tcb.remote_port,
-                    seq: tcb.snd_nxt,
-                    ack_num: tcb.rcv_nxt,
-                    flags: ACK,
-                    window: tcb.advertised_window(),
-                })
+                if fin_is_next(tcb, seg) {
+                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
+                    tcb.fin_received = true;
+                    tcb.state = TcpState::TimeWait;
+                    tcb.time_wait_start = now;
+                    Some(ack_current(tcb))
+                } else {
+                    Some(ack_current(tcb))
+                }
             } else {
                 data_ack
             }

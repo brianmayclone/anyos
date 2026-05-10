@@ -10,11 +10,14 @@ use alloc::vec::Vec;
 use anyos_std::{
     crypto,
     fs::{self, Read},
-    print, println, process,
+    print, println, process, sys,
 };
 
 const FS_TYPE_DIRECTORY: u32 = 1;
 const PROGRESS_BAR_WIDTH: usize = 28;
+const DOWNLOAD_PROGRESS_STEP: u32 = 512 * 1024;
+
+static mut DOWNLOAD_LAST_PRINT: u32 = 0;
 
 struct PackageLink {
     index: u32,
@@ -60,6 +63,17 @@ impl InstallProgress {
     pub(crate) fn set_overall(&mut self, done: u32, total: u32) {
         self.overall_done = done;
         self.overall_total = total;
+        self.render();
+    }
+
+    pub(crate) fn phase(&mut self, name: &str, detail: &str) {
+        self.package_name.clear();
+        self.package_name.push_str(name);
+        self.package_version.clear();
+        self.package_version.push_str(detail);
+        self.package_done = 0;
+        self.package_total = 0;
+        self.files_written = 0;
         self.render();
     }
 
@@ -181,11 +195,13 @@ fn install_package_inner(
     if is_installed(config, pkg, rootfs) {
         return true;
     }
+    progress.phase("apt resolve", pkg);
     if !ensure_apt_index(config, progress) {
         return false;
     }
 
     let package_index_txt = config.package_index_txt();
+    progress.phase("apt parse", pkg);
     let Some(info) = find_package_in_index(config, pkg) else {
         progress.finish();
         println!("licof apt: package '{}' not found", pkg);
@@ -218,6 +234,7 @@ fn install_package_inner(
 
     pending.push(info.package.clone());
 
+    progress.phase("apt depends", &info.package);
     for dep_group in parse_depends(&info.pre_depends) {
         if !install_dependency_group(config, &dep_group, rootfs, depth + 1, pending, progress) {
             progress.finish();
@@ -249,8 +266,11 @@ fn install_package_inner(
             pending.pop();
             return false;
         }
+    } else {
+        progress.phase("deb cache", &info.package);
     }
 
+    progress.phase("deb extract", &info.package);
     let ok = install_deb(config, &deb_path, rootfs, Some(&info), progress);
     pending.pop();
     ok
@@ -288,17 +308,29 @@ fn download_verified_package(
 ) -> bool {
     for attempt in 1..=config.download_attempts {
         let _ = fs::unlink(dest);
+        progress.phase(
+            "deb download",
+            &alloc::format!(
+                "{} {} attempt {}/{}",
+                info.package,
+                info.version,
+                attempt,
+                config.download_attempts
+            ),
+        );
         if progress.verbose() {
             println!(
                 "licof apt: downloading {} {} (attempt {}/{})",
                 info.package, info.version, attempt, config.download_attempts
             );
         }
+        progress.finish();
         if !download_url(config, url, dest) {
             progress.finish();
             println!("licof apt: download failed: {}", url);
             return false;
         }
+        progress.phase("deb verify", &info.package);
         if verify_package_file(info, dest) {
             return true;
         }
@@ -324,6 +356,7 @@ fn dependency_pending(pkg: &str, pending: &[String]) -> bool {
 }
 
 fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool {
+    progress.phase("apt index", "initializing libzip");
     if !libzip_client::init() {
         progress.finish();
         println!("licof apt: libzip unavailable");
@@ -332,6 +365,7 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
     ensure_dir(&config.cache);
     let packages_gz = config.package_index_gz();
     let packages_txt = config.package_index_txt();
+    progress.phase("apt index", "checking cache");
     if file_size(&packages_txt) > 0 {
         if looks_like_plain_packages_index(&packages_txt)
             && packages_index_has_required_entries(config)
@@ -348,18 +382,27 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
     for attempt in 1..=config.download_attempts {
         let _ = fs::unlink(&packages_gz);
         let _ = fs::unlink(&packages_txt);
+        progress.phase(
+            "apt index download",
+            &alloc::format!("attempt {}/{}", attempt, config.download_attempts),
+        );
         if progress.verbose() {
             println!(
                 "licof apt: fetching package index (attempt {}/{})",
                 attempt, config.download_attempts
             );
         }
+        progress.finish();
         if !download_url(config, &url, &packages_gz) {
             progress.finish();
             println!("licof apt: failed to download {}", url);
             continue;
         }
         let downloaded = file_size(&packages_gz);
+        progress.phase(
+            "apt index validate",
+            &alloc::format!("{} bytes downloaded", downloaded),
+        );
         if downloaded == 0 {
             progress.finish();
             println!("licof apt: downloaded package index is empty");
@@ -382,6 +425,10 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
                 print_index_download_diagnostic(&packages_gz, downloaded);
                 continue;
             }
+            progress.phase(
+                "apt index decompress",
+                &alloc::format!("{} bytes gzip", downloaded),
+            );
             let gzip_status =
                 libzip_client::gzip_decompress_file_status(&packages_gz, &packages_txt);
             if gzip_status != libzip_client::GZIP_STATUS_OK {
@@ -392,11 +439,17 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
                     downloaded
                 );
                 print_gzip_diagnostic(&packages_gz, downloaded);
-                continue;
+                if !download_plain_package_index(config, &packages_txt, progress) {
+                    continue;
+                }
             }
         }
 
         let unpacked = file_size(&packages_txt);
+        progress.phase(
+            "apt index verify",
+            &alloc::format!("{} bytes unpacked", unpacked),
+        );
         if unpacked == 0 {
             progress.finish();
             println!("licof apt: decompressed package index is empty");
@@ -419,6 +472,53 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
     }
 
     let _ = fs::unlink(&packages_txt);
+    false
+}
+
+fn download_plain_package_index(
+    config: &LicoConfig,
+    packages_txt: &str,
+    progress: &mut InstallProgress,
+) -> bool {
+    let url = config.package_index_plain_url();
+    for attempt in 1..=config.download_attempts {
+        let _ = fs::unlink(packages_txt);
+        progress.phase(
+            "apt index plain",
+            &alloc::format!("attempt {}/{}", attempt, config.download_attempts),
+        );
+        if progress.verbose() {
+            println!(
+                "licof apt: fetching uncompressed package index (attempt {}/{})",
+                attempt, config.download_attempts
+            );
+        }
+        progress.finish();
+        if !download_url(config, &url, packages_txt) {
+            progress.finish();
+            println!("licof apt: failed to download {}", url);
+            continue;
+        }
+        let downloaded = file_size(packages_txt);
+        if downloaded == 0 {
+            progress.finish();
+            println!("licof apt: uncompressed package index is empty");
+            continue;
+        }
+        if looks_like_plain_packages_index(packages_txt) {
+            progress.finish();
+            println!(
+                "licof apt: using uncompressed package index fallback ({} bytes)",
+                downloaded
+            );
+            return true;
+        }
+        progress.finish();
+        println!(
+            "licof apt: uncompressed package index is not a Packages file ({} bytes)",
+            downloaded
+        );
+    }
     false
 }
 
@@ -1305,9 +1405,17 @@ fn gzip_status_text(status: u32) -> &'static str {
 fn download_url(config: &LicoConfig, url: &str, dest: &str) -> bool {
     if libhttp_client::init() {
         let mut last_error = String::new();
-        for _attempt in 1..=config.download_attempts {
+        for attempt in 1..=config.download_attempts {
             let _ = fs::unlink(dest);
-            if !libhttp_client::download(url, dest) {
+            reset_download_progress();
+            let started = sys::uptime_ms();
+            println!(
+                "licof download: libhttp GET attempt {}/{} -> {}",
+                attempt, config.download_attempts, dest
+            );
+            println!("licof download: url {}", url);
+            if !libhttp_client::download_progress(url, dest, download_progress, 0) {
+                print!("\n");
                 last_error = alloc::format!(
                     "libhttp failed with status {} error {}",
                     libhttp_client::last_status(),
@@ -1316,9 +1424,16 @@ fn download_url(config: &LicoConfig, url: &str, dest: &str) -> bool {
                 continue;
             }
             if file_size(dest) == 0 {
+                print!("\n");
                 last_error = alloc::format!("libhttp produced an empty file: {}", dest);
                 continue;
             }
+            let ms = sys::uptime_ms().wrapping_sub(started);
+            println!(
+                "\nlicof download: received {} bytes in {} ms",
+                file_size(dest),
+                ms
+            );
             return true;
         }
         if last_error.is_empty() {
@@ -1337,9 +1452,15 @@ fn download_url(config: &LicoConfig, url: &str, dest: &str) -> bool {
         return false;
     }
     let mut last_error = String::new();
-    for _attempt in 1..=config.download_attempts {
+    for attempt in 1..=config.download_attempts {
         let _ = fs::unlink(dest);
         let args = alloc::format!("-q -O {} {}", dest, url);
+        let started = sys::uptime_ms();
+        println!(
+            "licof download: wget attempt {}/{} -> {}",
+            attempt, config.download_attempts, dest
+        );
+        println!("licof download: url {}", url);
         let tid = process::spawn(&config.wget, &args);
         if tid == u32::MAX {
             last_error = String::from("failed to start wget");
@@ -1363,6 +1484,12 @@ fn download_url(config: &LicoConfig, url: &str, dest: &str) -> bool {
             last_error = alloc::format!("wget produced an empty file: {}", dest);
             continue;
         }
+        let ms = sys::uptime_ms().wrapping_sub(started);
+        println!(
+            "licof download: received {} bytes in {} ms",
+            file_size(dest),
+            ms
+        );
         return true;
     }
     if last_error.is_empty() {
@@ -1373,6 +1500,33 @@ fn download_url(config: &LicoConfig, url: &str, dest: &str) -> bool {
         config.download_attempts, last_error
     );
     false
+}
+
+extern "C" fn download_progress(received: u32, total: u32, _userdata: u64) {
+    let should_print = unsafe {
+        if received == total && total > 0 {
+            DOWNLOAD_LAST_PRINT = received;
+            true
+        } else if received.saturating_sub(DOWNLOAD_LAST_PRINT) >= DOWNLOAD_PROGRESS_STEP {
+            DOWNLOAD_LAST_PRINT = received;
+            true
+        } else {
+            false
+        }
+    };
+    if should_print {
+        if total > 0 {
+            print!("\rlicof download: {} / {} bytes", received, total);
+        } else {
+            print!("\rlicof download: {} bytes", received);
+        }
+    }
+}
+
+fn reset_download_progress() {
+    unsafe {
+        DOWNLOAD_LAST_PRINT = 0;
+    }
 }
 
 fn packages_index_has_required_entries(config: &LicoConfig) -> bool {

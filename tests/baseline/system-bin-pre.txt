@@ -60,6 +60,7 @@ hexdump
 hostname
 htop
 httpd
+httpstress
 ifconfig
 jp2a
 jscript
@@ -121,6 +122,7 @@ sync
 sysinfo
 tail
 tar
+tcpstress
 textmode_console
 top
 touch
@@ -131,6 +133,7 @@ uname
 uniq
 unzip
 uptime
+vfsstress
 vdagent
 vi
 vmctl

@@ -1104,6 +1104,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "httpstress"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libhttp_client",
+ "libzip_client",
+]
+
+[[package]]
 name = "iconview"
 version = "0.1.0"
 dependencies = [
@@ -2261,6 +2270,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tcpstress"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "terminal"
 version = "0.1.0"
 dependencies = [
@@ -2431,6 +2447,13 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vfsstress"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
 
 [[package]]
 name = "vi"

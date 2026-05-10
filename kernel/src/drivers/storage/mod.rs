@@ -353,6 +353,7 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
             let ok = read_sectors_raw_for_disk(disk_id, miss_lba, total_fetch, big_buf);
             io_lock_release();
             if ok {
+                crate::fs::blockcache::overlay_cached(disk_id, miss_lba, total_fetch, big_buf);
                 let needed = miss_count as usize * 512;
                 let copy_end = needed.min(buf.len() - miss_offset);
                 buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);
@@ -372,6 +373,7 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
             let ok = read_sectors_raw_for_disk(disk_id, miss_lba, total_fetch, &mut big_buf);
             io_lock_release();
             if ok {
+                crate::fs::blockcache::overlay_cached(disk_id, miss_lba, total_fetch, &mut big_buf);
                 let needed = miss_count as usize * 512;
                 let copy_end = needed.min(buf.len() - miss_offset);
                 buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);
@@ -387,8 +389,16 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
         let ok = read_sectors_raw_for_disk(disk_id, miss_lba, miss_count, &mut buf[miss_offset..]);
         io_lock_release();
         if ok && cache_active {
-            // Populate cache with fetched sectors
             let fetched_bytes = miss_count as usize * 512;
+            if buf.len() >= miss_offset + fetched_bytes {
+                crate::fs::blockcache::overlay_cached(
+                    disk_id,
+                    miss_lba,
+                    miss_count,
+                    &mut buf[miss_offset..miss_offset + fetched_bytes],
+                );
+            }
+            // Populate cache with fetched sectors
             if buf.len() >= miss_offset + fetched_bytes {
                 crate::fs::blockcache::populate(
                     disk_id,
