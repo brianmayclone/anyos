@@ -401,6 +401,9 @@ pub(super) fn linux_recvmsg(fd: u32, msg_ptr: u64, flags: u64) -> u64 {
     if iovlen == 0 {
         return 0;
     }
+    if iov == 0 || !handlers::helpers::is_user_range_accessible(iov, 16) {
+        return linux_err(EFAULT);
+    }
     let base = unsafe { read_u64(iov, 0) };
     let len = unsafe { read_u64(iov, 8) };
     let ret = linux_recvfrom(fd, base, len, flags, name, msg_ptr + 8);
@@ -614,8 +617,7 @@ pub(crate) fn socket_decref(socket_id: u32) {
     let Some(idx) = socket_index(socket_id) else {
         return;
     };
-    let mut close_state = LinuxSocketState::Empty;
-    {
+    let close_state = {
         let mut table = LINUX_SOCKETS.lock();
         if !table[idx].in_use {
             return;
@@ -624,9 +626,10 @@ pub(crate) fn socket_decref(socket_id: u32) {
             table[idx].refs -= 1;
             return;
         }
-        close_state = table[idx].state;
+        let close_state = table[idx].state;
         table[idx] = LinuxSocketEntry::EMPTY;
-    }
+        close_state
+    };
     close_socket_state(close_state);
 }
 
@@ -887,6 +890,12 @@ fn socket_send_iov(
 ) -> u64 {
     if iovlen == 0 {
         return 0;
+    }
+    let Some(iov_bytes) = iovlen.checked_mul(16) else {
+        return linux_err(EINVAL);
+    };
+    if iov == 0 || !handlers::helpers::is_user_range_accessible(iov, iov_bytes) {
+        return linux_err(EFAULT);
     }
     let mut total = 0u64;
     let mut datagram = Vec::new();

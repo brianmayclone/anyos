@@ -11,6 +11,9 @@ pub(super) fn linux_fcntl(fd: u32, cmd: u32, arg: u64) -> u64 {
                 return linux_err(EBADF);
             }
             if arg != 0 {
+                if !handlers::helpers::is_user_range_accessible(arg, 2) {
+                    return linux_err(EFAULT);
+                }
                 unsafe {
                     *((arg) as *mut u16) = F_UNLCK;
                 }
@@ -111,6 +114,12 @@ pub(super) fn linux_iov_io(fd: u32, iov_ptr: u64, iovcnt: u64, write: bool) -> u
     const IOV_MAX: u64 = 1024;
     if iov_ptr == 0 || iovcnt > IOV_MAX {
         return linux_err(EINVAL);
+    }
+    let Some(iov_bytes) = iovcnt.checked_mul(16) else {
+        return linux_err(EINVAL);
+    };
+    if !handlers::helpers::is_user_range_accessible(iov_ptr, iov_bytes) {
+        return linux_err(EFAULT);
     }
     let mut total = 0u64;
     for i in 0..iovcnt {
@@ -221,6 +230,12 @@ pub(super) fn linux_poll(fds_ptr: u64, nfds: u64, _timeout: u64) -> u64 {
         return 0;
     }
     if fds_ptr == 0 || nfds > 1024 {
+        return linux_err(EFAULT);
+    }
+    let Some(fds_bytes) = nfds.checked_mul(8) else {
+        return linux_err(EFAULT);
+    };
+    if !handlers::helpers::is_user_range_accessible(fds_ptr, fds_bytes) {
         return linux_err(EFAULT);
     }
     let mut ready = 0u64;

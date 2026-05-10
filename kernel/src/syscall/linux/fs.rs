@@ -556,6 +556,9 @@ pub(super) fn linux_getdents64(fd: u32, dirent_ptr: u64, count: u64) -> u64 {
     if dirent_ptr == 0 || count < 24 || count > u32::MAX as u64 {
         return linux_err(EFAULT);
     }
+    if !super::handlers::helpers::is_user_range_accessible(dirent_ptr, count) {
+        return linux_err(EFAULT);
+    }
     let entry = match crate::task::scheduler::current_fd_get(fd) {
         Some(entry) => entry,
         None => return linux_err(EBADF),
@@ -614,6 +617,9 @@ pub(super) fn linux_getdents64(fd: u32, dirent_ptr: u64, count: u64) -> u64 {
 
 pub(super) fn linux_getdents(fd: u32, dirent_ptr: u64, count: u64) -> u64 {
     if dirent_ptr == 0 || count < 24 || count > u32::MAX as u64 {
+        return linux_err(EFAULT);
+    }
+    if !super::handlers::helpers::is_user_range_accessible(dirent_ptr, count) {
         return linux_err(EFAULT);
     }
     let entry = match crate::task::scheduler::current_fd_get(fd) {
@@ -694,6 +700,9 @@ pub(super) fn linux_fstatfs(fd: u32, buf_ptr: u64) -> u64 {
 }
 
 pub(super) fn linux_statfs_translated(path: &str, buf_ptr: u64) -> u64 {
+    if !super::handlers::helpers::is_user_range_accessible(buf_ptr, 120) {
+        return linux_err(EFAULT);
+    }
     let st = crate::fs::vfs::statfs(path).unwrap_or(crate::fs::vfs::StatFs {
         total_bytes: 64 * 1024 * 1024,
         used_bytes: 0,
