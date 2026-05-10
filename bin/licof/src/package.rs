@@ -603,22 +603,24 @@ fn install_package_link(
                 return true;
             }
             println!(
-                "licof pkg: symlink verification failed {} -> {}; materializing",
+                "licof pkg: symlink verification failed {} -> {}",
                 link.rel, link.target
             );
+            let _ = fs::unlink(&link.dest);
         }
+        return false;
     } else {
         println!("licof pkg: hardlink {} -> {}", link.rel, link.target);
     }
-    if materialize_link_target(rootfs, &link.dest, &link.target, link.symlink) {
+    if materialize_hardlink_target(rootfs, &link.dest, &link.target) {
         apply_tar_metadata(reader, link.index, &link.dest);
         return true;
     }
     false
 }
 
-fn materialize_link_target(rootfs: &str, dest: &str, target: &str, symlink: bool) -> bool {
-    let Some(src) = resolve_package_link_target(rootfs, dest, target, symlink) else {
+fn materialize_hardlink_target(rootfs: &str, dest: &str, target: &str) -> bool {
+    let Some(src) = resolve_package_link_target(rootfs, dest, target, false) else {
         return false;
     };
     if !path_under_rootfs(rootfs, &src) {
@@ -709,7 +711,7 @@ fn ensure_runtime_alias(rootfs: &str, dest_linux: &str, target: &str, label: &st
         return false;
     }
 
-    if symlink_points_to(&dest, target) && is_elf_file(&dest) {
+    if symlink_points_to(&dest, target) && rootfs_resolved_is_elf(rootfs, &dest) {
         return true;
     }
     if path_exists_no_follow(&dest) && !path_is_symlink(&dest) && is_elf_file(&dest) {
@@ -722,28 +724,33 @@ fn ensure_runtime_alias(rootfs: &str, dest_linux: &str, target: &str, label: &st
             "licof pkg: replacing stale {} {} (size {}, expected {})",
             label, dest, dest_size, src_size
         );
+    } else if path_exists_no_follow(&dest) && path_is_symlink(&dest) {
+        println!("licof pkg: replacing stale {} symlink {}", label, dest);
     } else if path_exists_no_follow(&dest) {
         println!("licof pkg: replacing stale {} {}", label, dest);
     }
 
     ensure_parent_dirs(&dest);
     let _ = fs::unlink(&dest);
-    if fs::symlink(target, &dest) == 0 && is_elf_file(&dest) {
+    if fs::symlink(target, &dest) == 0 && rootfs_resolved_is_elf(rootfs, &dest) {
         println!("licof pkg: restored {} {} -> {}", label, dest, target);
         return true;
     }
 
-    let _ = fs::unlink(&dest);
-    if copy_file(&src, &dest) && is_elf_file(&dest) {
-        println!("licof pkg: materialized {} {} from {}", label, dest, src);
-        return true;
-    }
-
     println!(
-        "licof pkg: failed to materialize {} {} from {}",
-        label, dest, src
+        "licof pkg: failed to restore {} {} -> {}",
+        label, dest, target
     );
     false
+}
+
+fn rootfs_resolved_is_elf(rootfs: &str, path: &str) -> bool {
+    if is_elf_file(path) {
+        return true;
+    }
+    resolve_rootfs_symlink_path(rootfs, path)
+        .map(|resolved| is_elf_file(&resolved))
+        .unwrap_or(false)
 }
 
 fn validate_runtime_elf(rootfs: &str, linux_path: &str, label: &str) -> bool {

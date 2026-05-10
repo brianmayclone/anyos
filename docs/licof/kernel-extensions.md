@@ -26,7 +26,7 @@ x86_64 `SYSCALL` still enters the common kernel syscall path. In
 is used:
 
 - `AnyOs` goes to the normal anyOS syscall table.
-- `LinuxX86_64` goes to `kernel/src/syscall/linux.rs`.
+- `LinuxX86_64` goes to `kernel/src/syscall/linux/`.
 
 Linux syscall arguments follow the Linux x86_64 convention:
 
@@ -50,6 +50,19 @@ licof linux: unsupported syscall nr=<nr> rip=<rip> args=<a1>,<a2>,<a3>,<a4>,<a5>
 
 `rseq` is intentionally quiet and returns `-ENOSYS`, because glibc commonly
 probes it and treats `ENOSYS` as acceptable.
+
+The Linux syscall layer is split by responsibility:
+
+| File | Responsibility |
+| --- | --- |
+| `kernel/src/syscall/linux/mod.rs` | syscall constants and dispatch table |
+| `kernel/src/syscall/linux/abi.rs` | user-copy helpers and errno conversion |
+| `kernel/src/syscall/linux/path.rs` | Linux base translation and symlink resolution |
+| `kernel/src/syscall/linux/procfs.rs` | small pseudo `/proc` files |
+| `kernel/src/syscall/linux/fs.rs` | path, metadata and directory syscalls |
+| `kernel/src/syscall/linux/io.rs` | fd I/O, polling, fcntl and ioctl |
+| `kernel/src/syscall/linux/memory.rs` | `brk`, `mmap`, `mprotect` and `arch_prctl` |
+| `kernel/src/syscall/linux/process.rs` | identity, time, signals, rlimits and process shims |
 
 ## Implemented Linux Syscall Surface
 

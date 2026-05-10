@@ -206,6 +206,11 @@ If dynamic libraries are missing after extraction:
 4. Re-run `licof repair` only to recreate missing symlinks, or reinstall the
    package if the versioned library itself is absent.
 
+licof must not materialize shared-library symlinks as regular files. If a
+package symlink cannot be created or verified, fix the filesystem/VFS symlink
+path and reinstall the package. Copying over SONAME links can make the dynamic
+loader read the wrong ELF metadata and produces misleading version errors.
+
 ## Linux Base Debugging
 
 Default paths:
@@ -239,13 +244,15 @@ seeded the same way.
 ## Adding a New Syscall
 
 1. Confirm the Linux x86_64 syscall number and argument order.
-2. Add the constant to `kernel/src/syscall/linux.rs`.
+2. Add the constant to `kernel/src/syscall/linux/mod.rs`.
 3. Add a match arm in `dispatch`.
-4. Translate Linux structs and flags explicitly; do not cast to anyOS structs.
-5. Return Linux negative errno.
-6. Add serial diagnostics while developing.
-7. Remove noisy success diagnostics once the path is stable.
-8. Test the real binary that required the syscall.
+4. Put the implementation into the matching file under
+   `kernel/src/syscall/linux/`.
+5. Translate Linux structs and flags explicitly; do not cast to anyOS structs.
+6. Return Linux negative errno.
+7. Add serial diagnostics while developing.
+8. Remove noisy success diagnostics once the path is stable.
+9. Test the real binary that required the syscall.
 
 ## When to Keep a Stub
 

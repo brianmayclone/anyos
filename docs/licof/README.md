@@ -53,7 +53,7 @@ needs them and when the anyOS behavior can be made explicit.
 | CLI | `bin/licof/src/main.rs` |
 | CLI config / confd manifest | `bin/licof/src/config.rs` |
 | CLI model types | `bin/licof/src/model.rs` |
-| Linux syscall dispatch | `kernel/src/syscall/linux.rs` |
+| Linux syscall dispatch | `kernel/src/syscall/linux/` |
 | licof spawn syscall | `kernel/src/syscall/handlers/process.rs` |
 | ELF64 loader / Linux initial stack | `kernel/src/task/loader.rs` |
 | ABI personality | `kernel/src/task/abi.rs`, scheduler thread state |
@@ -69,8 +69,10 @@ needs them and when the anyOS behavior can be made explicit.
 - The Linux base is ordinary anyOS filesystem content under
   `/System/var/licof/rootfs`.
 - Debian package maintainer scripts are not executed by `licof`.
-- Package symlinks are preserved as symlinks. Hardlinks are materialized only
-  when the filesystem has no native hardlink operation.
+- Package symlinks are preserved as symlinks. If symlink creation or
+  verification fails, package extraction fails instead of copying the target
+  over the link. Hardlinks are materialized because the package archive does
+  not currently have a native hardlink operation in the anyOS fs API.
 - `licof init` does not run runtime repair after bootstrap; broken Linux links
   must be fixed in the symlink-aware loader/VFS path instead of by copying
   libraries over package metadata.

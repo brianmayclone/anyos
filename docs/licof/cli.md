@@ -84,8 +84,10 @@ Repair currently:
   - `/usr/lib/x86_64-linux-gnu`
 
 Package symlinks are installed as symlinks when the filesystem supports them.
-If symlink creation fails during package extraction, licof falls back to
-materializing the target as a regular file for that package entry.
+If symlink creation or verification fails during package extraction, the
+package install fails. Runtime libraries must keep their package metadata and
+SONAME symlinks intact; licof no longer copies a library over a broken symlink
+to "repair" it.
 
 ## `licof run`
 
@@ -146,7 +148,8 @@ Behavior:
 - opens the Debian `ar` container through `libzip_client`.
 - finds `data.tar.gz` or `data.tar.xz`.
 - extracts files into the Linux base.
-- installs package symlinks and hardlinks best-effort.
+- installs package symlinks as symlinks.
+- materializes package hardlinks by copying the already extracted target.
 - records installed package metadata when package info is available.
 
 Maintainer scripts are not executed.
