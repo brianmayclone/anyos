@@ -35,6 +35,7 @@ pub(super) fn linux_clone(
     const SIGCHLD: u64 = 17;
     const CLONE_VM: u64 = 0x0000_0100;
     const CLONE_PARENT_SETTID: u64 = 0x0010_0000;
+    const CLONE_CHILD_CLEARTID: u64 = 0x0020_0000;
     const CLONE_CHILD_SETTID: u64 = 0x0100_0000;
     const CLONE_THREAD: u64 = 0x0001_0000;
     const CLONE_SETTLS: u64 = 0x0008_0000;
@@ -75,9 +76,21 @@ pub(super) fn linux_clone(
     } else {
         0
     };
+    let clear_child_tidptr = if (flags & CLONE_CHILD_CLEARTID) != 0 {
+        if child_tidptr == 0 || !handlers::helpers::is_user_range_accessible(child_tidptr, 4) {
+            return linux_err(EFAULT);
+        }
+        child_tidptr
+    } else {
+        0
+    };
 
     #[cfg(target_arch = "x86_64")]
-    let child_tid = handlers::sys_fork_with_child_tidptr(regs, child_tidptr);
+    let child_tid = handlers::sys_fork_with_child_tidptr(
+        regs,
+        child_tidptr,
+        clear_child_tidptr,
+    );
     #[cfg(not(target_arch = "x86_64"))]
     let child_tid = handlers::sys_fork(regs);
     if child_tid == u32::MAX {
@@ -105,6 +118,14 @@ pub(super) fn linux_vfork(regs: &SyscallRegs) -> u64 {
     // than fork. A real fork is conservative for early userland tools and
     // avoids corrupting the parent while execve support matures.
     linux_fork(regs)
+}
+
+pub(super) fn linux_set_tid_address(tidptr: u64) -> u64 {
+    if tidptr != 0 && !handlers::helpers::is_user_range_accessible(tidptr, 4) {
+        return linux_err(EFAULT);
+    }
+    crate::task::scheduler::set_current_thread_linux_clear_child_tid(tidptr);
+    crate::task::scheduler::current_tid() as u64
 }
 
 pub(super) fn linux_execve(filename_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> u64 {
@@ -426,22 +447,6 @@ pub(super) fn linux_sysinfo(info_ptr: u64) -> u64 {
         write_u16(info_ptr, 104, 1);
     }
     0
-}
-
-pub(super) fn linux_socket(domain: u64, type_: u64, protocol: u64) -> u64 {
-    const AF_UNIX: u64 = 1;
-    const SOCK_TYPE_MASK: u64 = 0xF;
-    const SOCK_STREAM: u64 = 1;
-    if domain == AF_UNIX && (type_ & SOCK_TYPE_MASK) == SOCK_STREAM {
-        return linux_err(EAFNOSUPPORT);
-    }
-    crate::serial_println!(
-        "licof linux socket: unsupported domain={} type={:#x} protocol={} -> EAFNOSUPPORT",
-        domain,
-        type_,
-        protocol
-    );
-    linux_err(EAFNOSUPPORT)
 }
 
 pub(super) fn linux_getgroups(size: u64, list_ptr: u64) -> u64 {

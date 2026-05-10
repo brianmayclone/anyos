@@ -14,6 +14,7 @@ mod memory;
 mod path;
 mod process;
 mod procfs;
+mod socket;
 
 use abi::*;
 use fs::*;
@@ -22,6 +23,9 @@ use memory::*;
 use path::*;
 use process::*;
 use procfs::*;
+use socket::*;
+
+pub(crate) use socket::{socket_decref, socket_incref};
 
 const EINVAL: i32 = 22;
 const ENOMEM: i32 = 12;
@@ -40,6 +44,9 @@ const ENOEXEC: i32 = 8;
 const ECHILD: i32 = 10;
 const ELOOP: i32 = 40;
 const EAFNOSUPPORT: i32 = 97;
+const ECONNREFUSED: i32 = 111;
+const ENOTCONN: i32 = 107;
+const EPROTONOSUPPORT: i32 = 93;
 
 const LINUX_SYS_READ: u64 = 0;
 const LINUX_SYS_WRITE: u64 = 1;
@@ -70,6 +77,20 @@ const LINUX_SYS_DUP2: u64 = 33;
 const LINUX_SYS_NANOSLEEP: u64 = 35;
 const LINUX_SYS_GETPID: u64 = 39;
 const LINUX_SYS_SOCKET: u64 = 41;
+const LINUX_SYS_CONNECT: u64 = 42;
+const LINUX_SYS_ACCEPT: u64 = 43;
+const LINUX_SYS_SENDTO: u64 = 44;
+const LINUX_SYS_RECVFROM: u64 = 45;
+const LINUX_SYS_SENDMSG: u64 = 46;
+const LINUX_SYS_RECVMSG: u64 = 47;
+const LINUX_SYS_SHUTDOWN: u64 = 48;
+const LINUX_SYS_BIND: u64 = 49;
+const LINUX_SYS_LISTEN: u64 = 50;
+const LINUX_SYS_GETSOCKNAME: u64 = 51;
+const LINUX_SYS_GETPEERNAME: u64 = 52;
+const LINUX_SYS_SOCKETPAIR: u64 = 53;
+const LINUX_SYS_SETSOCKOPT: u64 = 54;
+const LINUX_SYS_GETSOCKOPT: u64 = 55;
 const LINUX_SYS_CLONE: u64 = 56;
 const LINUX_SYS_FORK: u64 = 57;
 const LINUX_SYS_VFORK: u64 = 58;
@@ -183,7 +204,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
 
     match nr {
         LINUX_SYS_READ => linux_read(a1 as u32, a2, a3),
-        LINUX_SYS_WRITE => anyos_u32_ret(handlers::sys_write(a1 as u32, a2, a3 as u32)),
+        LINUX_SYS_WRITE => linux_write(a1 as u32, a2, a3),
         LINUX_SYS_OPEN => linux_open(a1, a2),
         LINUX_SYS_OPENAT => linux_openat(a1, a2, a3),
         LINUX_SYS_CLOSE => anyos_u32_ret(handlers::sys_close(a1 as u32)),
@@ -221,6 +242,20 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_ARCH_PRCTL => linux_arch_prctl(a1, a2),
         LINUX_SYS_GETPID => handlers::sys_getpid() as u64,
         LINUX_SYS_SOCKET => linux_socket(a1, a2, a3),
+        LINUX_SYS_CONNECT => linux_connect(a1 as u32, a2, a3),
+        LINUX_SYS_ACCEPT => linux_accept(a1 as u32, a2, a3),
+        LINUX_SYS_SENDTO => linux_sendto(a1 as u32, a2, a3, a4, a5, a6),
+        LINUX_SYS_RECVFROM => linux_recvfrom(a1 as u32, a2, a3, a4, a5, a6),
+        LINUX_SYS_SENDMSG => linux_sendmsg(a1 as u32, a2, a3),
+        LINUX_SYS_RECVMSG => linux_recvmsg(a1 as u32, a2, a3),
+        LINUX_SYS_SHUTDOWN => linux_shutdown(a1 as u32, a2),
+        LINUX_SYS_BIND => linux_bind(a1 as u32, a2, a3),
+        LINUX_SYS_LISTEN => linux_listen(a1 as u32, a2),
+        LINUX_SYS_GETSOCKNAME => linux_getsockname(a1 as u32, a2, a3),
+        LINUX_SYS_GETPEERNAME => linux_getpeername(a1 as u32, a2, a3),
+        LINUX_SYS_SOCKETPAIR => linux_socketpair(a1, a2, a3, a4),
+        LINUX_SYS_SETSOCKOPT => linux_setsockopt(a1 as u32, a2, a3, a4, a5),
+        LINUX_SYS_GETSOCKOPT => linux_getsockopt(a1 as u32, a2, a3, a4, a5),
         LINUX_SYS_CLONE => linux_clone(regs, a1, a2, a3, a4, a5),
         LINUX_SYS_FORK => linux_fork(regs),
         LINUX_SYS_VFORK => linux_vfork(regs),
@@ -282,7 +317,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_FUTEX => linux_futex(a1, a2, a3),
         LINUX_SYS_GETDENTS => linux_getdents(a1 as u32, a2, a3),
         LINUX_SYS_GETDENTS64 => linux_getdents64(a1 as u32, a2, a3),
-        LINUX_SYS_SET_TID_ADDRESS => handlers::sys_getpid() as u64,
+        LINUX_SYS_SET_TID_ADDRESS => linux_set_tid_address(a1),
         LINUX_SYS_FADVISE64 => 0,
         LINUX_SYS_CLOCK_GETTIME => linux_clock_gettime(a1, a2),
         LINUX_SYS_EXIT | LINUX_SYS_EXIT_GROUP => handlers::sys_exit(a1 as u32) as u64,

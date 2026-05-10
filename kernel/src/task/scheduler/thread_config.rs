@@ -125,6 +125,41 @@ pub fn current_thread_linux_fs_base() -> u64 {
     0
 }
 
+/// Set the Linux clear_child_tid pointer for a thread.
+pub fn set_thread_linux_clear_child_tid(tid: u32, clear_child_tid: u64) {
+    let mut guard = SCHEDULER.lock();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.linux_clear_child_tid = clear_child_tid;
+    }
+}
+
+/// Set the current Linux thread's clear_child_tid pointer.
+pub fn set_current_thread_linux_clear_child_tid(clear_child_tid: u64) {
+    let mut guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            sched.threads[idx].linux_clear_child_tid = clear_child_tid;
+        }
+    }
+}
+
+/// Read the current Linux thread's clear_child_tid pointer.
+pub fn current_thread_linux_clear_child_tid() -> u64 {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            return sched.threads[idx].linux_clear_child_tid;
+        }
+    }
+    0
+}
+
 /// Get the current thread's page directory.
 pub fn current_thread_page_directory() -> Option<PhysAddr> {
     let guard = SCHEDULER.lock();

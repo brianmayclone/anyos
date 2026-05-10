@@ -233,6 +233,8 @@ pub struct Thread {
     pub linux_rootfs: [u8; 512],
     /// Linux x86_64 FS base used for glibc TLS.
     pub linux_fs_base: u64,
+    /// Linux clear_child_tid userspace pointer for CLONE_CHILD_CLEARTID.
+    pub linux_clear_child_tid: u64,
 
     // ---- Debug / trace state (anyTrace) ----
     /// TID of the debugger thread attached to this thread (0 = not attached).
@@ -392,6 +394,7 @@ impl Thread {
             abi: AbiPersonality::AnyOs,
             linux_rootfs: [0u8; 512],
             linux_fs_base: 0,
+            linux_clear_child_tid: 0,
             debug_attached_by: 0,
             debug_suspended: false,
             debug_sw_breakpoints: [(0, 0); 16],

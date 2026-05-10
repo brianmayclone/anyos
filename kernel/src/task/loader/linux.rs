@@ -737,6 +737,7 @@ fn decref_fd_kind(kind: crate::fs::fd_table::FdKind) {
         FdKind::File { global_id } => crate::fs::vfs::decref(global_id),
         FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::decref_read(pipe_id),
         FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::decref_write(pipe_id),
+        FdKind::LinuxSocket { socket_id } => crate::syscall::linux::socket_decref(socket_id),
         FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
     }
 }

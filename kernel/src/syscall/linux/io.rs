@@ -33,11 +33,29 @@ pub(super) fn linux_read(fd: u32, buf_ptr: u64, len: u64) -> u64 {
         return linux_err(EINVAL);
     }
     if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
-        if let crate::fs::fd_table::FdKind::LinuxProc { file, position } = entry.kind {
-            return linux_read_proc_file(fd, file, position, buf_ptr, len as u32);
+        match entry.kind {
+            crate::fs::fd_table::FdKind::LinuxProc { file, position } => {
+                return linux_read_proc_file(fd, file, position, buf_ptr, len as u32);
+            }
+            crate::fs::fd_table::FdKind::LinuxSocket { .. } => {
+                return socket_read(fd, buf_ptr, len);
+            }
+            _ => {}
         }
     }
     anyos_u32_ret(handlers::sys_read(fd, buf_ptr, len as u32))
+}
+
+pub(super) fn linux_write(fd: u32, buf_ptr: u64, len: u64) -> u64 {
+    if len > u32::MAX as u64 {
+        return linux_err(EINVAL);
+    }
+    if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
+        if let crate::fs::fd_table::FdKind::LinuxSocket { .. } = entry.kind {
+            return socket_write(fd, buf_ptr, len);
+        }
+    }
+    anyos_u32_ret(handlers::sys_write(fd, buf_ptr, len as u32))
 }
 
 pub(super) fn linux_lseek(fd: u32, offset: u64, whence: u64) -> u64 {
@@ -105,7 +123,12 @@ pub(super) fn linux_iov_io(fd: u32, iov_ptr: u64, iovcnt: u64, write: bool) -> u
             return linux_err(EINVAL);
         }
         let ret = if write {
-            handlers::sys_write(fd, base, len as u32)
+            let ret = linux_write(fd, base, len);
+            if (ret as i64) < 0 {
+                ret as u32
+            } else {
+                ret as u32
+            }
         } else {
             let ret = linux_read(fd, base, len);
             if (ret as i64) < 0 {

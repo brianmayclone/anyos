@@ -261,7 +261,10 @@ pub(super) fn linux_fstat(fd: u32, stat_ptr: u64) -> u64 {
                 }
                 Err(_) => linux_err(EBADF),
             },
-            FdKind::PipeRead { .. } | FdKind::PipeWrite { .. } | FdKind::Tty => {
+            FdKind::PipeRead { .. }
+            | FdKind::PipeWrite { .. }
+            | FdKind::Tty
+            | FdKind::LinuxSocket { .. } => {
                 write_linux_stat(stat_ptr, 0, 2, 2, 0, 0, 0, 0o666, 0);
                 0
             }

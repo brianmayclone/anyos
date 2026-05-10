@@ -13,7 +13,7 @@
 
 mod defs;
 pub mod handlers;
-mod linux;
+pub(crate) mod linux;
 pub mod table;
 pub use defs::*;
 

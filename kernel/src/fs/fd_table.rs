@@ -23,6 +23,8 @@ pub enum FdKind {
     Tty,
     /// Small read-only pseudo-file exposed by the licof Linux ABI.
     LinuxProc { file: u8, position: u32 },
+    /// Socket exposed by the licof Linux ABI.
+    LinuxSocket { socket_id: u32 },
 }
 
 /// Per-FD flags (POSIX).

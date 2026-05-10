@@ -24,6 +24,13 @@ pub fn sys_exit(status: u32) -> u32 {
     let (tid, pd, _) = crate::task::scheduler::current_exit_info();
     crate::debug_println!("sys_exit({}) TID={}", status, tid);
 
+    let clear_child_tid = crate::task::scheduler::current_thread_linux_clear_child_tid();
+    if clear_child_tid != 0 && is_user_range_accessible(clear_child_tid, 4) {
+        unsafe {
+            *(clear_child_tid as *mut u32) = 0;
+        }
+    }
+
     // Close all open file descriptors and decref global resources.
     // Must happen before destroying the page directory.
     {
@@ -39,6 +46,9 @@ pub fn sys_exit(status: u32) -> u32 {
                 }
                 FdKind::PipeWrite { pipe_id } => {
                     crate::ipc::anon_pipe::decref_write(*pipe_id);
+                }
+                FdKind::LinuxSocket { socket_id } => {
+                    crate::syscall::linux::socket_decref(*socket_id);
                 }
                 FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
             }
@@ -950,11 +960,15 @@ pub fn sys_getargs(buf_ptr: u64, buf_size: u32) -> u32 {
 /// state. ARM64 fork will use ERET with a separate register save/restore path.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
-    sys_fork_with_child_tidptr(regs, 0)
+    sys_fork_with_child_tidptr(regs, 0, 0)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_fork_with_child_tidptr(regs: &super::super::SyscallRegs, child_tidptr: u64) -> u32 {
+pub fn sys_fork_with_child_tidptr(
+    regs: &super::super::SyscallRegs,
+    child_tidptr: u64,
+    clear_child_tidptr: u64,
+) -> u32 {
     use crate::memory::virtual_mem;
     use crate::task::dll;
     use crate::task::env;
@@ -1035,6 +1049,7 @@ pub fn sys_fork_with_child_tidptr(regs: &super::super::SyscallRegs, child_tidptr
     scheduler::set_thread_abi(child_tid, snap.abi);
     if snap.abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
         scheduler::set_thread_linux_fs_base(child_tid, snap.linux_fs_base);
+        scheduler::set_thread_linux_clear_child_tid(child_tid, clear_child_tidptr);
     }
 
     // Pipes
@@ -1064,6 +1079,9 @@ pub fn sys_fork_with_child_tidptr(regs: &super::super::SyscallRegs, child_tidptr
                 }
                 FdKind::PipeWrite { pipe_id } => {
                     crate::ipc::anon_pipe::incref_write(pipe_id);
+                }
+                FdKind::LinuxSocket { socket_id } => {
+                    crate::syscall::linux::socket_incref(socket_id);
                 }
                 FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
             }
@@ -1221,6 +1239,9 @@ pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
                 FdKind::File { global_id } => crate::fs::vfs::incref(global_id),
                 FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::incref_read(pipe_id),
                 FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::incref_write(pipe_id),
+                FdKind::LinuxSocket { socket_id } => {
+                    crate::syscall::linux::socket_incref(socket_id)
+                }
                 FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
             }
         }
