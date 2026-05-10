@@ -608,7 +608,7 @@ fn default_envp() -> alloc::vec::Vec<alloc::string::String> {
         alloc::string::String::from("SHELL=/bin/bash"),
         alloc::string::String::from("USER=root"),
         alloc::string::String::from("LOGNAME=root"),
-        alloc::string::String::from("PS1=\\u@licof:\\w\\$ "),
+        alloc::string::String::from("PS1=# "),
         alloc::string::String::from("LICOF=1"),
     ]
 }
@@ -743,7 +743,7 @@ fn decref_fd_kind(kind: crate::fs::fd_table::FdKind) {
         FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::decref_read(pipe_id),
         FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::decref_write(pipe_id),
         FdKind::LinuxSocket { socket_id } => crate::syscall::linux::socket_decref(socket_id),
-        FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
+        FdKind::Tty | FdKind::PtySlave { .. } | FdKind::LinuxProc { .. } | FdKind::None => {}
     }
 }
 

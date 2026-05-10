@@ -28,10 +28,17 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u64) {
         thread.context.checksum = thread.context.compute_checksum();
         thread.is_user = true;
         thread.brk = brk;
-        // Reserve fd 0/1/2 as Tty so pipe()/open() start at fd 3
-        thread.fd_table.alloc_at(0, FdKind::Tty);
-        thread.fd_table.alloc_at(1, FdKind::Tty);
-        thread.fd_table.alloc_at(2, FdKind::Tty);
+        // Reserve fd 0/1/2 so pipe()/open() start at fd 3.
+        let stdio = if thread.pty_id != 0 {
+            FdKind::PtySlave {
+                pty_id: thread.pty_id,
+            }
+        } else {
+            FdKind::Tty
+        };
+        thread.fd_table.alloc_at(0, stdio);
+        thread.fd_table.alloc_at(1, stdio);
+        thread.fd_table.alloc_at(2, stdio);
     }
 }
 
@@ -453,6 +460,50 @@ pub fn current_thread_stdin_pipe() -> u32 {
     if let Some(sched) = guard.as_ref() {
         if let Some(idx) = sched.current_idx(cpu_id) {
             return sched.threads[idx].stdin_pipe;
+        }
+    }
+    0
+}
+
+/// Attach a PTY slave to fd 0/1/2 for a thread.
+pub fn attach_thread_pty(tid: u32, pty_id: u32) {
+    if pty_id == 0 {
+        return;
+    }
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_PIPE);
+    let mut guard = SCHEDULER.lock();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.pty_id = pty_id;
+        let stdio = FdKind::PtySlave { pty_id };
+        thread.fd_table.alloc_at(0, stdio);
+        thread.fd_table.alloc_at(1, stdio);
+        thread.fd_table.alloc_at(2, stdio);
+    }
+}
+
+/// Record a PTY id without rewriting the fd table (used after fork fd cloning).
+pub fn set_thread_pty_id(tid: u32, pty_id: u32) {
+    let mut guard = SCHEDULER.lock();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.pty_id = pty_id;
+    }
+}
+
+/// Get the current thread's PTY id, or 0 if it has no PTY.
+pub fn current_thread_pty_id() -> u32 {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            return sched.threads[idx].pty_id;
         }
     }
     0

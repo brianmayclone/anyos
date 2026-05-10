@@ -21,6 +21,8 @@ pub enum FdKind {
     /// Terminal I/O — uses legacy stdout_pipe / stdin_pipe on the Thread.
     /// Reserves fd 0/1/2 so pipe()/open() start at fd 3.
     Tty,
+    /// Pseudo-terminal slave endpoint backed by a terminal master pipe pair.
+    PtySlave { pty_id: u32 },
     /// Small read-only pseudo-file exposed by the licof Linux ABI.
     LinuxProc { file: u8, position: u32 },
     /// Socket exposed by the licof Linux ABI.

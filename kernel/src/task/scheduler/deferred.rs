@@ -132,7 +132,7 @@ pub(super) fn process_deferred_thread_cleanup(entry: DeferredThreadCleanup) {
             FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::decref_read(*pipe_id),
             FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::decref_write(*pipe_id),
             FdKind::LinuxSocket { socket_id } => crate::syscall::linux::socket_decref(*socket_id),
-            FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
+            FdKind::Tty | FdKind::PtySlave { .. } | FdKind::LinuxProc { .. } | FdKind::None => {}
         }
     }
 

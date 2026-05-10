@@ -293,7 +293,13 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
                 if !handlers::helpers::is_user_range_accessible(arg, 36) {
                     return linux_err(EFAULT);
                 }
-                linux_write_termios(arg);
+                if let Some(pty_id) = linux_fd_pty_id(fd) {
+                    let termios = crate::ipc::pty::get_termios(pty_id)
+                        .unwrap_or_else(crate::ipc::pty::Termios::default);
+                    linux_write_termios_value(arg, termios);
+                } else {
+                    linux_write_termios(arg);
+                }
             }
             crate::serial_println!("licof linux ioctl: TCGETS fd={} -> ok", fd);
             0
@@ -304,6 +310,12 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
             }
             if arg != 0 && !handlers::helpers::is_user_range_accessible(arg, 36) {
                 return linux_err(EFAULT);
+            }
+            if arg != 0 {
+                if let Some(pty_id) = linux_fd_pty_id(fd) {
+                    let termios = linux_read_termios_value(arg);
+                    crate::ipc::pty::set_termios(pty_id, termios);
+                }
             }
             crate::serial_println!(
                 "licof linux ioctl: TCSETS* fd={} request={:#x} -> ok",
@@ -367,12 +379,23 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
 
 pub(super) fn linux_fd_is_tty(fd: u32) -> bool {
     if fd < 3 {
-        return true;
+        return matches!(
+            crate::task::scheduler::current_fd_get(fd).map(|entry| entry.kind),
+            Some(crate::fs::fd_table::FdKind::Tty)
+                | Some(crate::fs::fd_table::FdKind::PtySlave { .. })
+        );
     }
     matches!(
         crate::task::scheduler::current_fd_get(fd).map(|entry| entry.kind),
-        Some(crate::fs::fd_table::FdKind::Tty)
+        Some(crate::fs::fd_table::FdKind::Tty) | Some(crate::fs::fd_table::FdKind::PtySlave { .. })
     )
+}
+
+fn linux_fd_pty_id(fd: u32) -> Option<u32> {
+    match crate::task::scheduler::current_fd_get(fd).map(|entry| entry.kind) {
+        Some(crate::fs::fd_table::FdKind::PtySlave { pty_id }) => Some(pty_id),
+        _ => None,
+    }
 }
 
 pub(super) fn linux_write_termios(arg: u64) {
@@ -390,5 +413,36 @@ pub(super) fn linux_write_termios(arg: u64) {
             3u8, 28, 127, 21, 4, 0, 1, 0, 17, 19, 26, 0, 18, 15, 23, 22, 0, 0, 0,
         ];
         core::ptr::copy_nonoverlapping(defaults.as_ptr(), cc, defaults.len());
+    }
+}
+
+fn linux_write_termios_value(arg: u64, termios: crate::ipc::pty::Termios) {
+    unsafe {
+        core::ptr::write_bytes(arg as *mut u8, 0, 36);
+        write_u32(arg, 0, termios.iflag);
+        write_u32(arg, 4, termios.oflag);
+        write_u32(arg, 8, termios.cflag);
+        write_u32(arg, 12, termios.lflag);
+        *((arg + 16) as *mut u8) = termios.line;
+        core::ptr::copy_nonoverlapping(
+            termios.cc.as_ptr(),
+            (arg + 17) as *mut u8,
+            termios.cc.len(),
+        );
+    }
+}
+
+fn linux_read_termios_value(arg: u64) -> crate::ipc::pty::Termios {
+    let mut cc = [0u8; 19];
+    unsafe {
+        core::ptr::copy_nonoverlapping((arg + 17) as *const u8, cc.as_mut_ptr(), cc.len());
+        crate::ipc::pty::Termios {
+            iflag: *((arg + 0) as *const u32),
+            oflag: *((arg + 4) as *const u32),
+            cflag: *((arg + 8) as *const u32),
+            lflag: *((arg + 12) as *const u32),
+            line: *((arg + 16) as *const u8),
+            cc,
+        }
     }
 }

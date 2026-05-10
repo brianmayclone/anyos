@@ -93,7 +93,13 @@ pub(super) fn linux_access(path_ptr: u64, _mode: u64) -> u64 {
 pub(super) fn linux_open_linux_path(path: &str, linux_flags: u64) -> u64 {
     let abs = linux_absolute_path(path);
     if abs == "/dev/tty" {
-        let fd = match crate::task::scheduler::current_fd_alloc(crate::fs::fd_table::FdKind::Tty) {
+        let pty_id = crate::task::scheduler::current_thread_pty_id();
+        let kind = if pty_id != 0 {
+            crate::fs::fd_table::FdKind::PtySlave { pty_id }
+        } else {
+            crate::fs::fd_table::FdKind::Tty
+        };
+        let fd = match crate::task::scheduler::current_fd_alloc(kind) {
             Some(fd) => fd,
             None => return linux_err(EBADF),
         };
@@ -264,6 +270,7 @@ pub(super) fn linux_fstat(fd: u32, stat_ptr: u64) -> u64 {
             FdKind::PipeRead { .. }
             | FdKind::PipeWrite { .. }
             | FdKind::Tty
+            | FdKind::PtySlave { .. }
             | FdKind::LinuxSocket { .. } => {
                 write_linux_stat(stat_ptr, 0, 2, 2, 0, 0, 0, 0o666, 0);
                 0

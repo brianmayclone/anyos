@@ -7,5 +7,6 @@ pub mod anon_pipe;
 pub mod event_bus;
 pub mod message_queue;
 pub mod pipe;
+pub mod pty;
 pub mod shared_memory;
 pub mod signal;

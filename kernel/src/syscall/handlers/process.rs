@@ -50,7 +50,8 @@ pub fn sys_exit(status: u32) -> u32 {
                 FdKind::LinuxSocket { socket_id } => {
                     crate::syscall::linux::socket_decref(*socket_id);
                 }
-                FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
+                FdKind::Tty | FdKind::PtySlave { .. } | FdKind::LinuxProc { .. } | FdKind::None => {
+                }
             }
         }
     }
@@ -772,6 +773,25 @@ pub fn sys_try_waitpid(tid: u32) -> u32 {
 /// Sentinel return value from sys_spawn: the .app needs a permission dialog first.
 const PERM_NEEDED: u32 = u32::MAX - 2;
 
+fn attach_stdio_pty(tid: u32, stdout_pipe: u32, stdin_pipe: u32) {
+    if stdout_pipe == 0 || stdin_pipe == 0 {
+        return;
+    }
+    let pty_id = crate::ipc::pty::create(stdin_pipe, stdout_pipe);
+    if pty_id != 0 {
+        crate::task::scheduler::attach_thread_pty(tid, pty_id);
+    }
+}
+
+fn inherit_or_attach_stdio_pty(tid: u32, stdout_pipe: u32, stdin_pipe: u32) {
+    let inherited = crate::task::scheduler::current_thread_pty_id();
+    if inherited != 0 {
+        crate::task::scheduler::attach_thread_pty(tid, inherited);
+    } else {
+        attach_stdio_pty(tid, stdout_pipe, stdin_pipe);
+    }
+}
+
 /// sys_spawn - Spawn a new process from a filesystem path.
 /// arg1=path_ptr, arg2=stdout_pipe_id (0=none), arg3=args_ptr (0=none), arg4=stdin_pipe_id (0=none)
 /// Returns TID, u32::MAX on error, or PERM_NEEDED if a permission dialog is required.
@@ -885,6 +905,7 @@ pub fn sys_spawn(path_ptr: u64, stdout_pipe: u32, args_ptr: u64, stdin_pipe: u32
             if stdin_pipe != 0 {
                 crate::task::scheduler::set_thread_stdin_pipe(tid, stdin_pipe);
             }
+            attach_stdio_pty(tid, stdout_pipe, stdin_pipe);
             // Inherit parent's environment variables
             if let Some(parent_pd) = crate::task::scheduler::current_thread_page_directory() {
                 if let Some(child_pd) = crate::task::scheduler::thread_page_directory(tid) {
@@ -925,6 +946,7 @@ pub fn sys_licof_spawn(path_ptr: u64, args_ptr: u64) -> u32 {
             if stdin_pipe != 0 {
                 crate::task::scheduler::set_thread_stdin_pipe(tid, stdin_pipe);
             }
+            inherit_or_attach_stdio_pty(tid, stdout_pipe, stdin_pipe);
             crate::task::scheduler::set_thread_cwd(tid, "/");
             if let Some(parent_pd) = crate::task::scheduler::current_thread_page_directory() {
                 if let Some(child_pd) = crate::task::scheduler::thread_page_directory(tid) {
@@ -1059,6 +1081,9 @@ pub fn sys_fork_with_child_tidptr(
     if snap.stdin_pipe != 0 {
         scheduler::set_thread_stdin_pipe(child_tid, snap.stdin_pipe);
     }
+    if snap.pty_id != 0 {
+        scheduler::set_thread_pty_id(child_tid, snap.pty_id);
+    }
 
     // FPU state, mmap_next, user_pages
     scheduler::set_thread_fpu_state(child_tid, &snap.fpu_data);
@@ -1083,7 +1108,8 @@ pub fn sys_fork_with_child_tidptr(
                 FdKind::LinuxSocket { socket_id } => {
                     crate::syscall::linux::socket_incref(socket_id);
                 }
-                FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
+                FdKind::Tty | FdKind::PtySlave { .. } | FdKind::LinuxProc { .. } | FdKind::None => {
+                }
             }
         }
         scheduler::set_thread_fd_table(child_tid, fd_table);
@@ -1226,6 +1252,9 @@ pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
     if snap.stdin_pipe != 0 {
         scheduler::set_thread_stdin_pipe(child_tid, snap.stdin_pipe);
     }
+    if snap.pty_id != 0 {
+        scheduler::set_thread_pty_id(child_tid, snap.pty_id);
+    }
 
     scheduler::set_thread_fpu_state(child_tid, &snap.fpu_data);
     scheduler::set_thread_mmap_next(child_tid, snap.mmap_next);
@@ -1242,7 +1271,8 @@ pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
                 FdKind::LinuxSocket { socket_id } => {
                     crate::syscall::linux::socket_incref(socket_id)
                 }
-                FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
+                FdKind::Tty | FdKind::PtySlave { .. } | FdKind::LinuxProc { .. } | FdKind::None => {
+                }
             }
         }
         scheduler::set_thread_fd_table(child_tid, fd_table);

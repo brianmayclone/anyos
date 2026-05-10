@@ -218,7 +218,8 @@ fn cleanup_killed_children(children: &[u32]) {
                 FdKind::LinuxSocket { socket_id } => {
                     crate::syscall::linux::socket_decref(*socket_id)
                 }
-                FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
+                FdKind::Tty | FdKind::PtySlave { .. } | FdKind::LinuxProc { .. } | FdKind::None => {
+                }
             }
         }
         // Clean up network state
@@ -684,7 +685,8 @@ pub fn kill_thread(tid: u32) -> u32 {
                 FdKind::LinuxSocket { socket_id } => {
                     crate::syscall::linux::socket_decref(*socket_id);
                 }
-                FdKind::Tty | FdKind::LinuxProc { .. } | FdKind::None => {}
+                FdKind::Tty | FdKind::PtySlave { .. } | FdKind::LinuxProc { .. } | FdKind::None => {
+                }
             }
         }
     }
