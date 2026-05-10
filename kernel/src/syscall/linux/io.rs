@@ -129,6 +129,70 @@ pub(super) fn linux_iov_io(fd: u32, iov_ptr: u64, iovcnt: u64, write: bool) -> u
     total
 }
 
+pub(super) fn linux_select(
+    nfds: u64,
+    readfds: u64,
+    writefds: u64,
+    exceptfds: u64,
+    _timeout: u64,
+) -> u64 {
+    if nfds > 1024 {
+        return linux_err(EINVAL);
+    }
+    if nfds == 0 {
+        return 0;
+    }
+    let fdset_bytes = (((nfds + 63) / 64) * 8) as usize;
+    for ptr in [readfds, writefds, exceptfds] {
+        if ptr != 0 && !handlers::helpers::is_user_range_accessible(ptr, fdset_bytes as u64) {
+            return linux_err(EFAULT);
+        }
+    }
+
+    let mut ready = 0u64;
+    for fd in 0..nfds {
+        let valid = fd < 3 || crate::task::scheduler::current_fd_get(fd as u32).is_some();
+        if select_fd_is_set(readfds, fd) {
+            if valid {
+                ready += 1;
+            } else {
+                select_fd_clear(readfds, fd);
+            }
+        }
+        if select_fd_is_set(writefds, fd) {
+            if valid {
+                ready += 1;
+            } else {
+                select_fd_clear(writefds, fd);
+            }
+        }
+        if select_fd_is_set(exceptfds, fd) {
+            select_fd_clear(exceptfds, fd);
+        }
+    }
+    ready
+}
+
+fn select_fd_is_set(set_ptr: u64, fd: u64) -> bool {
+    if set_ptr == 0 {
+        return false;
+    }
+    unsafe {
+        let byte = *((set_ptr + fd / 8) as *const u8);
+        (byte & (1u8 << (fd & 7))) != 0
+    }
+}
+
+fn select_fd_clear(set_ptr: u64, fd: u64) {
+    if set_ptr == 0 {
+        return;
+    }
+    unsafe {
+        let byte = (set_ptr + fd / 8) as *mut u8;
+        *byte &= !(1u8 << (fd & 7));
+    }
+}
+
 pub(super) fn linux_poll(fds_ptr: u64, nfds: u64, _timeout: u64) -> u64 {
     if nfds == 0 {
         return 0;
@@ -163,6 +227,8 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
     const TCSETS: u64 = 0x5402;
     const TCSETSW: u64 = 0x5403;
     const TCSETSF: u64 = 0x5404;
+    const TIOCGPGRP: u64 = 0x540F;
+    const TIOCSPGRP: u64 = 0x5410;
     const TIOCGWINSZ: u64 = 0x5413;
     match request {
         TCGETS => {
@@ -190,6 +256,27 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
                 fd,
                 request
             );
+            0
+        }
+        TIOCGPGRP => {
+            if !linux_fd_is_tty(fd) {
+                return linux_err(EBADF);
+            }
+            if arg == 0 || !handlers::helpers::is_user_range_accessible(arg, 4) {
+                return linux_err(EFAULT);
+            }
+            unsafe {
+                write_u32(arg, 0, crate::task::scheduler::current_tid());
+            }
+            0
+        }
+        TIOCSPGRP => {
+            if !linux_fd_is_tty(fd) {
+                return linux_err(EBADF);
+            }
+            if arg != 0 && !handlers::helpers::is_user_range_accessible(arg, 4) {
+                return linux_err(EFAULT);
+            }
             0
         }
         TIOCGWINSZ => {

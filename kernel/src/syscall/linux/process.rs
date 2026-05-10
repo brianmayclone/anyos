@@ -34,7 +34,6 @@ pub(super) fn linux_clone(
     const CSIGNAL: u64 = 0xff;
     const SIGCHLD: u64 = 17;
     const CLONE_VM: u64 = 0x0000_0100;
-    const CLONE_VFORK: u64 = 0x0000_4000;
     const CLONE_PARENT_SETTID: u64 = 0x0010_0000;
     const CLONE_THREAD: u64 = 0x0001_0000;
     const CLONE_SETTLS: u64 = 0x0008_0000;
@@ -43,7 +42,7 @@ pub(super) fn linux_clone(
     if signal != 0 && signal != SIGCHLD {
         return linux_err(EINVAL);
     }
-    if (flags & (CLONE_VM | CLONE_THREAD | CLONE_VFORK | CLONE_SETTLS)) != 0 || tls != 0 {
+    if (flags & (CLONE_VM | CLONE_THREAD | CLONE_SETTLS)) != 0 || tls != 0 {
         crate::serial_println!(
             "licof linux clone: unsupported flags={:#x} child_stack={:#x} tls={:#x}",
             flags,
@@ -71,6 +70,87 @@ pub(super) fn linux_clone(
         }
     }
     child_tid as u64
+}
+
+pub(super) fn linux_fork(regs: &SyscallRegs) -> u64 {
+    let child_tid = handlers::sys_fork(regs);
+    if child_tid == u32::MAX {
+        linux_err(ENOMEM)
+    } else {
+        child_tid as u64
+    }
+}
+
+pub(super) fn linux_vfork(regs: &SyscallRegs) -> u64 {
+    // vfork's shared-address-space/suspended-parent semantics are stricter
+    // than fork. A real fork is conservative for early userland tools and
+    // avoids corrupting the parent while execve support matures.
+    linux_fork(regs)
+}
+
+pub(super) fn linux_execve(filename_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> u64 {
+    let filename = match handlers::helpers::read_user_str_safe(filename_ptr) {
+        Some(path) if !path.is_empty() => path,
+        Some(_) => return linux_err(ENOENT),
+        None => return linux_err(EFAULT),
+    };
+
+    let linux_path = linux_absolute_path(filename);
+    let translated = linux_translate_absolute_path(&linux_path);
+    let resolved = match linux_resolve_translated_path(&translated, true, false) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+
+    let mut argv = match read_exec_string_array(argv_ptr, 64) {
+        Ok(argv) => argv,
+        Err(errno) => return linux_err(errno),
+    };
+    if argv.is_empty() {
+        argv.push(linux_path.clone());
+    }
+    let envp = match read_exec_string_array(envp_ptr, 128) {
+        Ok(envp) => envp,
+        Err(errno) => return linux_err(errno),
+    };
+
+    let err = crate::task::loader::exec_current_linux_process(&resolved, &argv, &envp);
+    crate::serial_println!(
+        "licof linux execve: failed linux='{}' resolved='{}': {}",
+        linux_path,
+        resolved,
+        err
+    );
+    if err.contains("read program file") || err.contains("path not found") {
+        linux_err(ENOENT)
+    } else {
+        linux_err(ENOEXEC)
+    }
+}
+
+fn read_exec_string_array(ptr: u64, max_entries: usize) -> Result<Vec<String>, i32> {
+    if ptr == 0 {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::<String>::new();
+    let mut total = 0usize;
+    for i in 0..max_entries {
+        let slot = ptr.checked_add((i as u64) * 8).ok_or(EFAULT)?;
+        if !handlers::helpers::is_user_range_accessible(slot, 8) {
+            return Err(EFAULT);
+        }
+        let string_ptr = unsafe { read_u64(slot, 0) };
+        if string_ptr == 0 {
+            return Ok(out);
+        }
+        let s = handlers::helpers::read_user_str_safe(string_ptr).ok_or(EFAULT)?;
+        total = total.checked_add(s.len() + 1).ok_or(E2BIG)?;
+        if total > 128 * 1024 {
+            return Err(E2BIG);
+        }
+        out.push(String::from(s));
+    }
+    Err(E2BIG)
 }
 
 pub(super) fn linux_wait4(pid: i64, status_ptr: u64, options: u64, rusage_ptr: u64) -> u64 {
@@ -118,6 +198,105 @@ pub(super) fn linux_wait4(pid: i64, status_ptr: u64, options: u64, rusage_ptr: u
         }
     }
     child_tid as u64
+}
+
+pub(super) fn linux_kill(pid: i64, sig: u64) -> u64 {
+    let tid = if pid > 0 {
+        pid as u32
+    } else if pid == 0 {
+        crate::task::scheduler::current_tid()
+    } else {
+        return if sig == 0 { 0 } else { linux_err(ESRCH) };
+    };
+    if sig == 0 {
+        return if crate::task::scheduler::thread_exists(tid) {
+            0
+        } else {
+            linux_err(ESRCH)
+        };
+    }
+    if handlers::sys_kill(tid, sig as u32) == u32::MAX {
+        linux_err(ESRCH)
+    } else {
+        0
+    }
+}
+
+pub(super) fn linux_tgkill(_tgid: u64, tid: u64, sig: u64) -> u64 {
+    if tid == 0 {
+        return linux_err(EINVAL);
+    }
+    linux_kill(tid as i64, sig)
+}
+
+pub(super) fn linux_setpgid(pid: u64, _pgid: u64) -> u64 {
+    if pid != 0 && !crate::task::scheduler::thread_exists(pid as u32) {
+        return linux_err(ESRCH);
+    }
+    0
+}
+
+pub(super) fn linux_getpgid(pid: u64) -> u64 {
+    if pid == 0 {
+        return crate::task::scheduler::current_tid() as u64;
+    }
+    if !crate::task::scheduler::thread_exists(pid as u32) {
+        return linux_err(ESRCH);
+    }
+    pid
+}
+
+pub(super) fn linux_setsid() -> u64 {
+    crate::task::scheduler::current_tid() as u64
+}
+
+pub(super) fn linux_getsid(pid: u64) -> u64 {
+    linux_getpgid(pid)
+}
+
+pub(super) fn linux_rt_sigsuspend(_mask: u64, sigsetsize: u64) -> u64 {
+    if sigsetsize != 8 {
+        return linux_err(EINVAL);
+    }
+    linux_err(EINTR)
+}
+
+pub(super) fn linux_sigaltstack(_ss: u64, old_ss: u64) -> u64 {
+    if old_ss != 0 {
+        if !handlers::helpers::is_user_range_accessible(old_ss, 24) {
+            return linux_err(EFAULT);
+        }
+        unsafe {
+            core::ptr::write_bytes(old_ss as *mut u8, 0, 24);
+        }
+    }
+    0
+}
+
+pub(super) fn linux_sched_yield() -> u64 {
+    0
+}
+
+pub(super) fn linux_getrusage(_who: u64, usage_ptr: u64) -> u64 {
+    if usage_ptr == 0 {
+        return linux_err(EFAULT);
+    }
+    unsafe {
+        core::ptr::write_bytes(usage_ptr as *mut u8, 0, 144);
+    }
+    0
+}
+
+pub(super) fn linux_times(tms_ptr: u64) -> u64 {
+    if tms_ptr != 0 {
+        if !handlers::helpers::is_user_range_accessible(tms_ptr, 32) {
+            return linux_err(EFAULT);
+        }
+        unsafe {
+            core::ptr::write_bytes(tms_ptr as *mut u8, 0, 32);
+        }
+    }
+    crate::arch::hal::timer_current_ticks() as u64
 }
 
 pub(super) fn linux_uname(buf_ptr: u64) -> u64 {
