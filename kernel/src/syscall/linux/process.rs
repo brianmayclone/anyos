@@ -23,6 +23,103 @@ pub(super) fn linux_unsupported_syscall(
     linux_err(ENOSYS)
 }
 
+pub(super) fn linux_clone(
+    regs: &SyscallRegs,
+    flags: u64,
+    child_stack: u64,
+    parent_tidptr: u64,
+    _child_tidptr: u64,
+    tls: u64,
+) -> u64 {
+    const CSIGNAL: u64 = 0xff;
+    const SIGCHLD: u64 = 17;
+    const CLONE_VM: u64 = 0x0000_0100;
+    const CLONE_VFORK: u64 = 0x0000_4000;
+    const CLONE_PARENT_SETTID: u64 = 0x0010_0000;
+    const CLONE_THREAD: u64 = 0x0001_0000;
+    const CLONE_SETTLS: u64 = 0x0008_0000;
+
+    let signal = flags & CSIGNAL;
+    if signal != 0 && signal != SIGCHLD {
+        return linux_err(EINVAL);
+    }
+    if (flags & (CLONE_VM | CLONE_THREAD | CLONE_VFORK | CLONE_SETTLS)) != 0 || tls != 0 {
+        crate::serial_println!(
+            "licof linux clone: unsupported flags={:#x} child_stack={:#x} tls={:#x}",
+            flags,
+            child_stack,
+            tls
+        );
+        return linux_err(ENOSYS);
+    }
+    if child_stack != 0 {
+        crate::serial_println!(
+            "licof linux clone: unsupported custom child_stack={:#x} flags={:#x}",
+            child_stack,
+            flags
+        );
+        return linux_err(ENOSYS);
+    }
+
+    let child_tid = handlers::sys_fork(regs);
+    if child_tid == u32::MAX {
+        return linux_err(ENOMEM);
+    }
+    if (flags & CLONE_PARENT_SETTID) != 0 && parent_tidptr != 0 {
+        unsafe {
+            write_u32(parent_tidptr, 0, child_tid);
+        }
+    }
+    child_tid as u64
+}
+
+pub(super) fn linux_wait4(pid: i64, status_ptr: u64, options: u64, rusage_ptr: u64) -> u64 {
+    const WNOHANG: u64 = 1;
+    if (options & !WNOHANG) != 0 {
+        return linux_err(EINVAL);
+    }
+
+    let wnohang = (options & WNOHANG) != 0;
+    let (child_tid, code) = if pid == -1 {
+        if wnohang {
+            crate::task::scheduler::try_waitpid_any()
+        } else {
+            crate::task::scheduler::waitpid_any()
+        }
+    } else if pid > 0 {
+        let code = if wnohang {
+            crate::task::scheduler::try_waitpid(pid as u32)
+        } else {
+            crate::task::scheduler::waitpid(pid as u32)
+        };
+        (pid as u32, code)
+    } else {
+        return linux_err(ECHILD);
+    };
+
+    if child_tid == u32::MAX || code == u32::MAX {
+        return linux_err(ECHILD);
+    }
+    if child_tid == u32::MAX - 1 || code == u32::MAX - 1 {
+        return 0;
+    }
+    if code == u32::MAX - 2 {
+        return 0;
+    }
+
+    if status_ptr != 0 {
+        unsafe {
+            write_u32(status_ptr, 0, (code & 0xff) << 8);
+        }
+    }
+    if rusage_ptr != 0 {
+        unsafe {
+            core::ptr::write_bytes(rusage_ptr as *mut u8, 0, 144);
+        }
+    }
+    child_tid as u64
+}
+
 pub(super) fn linux_uname(buf_ptr: u64) -> u64 {
     if buf_ptr == 0 {
         return linux_err(EFAULT);

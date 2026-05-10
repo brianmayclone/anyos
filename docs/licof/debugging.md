@@ -174,7 +174,8 @@ licof apt: response looks like HTML; archive server returned an error page
 licof apt: failed to decompress package index: ...
 licof apt: checksum mismatch ...
 licof apt: invalid package size ...
-licof apt: installed marker for '<package>' is stale; reinstalling
+licof apt: installed marker for '<package>' failed validation; reinstalling
+licof apt: installed marker for '<package>' references missing payload '...'
 ```
 
 If the first bytes are `00 00 00 00`, suspect a write/flush/filesystem issue or
@@ -213,11 +214,19 @@ path and reinstall the package. Copying over SONAME links can make the dynamic
 loader read the wrong ELF metadata and produces misleading version errors.
 
 Installed package markers contain `Path:` entries for extracted payload files
-and links. When `licof apt` sees a marker without payload paths, or a payload
-path no longer exists, it deletes the marker and reinstalls the package. This
-guards against crashes, interrupted flushes, filesystem regressions and older
-marker formats that claimed a package was installed without proving its files
-are still present.
+and links. Validation checks that each archived payload entry still exists in
+the Linux base without following a final symlink. This matters for Debian
+links such as `usr/bin/touch -> /bin/touch`, where following the link from the
+anyOS root would leave the Linux base. When `licof apt` sees a marker without
+payload paths, or a payload path no longer exists, it deletes the marker and
+reinstalls the package. This guards against crashes, interrupted flushes,
+filesystem regressions and older marker formats that claimed a package was
+installed without proving its files are still present.
+
+`licof init` also writes `<paths/db>/bootstrap-state` after every bootstrap
+seed package. The file contains `Status`, `Installed`, `Missing` and `Failed`
+lines. If a rerun unexpectedly skips work, inspect this file together with the
+per-package marker under `<paths/installed_db>`.
 
 ## Linux Base Debugging
 

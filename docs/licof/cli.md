@@ -269,9 +269,23 @@ The rootfs key is a filesystem-safe encoding of the active Linux base path.
 Each marker records the package version, source filename, file count and the
 extracted payload paths. A marker is accepted only when at least one payload
 path is recorded and all recorded files or links still exist in the active
-Linux base. Stale or legacy markers are ignored and the package is installed
-again. This is still not a full dpkg database; it is a bootstrap integrity
-cache.
+Linux base. The check does not follow the final symlink, because Debian
+packages can contain Linux-absolute links that must be resolved relative to the
+Linux base at runtime. Invalid or legacy markers are ignored and the package is
+installed again. This is still not a full dpkg database; it is a bootstrap
+integrity cache.
+
+Bootstrap progress is also written to:
+
+```text
+<paths/db>/bootstrap-state
+```
+
+The state file is recomputed during `licof init` and records `Status`,
+`Installed`, `Missing` and `Failed` package lines for the configured bootstrap
+seed. Re-running `licof init` uses the package markers above, ignores stale
+markers, downloads the missing seed packages and updates this state file after
+each package.
 
 ## Current Operational Notes
 

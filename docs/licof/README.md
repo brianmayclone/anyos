@@ -79,6 +79,9 @@ needs them and when the anyOS behavior can be made explicit.
 - Installed-package markers must prove their payload paths still exist. Stale
   markers are ignored so a half-written Linux base cannot be reported as a
   complete bootstrap.
+- `licof init` writes `<paths/db>/bootstrap-state` while it runs. The file is
+  recomputed from validated package markers and lists installed, missing and
+  failed bootstrap seed packages so a later `licof init` can continue.
 - The CLI reads policy and paths from `confd` via the `services/licof`
   manifest. Built-in defaults exist so a system can bootstrap without a
   pre-existing config tree.

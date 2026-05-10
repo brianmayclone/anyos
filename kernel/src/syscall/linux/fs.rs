@@ -609,6 +609,66 @@ pub(super) fn linux_getdents64(fd: u32, dirent_ptr: u64, count: u64) -> u64 {
     written as u64
 }
 
+pub(super) fn linux_getdents(fd: u32, dirent_ptr: u64, count: u64) -> u64 {
+    if dirent_ptr == 0 || count < 24 || count > u32::MAX as u64 {
+        return linux_err(EFAULT);
+    }
+    let entry = match crate::task::scheduler::current_fd_get(fd) {
+        Some(entry) => entry,
+        None => return linux_err(EBADF),
+    };
+    let global_id = match entry.kind {
+        crate::fs::fd_table::FdKind::File { global_id } => global_id,
+        _ => return linux_err(EBADF),
+    };
+    let (file_type, _size, position, _mtime) = match crate::fs::vfs::fstat(global_id) {
+        Ok(st) => st,
+        Err(e) => return linux_fs_err(e),
+    };
+    if file_type != crate::fs::file::FileType::Directory {
+        return linux_err(ENOTTY);
+    }
+    let path = match crate::fs::vfs::get_fd_path(global_id) {
+        Ok(path) => path,
+        Err(e) => return linux_fs_err(e),
+    };
+    let entries = match crate::fs::vfs::read_dir(&path) {
+        Ok(entries) => entries,
+        Err(e) => return linux_fs_err(e),
+    };
+
+    let start = position as usize;
+    let mut written = 0usize;
+    let mut next_index = start;
+    for (idx, entry) in entries.iter().enumerate().skip(start) {
+        let name = entry.name.as_bytes();
+        let reclen = align_up(18 + name.len() + 2, 8);
+        if written + reclen > count as usize {
+            break;
+        }
+        let base = dirent_ptr + written as u64;
+        unsafe {
+            write_u64(base, 0, (idx + 1) as u64);
+            write_u64(base, 8, (idx + 1) as u64);
+            *((base + 16) as *mut u16) = reclen as u16;
+            core::ptr::copy_nonoverlapping(name.as_ptr(), (base + 18) as *mut u8, name.len());
+            *((base + 18 + name.len() as u64) as *mut u8) = 0;
+            *((base + reclen as u64 - 1) as *mut u8) = linux_dir_type(entry.file_type);
+            if reclen > 19 + name.len() {
+                core::ptr::write_bytes(
+                    (base + 19 + name.len() as u64) as *mut u8,
+                    0,
+                    reclen - 20 - name.len(),
+                );
+            }
+        }
+        written += reclen;
+        next_index = idx + 1;
+    }
+    let _ = crate::fs::vfs::lseek(global_id, next_index as i32, 0);
+    written as u64
+}
+
 pub(super) fn linux_statfs(path_ptr: u64, buf_ptr: u64) -> u64 {
     if buf_ptr == 0 {
         return linux_err(EFAULT);

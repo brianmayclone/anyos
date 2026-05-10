@@ -57,9 +57,7 @@ pub(crate) fn diagnose_linux_binary(config: &LicoConfig, label: &str, path: &str
         let resolved = linux_path_in_rootfs(&rootfs, &interp);
         let final_path =
             resolve_rootfs_symlink_path(&rootfs, &resolved).unwrap_or_else(|| resolved.clone());
-        if path_exists_no_follow(&resolved) || path_exists(&final_path) {
-            println!("{}: PT_INTERP {} -> {}", label, interp, final_path);
-        } else {
+        if !(path_exists_no_follow(&resolved) || path_exists(&final_path)) {
             println!("{}: missing PT_INTERP {}", label, interp);
             println!("{}: expected interpreter at {}", label, resolved);
             print_path_probe(label, &resolved);
@@ -68,8 +66,6 @@ pub(crate) fn diagnose_linux_binary(config: &LicoConfig, label: &str, path: &str
                 &linux_path_in_rootfs(&rootfs, "/lib/x86_64-linux-gnu/ld-2.13.so"),
             );
         }
-    } else {
-        println!("{}: static/no-PT_INTERP Linux ELF64", label);
     }
     if fs::isatty(0) != 1 {
         println!(

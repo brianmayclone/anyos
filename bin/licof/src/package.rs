@@ -888,19 +888,23 @@ fn is_installed(config: &LicoConfig, pkg: &str, rootfs: &str) -> bool {
     let Ok(data) = fs::read_to_vec(&path) else {
         return false;
     };
-    if installed_manifest_valid(rootfs, &data) {
+    if installed_manifest_valid(rootfs, pkg, &data) {
         return true;
     }
     println!(
-        "licof apt: installed marker for '{}' is stale; reinstalling",
+        "licof apt: installed marker for '{}' failed validation; reinstalling",
         pkg
     );
     let _ = fs::unlink(&path);
     false
 }
 
-fn installed_manifest_valid(rootfs: &str, data: &[u8]) -> bool {
+fn installed_manifest_valid(rootfs: &str, pkg: &str, data: &[u8]) -> bool {
     let Ok(text) = core::str::from_utf8(data) else {
+        println!(
+            "licof apt: installed marker for '{}' is not valid UTF-8",
+            pkg
+        );
         return false;
     };
     let mut paths = 0u32;
@@ -908,26 +912,43 @@ fn installed_manifest_valid(rootfs: &str, data: &[u8]) -> bool {
         let Some(rel) = line.strip_prefix("Path: ") else {
             continue;
         };
-        if rel.is_empty() || rel.starts_with('/') || rel.contains("..") {
+        if !valid_manifest_relative_path(rel) {
+            println!(
+                "licof apt: installed marker for '{}' has invalid payload path '{}'",
+                pkg, rel
+            );
             return false;
         }
         paths += 1;
         if !installed_payload_path_exists(rootfs, rel) {
+            println!(
+                "licof apt: installed marker for '{}' references missing payload '{}'",
+                pkg, rel
+            );
             return false;
         }
     }
-    paths > 0
+    if paths == 0 {
+        println!(
+            "licof apt: installed marker for '{}' has no payload paths",
+            pkg
+        );
+        return false;
+    }
+    true
 }
 
 fn installed_payload_path_exists(rootfs: &str, rel: &str) -> bool {
     let path = normalize_abs_path(&alloc::format!("{}/{}", rootfs, rel));
-    if !path_under_rootfs(rootfs, &path) || !path_exists_no_follow(&path) {
-        return false;
-    }
-    if !path_is_symlink(&path) {
-        return path_exists(&path);
-    }
-    true
+    path_under_rootfs(rootfs, &path) && path_exists_no_follow(&path)
+}
+
+fn valid_manifest_relative_path(rel: &str) -> bool {
+    !rel.is_empty()
+        && !rel.starts_with('/')
+        && rel
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
 fn installed_package_path(config: &LicoConfig, pkg: &str, rootfs: &str) -> String {
