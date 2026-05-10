@@ -132,6 +132,7 @@ const LINUX_SYS_GETEUID: u64 = 107;
 const LINUX_SYS_GETEGID: u64 = 108;
 const LINUX_SYS_SETPGID: u64 = 109;
 const LINUX_SYS_GETPPID: u64 = 110;
+const LINUX_SYS_GETPGRP: u64 = 111;
 const LINUX_SYS_SETSID: u64 = 112;
 const LINUX_SYS_GETGROUPS: u64 = 115;
 const LINUX_SYS_SETGROUPS: u64 = 116;
@@ -293,6 +294,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_GETEGID => handlers::sys_getgid() as u64,
         LINUX_SYS_SETPGID => linux_setpgid(a1, a2),
         LINUX_SYS_GETPPID => handlers::sys_getppid() as u64,
+        LINUX_SYS_GETPGRP => linux_getpgid(0),
         LINUX_SYS_SETSID => linux_setsid(),
         LINUX_SYS_GETGROUPS => linux_getgroups(a1, a2),
         LINUX_SYS_SETGROUPS => linux_setgroups(a1, a2),

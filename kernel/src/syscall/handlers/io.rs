@@ -157,7 +157,7 @@ pub fn sys_read(fd: u32, buf_ptr: u64, len: u32) -> u32 {
                     // Terminal I/O: read from named stdin pipe
                     let pipe = crate::task::scheduler::current_thread_stdin_pipe();
                     if pipe != 0 {
-                        crate::ipc::pipe::read(pipe, buf) as u32
+                        read_tty_pipe(pipe, buf, !entry.flags.nonblock)
                     } else {
                         0 // no stdin
                     }
@@ -176,13 +176,27 @@ pub fn sys_read(fd: u32, buf_ptr: u64, len: u32) -> u32 {
                     let buf = unsafe {
                         core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize)
                     };
-                    return crate::ipc::pipe::read(pipe, buf) as u32;
+                    return read_tty_pipe(pipe, buf, true);
                 }
                 0 // no stdin pipe
             } else {
                 u32::MAX
             }
         }
+    }
+}
+
+fn read_tty_pipe(pipe: u32, buf: &mut [u8], blocking: bool) -> u32 {
+    loop {
+        let n = crate::ipc::pipe::read(pipe, buf);
+        if n != 0 {
+            return n;
+        }
+        if !blocking {
+            return u32::MAX - 10;
+        }
+        let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
+        crate::task::scheduler::sleep_until(wake_at);
     }
 }
 

@@ -602,8 +602,13 @@ fn build_spawn_argv(path: &str, args: &str) -> alloc::vec::Vec<alloc::string::St
 fn default_envp() -> alloc::vec::Vec<alloc::string::String> {
     alloc::vec![
         alloc::string::String::from("PATH=/usr/bin:/bin"),
-        alloc::string::String::from("HOME=/"),
+        alloc::string::String::from("HOME=/root"),
+        alloc::string::String::from("PWD=/"),
         alloc::string::String::from("TERM=ansi"),
+        alloc::string::String::from("SHELL=/bin/bash"),
+        alloc::string::String::from("USER=root"),
+        alloc::string::String::from("LOGNAME=root"),
+        alloc::string::String::from("PS1=\\u@licof:\\w\\$ "),
         alloc::string::String::from("LICOF=1"),
     ]
 }

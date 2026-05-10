@@ -88,7 +88,11 @@ fn shell(config: &LicoConfig, args: &[&str]) {
         println!("licof shell: run 'licof init' or install bash/dash first");
         return;
     };
-    let child_args = join_args(args);
+    let child_args = if args.is_empty() {
+        String::from("-i")
+    } else {
+        join_args(args)
+    };
     run_linux_process(config, "licof shell", &path, &child_args);
 }
 
