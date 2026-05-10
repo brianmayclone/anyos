@@ -73,6 +73,32 @@ pub unsafe fn debug_assert_gs_is_kernel() {
     }
 }
 
+/// Ensure `GS.base` points at this CPU's PERCPU block before building a ring-3
+/// return frame.
+///
+/// Interrupts from user mode arrive without an automatic `swapgs`. If such a
+/// path reaches a kernel trampoline with user GS still loaded, the final
+/// ring-3 preparation would otherwise copy `GS.base=0` into
+/// `KERNEL_GS_BASE`, and the next SYSCALL would enter with a null GS base.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub unsafe fn ensure_gs_is_kernel_for_ring3() {
+    let gs_base = rdmsr(MSR_GS_BASE);
+    if gs_base >= 0xFFFF_8000_0000_0000 {
+        return;
+    }
+
+    let lapic_id = crate::arch::x86::apic::lapic_id() as usize;
+    let percpu = if lapic_id < 256 {
+        LAPIC_TO_PERCPU[lapic_id]
+    } else {
+        0
+    };
+    if percpu >= 0xFFFF_8000_0000_0000 {
+        wrmsr(MSR_GS_BASE, percpu);
+    }
+}
+
 // EFER bits
 const EFER_SCE: u64 = 1 << 0; // Syscall Enable
 const EFER_NXE: u64 = 1 << 11; // No-Execute Enable (must be set for PAGE_NX in PTEs to work)

@@ -199,6 +199,14 @@ isr_common_stub:
     test rsp, rsp
     jns .bad_rsp
 
+    ; Interrupts and exceptions do not perform SWAPGS for us. If this frame
+    ; came from ring 3, GS.base is still the user's GS (usually 0). Normalize
+    ; to kernel PERCPU before any Rust code or scheduler path can run.
+    test qword [rsp + 24], 3       ; common frame: [int,err,rip,cs,...]
+    jz .isr_gs_ready
+    swapgs
+.isr_gs_ready:
+
     ; Capture DS/ES BEFORE overwriting — for #GP diagnostics.
     ; In 64-bit long mode, DS base is forced to 0, so RIP-relative
     ; addressing works even when DS holds a null selector (0x0000).
@@ -280,6 +288,7 @@ isr_common_stub:
     mov es, ax
     pop rax
     or qword [rsp + 32], 3         ; force SS.RPL = 3 for user-mode return
+    swapgs                         ; restore user GS before IRETQ
 .isr_iret_done:
     iretq
 
@@ -325,6 +334,13 @@ irq_common_stub:
     ; user/low stack.
     test rsp, rsp
     jns .bad_rsp
+
+    ; Hardware IRQs from ring 3 also arrive with user GS still loaded.
+    ; Switch to kernel PERCPU for the whole handler/scheduler residency.
+    test qword [rsp + 24], 3       ; common frame: [int,err,rip,cs,...]
+    jz .irq_gs_ready
+    swapgs
+.irq_gs_ready:
 
     ; Capture DS/ES BEFORE overwriting (same as ISR stub)
     push rax
@@ -391,6 +407,7 @@ irq_common_stub:
     mov es, ax
     pop rax
     or qword [rsp + 32], 3         ; force SS.RPL = 3
+    swapgs                         ; restore user GS before IRETQ
 .irq_iret_done:
     iretq
 

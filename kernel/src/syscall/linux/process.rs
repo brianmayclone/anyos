@@ -190,7 +190,14 @@ fn read_exec_string_array(ptr: u64, max_entries: usize) -> Result<Vec<String>, i
 
 pub(super) fn linux_wait4(pid: i64, status_ptr: u64, options: u64, rusage_ptr: u64) -> u64 {
     const WNOHANG: u64 = 1;
-    if (options & !WNOHANG) != 0 {
+    const WUNTRACED: u64 = 2;
+    const WCONTINUED: u64 = 8;
+    const WNOTHREAD: u64 = 0x2000_0000;
+    const WALL: u64 = 0x4000_0000;
+    const WCLONE: u64 = 0x8000_0000;
+    const SUPPORTED_WAIT_OPTIONS: u64 =
+        WNOHANG | WUNTRACED | WCONTINUED | WNOTHREAD | WALL | WCLONE;
+    if (options & !SUPPORTED_WAIT_OPTIONS) != 0 {
         return linux_err(EINVAL);
     }
     if status_ptr != 0 && !handlers::helpers::is_user_range_accessible(status_ptr, 4) {

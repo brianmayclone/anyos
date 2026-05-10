@@ -53,10 +53,6 @@ pub fn waitpid(tid: u32) -> u32 {
     schedule();
     loop {
         {
-            crate::arch::hal::enable_interrupts();
-            crate::arch::hal::halt();
-        }
-        {
             crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_WAITPID);
             let mut guard = SCHEDULER.lock();
             if let Some(sched) = guard.as_mut() {
@@ -69,6 +65,8 @@ pub fn waitpid(tid: u32) -> u32 {
                 }
             }
         }
+        crate::arch::hal::enable_interrupts();
+        crate::arch::hal::halt();
     }
 }
 
@@ -126,10 +124,6 @@ pub fn waitpid_any() -> (u32, u32) {
     schedule();
     loop {
         {
-            crate::arch::hal::enable_interrupts();
-            crate::arch::hal::halt();
-        }
-        {
             crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_WAITPID_ANY);
             let mut guard = SCHEDULER.lock();
             if let Some(sched) = guard.as_mut() {
@@ -149,6 +143,8 @@ pub fn waitpid_any() -> (u32, u32) {
                 }
             }
         }
+        crate::arch::hal::enable_interrupts();
+        crate::arch::hal::halt();
     }
 }
 

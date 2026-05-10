@@ -623,6 +623,7 @@ pub extern "C" fn fork_child_trampoline() {
 /// silent corruption of the pointer operand.
 #[cfg(target_arch = "x86_64")]
 unsafe fn fork_return_to_user(regs: *const ForkChildRegs) -> ! {
+    crate::arch::x86::syscall_msr::ensure_gs_is_kernel_for_ring3();
     crate::arch::x86::syscall_msr::debug_assert_gs_is_kernel();
     core::arch::asm!(
         "cli",
@@ -1450,6 +1451,7 @@ pub extern "C" fn thread_create_trampoline() {
 /// On AArch64: sets ELR_EL1/SP_EL0/SPSR_EL1 and issues `eret` to EL0.
 #[cfg(target_arch = "x86_64")]
 unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
+    crate::arch::x86::syscall_msr::ensure_gs_is_kernel_for_ring3();
     crate::arch::x86::syscall_msr::debug_assert_gs_is_kernel();
     // Use explicit R14/R15 to avoid `mov ax, 0x23` clobbering an in(reg) operand
     // (MEMORY.md: hardcoded AX in asm! corrupts any in(reg) that the compiler
