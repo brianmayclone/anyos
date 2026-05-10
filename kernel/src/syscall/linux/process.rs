@@ -270,35 +270,44 @@ pub(super) fn linux_kill(pid: i64, sig: u64) -> u64 {
     }
 }
 
-pub(super) fn linux_tgkill(_tgid: u64, tid: u64, sig: u64) -> u64 {
-    if tid == 0 {
+pub(super) fn linux_tgkill(_tgid: i32, tid: i32, sig: u64) -> u64 {
+    if tid <= 0 {
         return linux_err(EINVAL);
     }
     linux_kill(tid as i64, sig)
 }
 
-pub(super) fn linux_setpgid(pid: u64, _pgid: u64) -> u64 {
+pub(super) fn linux_setpgid(pid: i32, pgid: i32) -> u64 {
+    if pid < 0 {
+        return linux_err(ESRCH);
+    }
+    if pgid < 0 {
+        return linux_err(EINVAL);
+    }
     if pid != 0 && !crate::task::scheduler::thread_exists(pid as u32) {
         return linux_err(ESRCH);
     }
     0
 }
 
-pub(super) fn linux_getpgid(pid: u64) -> u64 {
+pub(super) fn linux_getpgid(pid: i32) -> u64 {
+    if pid < 0 {
+        return linux_err(ESRCH);
+    }
     if pid == 0 {
         return crate::task::scheduler::current_tid() as u64;
     }
     if !crate::task::scheduler::thread_exists(pid as u32) {
         return linux_err(ESRCH);
     }
-    pid
+    pid as u64
 }
 
 pub(super) fn linux_setsid() -> u64 {
     crate::task::scheduler::current_tid() as u64
 }
 
-pub(super) fn linux_getsid(pid: u64) -> u64 {
+pub(super) fn linux_getsid(pid: i32) -> u64 {
     linux_getpgid(pid)
 }
 
@@ -457,7 +466,10 @@ pub(super) fn linux_sysinfo(info_ptr: u64) -> u64 {
     0
 }
 
-pub(super) fn linux_getgroups(size: u64, list_ptr: u64) -> u64 {
+pub(super) fn linux_getgroups(size: i32, list_ptr: u64) -> u64 {
+    if size < 0 {
+        return linux_err(EINVAL);
+    }
     if size == 0 {
         return 1;
     }
@@ -470,19 +482,19 @@ pub(super) fn linux_getgroups(size: u64, list_ptr: u64) -> u64 {
     1
 }
 
-pub(super) fn linux_setgroups(size: u64, _list_ptr: u64) -> u64 {
+pub(super) fn linux_setgroups(size: i32, _list_ptr: u64) -> u64 {
     if handlers::sys_getuid() != 0 {
         return linux_err(EPERM);
     }
-    if size > 1024 {
+    if !(0..=1024).contains(&size) {
         return linux_err(EINVAL);
     }
     0
 }
 
-pub(super) fn linux_setres_id(real: u64, effective: u64, saved: u64, uid: bool) -> u64 {
+pub(super) fn linux_setres_id(real: u32, effective: u32, saved: u32, uid: bool) -> u64 {
     for value in [real, effective, saved] {
-        if value != u32::MAX as u64 && value != 0 && value != current_linux_id(uid) as u64 {
+        if value != u32::MAX && value != 0 && value != current_linux_id(uid) {
             return linux_err(EPERM);
         }
     }
@@ -502,9 +514,9 @@ pub(super) fn linux_getres_id(real_ptr: u64, effective_ptr: u64, saved_ptr: u64,
     0
 }
 
-pub(super) fn linux_setfs_id(id: u64, uid: bool) -> u64 {
+pub(super) fn linux_setfs_id(id: u32, uid: bool) -> u64 {
     let old = current_linux_id(uid);
-    if id != u32::MAX as u64 && id != 0 && id != old as u64 {
+    if id != u32::MAX && id != 0 && id != old {
         return linux_err(EPERM);
     }
     old as u64
@@ -518,8 +530,8 @@ pub(super) fn current_linux_id(uid: bool) -> u32 {
     }
 }
 
-pub(super) fn linux_set_root_or_current(id: u64, uid: bool) -> u64 {
-    if id == 0 || id == current_linux_id(uid) as u64 {
+pub(super) fn linux_set_root_or_current(id: u32, uid: bool) -> u64 {
+    if id == 0 || id == current_linux_id(uid) {
         0
     } else {
         linux_err(EPERM)
@@ -581,7 +593,7 @@ pub(super) fn linux_prctl(option: u64, arg2: u64) -> u64 {
     }
 }
 
-pub(super) fn linux_prlimit64(_pid: u64, resource: u64, _new_limit: u64, old_limit: u64) -> u64 {
+pub(super) fn linux_prlimit64(_pid: i32, resource: u64, _new_limit: u64, old_limit: u64) -> u64 {
     if old_limit == 0 {
         return 0;
     }

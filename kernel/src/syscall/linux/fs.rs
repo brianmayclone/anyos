@@ -8,8 +8,7 @@ pub(super) fn linux_open(path_ptr: u64, linux_flags: u64) -> u64 {
     linux_open_linux_path(raw_path, linux_flags)
 }
 
-pub(super) fn linux_openat(dirfd: u64, path_ptr: u64, linux_flags: u64) -> u64 {
-    let dirfd = dirfd as i32;
+pub(super) fn linux_openat(dirfd: i32, path_ptr: u64, linux_flags: u64) -> u64 {
     let raw_path = match super::handlers::helpers::read_user_str_safe(path_ptr) {
         Some(path) => path,
         None => return linux_err(EFAULT),
@@ -17,7 +16,7 @@ pub(super) fn linux_openat(dirfd: u64, path_ptr: u64, linux_flags: u64) -> u64 {
     if dirfd == LINUX_AT_FDCWD || raw_path.starts_with('/') {
         return linux_open_linux_path(raw_path, linux_flags);
     }
-    let path = match linux_translate_at_path(dirfd as u64, path_ptr) {
+    let path = match linux_translate_at_path(dirfd, path_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
@@ -40,7 +39,7 @@ pub(super) fn linux_stat(path_ptr: u64, stat_ptr: u64, nofollow: bool) -> u64 {
     linux_stat_translated(&path, stat_ptr, nofollow)
 }
 
-pub(super) fn linux_newfstatat(dirfd: u64, path_ptr: u64, stat_ptr: u64, flags: u64) -> u64 {
+pub(super) fn linux_newfstatat(dirfd: i32, path_ptr: u64, stat_ptr: u64, flags: u64) -> u64 {
     if stat_ptr == 0 {
         return linux_err(EFAULT);
     }
@@ -55,7 +54,7 @@ pub(super) fn linux_newfstatat(dirfd: u64, path_ptr: u64, stat_ptr: u64, flags: 
     if raw_path.is_empty() && (flags & LINUX_AT_EMPTY_PATH) != 0 {
         return linux_fstat(dirfd as u32, stat_ptr);
     }
-    if raw_path.starts_with('/') || (dirfd as i32) == LINUX_AT_FDCWD {
+    if raw_path.starts_with('/') || dirfd == LINUX_AT_FDCWD {
         let abs = linux_absolute_path(&raw_path);
         if let Some(file) = linux_proc_file_id(&abs) {
             return linux_write_proc_stat(stat_ptr, file);
@@ -343,7 +342,7 @@ pub(super) fn linux_readlink(path_ptr: u64, buf_ptr: u64, buf_size: u64) -> u64 
     }
 }
 
-pub(super) fn linux_readlinkat(dirfd: u64, path_ptr: u64, buf_ptr: u64, buf_size: u64) -> u64 {
+pub(super) fn linux_readlinkat(dirfd: i32, path_ptr: u64, buf_ptr: u64, buf_size: u64) -> u64 {
     let path = match linux_translate_at_path(dirfd, path_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
@@ -382,7 +381,7 @@ pub(super) fn linux_rename(old_ptr: u64, new_ptr: u64) -> u64 {
     }
 }
 
-pub(super) fn linux_renameat(old_dirfd: u64, old_ptr: u64, new_dirfd: u64, new_ptr: u64) -> u64 {
+pub(super) fn linux_renameat(old_dirfd: i32, old_ptr: u64, new_dirfd: i32, new_ptr: u64) -> u64 {
     let old_path = match linux_translate_at_path(old_dirfd, old_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
@@ -407,7 +406,7 @@ pub(super) fn linux_mkdir(path_ptr: u64, _mode: u64) -> u64 {
     }
 }
 
-pub(super) fn linux_mkdirat(dirfd: u64, path_ptr: u64, _mode: u64) -> u64 {
+pub(super) fn linux_mkdirat(dirfd: i32, path_ptr: u64, _mode: u64) -> u64 {
     let path = match linux_translate_at_path(dirfd, path_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
@@ -425,7 +424,7 @@ pub(super) fn linux_unlink_path(path_ptr: u64) -> u64 {
     linux_unlink_translated(&path)
 }
 
-pub(super) fn linux_unlinkat(dirfd: u64, path_ptr: u64, flags: u64) -> u64 {
+pub(super) fn linux_unlinkat(dirfd: i32, path_ptr: u64, flags: u64) -> u64 {
     if (flags & !LINUX_AT_REMOVEDIR) != 0 {
         return linux_err(EINVAL);
     }
@@ -489,7 +488,7 @@ pub(super) fn linux_fchmod(fd: u32, mode: u64) -> u64 {
     }
 }
 
-pub(super) fn linux_fchmodat(dirfd: u64, path_ptr: u64, mode: u64, _flags: u64) -> u64 {
+pub(super) fn linux_fchmodat(dirfd: i32, path_ptr: u64, mode: u64, _flags: u64) -> u64 {
     let path = match linux_translate_at_path(dirfd, path_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
@@ -500,14 +499,14 @@ pub(super) fn linux_fchmodat(dirfd: u64, path_ptr: u64, mode: u64, _flags: u64) 
     }
 }
 
-pub(super) fn linux_chown(path_ptr: u64, uid: u64, gid: u64) -> u64 {
+pub(super) fn linux_chown(path_ptr: u64, uid: u32, gid: u32) -> u64 {
     let Some(path) = linux_translate_user_path(path_ptr) else {
         return linux_err(EFAULT);
     };
     linux_chown_translated(&path, uid, gid)
 }
 
-pub(super) fn linux_fchown(fd: u32, uid: u64, gid: u64) -> u64 {
+pub(super) fn linux_fchown(fd: u32, uid: u32, gid: u32) -> u64 {
     let path = match linux_fd_path(fd) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
@@ -515,7 +514,7 @@ pub(super) fn linux_fchown(fd: u32, uid: u64, gid: u64) -> u64 {
     linux_chown_translated(&path, uid, gid)
 }
 
-pub(super) fn linux_fchownat(dirfd: u64, path_ptr: u64, uid: u64, gid: u64) -> u64 {
+pub(super) fn linux_fchownat(dirfd: i32, path_ptr: u64, uid: u32, gid: u32) -> u64 {
     let path = match linux_translate_at_path(dirfd, path_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
@@ -523,14 +522,14 @@ pub(super) fn linux_fchownat(dirfd: u64, path_ptr: u64, uid: u64, gid: u64) -> u
     linux_chown_translated(&path, uid, gid)
 }
 
-pub(super) fn linux_chown_translated(path: &str, uid: u64, gid: u64) -> u64 {
+pub(super) fn linux_chown_translated(path: &str, uid: u32, gid: u32) -> u64 {
     let (current_uid, current_gid, _) = crate::fs::vfs::get_permissions(path).unwrap_or((0, 0, 0));
-    let uid = if uid == u32::MAX as u64 {
+    let uid = if uid == u32::MAX {
         current_uid
     } else {
         uid as u16
     };
-    let gid = if gid == u32::MAX as u64 {
+    let gid = if gid == u32::MAX {
         current_gid
     } else {
         gid as u16
@@ -541,7 +540,7 @@ pub(super) fn linux_chown_translated(path: &str, uid: u64, gid: u64) -> u64 {
     }
 }
 
-pub(super) fn linux_faccessat(dirfd: u64, path_ptr: u64, mode: u64, _flags: u64) -> u64 {
+pub(super) fn linux_faccessat(dirfd: i32, path_ptr: u64, mode: u64, _flags: u64) -> u64 {
     let path = match linux_translate_at_path(dirfd, path_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),

@@ -211,6 +211,16 @@ const LINUX_PROC_MOUNTS: u8 = 2;
 const LINUX_PROC_LOGINUID: u8 = 3;
 const LINUX_PROC_STATUS: u8 = 4;
 
+#[inline]
+fn linux_i32_arg(value: u64) -> i32 {
+    value as u32 as i32
+}
+
+#[inline]
+fn linux_u32_arg(value: u64) -> u32 {
+    value as u32
+}
+
 pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
     let nr = regs.rax;
     let a1 = regs.rdi;
@@ -226,7 +236,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_READ => linux_read(a1 as u32, a2, a3),
         LINUX_SYS_WRITE => linux_write(a1 as u32, a2, a3),
         LINUX_SYS_OPEN => linux_open(a1, a2),
-        LINUX_SYS_OPENAT => linux_openat(a1, a2, a3),
+        LINUX_SYS_OPENAT => linux_openat(linux_i32_arg(a1), a2, a3),
         LINUX_SYS_CLOSE => anyos_u32_ret(handlers::sys_close(a1 as u32)),
         LINUX_SYS_STAT => linux_stat(a1, a2, false),
         LINUX_SYS_LSTAT => linux_stat(a1, a2, true),
@@ -286,8 +296,8 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_VFORK => linux_vfork(regs),
         LINUX_SYS_EXECVE => linux_execve(a1, a2, a3),
         LINUX_SYS_UNAME => linux_uname(a1),
-        LINUX_SYS_WAIT4 => linux_wait4(a1 as i64, a2, a3, a4),
-        LINUX_SYS_KILL => linux_kill(a1 as i64, a2),
+        LINUX_SYS_WAIT4 => linux_wait4(linux_i32_arg(a1) as i64, a2, a3, a4),
+        LINUX_SYS_KILL => linux_kill(linux_i32_arg(a1) as i64, a2),
         LINUX_SYS_SEMGET => linux_semget(a1, a2, a3),
         LINUX_SYS_SEMOP => linux_semop(a1, a2, a3),
         LINUX_SYS_SEMCTL => linux_semctl(a1, a2, a3, a4),
@@ -311,8 +321,8 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_READLINK => linux_readlink(a1, a2, a3),
         LINUX_SYS_CHMOD => linux_chmod(a1, a2),
         LINUX_SYS_FCHMOD => linux_fchmod(a1 as u32, a2),
-        LINUX_SYS_CHOWN | LINUX_SYS_LCHOWN => linux_chown(a1, a2, a3),
-        LINUX_SYS_FCHOWN => linux_fchown(a1 as u32, a2, a3),
+        LINUX_SYS_CHOWN | LINUX_SYS_LCHOWN => linux_chown(a1, linux_u32_arg(a2), linux_u32_arg(a3)),
+        LINUX_SYS_FCHOWN => linux_fchown(a1 as u32, linux_u32_arg(a2), linux_u32_arg(a3)),
         LINUX_SYS_UMASK => 0,
         LINUX_SYS_GETTIMEOFDAY => linux_gettimeofday(a1),
         LINUX_SYS_GETRLIMIT => linux_prlimit64(0, a1, 0, a2),
@@ -321,24 +331,34 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_TIMES => linux_times(a1),
         LINUX_SYS_GETUID => handlers::sys_getuid() as u64,
         LINUX_SYS_GETGID => handlers::sys_getgid() as u64,
-        LINUX_SYS_SETUID => linux_set_root_or_current(a1, true),
-        LINUX_SYS_SETGID => linux_set_root_or_current(a1, false),
+        LINUX_SYS_SETUID => linux_set_root_or_current(linux_u32_arg(a1), true),
+        LINUX_SYS_SETGID => linux_set_root_or_current(linux_u32_arg(a1), false),
         LINUX_SYS_GETEUID => handlers::sys_getuid() as u64,
         LINUX_SYS_GETEGID => handlers::sys_getgid() as u64,
-        LINUX_SYS_SETPGID => linux_setpgid(a1, a2),
+        LINUX_SYS_SETPGID => linux_setpgid(linux_i32_arg(a1), linux_i32_arg(a2)),
         LINUX_SYS_GETPPID => handlers::sys_getppid() as u64,
         LINUX_SYS_GETPGRP => linux_getpgid(0),
         LINUX_SYS_SETSID => linux_setsid(),
-        LINUX_SYS_GETGROUPS => linux_getgroups(a1, a2),
-        LINUX_SYS_SETGROUPS => linux_setgroups(a1, a2),
-        LINUX_SYS_SETRESUID => linux_setres_id(a1, a2, a3, true),
+        LINUX_SYS_GETGROUPS => linux_getgroups(linux_i32_arg(a1), a2),
+        LINUX_SYS_SETGROUPS => linux_setgroups(linux_i32_arg(a1), a2),
+        LINUX_SYS_SETRESUID => linux_setres_id(
+            linux_u32_arg(a1),
+            linux_u32_arg(a2),
+            linux_u32_arg(a3),
+            true,
+        ),
         LINUX_SYS_GETRESUID => linux_getres_id(a1, a2, a3, true),
-        LINUX_SYS_SETRESGID => linux_setres_id(a1, a2, a3, false),
+        LINUX_SYS_SETRESGID => linux_setres_id(
+            linux_u32_arg(a1),
+            linux_u32_arg(a2),
+            linux_u32_arg(a3),
+            false,
+        ),
         LINUX_SYS_GETRESGID => linux_getres_id(a1, a2, a3, false),
-        LINUX_SYS_GETPGID => linux_getpgid(a1),
-        LINUX_SYS_SETFSUID => linux_setfs_id(a1, true),
-        LINUX_SYS_SETFSGID => linux_setfs_id(a1, false),
-        LINUX_SYS_GETSID => linux_getsid(a1),
+        LINUX_SYS_GETPGID => linux_getpgid(linux_i32_arg(a1)),
+        LINUX_SYS_SETFSUID => linux_setfs_id(linux_u32_arg(a1), true),
+        LINUX_SYS_SETFSGID => linux_setfs_id(linux_u32_arg(a1), false),
+        LINUX_SYS_GETSID => linux_getsid(linux_i32_arg(a1)),
         LINUX_SYS_CAPGET => linux_capget(a1, a2),
         LINUX_SYS_CAPSET => linux_capset(a1, a2),
         LINUX_SYS_RT_SIGSUSPEND => linux_rt_sigsuspend(a1, a2),
@@ -356,18 +376,20 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_FADVISE64 => 0,
         LINUX_SYS_CLOCK_GETTIME => linux_clock_gettime(a1, a2),
         LINUX_SYS_EXIT | LINUX_SYS_EXIT_GROUP => handlers::sys_exit(a1 as u32) as u64,
-        LINUX_SYS_TGKILL => linux_tgkill(a1, a2, a3),
-        LINUX_SYS_MKDIRAT => linux_mkdirat(a1, a2, a3),
-        LINUX_SYS_FCHOWNAT => linux_fchownat(a1, a2, a3, a4),
-        LINUX_SYS_NEWFSTATAT => linux_newfstatat(a1, a2, a3, a4),
-        LINUX_SYS_UNLINKAT => linux_unlinkat(a1, a2, a3),
-        LINUX_SYS_RENAMEAT => linux_renameat(a1, a2, a3, a4),
-        LINUX_SYS_READLINKAT => linux_readlinkat(a1, a2, a3, a4),
-        LINUX_SYS_FCHMODAT => linux_fchmodat(a1, a2, a3, a4),
-        LINUX_SYS_FACCESSAT => linux_faccessat(a1, a2, a3, a4),
+        LINUX_SYS_TGKILL => linux_tgkill(linux_i32_arg(a1), linux_i32_arg(a2), a3),
+        LINUX_SYS_MKDIRAT => linux_mkdirat(linux_i32_arg(a1), a2, a3),
+        LINUX_SYS_FCHOWNAT => {
+            linux_fchownat(linux_i32_arg(a1), a2, linux_u32_arg(a3), linux_u32_arg(a4))
+        }
+        LINUX_SYS_NEWFSTATAT => linux_newfstatat(linux_i32_arg(a1), a2, a3, a4),
+        LINUX_SYS_UNLINKAT => linux_unlinkat(linux_i32_arg(a1), a2, a3),
+        LINUX_SYS_RENAMEAT => linux_renameat(linux_i32_arg(a1), a2, linux_i32_arg(a3), a4),
+        LINUX_SYS_READLINKAT => linux_readlinkat(linux_i32_arg(a1), a2, a3, a4),
+        LINUX_SYS_FCHMODAT => linux_fchmodat(linux_i32_arg(a1), a2, a3, a4),
+        LINUX_SYS_FACCESSAT => linux_faccessat(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_SET_ROBUST_LIST => 0,
         LINUX_SYS_UTIMENSAT => 0,
-        LINUX_SYS_PRLIMIT64 => linux_prlimit64(a1, a2, a3, a4),
+        LINUX_SYS_PRLIMIT64 => linux_prlimit64(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_GETRANDOM => linux_getrandom(a1, a2),
         LINUX_SYS_RSEQ => linux_err(ENOSYS),
         _ => linux_unsupported_syscall(regs, a1, a2, a3, a4, a5, a6),

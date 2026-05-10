@@ -1273,7 +1273,8 @@ impl Scheduler {
                 }
                 let n = self.num_cpus();
                 let target = if cpu < n { cpu } else { 0 };
-                let needs_kick = self.per_cpu[target].run_queue.is_empty();
+                let current_cpu = get_cpu_id();
+                let needs_kick = target != current_cpu || self.per_cpu[target].run_queue.is_empty();
                 self.per_cpu[target]
                     .run_queue
                     .enqueue(tid, self.threads[idx].priority);

@@ -25,6 +25,16 @@ fn safe_cpu_id(cpu_id: usize) -> usize {
     }
 }
 
+#[inline]
+fn kick_resched_cpu(cpu: usize) {
+    #[cfg(target_arch = "x86_64")]
+    crate::arch::x86::smp::resched_cpu(cpu);
+    #[cfg(target_arch = "aarch64")]
+    crate::arch::hal::send_ipi(cpu, 1);
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let _ = cpu;
+}
+
 #[cfg(target_arch = "x86_64")]
 #[inline(never)]
 fn try_exit_diag_putc(c: u8) {
@@ -277,6 +287,7 @@ pub fn exit_current(code: u32) {
     let mut tid = 0u32;
     let mut pd_to_destroy: Option<PhysAddr> = None;
     let mut killed_children: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+    let mut wake_kick_cpu: Option<usize> = None;
     crate::sched_diag::set(my_cpu, crate::sched_diag::PHASE_EXIT_CURRENT);
 
     {
@@ -334,7 +345,7 @@ pub fn exit_current(code: u32) {
 
         // Wake any thread waiting via waitpid
         if let Some(waiter_tid) = sched.threads[idx].exit_waiter_tid {
-            sched.wake_thread_inner(waiter_tid);
+            wake_kick_cpu = sched.wake_thread_inner(waiter_tid);
         }
         // Send SIGCHLD to parent
         if parent_tid != 0 {
@@ -345,6 +356,10 @@ pub fn exit_current(code: u32) {
             }
         }
     } // SCHEDULER lock released here
+
+    if let Some(cpu) = wake_kick_cpu {
+        kick_resched_cpu(cpu);
+    }
 
     // ── Resource cleanup for killed children (outside lock) ───────
     cleanup_killed_children(&killed_children);
@@ -589,6 +604,7 @@ pub fn kill_thread(tid: u32) -> u32 {
     let is_current;
     let running_on_other_cpu;
     let mut killed_children: alloc::vec::Vec<u32>;
+    let mut wake_kick_cpu: Option<usize> = None;
 
     crate::sched_diag::set(
         safe_cpu_id(get_cpu_id()),
@@ -654,7 +670,7 @@ pub fn kill_thread(tid: u32) -> u32 {
         }
 
         if let Some(waiter_tid) = sched.threads[target_idx].exit_waiter_tid {
-            sched.wake_thread_inner(waiter_tid);
+            wake_kick_cpu = sched.wake_thread_inner(waiter_tid);
         }
     }
 
@@ -662,6 +678,10 @@ pub fn kill_thread(tid: u32) -> u32 {
         guard.release_no_irq_restore();
     } else {
         drop(guard);
+    }
+
+    if let Some(cpu) = wake_kick_cpu {
+        kick_resched_cpu(cpu);
     }
 
     // ── Resource cleanup for killed children ──────────────────────
