@@ -950,6 +950,11 @@ pub fn sys_getargs(buf_ptr: u64, buf_size: u32) -> u32 {
 /// state. ARM64 fork will use ERET with a separate register save/restore path.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
+    sys_fork_with_child_tidptr(regs, 0)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn sys_fork_with_child_tidptr(regs: &super::super::SyscallRegs, child_tidptr: u64) -> u32 {
     use crate::memory::virtual_mem;
     use crate::task::dll;
     use crate::task::env;
@@ -1099,6 +1104,8 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
         rflags: regs.rflags,
         rsp: regs.rsp,
         ss: regs.ss,
+        fs_base: snap.linux_fs_base,
+        child_tidptr,
     };
     store_pending_fork(child_tid, child_regs);
 

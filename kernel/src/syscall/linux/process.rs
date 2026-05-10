@@ -28,13 +28,14 @@ pub(super) fn linux_clone(
     flags: u64,
     child_stack: u64,
     parent_tidptr: u64,
-    _child_tidptr: u64,
+    child_tidptr: u64,
     tls: u64,
 ) -> u64 {
     const CSIGNAL: u64 = 0xff;
     const SIGCHLD: u64 = 17;
     const CLONE_VM: u64 = 0x0000_0100;
     const CLONE_PARENT_SETTID: u64 = 0x0010_0000;
+    const CLONE_CHILD_SETTID: u64 = 0x0100_0000;
     const CLONE_THREAD: u64 = 0x0001_0000;
     const CLONE_SETTLS: u64 = 0x0008_0000;
 
@@ -60,6 +61,24 @@ pub(super) fn linux_clone(
         return linux_err(ENOSYS);
     }
 
+    if (flags & CLONE_PARENT_SETTID) != 0
+        && (parent_tidptr == 0
+            || !handlers::helpers::is_user_range_accessible(parent_tidptr, 4))
+    {
+        return linux_err(EFAULT);
+    }
+    let child_tidptr = if (flags & CLONE_CHILD_SETTID) != 0 {
+        if child_tidptr == 0 || !handlers::helpers::is_user_range_accessible(child_tidptr, 4) {
+            return linux_err(EFAULT);
+        }
+        child_tidptr
+    } else {
+        0
+    };
+
+    #[cfg(target_arch = "x86_64")]
+    let child_tid = handlers::sys_fork_with_child_tidptr(regs, child_tidptr);
+    #[cfg(not(target_arch = "x86_64"))]
     let child_tid = handlers::sys_fork(regs);
     if child_tid == u32::MAX {
         return linux_err(ENOMEM);

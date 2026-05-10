@@ -294,6 +294,8 @@ pub struct ForkChildRegs {
     pub rflags: u64,
     pub rsp: u64,
     pub ss: u64,
+    pub fs_base: u64,
+    pub child_tidptr: u64,
 }
 
 /// User-mode register state saved by fork() for the child process on AArch64.
@@ -347,6 +349,8 @@ impl ForkPendingSlot {
                 rflags: 0,
                 rsp: 0,
                 ss: 0,
+                fs_base: 0,
+                child_tidptr: 0,
             },
         }
     }
@@ -566,10 +570,18 @@ pub extern "C" fn fork_child_trampoline() {
             rflags: slot.regs.rflags,
             rsp: slot.regs.rsp,
             ss: slot.regs.ss,
+            fs_base: slot.regs.fs_base,
+            child_tidptr: slot.regs.child_tidptr,
         };
         slot.used = false;
         r
     };
+
+    if regs.child_tidptr != 0 {
+        unsafe {
+            *(regs.child_tidptr as *mut u32) = tid;
+        }
+    }
 
     unsafe {
         fork_return_to_user(&regs);
@@ -624,7 +636,7 @@ unsafe fn fork_return_to_user(regs: *const ForkChildRegs) -> ! {
         // Build IRETQ frame from struct (field offsets in ForkChildRegs):
         // rbx=0, rcx=8, rdx=16, rsi=24, rdi=32, rbp=40,
         // r8=48, r9=56, r10=64, r11=72, r12=80, r13=88, r14=96, r15=104,
-        // rip=112, cs=120, rflags=128, rsp=136, ss=144
+        // rip=112, cs=120, rflags=128, rsp=136, ss=144, fs_base=152
         "push qword ptr [r15 + 144]",   // SS
         "push qword ptr [r15 + 136]",   // RSP
         "push qword ptr [r15 + 128]",   // RFLAGS
@@ -635,6 +647,14 @@ unsafe fn fork_return_to_user(regs: *const ForkChildRegs) -> ! {
         crate::prepare_gs_for_ring3_asm!(),
         "mov ax, 0x23",
         "mov gs, ax",
+        // Linux TLS lives behind FS.base. Loading the FS selector above may
+        // reset the hidden base on some CPUs, so restore the inherited value
+        // explicitly before returning to userspace.
+        "mov ecx, 0xC0000100",
+        "mov rax, [r15 + 152]",
+        "mov rdx, rax",
+        "shr rdx, 32",
+        "wrmsr",
         // Restore GPRs after prepare_gs_for_ring3_asm!(), which clobbers
         // RAX/RCX/RDX. r15 keeps the frame pointer until its own restore.
         "mov r14, [r15 + 96]",
