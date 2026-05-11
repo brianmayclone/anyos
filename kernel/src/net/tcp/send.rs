@@ -5,6 +5,7 @@
 //! function with sliding window, batched locking, and send buffer tracking.
 
 use super::tcb::*;
+use super::util::is_seq_gte;
 use super::{TCP_CONNECTIONS, TCP_RESETS_SENT, TCP_SEGMENTS_SENT};
 use crate::net::types::{Ipv4Addr, Ipv6Addr};
 use core::sync::atomic::Ordering;
@@ -466,9 +467,10 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
         }; // lock released here
 
         // ── Send all batched segments outside the lock ──
+        let mut failed_segment = None;
         for i in 0..batch_count {
             let seg = unsafe { batch[i].assume_init_ref() };
-            send_segment(
+            let ok = send_segment(
                 seg.local_ip,
                 seg.local_port,
                 seg.remote_ip,
@@ -479,6 +481,31 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
                 seg.window,
                 &data[seg.data_start..seg.data_end],
             );
+            if !ok {
+                failed_segment = Some(i);
+                break;
+            }
+        }
+
+        if let Some(failed_idx) = failed_segment {
+            let seg = unsafe { batch[failed_idx].assume_init_ref() };
+            let mut conns = TCP_CONNECTIONS.lock();
+            if let Some(table) = conns.as_mut() {
+                if let Some(tcb) = table[id].as_mut() {
+                    if tcb.state == TcpState::Established && is_seq_gte(tcb.snd_nxt, seg.seq) {
+                        let rollback = tcb.snd_nxt.wrapping_sub(seg.seq) as usize;
+                        if rollback <= tcb.send_buf.len() {
+                            let keep = tcb.send_buf.len() - rollback;
+                            tcb.send_buf.truncate(keep);
+                        } else {
+                            tcb.send_buf.clear();
+                        }
+                        tcb.snd_nxt = seg.seq;
+                        tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
+                    }
+                }
+            }
+            send_offset = seg.data_start;
         }
 
         // All data acknowledged?
@@ -502,7 +529,7 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
         }
 
         // If no segments were sent (window full), sleep briefly.
-        if batch_count == 0 {
+        if batch_count == 0 || failed_segment.is_some() {
             let wake_at = crate::arch::hal::timer_current_ticks() + 1;
             crate::task::scheduler::sleep_until(wake_at);
             crate::net::poll();
