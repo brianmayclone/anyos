@@ -47,6 +47,12 @@ pub struct SignalState {
     pub blocked: u32,
     /// Handler address for each signal (0=SIG_DFL, 1=SIG_IGN, else user addr).
     pub handlers: [u64; 32],
+    /// Per-signal action flags, as passed by Linux rt_sigaction.
+    pub flags: [u64; 32],
+    /// Per-signal restorer address for SA_RESTORER-style Linux handlers.
+    pub restorers: [u64; 32],
+    /// Per-signal handler mask.
+    pub masks: [u64; 32],
 }
 
 impl SignalState {
@@ -56,6 +62,9 @@ impl SignalState {
             pending: 0,
             blocked: 0,
             handlers: [SIG_DFL; 32],
+            flags: [0; 32],
+            restorers: [0; 32],
+            masks: [0; 32],
         }
     }
 
@@ -92,6 +101,35 @@ impl SignalState {
         }
         let old = self.handlers[sig as usize];
         self.handlers[sig as usize] = handler;
+        self.flags[sig as usize] = 0;
+        self.restorers[sig as usize] = 0;
+        self.masks[sig as usize] = 0;
+        old
+    }
+
+    /// Set full signal action. Returns old handler, flags, restorer, and mask.
+    pub fn set_action(
+        &mut self,
+        sig: u32,
+        handler: u64,
+        flags: u64,
+        restorer: u64,
+        mask: u64,
+    ) -> (u64, u64, u64, u64) {
+        if sig == 0 || sig >= 32 || sig == SIGKILL || sig == SIGSTOP {
+            return (SIG_DFL, 0, 0, 0);
+        }
+        let idx = sig as usize;
+        let old = (
+            self.handlers[idx],
+            self.flags[idx],
+            self.restorers[idx],
+            self.masks[idx],
+        );
+        self.handlers[idx] = handler;
+        self.flags[idx] = flags;
+        self.restorers[idx] = restorer;
+        self.masks[idx] = mask;
         old
     }
 
@@ -101,6 +139,21 @@ impl SignalState {
             SIG_DFL
         } else {
             self.handlers[sig as usize]
+        }
+    }
+
+    /// Get full signal action: handler, flags, restorer, mask.
+    pub fn get_action(&self, sig: u32) -> (u64, u64, u64, u64) {
+        if sig >= 32 {
+            (SIG_DFL, 0, 0, 0)
+        } else {
+            let idx = sig as usize;
+            (
+                self.handlers[idx],
+                self.flags[idx],
+                self.restorers[idx],
+                self.masks[idx],
+            )
         }
     }
 

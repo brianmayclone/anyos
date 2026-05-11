@@ -327,6 +327,14 @@ pub fn exit_current(code: u32) {
         sched.threads[idx].state = ThreadState::Terminated;
         sched.threads[idx].exit_code = Some(code);
         sched.threads[idx].terminated_at_tick = Some(tick);
+        crate::serial_println!(
+            "licof exit: tid={} parent={} code={} waiter={} children_killed={}",
+            current_tid,
+            parent_tid,
+            code,
+            sched.threads[idx].exit_waiter_tid.unwrap_or(0),
+            killed_children.len()
+        );
 
         // ── Page directory cleanup ────────────────────────────────
         if let Some(pd) = sched.threads[idx].page_directory {

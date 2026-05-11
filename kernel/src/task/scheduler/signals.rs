@@ -128,6 +128,38 @@ pub fn current_signal_set_handler(sig: u32, handler: u64) -> u64 {
     crate::ipc::signal::SIG_DFL
 }
 
+/// Get the full signal action for the current thread.
+pub fn current_signal_action(sig: u32) -> (u64, u64, u64, u64) {
+    let guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_ref() {
+        let cpu = get_cpu_id();
+        if let Some(idx) = sched.current_idx(cpu) {
+            return sched.threads[idx].signals.get_action(sig);
+        }
+    }
+    (crate::ipc::signal::SIG_DFL, 0, 0, 0)
+}
+
+/// Set the full signal action on the current thread.
+pub fn current_signal_set_action(
+    sig: u32,
+    handler: u64,
+    flags: u64,
+    restorer: u64,
+    mask: u64,
+) -> (u64, u64, u64, u64) {
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        let cpu = get_cpu_id();
+        if let Some(idx) = sched.current_idx(cpu) {
+            return sched.threads[idx]
+                .signals
+                .set_action(sig, handler, flags, restorer, mask);
+        }
+    }
+    (crate::ipc::signal::SIG_DFL, 0, 0, 0)
+}
+
 /// Get the current thread's blocked signal mask.
 pub fn current_signal_get_blocked() -> u32 {
     let guard = SCHEDULER.lock();
@@ -212,6 +244,9 @@ pub fn set_thread_signals(tid: u32, signals: crate::ipc::signal::SignalState) {
         if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
             // Fork child inherits handler table and blocked mask, but pending signals are cleared
             thread.signals.handlers = signals.handlers;
+            thread.signals.flags = signals.flags;
+            thread.signals.restorers = signals.restorers;
+            thread.signals.masks = signals.masks;
             thread.signals.blocked = signals.blocked;
             thread.signals.pending = 0;
         }

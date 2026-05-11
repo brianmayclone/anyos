@@ -1113,7 +1113,11 @@ impl Scheduler {
                 }
                 let consumed = self.threads[i].exit_code.is_none();
                 let auto_reap_delay_ms = if self.threads[i].is_user { 5_000 } else { 200 };
-                let auto_reap = self.threads[i].exit_waiter_tid.is_none()
+                // Linux wait semantics require a dead child to remain as a
+                // waitable zombie until its parent consumes the exit status.
+                // Only orphan/root threads may be auto-reaped.
+                let auto_reap = self.threads[i].parent_tid == 0
+                    && self.threads[i].exit_waiter_tid.is_none()
                     && !self.threads[i].retain_exit_status
                     && self.threads[i]
                         .terminated_at_tick

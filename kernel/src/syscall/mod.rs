@@ -679,8 +679,7 @@ pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
     if crate::task::scheduler::current_thread_abi() == crate::task::abi::AbiPersonality::LinuxX86_64
     {
         let result = linux::dispatch(regs);
-        handlers::deliver_pending_signal_default();
-        return result;
+        return handlers::deliver_pending_signal_linux64(regs, result);
     }
 
     // fork() needs the full register frame — intercept before dispatch_inner.

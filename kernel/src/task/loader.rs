@@ -583,6 +583,15 @@ pub extern "C" fn fork_child_trampoline() {
         }
     }
 
+    crate::serial_println!(
+        "licof fork-child: tid={} returning rax=0 rip={:#x} rsp={:#x} fs_base={:#x} child_tidptr={:#x}",
+        tid,
+        regs.rip,
+        regs.rsp,
+        regs.fs_base,
+        regs.child_tidptr
+    );
+
     unsafe {
         fork_return_to_user(&regs);
     }
