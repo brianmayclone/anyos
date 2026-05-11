@@ -42,6 +42,7 @@ pub(crate) fn ensure_rootfs_layout(config: &LicoConfig) {
         b"Acquire::Check-Valid-Until \"false\";\n",
     );
     ensure_linux_account_files(rootfs);
+    ensure_linux_network_files(rootfs);
 }
 
 fn ensure_linux_account_files(rootfs: &str) {
@@ -61,6 +62,69 @@ fn ensure_linux_account_files(rootfs: &str) {
         0o644,
     );
     ensure_linux_pam_files(rootfs);
+}
+
+fn ensure_linux_network_files(rootfs: &str) {
+    ensure_rootfs_file(
+        rootfs,
+        "/etc/hosts",
+        b"127.0.0.1\tlocalhost localhost.localdomain\n::1\tlocalhost ip6-localhost ip6-loopback\n",
+        0o644,
+    );
+    ensure_rootfs_file(
+        rootfs,
+        "/etc/resolv.conf",
+        b"nameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:2\n",
+        0o644,
+    );
+    ensure_rootfs_file(rootfs, "/etc/host.conf", b"multi on\n", 0o644);
+    ensure_rootfs_file(rootfs, "/etc/hostname", b"anyos\n", 0o644);
+    ensure_rootfs_file(
+        rootfs,
+        "/etc/gai.conf",
+        b"precedence ::ffff:0:0/96  100\n",
+        0o644,
+    );
+    ensure_rootfs_file(
+        rootfs,
+        "/etc/networks",
+        b"default\t0.0.0.0\nloopback\t127.0.0.0\nlink-local\t169.254.0.0\n",
+        0o644,
+    );
+    ensure_rootfs_file(
+        rootfs,
+        "/etc/protocols",
+        b"ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n",
+        0o644,
+    );
+    ensure_rootfs_file(
+        rootfs,
+        "/etc/services",
+        b"tcpmux\t\t1/tcp\n\
+echo\t\t7/tcp\n\
+echo\t\t7/udp\n\
+discard\t\t9/tcp\n\
+discard\t\t9/udp\n\
+daytime\t\t13/tcp\n\
+daytime\t\t13/udp\n\
+ftp-data\t20/tcp\n\
+ftp\t\t21/tcp\n\
+ssh\t\t22/tcp\n\
+telnet\t\t23/tcp\n\
+smtp\t\t25/tcp\n\
+domain\t\t53/tcp\n\
+domain\t\t53/udp\n\
+http\t\t80/tcp\twww www-http\n\
+pop3\t\t110/tcp\n\
+ntp\t\t123/udp\n\
+imap2\t\t143/tcp\timap\n\
+https\t\t443/tcp\n\
+submission\t587/tcp\n\
+imaps\t\t993/tcp\n\
+pop3s\t\t995/tcp\n\
+http-alt\t8080/tcp\n",
+        0o644,
+    );
 }
 
 fn ensure_linux_pam_files(rootfs: &str) {
@@ -275,6 +339,8 @@ fn resolve_link_target(rootfs: &str, parent: &str, target: &str, remaining: &[&s
 
 pub(crate) fn repair_rootfs_runtime(rootfs: &str) {
     ensure_dir_recursive(&linux_path_in_rootfs(rootfs, "/lib64"));
+    ensure_linux_account_files(rootfs);
+    ensure_linux_network_files(rootfs);
     repair_dynamic_loader(rootfs);
     repair_common_library_links(rootfs, "/lib/x86_64-linux-gnu");
     repair_common_library_links(rootfs, "/usr/lib/x86_64-linux-gnu");

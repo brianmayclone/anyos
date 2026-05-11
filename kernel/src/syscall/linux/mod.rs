@@ -195,6 +195,7 @@ const LINUX_SYS_UTIMENSAT: u64 = 280;
 const LINUX_SYS_DUP3: u64 = 292;
 const LINUX_SYS_PIPE2: u64 = 293;
 const LINUX_SYS_PRLIMIT64: u64 = 302;
+const LINUX_SYS_SENDMMSG: u64 = 307;
 const LINUX_SYS_GETRANDOM: u64 = 318;
 const LINUX_SYS_RSEQ: u64 = 334;
 const LINUX_SYS_FACCESSAT2: u64 = 439;
@@ -289,6 +290,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_RECVFROM => linux_recvfrom(a1 as u32, a2, a3, a4, a5, a6),
         LINUX_SYS_SENDMSG => linux_sendmsg(a1 as u32, a2, a3),
         LINUX_SYS_RECVMSG => linux_recvmsg(a1 as u32, a2, a3),
+        LINUX_SYS_SENDMMSG => linux_sendmmsg(a1 as u32, a2, a3, a4),
         LINUX_SYS_SHUTDOWN => linux_shutdown(a1 as u32, a2),
         LINUX_SYS_BIND => linux_bind(a1 as u32, a2, a3),
         LINUX_SYS_LISTEN => linux_listen(a1 as u32, a2),

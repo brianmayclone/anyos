@@ -397,6 +397,38 @@ pub(super) fn linux_sendmsg(fd: u32, msg_ptr: u64, flags: u64) -> u64 {
     socket_send_iov(fd, name, namelen, iov, iovlen, flags)
 }
 
+pub(super) fn linux_sendmmsg(fd: u32, msgvec_ptr: u64, vlen: u64, flags: u64) -> u64 {
+    const MMSGHDR_SIZE: u64 = 64;
+    const MMSGHDR_LEN_OFFSET: u64 = 56;
+
+    if vlen == 0 {
+        return 0;
+    }
+    if vlen > 1024 {
+        return linux_err(EINVAL);
+    }
+    let Some(msgvec_bytes) = vlen.checked_mul(MMSGHDR_SIZE) else {
+        return linux_err(EINVAL);
+    };
+    if msgvec_ptr == 0 || !handlers::helpers::is_user_range_accessible(msgvec_ptr, msgvec_bytes) {
+        return linux_err(EFAULT);
+    }
+
+    let mut sent = 0u64;
+    for idx in 0..vlen {
+        let msg_ptr = msgvec_ptr + idx * MMSGHDR_SIZE;
+        let ret = linux_sendmsg(fd, msg_ptr, flags);
+        if (ret as i64) < 0 {
+            return if sent == 0 { ret } else { sent };
+        }
+        unsafe {
+            write_u32(msg_ptr, MMSGHDR_LEN_OFFSET, ret.min(u32::MAX as u64) as u32);
+        }
+        sent += 1;
+    }
+    sent
+}
+
 pub(super) fn linux_recvmsg(fd: u32, msg_ptr: u64, flags: u64) -> u64 {
     let (name, _namelen, iov, iovlen) = match read_msghdr(msg_ptr) {
         Ok(v) => v,
