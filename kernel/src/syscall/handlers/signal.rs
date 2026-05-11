@@ -237,7 +237,7 @@ pub fn deliver_pending_signal_linux64(regs: &mut super::super::SyscallRegs, resu
     crate::task::scheduler::current_signal_set_blocked(new_blocked);
 
     crate::serial_println!(
-        "licof linux signal: deliver tid={} sig={} handler={:#x} restorer={:#x} frame={:#x} result={:#x}",
+        "licof linux signal: deliver abi=v2 tid={} sig={} handler={:#x} restorer={:#x} frame={:#x} result={:#x}",
         crate::task::scheduler::current_tid(),
         sig,
         handler,
