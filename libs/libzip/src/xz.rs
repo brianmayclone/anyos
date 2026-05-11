@@ -655,9 +655,9 @@ impl LzmaDecoder {
         let num_direct_bits = (pos_slot >> 1) - 1;
         let mut dist = (2 | (pos_slot & 1)) << num_direct_bits;
         if pos_slot < LZMA_END_POS_MODEL_INDEX {
-            let base = dist - pos_slot - 1;
-            dist +=
-                reverse_decode_bits(rd, &mut self.pos_decoders[base..], num_direct_bits)? as usize;
+            let base = dist.checked_sub(pos_slot)?;
+            dist += reverse_decode_bits_from(rd, &mut self.pos_decoders, base, num_direct_bits)?
+                as usize;
         } else {
             dist += (rd.decode_direct_bits(num_direct_bits - LZMA_NUM_ALIGN_BITS)? as usize)
                 << LZMA_NUM_ALIGN_BITS;
@@ -810,6 +810,23 @@ fn reverse_decode_bits(rd: &mut RangeDecoder, probs: &mut [u16], bits: usize) ->
     let mut result = 0u32;
     for i in 0..bits {
         let bit = rd.decode_bit(&mut probs[symbol])? as usize;
+        symbol = (symbol << 1) | bit;
+        result |= (bit as u32) << i;
+    }
+    Some(result)
+}
+
+fn reverse_decode_bits_from(
+    rd: &mut RangeDecoder,
+    probs: &mut [u16],
+    base: usize,
+    bits: usize,
+) -> Option<u32> {
+    let mut symbol = 1usize;
+    let mut result = 0u32;
+    for i in 0..bits {
+        let idx = base.checked_add(symbol.checked_sub(1)?)?;
+        let bit = rd.decode_bit(probs.get_mut(idx)?)? as usize;
         symbol = (symbol << 1) | bit;
         result |= (bit as u32) << i;
     }

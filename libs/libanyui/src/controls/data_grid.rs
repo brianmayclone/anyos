@@ -11,6 +11,8 @@ const SCROLLBAR_PAD: i32 = 2;
 const MIN_THUMB: i32 = 20;
 /// Corner radius for the rounded scrollbar thumb.
 const THUMB_RADIUS: u32 = 4;
+/// Logical space reserved by a visible scrollbar, including its edge padding.
+const SCROLLBAR_EXTENT: u32 = SCROLLBAR_W + (SCROLLBAR_PAD as u32 * 2);
 
 /// Text alignment within a cell.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -553,12 +555,13 @@ impl DataGrid {
     /// Clamp scroll offsets so the viewport doesn't extend past the content.
     fn clamp_scroll(&mut self) {
         let content_h = self.row_count as i32 * self.row_height as i32;
-        let viewport_h = (self.base.h as i32).saturating_sub(self.header_height as i32);
+        let viewport_h = self.data_viewport_height() as i32;
         let max_scroll = (content_h - viewport_h).max(0);
         if self.scroll_y > max_scroll {
             self.scroll_y = max_scroll;
         }
-        let max_scroll_x = (self.total_content_width() as i32 - self.base.w as i32).max(0);
+        let max_scroll_x =
+            (self.total_content_width() as i32 - self.data_viewport_width() as i32).max(0);
         if self.scroll_x > max_scroll_x {
             self.scroll_x = max_scroll_x;
         }
@@ -575,11 +578,49 @@ impl DataGrid {
             .sum()
     }
 
+    fn scrollbar_presence(&self) -> (bool, bool) {
+        let content_w = self.total_content_width();
+        let content_h = self.row_count as u32 * self.row_height;
+        let data_h = self.base.h.saturating_sub(self.header_height);
+        let mut has_v = false;
+        let mut has_h = false;
+        for _ in 0..3 {
+            let view_w = self
+                .base
+                .w
+                .saturating_sub(if has_v { SCROLLBAR_EXTENT } else { 0 });
+            let view_h = data_h.saturating_sub(if has_h { SCROLLBAR_EXTENT } else { 0 });
+            let next_v = content_h > view_h && view_h > 4;
+            let next_h = content_w > view_w && view_w > 4;
+            if next_v == has_v && next_h == has_h {
+                return (has_v, has_h);
+            }
+            has_v = next_v;
+            has_h = next_h;
+        }
+        (has_v, has_h)
+    }
+
+    fn data_viewport_width(&self) -> u32 {
+        let (has_v, _) = self.scrollbar_presence();
+        self.base
+            .w
+            .saturating_sub(if has_v { SCROLLBAR_EXTENT } else { 0 })
+    }
+
+    fn data_viewport_height(&self) -> u32 {
+        let (_, has_h) = self.scrollbar_presence();
+        self.base
+            .h
+            .saturating_sub(self.header_height)
+            .saturating_sub(if has_h { SCROLLBAR_EXTENT } else { 0 })
+    }
+
     /// Returns (track_h, thumb_h, max_scroll) if the scrollbar is visible.
     /// All values are in logical pixels.
     fn scrollbar_metrics(&self) -> Option<(i32, i32, i32)> {
         let content_h = self.row_count as u32 * self.row_height;
-        let view_h = self.base.h.saturating_sub(self.header_height);
+        let view_h = self.data_viewport_height();
         if content_h <= view_h || view_h <= 4 {
             return None;
         }
@@ -621,7 +662,7 @@ impl DataGrid {
     /// All values are in logical pixels.
     fn h_scrollbar_metrics(&self) -> Option<(i32, i32, i32)> {
         let content_w = self.total_content_width();
-        let view_w = self.base.w;
+        let view_w = self.data_viewport_width();
         if content_w <= view_w || view_w <= 4 {
             return None;
         }
@@ -747,6 +788,9 @@ impl DataGrid {
     // ── Hit-test helpers ───────────────────────────────────────────
 
     fn column_at_x(&self, lx: i32) -> Option<usize> {
+        if lx >= self.data_viewport_width() as i32 {
+            return None;
+        }
         let mut col_x = -self.scroll_x;
         for (i, &logical) in self.display_order.iter().enumerate() {
             let w = self.columns[logical].width as i32;
@@ -759,6 +803,9 @@ impl DataGrid {
     }
 
     fn column_edge_at_x(&self, lx: i32) -> Option<(usize, i32)> {
+        if lx >= self.data_viewport_width() as i32 {
+            return None;
+        }
         let mut col_x = -self.scroll_x;
         for (i, &logical) in self.display_order.iter().enumerate() {
             col_x += self.columns[logical].width as i32;
@@ -771,6 +818,9 @@ impl DataGrid {
 
     fn row_at_y(&self, ly: i32) -> Option<usize> {
         if ly < self.header_height as i32 {
+            return None;
+        }
+        if ly >= self.header_height as i32 + self.data_viewport_height() as i32 {
             return None;
         }
         let data_y = ly - self.header_height as i32 + self.scroll_y;
@@ -815,7 +865,7 @@ impl DataGrid {
         let rh = self.row_height as i32;
         let row_top = vis_row as i32 * rh;
         let row_bottom = row_top + rh;
-        let viewport_h = self.base.h as i32 - self.header_height as i32;
+        let viewport_h = self.data_viewport_height() as i32;
         if row_top < self.scroll_y {
             self.scroll_y = row_top;
         } else if row_bottom > self.scroll_y + viewport_h {
@@ -848,7 +898,7 @@ impl Control for DataGrid {
 
     fn scrollbar_hit_x(&self) -> Option<i32> {
         if self.scrollbar_metrics().is_some() {
-            Some(self.base.w as i32 - SCROLLBAR_W as i32 - SCROLLBAR_PAD - 2)
+            Some(self.data_viewport_width() as i32)
         } else {
             None
         }
@@ -856,7 +906,7 @@ impl Control for DataGrid {
 
     fn scrollbar_hit_y(&self) -> Option<i32> {
         if self.h_scrollbar_metrics().is_some() {
-            Some(self.base.h as i32 - SCROLLBAR_W as i32 - SCROLLBAR_PAD - 2)
+            Some(self.header_height as i32 + self.data_viewport_height() as i32)
         } else {
             None
         }
@@ -884,6 +934,10 @@ impl Control for DataGrid {
 
         // Clip to control bounds (physical)
         let clipped = surface.with_clip(x, y, w, h);
+        let data_view_w = crate::theme::scale(self.data_viewport_width());
+        let data_view_h = crate::theme::scale(self.data_viewport_height());
+        let data_clip = clipped.with_clip(x, y + hdr_h as i32, data_view_w, data_view_h);
+        let header_clip = clipped.with_clip(x, y, data_view_w, hdr_h);
 
         // Background
         crate::draw::fill_rect(&clipped, x, y, w, h, tc.card_bg);
@@ -895,7 +949,7 @@ impl Control for DataGrid {
         let col_count = self.columns.len();
 
         // ── Data rows (scrolled) ──
-        let viewport_h = h.saturating_sub(hdr_h) as i32;
+        let viewport_h = data_view_h as i32;
         if viewport_h > 0 && self.row_count > 0 {
             let vis_start = (scroll_y_s / rh_s).max(0) as usize;
             let vis_end =
@@ -909,11 +963,18 @@ impl Control for DataGrid {
                 // Row background
                 let selected = self.is_row_selected(data_row);
                 if selected {
-                    crate::draw::fill_rect(&clipped, x, row_y, w, rh_u, tc.selection);
+                    crate::draw::fill_rect(&data_clip, x, row_y, data_view_w, rh_u, tc.selection);
                 } else if Some(vis_row) == self.hovered_row {
-                    crate::draw::fill_rect(&clipped, x, row_y, w, rh_u, tc.control_hover);
+                    crate::draw::fill_rect(
+                        &data_clip,
+                        x,
+                        row_y,
+                        data_view_w,
+                        rh_u,
+                        tc.control_hover,
+                    );
                 } else if vis_row % 2 == 1 {
-                    crate::draw::fill_rect(&clipped, x, row_y, w, rh_u, tc.alt_row_bg);
+                    crate::draw::fill_rect(&data_clip, x, row_y, data_view_w, rh_u, tc.alt_row_bg);
                 }
 
                 // Cell text + icons
@@ -924,7 +985,7 @@ impl Control for DataGrid {
                     let col_w_s = crate::theme::scale(col.width);
                     let cell_idx = data_row * col_count + logical_col;
 
-                    let cell_clip = clipped.with_clip(col_x, row_y, col_w_s, rh_u);
+                    let cell_clip = data_clip.with_clip(col_x, row_y, col_w_s, rh_u);
 
                     // Draw per-cell background color (if set)
                     if cell_idx < self.cell_bg_colors.len() && self.cell_bg_colors[cell_idx] != 0 {
@@ -1110,7 +1171,14 @@ impl Control for DataGrid {
                 }
 
                 // Row separator
-                crate::draw::fill_rect(&clipped, x, row_y + rh_s - 1, w, 1, tc.separator);
+                crate::draw::fill_rect(
+                    &data_clip,
+                    x,
+                    row_y + rh_s - 1,
+                    data_view_w,
+                    1,
+                    tc.separator,
+                );
             }
         }
 
@@ -1126,7 +1194,7 @@ impl Control for DataGrid {
 
             // Header text (clipped to column bounds)
             let text_y = y + (hdr_h as i32 - hdr_fs as i32) / 2;
-            let hdr_clip = clipped.with_clip(col_x, y, col_w_s, hdr_h);
+            let hdr_clip = header_clip.with_clip(col_x, y, col_w_s, hdr_h);
             crate::draw::draw_text_sized(
                 &hdr_clip,
                 col_x + cell_pad,
@@ -1141,17 +1209,24 @@ impl Control for DataGrid {
                 let ix = col_x + col_w_s as i32 - crate::theme::scale_i32(16);
                 let iy = y + (hdr_h as i32) / 2;
                 if self.sort_direction == SortDirection::Ascending {
-                    draw_sort_arrow_up(&clipped, ix, iy, tc.accent);
+                    draw_sort_arrow_up(&header_clip, ix, iy, tc.accent);
                 } else {
-                    draw_sort_arrow_down(&clipped, ix, iy, tc.accent);
+                    draw_sort_arrow_down(&header_clip, ix, iy, tc.accent);
                 }
             }
 
             col_x += col_w_s as i32;
             // Column separator line
-            let sep_h =
-                (hdr_h + self.row_count as u32 * crate::theme::scale(self.row_height)).min(h);
-            crate::draw::fill_rect(&clipped, col_x - 1, y, 1, sep_h, tc.separator);
+            let sep_h = (hdr_h + self.row_count as u32 * crate::theme::scale(self.row_height))
+                .min(hdr_h + data_view_h);
+            crate::draw::fill_rect(
+                &clipped.with_clip(x, y, data_view_w, sep_h),
+                col_x - 1,
+                y,
+                1,
+                sep_h,
+                tc.separator,
+            );
         }
 
         // Header bottom border
@@ -1175,10 +1250,10 @@ impl Control for DataGrid {
 
         // ── Vertical scrollbar + minimap ──
         let content_h_s = self.row_count as u32 * crate::theme::scale(self.row_height);
-        let view_h_s = h.saturating_sub(hdr_h);
+        let view_h_s = data_view_h;
         if content_h_s > view_h_s && view_h_s > 4 {
             let bar_w = crate::theme::scale(SCROLLBAR_W);
-            let bar_x = x + w as i32 - bar_w as i32 - crate::theme::scale_i32(SCROLLBAR_PAD);
+            let bar_x = x + data_view_w as i32 + crate::theme::scale_i32(SCROLLBAR_PAD);
             let track_y = y + hdr_h as i32 + crate::theme::scale_i32(SCROLLBAR_PAD);
             let track_h = (view_h_s as i32 - crate::theme::scale_i32(SCROLLBAR_PAD * 2)).max(1);
             crate::draw::fill_rect(
@@ -1231,10 +1306,11 @@ impl Control for DataGrid {
 
         // ── Horizontal scrollbar ──
         let content_w_s = crate::theme::scale(self.total_content_width());
-        let view_w_s = w;
+        let view_w_s = data_view_w;
         if content_w_s > view_w_s && view_w_s > 4 {
             let bar_h = crate::theme::scale(SCROLLBAR_W);
-            let bar_y = y + h as i32 - bar_h as i32 - crate::theme::scale_i32(SCROLLBAR_PAD);
+            let bar_y =
+                y + hdr_h as i32 + data_view_h as i32 + crate::theme::scale_i32(SCROLLBAR_PAD);
             let track_x = x + crate::theme::scale_i32(SCROLLBAR_PAD);
             let track_w = (view_w_s as i32 - crate::theme::scale_i32(SCROLLBAR_PAD * 2)).max(1);
             crate::draw::fill_rect(
@@ -1276,7 +1352,7 @@ impl Control for DataGrid {
                 let lc = self.display_order[dc];
                 conn_col_x += crate::theme::scale(self.columns[lc].width) as i32;
             }
-            let conn_clip = clipped.with_clip(conn_col_x, y + hdr_h as i32, col_w, view_h_s);
+            let conn_clip = data_clip.with_clip(conn_col_x, y + hdr_h as i32, col_w, view_h_s);
             let base_y = y + hdr_h as i32 - scroll_y_s;
             let conn_pad = crate::theme::scale_i32(2);
 
@@ -1562,7 +1638,8 @@ impl Control for DataGrid {
     fn handle_scroll(&mut self, delta: i32) -> EventResponse {
         let mods = crate::state().last_modifiers;
         if mods & 1 != 0 {
-            let max_scroll_x = (self.total_content_width() as i32 - self.base.w as i32).max(0);
+            let max_scroll_x =
+                (self.total_content_width() as i32 - self.data_viewport_width() as i32).max(0);
             let prev = self.scroll_x;
             self.scroll_x = (self.scroll_x - delta * 40).max(0).min(max_scroll_x);
             if self.scroll_x != prev {
@@ -1571,7 +1648,7 @@ impl Control for DataGrid {
             return EventResponse::CONSUMED;
         }
         let content_h = self.row_count as i32 * self.row_height as i32;
-        let viewport_h = self.base.h as i32 - self.header_height as i32;
+        let viewport_h = self.data_viewport_height() as i32;
         let max_scroll = (content_h - viewport_h).max(0);
         let prev = self.scroll_y;
         self.scroll_y = (self.scroll_y - delta * 20).max(0).min(max_scroll);

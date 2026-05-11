@@ -3703,8 +3703,7 @@ fn render_tree(
             // Logical coords for the ScrollView viewport
             let sv_x = parent_abs_x + controls[idx].base().x;
             let sv_y = parent_abs_y + controls[idx].base().y;
-            let sv_w = controls[idx].base().w;
-            let sv_h = controls[idx].base().h;
+            let (sv_w, sv_h) = crate::controls::scroll_view::viewport_size(controls, id);
             let (sx, sy) = crate::controls::scroll_view::scroll_offsets(controls, id);
             // Scale to physical for the Surface clip rect
             let p = crate::draw::scale_bounds(0, 0, sv_x, sv_y, sv_w, sv_h);

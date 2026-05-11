@@ -1117,6 +1117,10 @@ pub fn hit_test(
     // ScrollView/Expander: offset children's Y for hit-testing
     let (child_abs_x, child_abs_y) = match controls[idx].kind() {
         ControlKind::ScrollView => {
+            let (vw, vh) = crate::controls::scroll_view::viewport_size(controls, root);
+            if local_x >= vw as i32 || local_y >= vh as i32 {
+                return None;
+            }
             let (sx, sy) = crate::controls::scroll_view::scroll_offsets(controls, root);
             (abs_x - sx, abs_y - sy)
         }
@@ -1194,6 +1198,12 @@ pub fn cursor_at_point(
     // Recurse into children
     let (child_abs_x, child_abs_y) = match controls[idx].kind() {
         ControlKind::ScrollView => {
+            let local_x = px - abs_x;
+            let local_y = py - abs_y;
+            let (vw, vh) = crate::controls::scroll_view::viewport_size(controls, root);
+            if local_x >= vw as i32 || local_y >= vh as i32 {
+                return cursor;
+            }
             let (sx, sy) = crate::controls::scroll_view::scroll_offsets(controls, root);
             (abs_x - sx, abs_y - sy)
         }
@@ -1241,6 +1251,12 @@ pub fn hit_test_any(
     // ScrollView/Expander: offset children's Y
     let (child_abs_x, child_abs_y) = match controls[idx].kind() {
         ControlKind::ScrollView => {
+            let local_x = px - abs_x;
+            let local_y = py - abs_y;
+            let (vw, vh) = crate::controls::scroll_view::viewport_size(controls, root);
+            if local_x >= vw as i32 || local_y >= vh as i32 {
+                return Some(root);
+            }
             let (sx, sy) = crate::controls::scroll_view::scroll_offsets(controls, root);
             (abs_x - sx, abs_y - sy)
         }

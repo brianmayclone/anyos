@@ -29,26 +29,26 @@ pub(crate) fn diagnose_linux_binary(config: &LicoConfig, label: &str, path: &str
     let data = match fs::read_to_vec(&read_path) {
         Ok(data) => data,
         Err(_) => {
-            println!("{}: cannot read '{}'", label, path);
+            println!("[ERROR]\t{}: cannot read '{}'", label, path);
             return;
         }
     };
     let Some(info) = inspect_elf64(&data) else {
         println!(
-            "{}: '{}' is not a supported little-endian ELF64 binary",
+            "[ERROR]\t{}: '{}' is not a supported little-endian ELF64 binary",
             label, path
         );
         return;
     };
     if info.is_dyn {
         println!(
-            "{}: ELF64 ET_DYN binary; licof will use a compatibility load bias",
+            "[OK]\t{}: ELF64 ET_DYN binary; licof will use a compatibility load bias",
             label
         );
     }
     if info.entry == 0 {
         println!(
-            "{}: ELF64 entry point is 0; loader may reject this binary",
+            "[WARN]\t{}: ELF64 entry point is 0; loader may reject this binary",
             label
         );
     }
@@ -58,8 +58,8 @@ pub(crate) fn diagnose_linux_binary(config: &LicoConfig, label: &str, path: &str
         let final_path =
             resolve_rootfs_symlink_path(&rootfs, &resolved).unwrap_or_else(|| resolved.clone());
         if !(path_exists_no_follow(&resolved) || path_exists(&final_path)) {
-            println!("{}: missing PT_INTERP {}", label, interp);
-            println!("{}: expected interpreter at {}", label, resolved);
+            println!("[ERROR]\t{}: missing PT_INTERP {}", label, interp);
+            println!("[ERROR]\t{}: expected interpreter at {}", label, resolved);
             print_path_probe(label, &resolved);
             print_path_probe(
                 label,
@@ -69,13 +69,13 @@ pub(crate) fn diagnose_linux_binary(config: &LicoConfig, label: &str, path: &str
     }
     if fs::isatty(0) != 1 {
         println!(
-            "{}: stdin is not a tty; interactive Linux tools may fail",
+            "[WARN]\t{}: stdin is not a tty; interactive Linux tools may fail",
             label
         );
     }
     if fs::isatty(1) != 1 {
         println!(
-            "{}: stdout is not a tty; terminal-oriented Linux tools may fail",
+            "[WARN]\t{}: stdout is not a tty; terminal-oriented Linux tools may fail",
             label
         );
     }

@@ -8,6 +8,8 @@ const BAR_PAD: i32 = 2;
 const MIN_THUMB: i32 = 20;
 /// Corner radius for the rounded thumb.
 const THUMB_RADIUS: u32 = 4;
+/// Logical space reserved by a visible scrollbar, including its edge padding.
+const BAR_EXTENT: u32 = BAR_W + (BAR_PAD as u32 * 2);
 
 pub struct ScrollView {
     pub(crate) base: ControlBase,
@@ -45,8 +47,9 @@ impl ScrollView {
         if dy == 0 {
             return false;
         }
-        let max_scroll = if self.content_height > self.base.h {
-            (self.content_height - self.base.h) as i32
+        let (_, view_h) = self.viewport_size();
+        let max_scroll = if self.content_height > view_h {
+            (self.content_height - view_h) as i32
         } else {
             0
         };
@@ -65,8 +68,9 @@ impl ScrollView {
         if dx == 0 {
             return false;
         }
-        let max_scroll = if self.content_width > self.base.w {
-            (self.content_width - self.base.w) as i32
+        let (view_w, _) = self.viewport_size();
+        let max_scroll = if self.content_width > view_w {
+            (self.content_width - view_w) as i32
         } else {
             0
         };
@@ -85,13 +89,14 @@ impl ScrollView {
     }
 
     pub fn set_scroll_offsets(&mut self, x: i32, y: i32) -> bool {
-        let max_scroll_x = if self.content_width > self.base.w {
-            (self.content_width - self.base.w) as i32
+        let (view_w, view_h) = self.viewport_size();
+        let max_scroll_x = if self.content_width > view_w {
+            (self.content_width - view_w) as i32
         } else {
             0
         };
-        let max_scroll_y = if self.content_height > self.base.h {
-            (self.content_height - self.base.h) as i32
+        let max_scroll_y = if self.content_height > view_h {
+            (self.content_height - view_h) as i32
         } else {
             0
         };
@@ -107,9 +112,39 @@ impl ScrollView {
         true
     }
 
+    pub(crate) fn viewport_size(&self) -> (u32, u32) {
+        let mut has_v = false;
+        let mut has_h = false;
+        for _ in 0..3 {
+            let view_w = self
+                .base
+                .w
+                .saturating_sub(if has_v { BAR_EXTENT } else { 0 });
+            let view_h = self
+                .base
+                .h
+                .saturating_sub(if has_h { BAR_EXTENT } else { 0 });
+            let next_v = self.content_height > view_h && view_h > 4;
+            let next_h = self.content_width > view_w && view_w > 4;
+            if next_v == has_v && next_h == has_h {
+                return (view_w, view_h);
+            }
+            has_v = next_v;
+            has_h = next_h;
+        }
+        (
+            self.base
+                .w
+                .saturating_sub(if has_v { BAR_EXTENT } else { 0 }),
+            self.base
+                .h
+                .saturating_sub(if has_h { BAR_EXTENT } else { 0 }),
+        )
+    }
+
     /// Returns (track_h, thumb_h, max_scroll) if the scrollbar is visible.
     fn scrollbar_metrics(&self) -> Option<(i32, i32, i32)> {
-        let h = self.base.h;
+        let (_, h) = self.viewport_size();
         if self.content_height <= h || h <= 4 {
             return None;
         }
@@ -121,7 +156,7 @@ impl ScrollView {
     }
 
     fn h_scrollbar_metrics(&self) -> Option<(i32, i32, i32)> {
-        let w = self.base.w;
+        let (w, _) = self.viewport_size();
         if self.content_width <= w || w <= 4 {
             return None;
         }
@@ -200,18 +235,21 @@ impl Control for ScrollView {
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = self.base();
         let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
-        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
+        let (x, y) = (p.x, p.y);
 
         if let Some((track_h, thumb_h, max_scroll)) = self.scrollbar_metrics() {
             let tc = crate::theme::colors();
             let bar_w = crate::theme::scale(BAR_W);
             let bar_pad = crate::theme::scale_i32(BAR_PAD);
             let thumb_r = crate::theme::scale(THUMB_RADIUS);
-            let bar_x = x + w as i32 - bar_w as i32 - bar_pad;
+            let (view_w, _) = self.viewport_size();
+            let phys_view_w = crate::theme::scale(view_w);
+            let bar_x = x + phys_view_w as i32 + bar_pad;
 
             // Track
-            let track_pad_h = if h > (bar_pad as u32 * 2) {
-                h - bar_pad as u32 * 2
+            let phys_view_h = crate::theme::scale(self.viewport_size().1);
+            let track_pad_h = if phys_view_h > (bar_pad as u32 * 2) {
+                phys_view_h - bar_pad as u32 * 2
             } else {
                 1
             };
@@ -243,9 +281,12 @@ impl Control for ScrollView {
             let bar_h = crate::theme::scale(BAR_W);
             let bar_pad = crate::theme::scale_i32(BAR_PAD);
             let thumb_r = crate::theme::scale(THUMB_RADIUS);
-            let bar_y = y + h as i32 - bar_h as i32 - bar_pad;
-            let track_pad_w = if w > (bar_pad as u32 * 2) {
-                w - bar_pad as u32 * 2
+            let (_, view_h) = self.viewport_size();
+            let phys_view_h = crate::theme::scale(view_h);
+            let bar_y = y + phys_view_h as i32 + bar_pad;
+            let phys_view_w = crate::theme::scale(self.viewport_size().0);
+            let track_pad_w = if phys_view_w > (bar_pad as u32 * 2) {
+                phys_view_w - bar_pad as u32 * 2
             } else {
                 1
             };
@@ -279,8 +320,7 @@ impl Control for ScrollView {
 
     fn scrollbar_hit_x(&self) -> Option<i32> {
         if self.scrollbar_metrics().is_some() {
-            // Hit area extends 2px left of the visible track for easier targeting.
-            Some(self.base.w as i32 - BAR_W as i32 - BAR_PAD - 2)
+            Some(self.viewport_size().0 as i32)
         } else {
             None
         }
@@ -288,14 +328,15 @@ impl Control for ScrollView {
 
     fn scrollbar_hit_y(&self) -> Option<i32> {
         if self.h_scrollbar_metrics().is_some() {
-            Some(self.base.h as i32 - BAR_W as i32 - BAR_PAD - 2)
+            Some(self.viewport_size().1 as i32)
         } else {
             None
         }
     }
 
     fn is_drag_autoscroll_target(&self) -> bool {
-        self.content_height > self.base.h || self.content_width > self.base.w
+        let (view_w, view_h) = self.viewport_size();
+        self.content_height > view_h || self.content_width > view_w
     }
 
     fn drag_autoscroll(&mut self, delta_x: i32, delta_y: i32) -> bool {
@@ -304,7 +345,7 @@ impl Control for ScrollView {
 
     fn handle_mouse_down(&mut self, local_x: i32, local_y: i32, _button: u32) -> EventResponse {
         if let Some((track_w, thumb_w, max_scroll)) = self.h_scrollbar_metrics() {
-            let hit_y = self.base.h as i32 - BAR_W as i32 - BAR_PAD - 2;
+            let hit_y = self.viewport_size().1 as i32;
             if local_y >= hit_y {
                 let tx = self.thumb_x(track_w, thumb_w, max_scroll);
                 if local_x >= tx && local_x < tx + thumb_w {
@@ -320,7 +361,7 @@ impl Control for ScrollView {
             }
         }
         if let Some((track_h, thumb_h, max_scroll)) = self.scrollbar_metrics() {
-            let hit_x = self.base.w as i32 - BAR_W as i32 - BAR_PAD - 2;
+            let hit_x = self.viewport_size().0 as i32;
             if local_x >= hit_x {
                 let ty = self.thumb_y(track_h, thumb_h, max_scroll);
                 if local_y >= ty && local_y < ty + thumb_h {
@@ -368,8 +409,9 @@ impl Control for ScrollView {
     }
 
     fn handle_scroll(&mut self, delta: i32) -> EventResponse {
-        let max_scroll = if self.content_height > self.base.h {
-            (self.content_height - self.base.h) as i32
+        let (_, view_h) = self.viewport_size();
+        let max_scroll = if self.content_height > view_h {
+            (self.content_height - view_h) as i32
         } else {
             0
         };
@@ -393,6 +435,17 @@ pub fn scroll_offsets(controls: &[alloc::boxed::Box<dyn Control>], id: u32) -> (
         return (0, 0);
     };
     sv.scroll_offsets()
+}
+
+pub fn viewport_size(controls: &[alloc::boxed::Box<dyn Control>], id: u32) -> (u32, u32) {
+    let Some(idx) = crate::control::find_idx(controls, id) else {
+        return (0, 0);
+    };
+    let Some(sv) = crate::control::cast_ref::<ScrollView>(&controls[idx], ControlKind::ScrollView)
+    else {
+        return (0, 0);
+    };
+    sv.viewport_size()
 }
 
 /// Update content_height for all ScrollViews (called from event_loop after layout).
@@ -424,13 +477,14 @@ pub fn update_scroll_bounds(controls: &mut [alloc::boxed::Box<dyn Control>]) {
             };
             sv.content_width = max_right.max(0) as u32;
             sv.content_height = max_bottom.max(0) as u32;
-            let max_scroll_x = if sv.content_width > sv.base.w {
-                (sv.content_width - sv.base.w) as i32
+            let (view_w, view_h) = sv.viewport_size();
+            let max_scroll_x = if sv.content_width > view_w {
+                (sv.content_width - view_w) as i32
             } else {
                 0
             };
-            let max_scroll = if sv.content_height > sv.base.h {
-                (sv.content_height - sv.base.h) as i32
+            let max_scroll = if sv.content_height > view_h {
+                (sv.content_height - view_h) as i32
             } else {
                 0
             };

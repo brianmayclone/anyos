@@ -10,14 +10,14 @@ use alloc::vec::Vec;
 use anyos_std::{
     crypto,
     fs::{self, Read},
-    print, println, process, sys,
+    process, sys,
 };
 
 const FS_TYPE_DIRECTORY: u32 = 1;
-const PROGRESS_BAR_WIDTH: usize = 28;
 const DOWNLOAD_PROGRESS_STEP: u32 = 512 * 1024;
 
 static mut DOWNLOAD_LAST_PRINT: u32 = 0;
+static mut APT_INDEX_READY: bool = false;
 
 struct PackageLink {
     index: u32,
@@ -27,9 +27,74 @@ struct PackageLink {
     symlink: bool,
 }
 
+macro_rules! println {
+    () => {
+        anyos_std::println!()
+    };
+    ($($arg:tt)*) => {{
+        log_bootstrap_line(&alloc::format!($($arg)*));
+    }};
+}
+
+fn log_bootstrap_line(message: &str) {
+    let action = strip_log_prefix(message);
+    let level = classify_log_level(&action);
+    anyos_std::println!("[{}]\t{}", level, action);
+}
+
+fn strip_log_prefix(message: &str) -> String {
+    if let Some(rest) = message.strip_prefix("licof apt: ") {
+        return alloc::format!("apt: {}", rest);
+    }
+    if let Some(rest) = message.strip_prefix("licof pkg: ") {
+        return alloc::format!("pkg: {}", rest);
+    }
+    if let Some(rest) = message.strip_prefix("licof download: ") {
+        return alloc::format!("download: {}", rest);
+    }
+    if let Some(rest) = message.strip_prefix("licof: ") {
+        return String::from(rest);
+    }
+    String::from(message)
+}
+
+fn classify_log_level(action: &str) -> &'static str {
+    if contains_word(action, "panic") || contains_word(action, "corrupt") {
+        return "FATAL";
+    }
+    if contains_word(action, "retrying")
+        || contains_word(action, "falling back")
+        || contains_word(action, "fallback")
+        || contains_word(action, "refreshing")
+        || contains_word(action, "already scheduled")
+        || contains_word(action, "looks like HTML")
+    {
+        return "WARN";
+    }
+    if contains_word(action, "failed")
+        || contains_word(action, "cannot")
+        || contains_word(action, "missing")
+        || contains_word(action, "mismatch")
+        || contains_word(action, "unavailable")
+        || contains_word(action, "invalid")
+        || contains_word(action, "empty")
+        || contains_word(action, "not found")
+        || contains_word(action, "not satisfied")
+        || contains_word(action, "absent")
+        || contains_word(action, "did not create")
+        || contains_word(action, "no dependency")
+    {
+        return "ERROR";
+    }
+    "OK"
+}
+
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    haystack.find(needle).is_some()
+}
+
 pub(crate) struct InstallProgress {
     verbose: bool,
-    bars_active: bool,
     overall_done: u32,
     overall_total: u32,
     overall_unit: &'static str,
@@ -44,7 +109,6 @@ impl InstallProgress {
     pub(crate) fn new(verbose: bool, overall_total: u32, overall_unit: &'static str) -> Self {
         Self {
             verbose,
-            bars_active: false,
             overall_done: 0,
             overall_total,
             overall_unit,
@@ -63,7 +127,10 @@ impl InstallProgress {
     pub(crate) fn set_overall(&mut self, done: u32, total: u32) {
         self.overall_done = done;
         self.overall_total = total;
-        self.render();
+        println!(
+            "licof: overall {}/{} {}",
+            self.overall_done, self.overall_total, self.overall_unit
+        );
     }
 
     pub(crate) fn phase(&mut self, name: &str, detail: &str) {
@@ -74,7 +141,11 @@ impl InstallProgress {
         self.package_done = 0;
         self.package_total = 0;
         self.files_written = 0;
-        self.render();
+        if detail.is_empty() {
+            println!("licof: {}", name);
+        } else {
+            println!("licof: {}: {}", name, detail);
+        }
     }
 
     fn package_start(&mut self, name: &str, version: &str, total: u32) {
@@ -85,83 +156,34 @@ impl InstallProgress {
         self.package_done = 0;
         self.package_total = total;
         self.files_written = 0;
-        self.render();
+        if version.is_empty() {
+            println!("licof: unpacking {} ({} entries)", name, total);
+        } else {
+            println!("licof: unpacking {} {} ({} entries)", name, version, total);
+        }
     }
 
     fn package_file(&mut self, done: u32, files_written: u32) {
         self.package_done = done;
         self.files_written = files_written;
-        self.render();
+        if self.verbose {
+            println!(
+                "licof: package progress {}/{} entries, {} files",
+                self.package_done, self.package_total, self.files_written
+            );
+        }
     }
 
     fn package_done(&mut self, files_written: u32) {
         self.package_done = self.package_total;
         self.files_written = files_written;
-        self.render();
-    }
-
-    pub(crate) fn finish(&mut self) {
-        if self.verbose || !self.bars_active {
-            return;
-        }
-        print!("\n");
-        self.bars_active = false;
-    }
-
-    fn render(&mut self) {
-        if self.verbose {
-            return;
-        }
-        if self.bars_active {
-            print!("\x1B[2A");
-        } else {
-            self.bars_active = true;
-        }
-        print!("\r\x1B[K");
-        print_progress_line(
-            "Overall",
-            self.overall_done,
-            self.overall_total,
-            self.overall_unit,
+        println!(
+            "licof: unpacked {} {} ({} files)",
+            self.package_name, self.package_version, self.files_written
         );
-        print!("\n\r\x1B[K");
-        let mut label = String::from("Package ");
-        label.push_str(&self.package_name);
-        if !self.package_version.is_empty() {
-            label.push(' ');
-            label.push_str(&self.package_version);
-        }
-        print_progress_line(&label, self.package_done, self.package_total, "entries");
-        print!("  files {}", self.files_written);
-        print!("\n");
     }
-}
 
-fn print_progress_line(label: &str, done: u32, total: u32, unit: &str) {
-    let pct = if total == 0 {
-        0
-    } else {
-        done.saturating_mul(100).min(total.saturating_mul(100)) / total
-    };
-    print!("{:<32} {:>3}%[", label, pct);
-    let filled = if total == 0 {
-        0
-    } else {
-        (done as usize)
-            .saturating_mul(PROGRESS_BAR_WIDTH)
-            .min(total as usize * PROGRESS_BAR_WIDTH)
-            / total as usize
-    };
-    for i in 0..PROGRESS_BAR_WIDTH {
-        if i < filled {
-            print!("=");
-        } else if i == filled && done < total {
-            print!(">");
-        } else {
-            print!(" ");
-        }
-    }
-    print!("] {}/{} {}", done, total, unit);
+    pub(crate) fn finish(&mut self) {}
 }
 
 pub(crate) fn install_package(
@@ -262,6 +284,7 @@ fn install_package_inner(
     }
     if fs::stat(&deb_path, &mut [0u32; 7]) != 0 {
         let url = alloc::format!("{}/{}", config.apt_base, info.filename);
+        ensure_dir_recursive(&config.cache);
         if !download_verified_package(config, &info, &url, &deb_path, progress) {
             pending.pop();
             return false;
@@ -355,26 +378,53 @@ fn dependency_pending(pkg: &str, pending: &[String]) -> bool {
     pending.iter().any(|p| p == pkg)
 }
 
+fn apt_index_ready() -> bool {
+    unsafe { APT_INDEX_READY }
+}
+
+fn set_apt_index_ready() {
+    unsafe {
+        APT_INDEX_READY = true;
+    }
+}
+
 fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool {
+    if apt_index_ready() {
+        progress.phase("apt index", "using verified cache");
+        return true;
+    }
+
     progress.phase("apt index", "initializing libzip");
     if !libzip_client::init() {
         progress.finish();
         println!("licof apt: libzip unavailable");
         return false;
     }
-    ensure_dir(&config.cache);
+    ensure_dir_recursive(&config.cache);
     let packages_gz = config.package_index_gz();
     let packages_txt = config.package_index_txt();
     progress.phase("apt index", "checking cache");
     if file_size(&packages_txt) > 0 {
+        println!(
+            "licof apt: cached package index: {} ({} bytes)",
+            packages_txt,
+            file_size(&packages_txt)
+        );
+        println!("licof apt: cached package index: checking header");
+        if looks_like_plain_packages_index(&packages_txt) {
+            println!(
+                "licof apt: cached package index: checking {} required packages",
+                config.index_required_packages.len()
+            );
+        }
         if looks_like_plain_packages_index(&packages_txt)
             && packages_index_has_required_entries(config)
         {
+            set_apt_index_ready();
+            println!("licof apt: cached package index: ok");
             return true;
         }
-        if progress.verbose() {
-            println!("licof apt: cached package index is invalid; refreshing");
-        }
+        println!("licof apt: cached package index is invalid; refreshing");
         let _ = fs::unlink(&packages_txt);
     }
     let url = config.package_index_url();
@@ -465,9 +515,8 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
             println!("licof apt: decompressed package index is missing bootstrap entries");
             continue;
         }
-        if progress.verbose() {
-            println!("licof apt: package index ready ({} bytes)", unpacked);
-        }
+        set_apt_index_ready();
+        println!("licof apt: package index ready ({} bytes)", unpacked);
         return true;
     }
 
@@ -1380,58 +1429,68 @@ fn gzip_status_text(status: u32) -> &'static str {
 }
 
 fn download_url(config: &LicoConfig, url: &str, dest: &str) -> bool {
-    if libhttp_client::init() {
-        let mut last_error = String::new();
-        for attempt in 1..=config.download_attempts {
-            let _ = fs::unlink(dest);
-            reset_download_progress();
-            let started = sys::uptime_ms();
-            println!(
-                "licof download: libhttp GET attempt {}/{} -> {}",
-                attempt, config.download_attempts, dest
-            );
-            println!("licof download: url {}", url);
-            if !libhttp_client::download_progress(url, dest, download_progress, 0) {
-                print!("\n");
-                last_error = alloc::format!(
-                    "libhttp failed with status {} error {}",
-                    libhttp_client::last_status(),
-                    libhttp_client::last_error()
-                );
-                continue;
-            }
-            if file_size(dest) == 0 {
-                print!("\n");
-                last_error = alloc::format!("libhttp produced an empty file: {}", dest);
-                continue;
-            }
-            let ms = sys::uptime_ms().wrapping_sub(started);
-            println!(
-                "\nlicof download: received {} bytes in {} ms",
-                file_size(dest),
-                ms
-            );
-            return true;
-        }
-        if last_error.is_empty() {
-            last_error.push_str("libhttp download failed");
-        }
-        println!(
-            "licof download: failed after {} attempts: {}",
-            config.download_attempts, last_error
-        );
+    if path_exists(&config.wget) {
+        return download_url_with_wget(config, url, dest);
+    }
+
+    println!(
+        "licof download: wget not found at {}; falling back to libhttp",
+        config.wget
+    );
+    download_url_with_libhttp(config, url, dest)
+}
+
+fn download_url_with_libhttp(config: &LicoConfig, url: &str, dest: &str) -> bool {
+    if !libhttp_client::init() {
+        println!("licof download: libhttp unavailable");
         return false;
     }
 
-    println!("licof download: libhttp unavailable; falling back to wget");
-    if !path_exists(&config.wget) {
-        println!("licof download: wget not found at {}", config.wget);
-        return false;
-    }
     let mut last_error = String::new();
     for attempt in 1..=config.download_attempts {
         let _ = fs::unlink(dest);
-        let args = alloc::format!("-q -O {} {}", dest, url);
+        reset_download_progress();
+        let started = sys::uptime_ms();
+        println!(
+            "licof download: libhttp GET attempt {}/{} -> {}",
+            attempt, config.download_attempts, dest
+        );
+        println!("licof download: url {}", url);
+        if !libhttp_client::download_progress(url, dest, download_progress, 0) {
+            last_error = alloc::format!(
+                "libhttp failed with status {} error {}",
+                libhttp_client::last_status(),
+                libhttp_client::last_error()
+            );
+            continue;
+        }
+        if file_size(dest) == 0 {
+            last_error = alloc::format!("libhttp produced an empty file: {}", dest);
+            continue;
+        }
+        let ms = sys::uptime_ms().wrapping_sub(started);
+        println!(
+            "licof download: received {} bytes in {} ms",
+            file_size(dest),
+            ms
+        );
+        return true;
+    }
+    if last_error.is_empty() {
+        last_error.push_str("libhttp download failed");
+    }
+    println!(
+        "licof download: failed after {} attempts: {}",
+        config.download_attempts, last_error
+    );
+    false
+}
+
+fn download_url_with_wget(config: &LicoConfig, url: &str, dest: &str) -> bool {
+    let mut last_error = String::new();
+    for attempt in 1..=config.download_attempts {
+        let _ = fs::unlink(dest);
+        let args = alloc::format!("wget -q -O {} {}", dest, url);
         let started = sys::uptime_ms();
         println!(
             "licof download: wget attempt {}/{} -> {}",
@@ -1457,6 +1516,10 @@ fn download_url(config: &LicoConfig, url: &str, dest: &str) -> bool {
             last_error = alloc::format!("wget exited with status {}", code);
             continue;
         }
+        if !path_exists(dest) {
+            last_error = alloc::format!("wget did not create file: {}", dest);
+            continue;
+        }
         if file_size(dest) == 0 {
             last_error = alloc::format!("wget produced an empty file: {}", dest);
             continue;
@@ -1476,7 +1539,8 @@ fn download_url(config: &LicoConfig, url: &str, dest: &str) -> bool {
         "licof download: failed after {} attempts: {}",
         config.download_attempts, last_error
     );
-    false
+    println!("licof download: falling back to libhttp");
+    download_url_with_libhttp(config, url, dest)
 }
 
 extern "C" fn download_progress(received: u32, total: u32, _userdata: u64) {
@@ -1493,9 +1557,9 @@ extern "C" fn download_progress(received: u32, total: u32, _userdata: u64) {
     };
     if should_print {
         if total > 0 {
-            print!("\rlicof download: {} / {} bytes", received, total);
+            println!("licof download: {} / {} bytes", received, total);
         } else {
-            print!("\rlicof download: {} bytes", received);
+            println!("licof download: {} bytes", received);
         }
     }
 }
@@ -1508,12 +1572,8 @@ fn reset_download_progress() {
 
 fn packages_index_has_required_entries(config: &LicoConfig) -> bool {
     let packages_txt = config.package_index_txt();
-    let mut missing = Vec::new();
-    for pkg in &config.index_required_packages {
-        if !package_name_present(&packages_txt, pkg) {
-            missing.push(pkg.clone());
-        }
-    }
+    let mut missing =
+        missing_required_package_names(&packages_txt, &config.index_required_packages);
     if missing.is_empty() {
         return true;
     }
@@ -1533,6 +1593,77 @@ fn packages_index_has_required_entries(config: &LicoConfig) -> bool {
         return false;
     }
     true
+}
+
+fn missing_required_package_names(path: &str, required: &[String]) -> Vec<String> {
+    let mut found = Vec::new();
+    for _ in required {
+        found.push(false);
+    }
+
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return clone_package_names(required),
+    };
+    let mut chunk = [0u8; 4096];
+    let mut para = Vec::with_capacity(1024);
+    let mut newline_run = 0usize;
+
+    loop {
+        let n = match file.read(&mut chunk) {
+            Ok(n) => n,
+            Err(_) => return clone_package_names(required),
+        };
+        if n == 0 {
+            break;
+        }
+        for &b in &chunk[..n] {
+            para.push(b);
+            if b == b'\n' {
+                newline_run += 1;
+                if newline_run >= 2 {
+                    mark_required_package(&para, required, &mut found);
+                    para.clear();
+                    newline_run = 0;
+                }
+            } else if b != b'\r' {
+                newline_run = 0;
+            }
+        }
+    }
+    if !para.is_empty() {
+        mark_required_package(&para, required, &mut found);
+    }
+
+    let mut missing = Vec::new();
+    for (idx, pkg) in required.iter().enumerate() {
+        if !found.get(idx).copied().unwrap_or(false) {
+            missing.push(pkg.clone());
+        }
+    }
+    missing
+}
+
+fn clone_package_names(packages: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for pkg in packages {
+        out.push(pkg.clone());
+    }
+    out
+}
+
+fn mark_required_package(para: &[u8], required: &[String], found: &mut [bool]) {
+    let Some(package) = field_value(para, b"Package") else {
+        return;
+    };
+    for (idx, wanted) in required.iter().enumerate() {
+        if !found.get(idx).copied().unwrap_or(false) && &package == wanted {
+            if let Some(slot) = found.get_mut(idx) {
+                *slot = true;
+            }
+            return;
+        }
+    }
 }
 
 fn read_compressed_package_index(config: &LicoConfig) -> Option<Vec<u8>> {

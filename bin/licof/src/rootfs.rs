@@ -10,10 +10,10 @@ const FS_TYPE_REGULAR: u32 = 0;
 const FS_TYPE_DIRECTORY: u32 = 1;
 
 pub(crate) fn ensure_rootfs_layout(config: &LicoConfig) {
-    ensure_dir(&config.root);
-    ensure_dir(&config.cache);
-    ensure_dir(&config.db);
-    ensure_dir(&config.installed_db);
+    ensure_dir_recursive(&config.root);
+    ensure_dir_recursive(&config.cache);
+    ensure_dir_recursive(&config.db);
+    ensure_dir_recursive(&config.installed_db);
 
     let rootfs = &config.rootfs;
     ensure_dir(rootfs);
@@ -165,17 +165,17 @@ pub(crate) fn print_path_probe(prefix: &str, path: &str) {
         };
         if link.is_empty() {
             println!(
-                "{}: path {} exists kind={} size={}",
+                "[OK]\t{}: path {} exists kind={} size={}",
                 prefix, path, kind, stat_buf[1]
             );
         } else {
             println!(
-                "{}: path {} exists kind={} symlink->{}",
+                "[OK]\t{}: path {} exists kind={} symlink->{}",
                 prefix, path, kind, link
             );
         }
     } else {
-        println!("{}: path {} missing", prefix, path);
+        println!("[ERROR]\t{}: path {} missing", prefix, path);
     }
 }
 
@@ -338,7 +338,10 @@ fn repair_symlink(dest: &str, target: &str, label: &str) {
     }
     let _ = fs::unlink(dest);
     if fs::symlink(target, dest) == 0 {
-        println!("licof repair: repaired {} {} -> {}", label, dest, target);
+        println!(
+            "[OK]\tlicof repair: repaired {} {} -> {}",
+            label, dest, target
+        );
     }
 }
 
