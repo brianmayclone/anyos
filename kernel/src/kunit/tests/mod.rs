@@ -1,4 +1,5 @@
 pub mod alloc_tests;
+pub mod blockcache_tests;
 pub mod buddy_tests;
 pub mod capabilities_tests;
 pub mod crypto_tests;

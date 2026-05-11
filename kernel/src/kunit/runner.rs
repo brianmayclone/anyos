@@ -13,6 +13,7 @@ use super::{TestContext, TestSuite};
 
 static UNIT_SUITES: &[&TestSuite] = &[
     &super::tests::alloc_tests::SUITE,
+    &super::tests::blockcache_tests::SUITE,
     &super::tests::sync_tests::SUITE,
     &super::tests::net_tests::SUITE,
     &super::tests::net_types_tests::SUITE,

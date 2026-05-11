@@ -100,8 +100,7 @@ impl BlockCache {
             let idx = (h + probe) & (HASH_SIZE - 1);
             let slot_idx = self.hash_table[idx];
             if slot_idx == EMPTY {
-                self.misses += 1;
-                return false;
+                continue;
             }
             let si = slot_idx as usize;
             if si < self.slots.len() && self.slots[si].key == key {
@@ -175,11 +174,15 @@ impl BlockCache {
 
         // Check if already cached — update in place
         let h = Self::hash(key);
+        let mut first_empty = EMPTY;
         for probe in 0..MAX_PROBES {
             let idx = (h + probe) & (HASH_SIZE - 1);
             let slot_idx = self.hash_table[idx];
             if slot_idx == EMPTY {
-                break;
+                if first_empty == EMPTY {
+                    first_empty = idx as u16;
+                }
+                continue;
             }
             let si = slot_idx as usize;
             if si < self.slots.len() && self.slots[si].key == key {
@@ -187,6 +190,18 @@ impl BlockCache {
                 self.slots[si].data[..n].copy_from_slice(&data[..n]);
                 self.tick = self.tick.wrapping_add(1);
                 self.slots[si].tick = self.tick;
+                return;
+            }
+        }
+        // A previous invalidation can leave holes inside the probe window.
+        // Do a full slot scan before allocating a victim so an existing
+        // collided entry is updated in place instead of duplicated.
+        for i in 0..self.slots.len() {
+            if self.slots[i].key == key {
+                let n = data.len().min(512);
+                self.slots[i].data[..n].copy_from_slice(&data[..n]);
+                self.tick = self.tick.wrapping_add(1);
+                self.slots[i].tick = self.tick;
                 return;
             }
         }
@@ -237,7 +252,11 @@ impl BlockCache {
         self.slots[victim].tick = self.tick;
 
         // Insert into hash table
-        self.insert_hash(key, victim as u16);
+        if first_empty != EMPTY {
+            self.hash_table[first_empty as usize] = victim as u16;
+        } else {
+            self.insert_hash(key, victim as u16);
+        }
     }
 
     /// Insert multiple consecutive sectors from a buffer.
@@ -263,7 +282,7 @@ impl BlockCache {
             let idx = (h + probe) & (HASH_SIZE - 1);
             let slot_idx = self.hash_table[idx];
             if slot_idx == EMPTY {
-                break;
+                continue;
             }
             let si = slot_idx as usize;
             if si < self.slots.len() && self.slots[si].key == key {
@@ -291,7 +310,7 @@ impl BlockCache {
             let idx = (h + probe) & (HASH_SIZE - 1);
             let slot_idx = self.hash_table[idx];
             if slot_idx == EMPTY {
-                return;
+                continue;
             }
             let si = slot_idx as usize;
             if si < self.slots.len() && self.slots[si].key == key {
@@ -368,7 +387,7 @@ impl BlockCache {
             let idx = (h + probe) & (HASH_SIZE - 1);
             let slot_idx = self.hash_table[idx];
             if slot_idx == EMPTY {
-                return;
+                continue;
             }
             let si = slot_idx as usize;
             if si < self.slots.len() && self.slots[si].key == key {
@@ -407,9 +426,6 @@ impl BlockCache {
             let idx = (h + probe) & (HASH_SIZE - 1);
             if self.hash_table[idx] == slot_idx as u16 {
                 self.hash_table[idx] = EMPTY;
-                return;
-            }
-            if self.hash_table[idx] == EMPTY {
                 return;
             }
         }
