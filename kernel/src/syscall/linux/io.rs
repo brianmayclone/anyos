@@ -295,7 +295,7 @@ fn select_fd_clear(set_ptr: u64, fd: u64) {
     }
 }
 
-pub(super) fn linux_poll(fds_ptr: u64, nfds: u64, _timeout: u64) -> u64 {
+pub(super) fn linux_poll(fds_ptr: u64, nfds: u64, timeout: u64) -> u64 {
     if nfds == 0 {
         return 0;
     }
@@ -308,6 +308,32 @@ pub(super) fn linux_poll(fds_ptr: u64, nfds: u64, _timeout: u64) -> u64 {
     if !handlers::helpers::is_user_range_accessible(fds_ptr, fds_bytes) {
         return linux_err(EFAULT);
     }
+
+    let timeout_ms = timeout as i32;
+    let start = crate::arch::hal::timer_current_ticks();
+    let timeout_ticks = if timeout_ms < 0 {
+        None
+    } else {
+        Some(ms_to_ticks(timeout_ms as u64))
+    };
+
+    loop {
+        crate::net::poll();
+        let ready = linux_poll_once(fds_ptr, nfds);
+        if ready != 0 || timeout_ticks == Some(0) {
+            return ready;
+        }
+        if let Some(limit) = timeout_ticks {
+            let now = crate::arch::hal::timer_current_ticks();
+            if now.wrapping_sub(start) >= limit {
+                return 0;
+            }
+        }
+        crate::net::wait_for_poll_progress();
+    }
+}
+
+fn linux_poll_once(fds_ptr: u64, nfds: u64) -> u64 {
     let mut ready = 0u64;
     for i in 0..nfds {
         let base = fds_ptr + i * 8;
@@ -336,6 +362,15 @@ pub(super) fn linux_poll(fds_ptr: u64, nfds: u64, _timeout: u64) -> u64 {
         }
     }
     ready
+}
+
+fn ms_to_ticks(ms: u64) -> u32 {
+    if ms == 0 {
+        return 0;
+    }
+    let hz = crate::arch::hal::timer_frequency_hz().max(1) as u128;
+    let ticks = (ms as u128).saturating_mul(hz).saturating_add(999) / 1000;
+    ticks.clamp(1, u32::MAX as u128) as u32
 }
 
 pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {

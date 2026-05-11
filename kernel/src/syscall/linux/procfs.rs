@@ -62,6 +62,7 @@ pub(super) fn linux_proc_file_id(path: &str) -> Option<u8> {
     match path {
         "/proc/filesystems" => Some(LINUX_PROC_FILESYSTEMS),
         "/proc/mounts" | "/proc/self/mounts" => Some(LINUX_PROC_MOUNTS),
+        "/proc/self/mountinfo" => Some(LINUX_PROC_MOUNTINFO),
         "/proc/self/loginuid" => Some(LINUX_PROC_LOGINUID),
         "/proc/self/status" => Some(LINUX_PROC_STATUS),
         _ => None,
@@ -75,6 +76,9 @@ pub(super) fn linux_proc_content(file: u8) -> &'static [u8] {
         }
         LINUX_PROC_MOUNTS => {
             b"rootfs / rootfs rw 0 0\nproc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"
+        }
+        LINUX_PROC_MOUNTINFO => {
+            b"1 0 0:1 / / rw,relatime - rootfs rootfs rw\n2 1 0:2 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n"
         }
         LINUX_PROC_LOGINUID => b"4294967295\n",
         LINUX_PROC_STATUS => b"Name:\tlicof\nState:\tR (running)\nTgid:\t1\nPid:\t1\nPPid:\t0\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n",

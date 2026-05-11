@@ -220,6 +220,7 @@ const LINUX_PROC_FILESYSTEMS: u8 = 1;
 const LINUX_PROC_MOUNTS: u8 = 2;
 const LINUX_PROC_LOGINUID: u8 = 3;
 const LINUX_PROC_STATUS: u8 = 4;
+const LINUX_PROC_MOUNTINFO: u8 = 5;
 
 #[inline]
 fn linux_i32_arg(value: u64) -> i32 {

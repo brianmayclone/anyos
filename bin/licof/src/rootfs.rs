@@ -67,6 +67,12 @@ fn ensure_linux_account_files(rootfs: &str) {
 fn ensure_linux_network_files(rootfs: &str) {
     ensure_rootfs_file(
         rootfs,
+        "/etc/mtab",
+        b"rootfs / rootfs rw 0 0\nproc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n",
+        0o644,
+    );
+    ensure_rootfs_file(
+        rootfs,
         "/etc/hosts",
         b"127.0.0.1\tlocalhost localhost.localdomain\n::1\tlocalhost ip6-localhost ip6-loopback\n",
         0o644,
