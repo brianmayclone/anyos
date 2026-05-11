@@ -489,9 +489,7 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
                     downloaded
                 );
                 print_gzip_diagnostic(&packages_gz, downloaded);
-                if !download_plain_package_index(config, &packages_txt, progress) {
-                    continue;
-                }
+                continue;
             }
         }
 
@@ -521,53 +519,6 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
     }
 
     let _ = fs::unlink(&packages_txt);
-    false
-}
-
-fn download_plain_package_index(
-    config: &LicoConfig,
-    packages_txt: &str,
-    progress: &mut InstallProgress,
-) -> bool {
-    let url = config.package_index_plain_url();
-    for attempt in 1..=config.download_attempts {
-        let _ = fs::unlink(packages_txt);
-        progress.phase(
-            "apt index plain",
-            &alloc::format!("attempt {}/{}", attempt, config.download_attempts),
-        );
-        if progress.verbose() {
-            println!(
-                "licof apt: fetching uncompressed package index (attempt {}/{})",
-                attempt, config.download_attempts
-            );
-        }
-        progress.finish();
-        if !download_url(config, &url, packages_txt) {
-            progress.finish();
-            println!("licof apt: failed to download {}", url);
-            continue;
-        }
-        let downloaded = file_size(packages_txt);
-        if downloaded == 0 {
-            progress.finish();
-            println!("licof apt: uncompressed package index is empty");
-            continue;
-        }
-        if looks_like_plain_packages_index(packages_txt) {
-            progress.finish();
-            println!(
-                "licof apt: using uncompressed package index fallback ({} bytes)",
-                downloaded
-            );
-            return true;
-        }
-        progress.finish();
-        println!(
-            "licof apt: uncompressed package index is not a Packages file ({} bytes)",
-            downloaded
-        );
-    }
     false
 }
 
@@ -1534,11 +1485,15 @@ fn download_url_with_libhttp(config: &LicoConfig, url: &str, dest: &str) -> bool
         );
         println!("licof download: url {}", url);
         if !libhttp_client::download_progress(url, dest, download_progress, 0) {
+            let status = libhttp_client::last_status();
             last_error = alloc::format!(
                 "libhttp failed with status {} error {}",
-                libhttp_client::last_status(),
+                status,
                 libhttp_client::last_error()
             );
+            if is_permanent_http_status(status) {
+                break;
+            }
             continue;
         }
         if file_size(dest) == 0 {
@@ -1565,6 +1520,7 @@ fn download_url_with_libhttp(config: &LicoConfig, url: &str, dest: &str) -> bool
 
 fn download_url_with_wget(config: &LicoConfig, url: &str, dest: &str) -> bool {
     let mut last_error = String::new();
+    let mut permanent_http_error = false;
     for attempt in 1..=config.download_attempts {
         let _ = fs::unlink(dest);
         let args = alloc::format!("wget -q -O {} {}", dest, url);
@@ -1591,6 +1547,10 @@ fn download_url_with_wget(config: &LicoConfig, url: &str, dest: &str) -> bool {
         }
         if code != 0 {
             last_error = alloc::format!("wget exited with status {}", code);
+            if code == 8 {
+                permanent_http_error = true;
+                break;
+            }
             continue;
         }
         if !path_exists(dest) {
@@ -1616,8 +1576,15 @@ fn download_url_with_wget(config: &LicoConfig, url: &str, dest: &str) -> bool {
         "licof download: failed after {} attempts: {}",
         config.download_attempts, last_error
     );
+    if permanent_http_error {
+        return false;
+    }
     println!("licof download: falling back to libhttp");
     download_url_with_libhttp(config, url, dest)
+}
+
+fn is_permanent_http_status(status: u32) -> bool {
+    (400..500).contains(&status) && status != 408 && status != 429
 }
 
 extern "C" fn download_progress(received: u32, total: u32, _userdata: u64) {

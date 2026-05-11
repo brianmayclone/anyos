@@ -141,16 +141,6 @@ impl LicoConfig {
         )
     }
 
-    pub fn package_index_plain_url(&self) -> String {
-        alloc::format!(
-            "{}/dists/{}/{}/binary-{}/Packages",
-            self.apt_base,
-            self.apt_dist,
-            self.apt_component,
-            self.apt_arch
-        )
-    }
-
     fn read_confd_strings(&mut self) {
         read_confd_string("paths/root", &mut self.root);
         read_confd_string("paths/rootfs", &mut self.rootfs);

@@ -726,7 +726,7 @@ fn print_version() {
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
-fn main() {
+fn main() -> u32 {
     let mut args_buf = [0u8; 256];
     let raw = anyos_std::process::args(&mut args_buf).trim();
     let parsed = args::parse(raw, b"O");
@@ -736,11 +736,11 @@ fn main() {
         match parsed.positional[i] {
             "--help" => {
                 print_usage();
-                return;
+                return 0;
             }
             "--version" => {
                 print_version();
-                return;
+                return 0;
             }
             _ => {}
         }
@@ -748,11 +748,11 @@ fn main() {
 
     if parsed.has(b'h') {
         print_usage();
-        return;
+        return 0;
     }
     if parsed.has(b'V') {
         print_version();
-        return;
+        return 0;
     }
 
     let quiet = parsed.has(b'q');
@@ -764,7 +764,7 @@ fn main() {
     if url_str.is_empty() {
         println!("wget: missing URL");
         println!("Usage: wget [OPTION]... [URL]...");
-        return;
+        return 1;
     }
 
     // Parse the initial URL
@@ -772,7 +772,7 @@ fn main() {
         Some(u) => u,
         None => {
             println!("wget: invalid URL '{}'", url_str);
-            return;
+            return 1;
         }
     };
 
@@ -842,7 +842,7 @@ fn main() {
                     "wget: unable to resolve host address '{}'",
                     current_url.host
                 );
-                return;
+                return 4;
             }
         };
 
@@ -870,7 +870,7 @@ fn main() {
                     "wget: unable to connect to {}:{}",
                     current_url.host, current_url.port
                 );
-                return;
+                return 4;
             }
         };
         if !quiet {
@@ -891,7 +891,7 @@ fn main() {
                 }
                 println!("wget: HTTP request too large");
                 conn.close();
-                return;
+                return 1;
             }
         };
         if !quiet {
@@ -903,7 +903,7 @@ fn main() {
                 println!("failed.");
             }
             conn.close();
-            return;
+            return 4;
         }
 
         // Receive headers
@@ -917,7 +917,7 @@ fn main() {
                     println!("no data received.");
                 }
                 conn.close();
-                return;
+                return 4;
             }
             response.extend_from_slice(&recv_buf[..n as usize]);
             if let Some(end) = find_header_end(&response) {
@@ -929,7 +929,7 @@ fn main() {
                     println!("headers too large.");
                 }
                 conn.close();
-                return;
+                return 4;
             }
         }
 
@@ -955,7 +955,7 @@ fn main() {
                         Some(u) => u,
                         None => {
                             println!("wget: invalid redirect URL");
-                            return;
+                            return 1;
                         }
                     };
                 } else {
@@ -964,7 +964,7 @@ fn main() {
                 continue;
             } else {
                 println!("wget: redirect with no Location header");
-                return;
+                return 8;
             }
         }
 
@@ -973,7 +973,7 @@ fn main() {
             let ts = fmt_timestamp();
             println!("{} ERROR {}: {}.", ts, status, reason);
             conn.close();
-            return;
+            return 8;
         }
 
         // Handle 206 Partial Content for resume
@@ -1023,7 +1023,7 @@ fn main() {
             if f == u32::MAX {
                 println!("wget: cannot open '{}' for appending", out_filename);
                 conn.close();
-                return;
+                return 3;
             }
             f
         } else {
@@ -1031,7 +1031,7 @@ fn main() {
             if f == u32::MAX {
                 println!("wget: cannot open '{}' for writing", out_filename);
                 conn.close();
-                return;
+                return 3;
             }
             f
         };
@@ -1240,7 +1240,7 @@ fn main() {
                 received + existing_size,
                 total_size.unwrap_or(0)
             );
-            process::exit(1);
+            return 4;
         }
 
         // Summary line
@@ -1271,9 +1271,10 @@ fn main() {
             }
         }
 
-        return; // Done!
+        return 0; // Done!
     }
 
     // Exceeded max redirects
     println!("wget: maximum {} redirects exceeded", MAX_REDIRECTS);
+    8
 }
