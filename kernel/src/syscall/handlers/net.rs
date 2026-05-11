@@ -420,6 +420,27 @@ pub fn sys_tcp_accept(listener_id: u32, result_ptr: u64) -> u32 {
     0
 }
 
+/// sys_tcp_accept_v6 - Accept an IPv6 connection from a listening socket.
+/// arg1=listener_id, arg2=result_ptr (24 bytes: [socket_id:u32, ip:[u8;16], port:u16, pad:u16])
+pub fn sys_tcp_accept_v6(listener_id: u32, result_ptr: u64) -> u32 {
+    if result_ptr == 0 {
+        return u32::MAX;
+    }
+    let pit_hz = crate::arch::hal::timer_frequency_hz() as u32;
+    let timeout_ticks = 30 * pit_hz;
+    let (sock_id, remote_ip, remote_port) = crate::net::tcp::accept_v6(listener_id, timeout_ticks);
+    if sock_id == u32::MAX {
+        return u32::MAX - 1;
+    }
+    let result = unsafe { core::slice::from_raw_parts_mut(result_ptr as *mut u8, 24) };
+    result[0..4].copy_from_slice(&sock_id.to_le_bytes());
+    result[4..20].copy_from_slice(remote_ip.as_bytes());
+    result[20..22].copy_from_slice(&remote_port.to_le_bytes());
+    result[22] = 0;
+    result[23] = 0;
+    0
+}
+
 /// sys_tcp_accept_nowait - Non-blocking accept: returns immediately.
 /// arg1=listener_id, arg2=result_ptr (12 bytes, same as sys_tcp_accept)
 /// Returns 0 if a connection was accepted, u32::MAX if none pending.
@@ -576,14 +597,94 @@ pub fn sys_udp_recvfrom(port: u32, buf_ptr: u64, buf_len: u32) -> u32 {
             let buf =
                 unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
 
-            // Header: src_ip (4 bytes)
-            buf[0..4].copy_from_slice(&d.src_ip.0);
+            // Header: src_ip (4 bytes). IPv6 datagrams are available via
+            // SYS_UDP_RECVFROM_V6; keep the legacy ABI IPv4-shaped.
+            match d.src_ip {
+                crate::net::types::IpAddr::V4(ip) => buf[0..4].copy_from_slice(&ip.0),
+                crate::net::types::IpAddr::V6(_) => buf[0..4].copy_from_slice(&[0; 4]),
+            }
             // Header: src_port (u16 LE)
             buf[4..6].copy_from_slice(&d.src_port.to_le_bytes());
             // Header: payload_len (u16 LE)
             buf[6..8].copy_from_slice(&(payload_len as u16).to_le_bytes());
             // Payload
             buf[8..8 + payload_len].copy_from_slice(&d.data[..payload_len]);
+
+            crate::task::scheduler::record_net_rx(payload_len as u64);
+            total as u32
+        }
+        None => 0,
+    }
+}
+
+/// sys_udp_sendto_v6 - Send a UDP datagram over IPv6.
+/// arg1=params_ptr: [dst_ip:16, dst_port:u16, src_port:u16, data_ptr:u32, data_len:u32] = 28 bytes
+/// Returns bytes sent or u32::MAX on error.
+pub fn sys_udp_sendto_v6(params_ptr: u64) -> u32 {
+    if params_ptr == 0 {
+        return u32::MAX;
+    }
+    let params = unsafe { core::slice::from_raw_parts(params_ptr as *const u8, 28) };
+
+    let mut dst = [0u8; 16];
+    dst.copy_from_slice(&params[0..16]);
+    let dst_port = u16::from_le_bytes([params[16], params[17]]);
+    let src_port = u16::from_le_bytes([params[18], params[19]]);
+    let data_ptr = u32::from_le_bytes([params[20], params[21], params[22], params[23]]);
+    let data_len = u32::from_le_bytes([params[24], params[25], params[26], params[27]]);
+
+    if data_ptr == 0 || data_len == 0 {
+        return 0;
+    }
+    if data_len > 1452 {
+        return u32::MAX;
+    }
+
+    let data = unsafe { core::slice::from_raw_parts(data_ptr as *const u8, data_len as usize) };
+    if crate::net::udp::send_v6(crate::net::types::Ipv6Addr(dst), src_port, dst_port, data) {
+        crate::task::scheduler::record_net_tx(data_len as u64);
+        data_len
+    } else {
+        u32::MAX
+    }
+}
+
+/// sys_udp_recvfrom_v6 - Receive a UDP datagram on a bound port.
+/// Writes [src_ip:16, src_port:u16, payload_len:u16] then payload.
+pub fn sys_udp_recvfrom_v6(port: u32, buf_ptr: u64, buf_len: u32) -> u32 {
+    if port == 0 || port > 65535 || buf_ptr == 0 || buf_len < 20 {
+        return u32::MAX;
+    }
+
+    let port16 = port as u16;
+    let timeout_ms = crate::net::udp::get_timeout_ms(port16);
+    let dgram = if timeout_ms == 0 {
+        crate::net::poll();
+        crate::net::udp::recv(port16)
+    } else {
+        let timeout_ticks = timeout_ms * crate::arch::hal::timer_frequency_hz() as u32 / 1000;
+        crate::net::udp::recv_timeout(port16, if timeout_ticks == 0 { 1 } else { timeout_ticks })
+    };
+
+    match dgram {
+        Some(d) => {
+            let payload_len = d.data.len().min((buf_len as usize).saturating_sub(20));
+            let total = 20 + payload_len;
+            let buf =
+                unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
+
+            match d.src_ip {
+                crate::net::types::IpAddr::V6(ip) => buf[0..16].copy_from_slice(&ip.0),
+                crate::net::types::IpAddr::V4(ip) => {
+                    buf[0..10].fill(0);
+                    buf[10] = 0xff;
+                    buf[11] = 0xff;
+                    buf[12..16].copy_from_slice(&ip.0);
+                }
+            }
+            buf[16..18].copy_from_slice(&d.src_port.to_le_bytes());
+            buf[18..20].copy_from_slice(&(payload_len as u16).to_le_bytes());
+            buf[20..20 + payload_len].copy_from_slice(&d.data[..payload_len]);
 
             crate::task::scheduler::record_net_rx(payload_len as u64);
             total as u32

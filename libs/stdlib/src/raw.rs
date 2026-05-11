@@ -185,6 +185,12 @@ pub(crate) const SYS_UDP_SET_OPT: u32 = 154;
 pub(crate) const SYS_UDP_LIST: u32 = 155;
 pub(crate) const SYS_NET_STATS: u32 = 156;
 pub(crate) const SYS_WIFI: u32 = 158;
+pub(crate) const SYS_NET_PING6: u32 = 159;
+pub(crate) const SYS_NET_DNS6: u32 = 160;
+pub(crate) const SYS_UDP_SENDTO_V6: u32 = 162;
+pub(crate) const SYS_TCP_CONNECT_V6: u32 = 163;
+pub(crate) const SYS_UDP_RECVFROM_V6: u32 = 164;
+pub(crate) const SYS_TCP_ACCEPT_V6: u32 = 165;
 
 // Keyboard layout
 pub(crate) const SYS_KBD_GET_LAYOUT: u32 = 200;

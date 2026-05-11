@@ -4,7 +4,7 @@
 
 use crate::kunit::{TestCase, TestContext, TestSuite};
 use crate::net::ipv4;
-use crate::net::types::{Ipv4Addr, MacAddr, NetConfig};
+use crate::net::types::{Ipv4Addr, Ipv6Addr, MacAddr, NetConfig};
 
 pub static SUITE: TestSuite = TestSuite {
     name: "net::types",
@@ -37,6 +37,18 @@ pub static SUITE: TestSuite = TestSuite {
         TestCase {
             name: "ipv4_constants",
             run: test_ipv4_constants,
+        },
+        TestCase {
+            name: "ipv6_parse_valid",
+            run: test_ipv6_parse_valid,
+        },
+        TestCase {
+            name: "ipv6_parse_invalid",
+            run: test_ipv6_parse_invalid,
+        },
+        TestCase {
+            name: "ipv6_link_local_from_mac",
+            run: test_ipv6_link_local_from_mac,
         },
         // MacAddr
         TestCase {
@@ -184,6 +196,53 @@ fn test_ipv4_constants(ctx: &mut TestContext) {
         Ipv4Addr::BROADCAST.as_bytes(),
         &[255u8, 255, 255, 255],
         "BROADCAST",
+    );
+}
+
+fn test_ipv6_parse_valid(ctx: &mut TestContext) {
+    let cases = &[
+        ("::", [0u8; 16]),
+        ("::1", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+        (
+            "fe80::1",
+            [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+        ),
+        (
+            "2001:db8:0:1:2:3:4:5",
+            [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5],
+        ),
+    ];
+    for (s, expected) in cases {
+        let parsed = Ipv6Addr::parse(s);
+        if let Some(ip) = ctx.expect_some(parsed, "valid IPv6 parses to Some") {
+            ctx.expect_eq(ip.as_bytes(), expected, "parsed IPv6 bytes match");
+        }
+    }
+}
+
+fn test_ipv6_parse_invalid(ctx: &mut TestContext) {
+    let invalids = &[
+        "",
+        ":",
+        ":::",
+        "1:2:3:4:5:6:7",
+        "1:2:3:4:5:6:7:8:9",
+        "gggg::1",
+    ];
+    for s in invalids {
+        ctx.expect_none(Ipv6Addr::parse(s), "invalid IPv6 parses to None");
+    }
+}
+
+fn test_ipv6_link_local_from_mac(ctx: &mut TestContext) {
+    let mac = MacAddr([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]);
+    let ip = Ipv6Addr::from_mac_link_local(&mac);
+    ctx.expect_eq(
+        ip.as_bytes(),
+        &[
+            0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0, 0xff, 0xfe, 0x12, 0x34, 0x56,
+        ],
+        "EUI-64 link-local address matches MAC",
     );
 }
 

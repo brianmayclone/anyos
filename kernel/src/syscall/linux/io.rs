@@ -199,16 +199,40 @@ pub(super) fn linux_select(
 
     let mut ready = 0u64;
     for fd in 0..nfds {
-        let valid = fd < 3 || crate::task::scheduler::current_fd_get(fd as u32).is_some();
+        let entry = if fd < 3 {
+            None
+        } else {
+            crate::task::scheduler::current_fd_get(fd as u32)
+        };
+        let valid = fd < 3 || entry.is_some();
+        let requested = (if select_fd_is_set(readfds, fd) {
+            0x0001
+        } else {
+            0
+        }) | (if select_fd_is_set(writefds, fd) {
+            0x0004
+        } else {
+            0
+        });
+        let revents = if valid {
+            match entry.map(|e| e.kind) {
+                Some(crate::fs::fd_table::FdKind::LinuxSocket { socket_id }) => {
+                    linux_socket_poll_revents(socket_id, requested)
+                }
+                _ => requested,
+            }
+        } else {
+            0
+        };
         if select_fd_is_set(readfds, fd) {
-            if valid {
+            if revents & 0x0001 != 0 {
                 ready += 1;
             } else {
                 select_fd_clear(readfds, fd);
             }
         }
         if select_fd_is_set(writefds, fd) {
-            if valid {
+            if revents & 0x0004 != 0 {
                 ready += 1;
             } else {
                 select_fd_clear(writefds, fd);
@@ -290,14 +314,22 @@ pub(super) fn linux_poll(fds_ptr: u64, nfds: u64, _timeout: u64) -> u64 {
         let fd = unsafe { *((base) as *const i32) };
         let events = unsafe { *((base + 4) as *const i16) };
         let mut revents = 0i16;
-        if fd >= 0 && (fd < 3 || crate::task::scheduler::current_fd_get(fd as u32).is_some()) {
-            revents = events & 0x0005; // POLLIN | POLLOUT
+        if fd >= 0 {
+            if fd < 3 {
+                revents = events & 0x0005; // POLLIN | POLLOUT
+            } else if let Some(entry) = crate::task::scheduler::current_fd_get(fd as u32) {
+                revents = match entry.kind {
+                    crate::fs::fd_table::FdKind::LinuxSocket { socket_id } => {
+                        linux_socket_poll_revents(socket_id, events)
+                    }
+                    _ => events & 0x0005, // POLLIN | POLLOUT
+                };
+            } else {
+                revents = 0x0020; // POLLNVAL
+            }
             if revents != 0 {
                 ready += 1;
             }
-        } else if fd >= 0 {
-            revents = 0x0020; // POLLNVAL
-            ready += 1;
         }
         unsafe {
             *((base + 6) as *mut i16) = revents;
@@ -315,6 +347,7 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
     const TIOCSPGRP: u64 = 0x5410;
     const TIOCGWINSZ: u64 = 0x5413;
     const TIOCSWINSZ: u64 = 0x5414;
+    const FIONREAD: u64 = 0x541B;
     match request {
         TCGETS => {
             if !linux_fd_is_tty(fd) {
@@ -405,6 +438,20 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
                 return linux_err(EFAULT);
             }
             crate::serial_verbose_println!("licof linux ioctl: TIOCSWINSZ fd={} -> ok", fd);
+            0
+        }
+        FIONREAD => {
+            if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
+                if let crate::fs::fd_table::FdKind::LinuxSocket { socket_id } = entry.kind {
+                    return linux_socket_fionread(socket_id, arg);
+                }
+            }
+            if arg == 0 || !handlers::helpers::is_user_range_accessible(arg, 4) {
+                return linux_err(EFAULT);
+            }
+            unsafe {
+                write_u32(arg, 0, 0);
+            }
             0
         }
         _ => {

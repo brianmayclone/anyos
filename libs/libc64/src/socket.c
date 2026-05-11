@@ -48,7 +48,8 @@ typedef struct {
     uint16_t udp_port;
     uint16_t bind_port;
     int      listening;
-    struct sockaddr_in peer_addr;
+    struct sockaddr_storage peer_addr;
+    socklen_t peer_addrlen;
     int      connected;
     int      recv_timeout_ms;
     int      send_timeout_ms;
@@ -79,7 +80,7 @@ static socket_entry_t *get_socket(int sockfd) {
 
 int socket(int domain, int type, int protocol) {
     ensure_init();
-    if (domain != AF_INET) { errno = EAFNOSUPPORT; return -1; }
+    if (domain != AF_INET && domain != AF_INET6) { errno = EAFNOSUPPORT; return -1; }
     if (type != SOCK_STREAM && type != SOCK_DGRAM) { errno = EPROTONOSUPPORT; return -1; }
 
     for (int i = 0; i < MAX_SOCKETS; i++) {
@@ -109,6 +110,31 @@ int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     if (!s) { errno = EBADF; return -1; }
 
     if (s->type == SOCK_STREAM) {
+        if (addr->sa_family == AF_INET6) {
+            const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)addr;
+            struct {
+                uint8_t  ip[16];
+                uint16_t port;
+                uint16_t pad;
+                uint32_t timeout;
+            } __attribute__((packed)) params;
+
+            memcpy(params.ip, sin6->sin6_addr.s6_addr, 16);
+            params.port = ntohs(sin6->sin6_port);
+            params.pad = 0;
+            params.timeout = (uint32_t)s->send_timeout_ms;
+
+            long result = _syscall(SYS_TCP_CONNECT_V6, (long)&params, 0, 0, 0, 0);
+            if (result == -1L || result == (long)0xFFFFFFFFu) {
+                errno = ECONNREFUSED;
+                return -1;
+            }
+            s->tcp_sock_id = (int)result;
+            s->connected = 1;
+            memcpy(&s->peer_addr, sin6, sizeof(struct sockaddr_in6));
+            s->peer_addrlen = sizeof(struct sockaddr_in6);
+            return 0;
+        }
         const struct sockaddr_in *sin = (const struct sockaddr_in *)addr;
         struct {
             uint8_t  ip[4];
@@ -134,10 +160,16 @@ int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
         s->tcp_sock_id = (int)result;
         s->connected = 1;
         memcpy(&s->peer_addr, sin, sizeof(struct sockaddr_in));
+        s->peer_addrlen = sizeof(struct sockaddr_in);
         return 0;
     } else if (s->type == SOCK_DGRAM) {
-        const struct sockaddr_in *sin = (const struct sockaddr_in *)addr;
-        memcpy(&s->peer_addr, sin, sizeof(struct sockaddr_in));
+        if (addr->sa_family == AF_INET6) {
+            memcpy(&s->peer_addr, addr, sizeof(struct sockaddr_in6));
+            s->peer_addrlen = sizeof(struct sockaddr_in6);
+        } else {
+            memcpy(&s->peer_addr, addr, sizeof(struct sockaddr_in));
+            s->peer_addrlen = sizeof(struct sockaddr_in);
+        }
         s->connected = 1;
         return 0;
     }
@@ -155,16 +187,18 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     if (!s) { errno = EBADF; return -1; }
 
     if (s->type == SOCK_DGRAM) {
-        const struct sockaddr_in *sin = (const struct sockaddr_in *)addr;
-        uint16_t port = ntohs(sin->sin_port);
+        uint16_t port = addr->sa_family == AF_INET6
+            ? ntohs(((const struct sockaddr_in6 *)addr)->sin6_port)
+            : ntohs(((const struct sockaddr_in *)addr)->sin_port);
         long result = _syscall(SYS_UDP_BIND, (long)port, 0, 0, 0, 0);
         if (result == (long)0xFFFFFFFFu) { errno = EADDRINUSE; return -1; }
         s->udp_port = port;
         return 0;
     }
     if (s->type == SOCK_STREAM) {
-        const struct sockaddr_in *sin = (const struct sockaddr_in *)addr;
-        s->bind_port = ntohs(sin->sin_port);
+        s->bind_port = addr->sa_family == AF_INET6
+            ? ntohs(((const struct sockaddr_in6 *)addr)->sin6_port)
+            : ntohs(((const struct sockaddr_in *)addr)->sin_port);
         return 0;
     }
     errno = EOPNOTSUPP;
@@ -193,27 +227,41 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     if (!s) { errno = EBADF; return -1; }
     if (!s->listening || s->tcp_sock_id < 0) { errno = EINVAL; return -1; }
 
-    uint8_t result_buf[12];
-    long rc = _syscall(SYS_TCP_ACCEPT, s->tcp_sock_id, (long)result_buf, 0, 0, 0);
+    uint8_t result_buf[24];
+    long rc = s->domain == AF_INET6
+        ? _syscall(SYS_TCP_ACCEPT_V6, s->tcp_sock_id, (long)result_buf, 0, 0, 0)
+        : _syscall(SYS_TCP_ACCEPT, s->tcp_sock_id, (long)result_buf, 0, 0, 0);
     if (rc == (long)0xFFFFFFFFu) { errno = EAGAIN; return -1; }
 
     uint32_t new_sock_id = *(uint32_t *)&result_buf[0];
-    uint16_t remote_port = *(uint16_t *)&result_buf[8];
+    uint16_t remote_port = s->domain == AF_INET6
+        ? *(uint16_t *)&result_buf[20]
+        : *(uint16_t *)&result_buf[8];
 
     int new_fd = -1;
     for (int i = 0; i < MAX_SOCKETS; i++) {
         if (!socket_table[i].in_use) {
             memset(&socket_table[i], 0, sizeof(socket_entry_t));
             socket_table[i].in_use = 1;
-            socket_table[i].domain = AF_INET;
+            socket_table[i].domain = s->domain;
             socket_table[i].type = SOCK_STREAM;
             socket_table[i].tcp_sock_id = (int)new_sock_id;
             socket_table[i].connected = 1;
             socket_table[i].recv_timeout_ms = 30000;
             socket_table[i].send_timeout_ms = 10000;
-            socket_table[i].peer_addr.sin_family = AF_INET;
-            socket_table[i].peer_addr.sin_port = htons(remote_port);
-            memcpy(&socket_table[i].peer_addr.sin_addr.s_addr, &result_buf[4], 4);
+            if (s->domain == AF_INET6) {
+                struct sockaddr_in6 *peer6 = (struct sockaddr_in6 *)&socket_table[i].peer_addr;
+                peer6->sin6_family = AF_INET6;
+                peer6->sin6_port = htons(remote_port);
+                memcpy(peer6->sin6_addr.s6_addr, &result_buf[4], 16);
+                socket_table[i].peer_addrlen = sizeof(struct sockaddr_in6);
+            } else {
+                struct sockaddr_in *peer = (struct sockaddr_in *)&socket_table[i].peer_addr;
+                peer->sin_family = AF_INET;
+                peer->sin_port = htons(remote_port);
+                memcpy(&peer->sin_addr.s_addr, &result_buf[4], 4);
+                socket_table[i].peer_addrlen = sizeof(struct sockaddr_in);
+            }
             new_fd = i + SOCKET_FD_BASE;
             break;
         }
@@ -224,14 +272,26 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
         return -1;
     }
     if (addr && addrlen) {
-        struct sockaddr_in sin;
-        sin.sin_family = AF_INET;
-        sin.sin_port = htons(remote_port);
-        memcpy(&sin.sin_addr.s_addr, &result_buf[4], 4);
-        socklen_t copylen = sizeof(sin);
-        if (*addrlen < copylen) copylen = *addrlen;
-        memcpy(addr, &sin, copylen);
-        *addrlen = sizeof(sin);
+        if (s->domain == AF_INET6) {
+            struct sockaddr_in6 sin6;
+            memset(&sin6, 0, sizeof(sin6));
+            sin6.sin6_family = AF_INET6;
+            sin6.sin6_port = htons(remote_port);
+            memcpy(sin6.sin6_addr.s6_addr, &result_buf[4], 16);
+            socklen_t copylen = sizeof(sin6);
+            if (*addrlen < copylen) copylen = *addrlen;
+            memcpy(addr, &sin6, copylen);
+            *addrlen = sizeof(sin6);
+        } else {
+            struct sockaddr_in sin;
+            sin.sin_family = AF_INET;
+            sin.sin_port = htons(remote_port);
+            memcpy(&sin.sin_addr.s_addr, &result_buf[4], 4);
+            socklen_t copylen = sizeof(sin);
+            if (*addrlen < copylen) copylen = *addrlen;
+            memcpy(addr, &sin, copylen);
+            *addrlen = sizeof(sin);
+        }
     }
     return new_fd;
 }
@@ -275,6 +335,26 @@ ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
     if (!s) { errno = EBADF; return -1; }
 
     if (s->type == SOCK_DGRAM) {
+        if (dest_addr && dest_addr->sa_family == AF_INET6) {
+            const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)dest_addr;
+            struct {
+                uint8_t  dst_ip[16];
+                uint16_t dst_port;
+                uint16_t src_port;
+                uint32_t data_ptr;
+                uint32_t data_len;
+            } __attribute__((packed)) params;
+
+            memcpy(params.dst_ip, sin6->sin6_addr.s6_addr, 16);
+            params.dst_port = ntohs(sin6->sin6_port);
+            params.src_port = s->udp_port;
+            params.data_ptr = (uint32_t)(uintptr_t)buf;
+            params.data_len = (uint32_t)len;
+
+            long result = _syscall(SYS_UDP_SENDTO_V6, (long)&params, 0, 0, 0, 0);
+            if (result == (long)0xFFFFFFFFu) { errno = ENETUNREACH; return -1; }
+            return (ssize_t)result;
+        }
         const struct sockaddr_in *sin = (const struct sockaddr_in *)dest_addr;
         uint32_t addr_n = sin->sin_addr.s_addr;
         struct {
@@ -313,6 +393,33 @@ ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
 
     if (s->type == SOCK_DGRAM) {
         if (s->udp_port == 0) { errno = ENOTCONN; return -1; }
+        if (s->domain == AF_INET6) {
+            size_t total_len = 20 + len;
+            uint8_t *tmp = (uint8_t *)malloc(total_len);
+            if (!tmp) { errno = ENOMEM; return -1; }
+
+            long result = _syscall(SYS_UDP_RECVFROM_V6, (long)s->udp_port, (long)tmp, (long)total_len, 0, 0);
+            if (result == 0 || result == (long)0xFFFFFFFFu) {
+                free(tmp);
+                if (result == 0) return 0;
+                errno = ETIMEDOUT;
+                return -1;
+            }
+            uint16_t payload_len = (uint16_t)(tmp[18] | (tmp[19] << 8));
+            size_t copy_len = payload_len < len ? payload_len : len;
+            memcpy(buf, tmp + 20, copy_len);
+
+            if (src_addr && addrlen && *addrlen >= sizeof(struct sockaddr_in6)) {
+                struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)src_addr;
+                memset(sin6, 0, sizeof(*sin6));
+                sin6->sin6_family = AF_INET6;
+                memcpy(sin6->sin6_addr.s6_addr, tmp, 16);
+                sin6->sin6_port = htons((uint16_t)(tmp[16] | (tmp[17] << 8)));
+                *addrlen = sizeof(struct sockaddr_in6);
+            }
+            free(tmp);
+            return (ssize_t)copy_len;
+        }
         size_t total_len = 8 + len;
         uint8_t *tmp = (uint8_t *)malloc(total_len);
         if (!tmp) { errno = ENOMEM; return -1; }
@@ -428,9 +535,11 @@ int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     socket_entry_t *s = get_socket(sockfd);
     if (!s) { errno = EBADF; return -1; }
     if (!s->connected) { errno = ENOTCONN; return -1; }
-    if (addr && addrlen && *addrlen >= sizeof(struct sockaddr_in)) {
-        memcpy(addr, &s->peer_addr, sizeof(struct sockaddr_in));
-        *addrlen = sizeof(struct sockaddr_in);
+    if (addr && addrlen) {
+        socklen_t copylen = s->peer_addrlen;
+        if (*addrlen < copylen) copylen = *addrlen;
+        memcpy(addr, &s->peer_addr, copylen);
+        *addrlen = s->peer_addrlen;
     }
     return 0;
 }
@@ -438,10 +547,16 @@ int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     socket_entry_t *s = get_socket(sockfd);
     if (!s) { errno = EBADF; return -1; }
-    if (addr && addrlen && *addrlen >= sizeof(struct sockaddr_in)) {
+    if (addr && addrlen && s->domain == AF_INET6 && *addrlen >= sizeof(struct sockaddr_in6)) {
+        struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)addr;
+        memset(sin6, 0, sizeof(*sin6));
+        sin6->sin6_family = AF_INET6;
+        sin6->sin6_port = htons(s->udp_port ? s->udp_port : s->bind_port);
+        *addrlen = sizeof(struct sockaddr_in6);
+    } else if (addr && addrlen && *addrlen >= sizeof(struct sockaddr_in)) {
         struct sockaddr_in *sin = (struct sockaddr_in *)addr;
         sin->sin_family = AF_INET;
-        sin->sin_port = htons(s->udp_port);
+        sin->sin_port = htons(s->udp_port ? s->udp_port : s->bind_port);
         sin->sin_addr.s_addr = INADDR_ANY;
         *addrlen = sizeof(struct sockaddr_in);
     }
@@ -635,11 +750,52 @@ int getaddrinfo(const char *node, const char *service,
     int family = hints ? hints->ai_family : AF_UNSPEC;
     int socktype = hints ? hints->ai_socktype : 0;
     int protocol = hints ? hints->ai_protocol : 0;
-    (void)family;
+    if (family != AF_UNSPEC && family != AF_INET && family != AF_INET6) return EAI_FAMILY;
 
     if (socktype == 0) socktype = SOCK_STREAM;
     if (protocol == 0 && socktype == SOCK_STREAM) protocol = IPPROTO_TCP;
     if (protocol == 0 && socktype == SOCK_DGRAM) protocol = IPPROTO_UDP;
+
+    if (family == AF_INET6) {
+        struct in6_addr addr6;
+        memset(&addr6, 0, sizeof(addr6));
+        if (node) {
+            if (inet_pton(AF_INET6, node, &addr6) != 1) {
+                long r = _syscall(SYS_NET_DNS6, (long)node, (long)addr6.s6_addr, 0, 0, 0);
+                if (r != 0) return EAI_NONAME;
+            }
+        } else if (!(hints && (hints->ai_flags & AI_PASSIVE))) {
+            addr6.s6_addr[15] = 1;
+        }
+
+        uint16_t port = 0;
+        if (service) {
+            port = (uint16_t)atoi(service);
+            if (port == 0) {
+                if (strcmp(service, "http") == 0) port = 80;
+                else if (strcmp(service, "https") == 0) port = 443;
+                else if (strcmp(service, "ftp") == 0) port = 21;
+                else if (strcmp(service, "ssh") == 0) port = 22;
+                else if (strcmp(service, "dns") == 0) port = 53;
+                else return EAI_SERVICE;
+            }
+        }
+
+        struct addrinfo *ai = (struct addrinfo *)calloc(1, sizeof(struct addrinfo) + sizeof(struct sockaddr_in6));
+        if (!ai) return EAI_MEMORY;
+        struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)((char *)ai + sizeof(struct addrinfo));
+        sin6->sin6_family = AF_INET6;
+        sin6->sin6_port = htons(port);
+        sin6->sin6_addr = addr6;
+        ai->ai_flags = hints ? hints->ai_flags : 0;
+        ai->ai_family = AF_INET6;
+        ai->ai_socktype = socktype;
+        ai->ai_protocol = protocol;
+        ai->ai_addrlen = sizeof(struct sockaddr_in6);
+        ai->ai_addr = (struct sockaddr *)sin6;
+        *res = ai;
+        return 0;
+    }
 
     struct in_addr addr;
     addr.s_addr = INADDR_ANY;
@@ -719,13 +875,23 @@ int getnameinfo(const struct sockaddr *sa, socklen_t salen,
                 char *host, socklen_t hostlen,
                 char *serv, socklen_t servlen, int flags) {
     (void)salen; (void)flags;
-    if (sa->sa_family != AF_INET) return EAI_FAMILY;
-    const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
-    if (host && hostlen > 0)
-        inet_ntop(AF_INET, &sin->sin_addr, host, hostlen);
-    if (serv && servlen > 0)
-        snprintf(serv, servlen, "%u", ntohs(sin->sin_port));
-    return 0;
+    if (sa->sa_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
+        if (host && hostlen > 0)
+            inet_ntop(AF_INET, &sin->sin_addr, host, hostlen);
+        if (serv && servlen > 0)
+            snprintf(serv, servlen, "%u", ntohs(sin->sin_port));
+        return 0;
+    }
+    if (sa->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)sa;
+        if (host && hostlen > 0)
+            inet_ntop(AF_INET6, &sin6->sin6_addr, host, hostlen);
+        if (serv && servlen > 0)
+            snprintf(serv, servlen, "%u", ntohs(sin6->sin6_port));
+        return 0;
+    }
+    return EAI_FAMILY;
 }
 
 /* =========================================================================
@@ -776,6 +942,68 @@ char *inet_ntoa(struct in_addr in) {
     return __inet_ntoa_buf;
 }
 
+static int parse_ipv6_group(const char *s, const char *end, uint16_t *out) {
+    if (s == end || end - s > 4) return 0;
+    uint16_t val = 0;
+    while (s < end) {
+        char c = *s++;
+        val <<= 4;
+        if (c >= '0' && c <= '9') val |= (uint16_t)(c - '0');
+        else if (c >= 'a' && c <= 'f') val |= (uint16_t)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') val |= (uint16_t)(c - 'A' + 10);
+        else return 0;
+    }
+    *out = val;
+    return 1;
+}
+
+static int inet_pton6_simple(const char *src, unsigned char *dst) {
+    uint16_t groups[8];
+    int group_count = 0;
+    int compress_at = -1;
+    const char *p = src;
+    memset(groups, 0, sizeof(groups));
+
+    if (*p == ':' && p[1] == ':') {
+        compress_at = 0;
+        p += 2;
+    }
+
+    while (*p) {
+        if (group_count >= 8) return 0;
+        const char *start = p;
+        while (*p && *p != ':') p++;
+        if (!parse_ipv6_group(start, p, &groups[group_count++])) return 0;
+        if (*p == ':') {
+            if (p[1] == ':') {
+                if (compress_at >= 0) return 0;
+                compress_at = group_count;
+                p += 2;
+                if (!*p) break;
+            } else {
+                p++;
+                if (!*p) return 0;
+            }
+        }
+    }
+
+    if (compress_at >= 0) {
+        int zeros = 8 - group_count;
+        if (zeros <= 0) return 0;
+        memmove(&groups[compress_at + zeros], &groups[compress_at],
+                (group_count - compress_at) * sizeof(uint16_t));
+        memset(&groups[compress_at], 0, zeros * sizeof(uint16_t));
+        group_count = 8;
+    }
+    if (group_count != 8) return 0;
+
+    for (int i = 0; i < 8; i++) {
+        dst[i * 2] = (unsigned char)(groups[i] >> 8);
+        dst[i * 2 + 1] = (unsigned char)(groups[i] & 0xff);
+    }
+    return 1;
+}
+
 int inet_pton(int af, const char *src, void *dst) {
     if (af == AF_INET) {
         struct in_addr addr;
@@ -785,6 +1013,9 @@ int inet_pton(int af, const char *src, void *dst) {
         }
         return 0;
     }
+    if (af == AF_INET6) {
+        return inet_pton6_simple(src, (unsigned char *)dst);
+    }
     errno = EAFNOSUPPORT;
     return -1;
 }
@@ -793,6 +1024,15 @@ const char *inet_ntop(int af, const void *src, char *dst, unsigned int size) {
     if (af == AF_INET) {
         const uint8_t *p = (const uint8_t *)src;
         int n = snprintf(dst, size, "%u.%u.%u.%u", p[0], p[1], p[2], p[3]);
+        if (n < 0 || (unsigned int)n >= size) { errno = ENOSPC; return NULL; }
+        return dst;
+    }
+    if (af == AF_INET6) {
+        const uint8_t *p = (const uint8_t *)src;
+        uint16_t g[8];
+        for (int i = 0; i < 8; i++) g[i] = (uint16_t)((p[i * 2] << 8) | p[i * 2 + 1]);
+        int n = snprintf(dst, size, "%x:%x:%x:%x:%x:%x:%x:%x",
+                         g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]);
         if (n < 0 || (unsigned int)n >= size) { errno = ENOSPC; return NULL; }
         return dst;
     }

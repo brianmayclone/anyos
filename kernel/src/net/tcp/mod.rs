@@ -165,6 +165,23 @@ pub fn connect(
     connect::connect(remote_ip, remote_port, timeout_ticks)
 }
 
+pub use connect::ConnectStatus;
+
+/// Start an IPv4 active open without blocking.
+pub fn connect_start(remote_ip: crate::net::types::Ipv4Addr, remote_port: u16) -> u32 {
+    connect::connect_start(remote_ip, remote_port)
+}
+
+/// Start an IPv6 active open without blocking.
+pub fn connect_start_v6(remote_ip: crate::net::types::Ipv6Addr, remote_port: u16) -> u32 {
+    connect::connect_start_v6(remote_ip, remote_port)
+}
+
+/// Poll an active-open socket created by `connect_start`.
+pub fn connect_status(socket_id: u32) -> ConnectStatus {
+    connect::connect_status(socket_id)
+}
+
 /// Active open: connect to a remote host (IPv6).
 pub fn connect_v6(
     remote_ip: crate::net::types::Ipv6Addr,
@@ -182,6 +199,11 @@ pub fn listen(port: u16, backlog: u16) -> u32 {
 /// Accept a connection from a listening socket.
 pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, crate::net::types::Ipv4Addr, u16) {
     connect::accept(listener_id, timeout_ticks)
+}
+
+/// Accept an IPv6 connection from a listening socket.
+pub fn accept_v6(listener_id: u32, timeout_ticks: u32) -> (u32, crate::net::types::Ipv6Addr, u16) {
+    connect::accept_v6(listener_id, timeout_ticks)
 }
 
 /// Send data on an established connection.

@@ -168,13 +168,17 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         // Networking
         syscall::SYS_NET_CONFIG
         | syscall::SYS_NET_PING
+        | syscall::SYS_NET_PING6
         | syscall::SYS_NET_DHCP
         | syscall::SYS_NET_DNS
+        | syscall::SYS_NET_DNS6
         | syscall::SYS_NET_ARP
         | syscall::SYS_NET_POLL => CAP_NETWORK,
 
         // TCP
         syscall::SYS_TCP_CONNECT
+        | syscall::SYS_TCP_CONNECT_V6
+        | syscall::SYS_TCP_ACCEPT_V6
         | syscall::SYS_TCP_SEND
         | syscall::SYS_TCP_RECV
         | syscall::SYS_TCP_CLOSE
@@ -186,7 +190,9 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         syscall::SYS_UDP_BIND
         | syscall::SYS_UDP_UNBIND
         | syscall::SYS_UDP_SENDTO
+        | syscall::SYS_UDP_SENDTO_V6
         | syscall::SYS_UDP_RECVFROM
+        | syscall::SYS_UDP_RECVFROM_V6
         | syscall::SYS_UDP_SET_OPT => CAP_NETWORK,
 
         // Audio

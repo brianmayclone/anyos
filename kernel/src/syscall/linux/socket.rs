@@ -1,6 +1,6 @@
 use super::*;
 use crate::fs::fd_table::FdKind;
-use crate::net::types::Ipv4Addr;
+use crate::net::types::{IpAddr, Ipv4Addr, Ipv6Addr};
 use crate::sync::spinlock::Spinlock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -9,6 +9,7 @@ const MAX_LINUX_SOCKETS: usize = 256;
 
 const AF_UNIX: u64 = 1;
 const AF_INET: u64 = 2;
+const AF_INET6: u64 = 10;
 
 const SOCK_TYPE_MASK: u64 = 0xF;
 const SOCK_STREAM: u64 = 1;
@@ -33,6 +34,8 @@ enum LinuxSocketKind {
     Empty,
     InetStream,
     InetDatagram,
+    Inet6Stream,
+    Inet6Datagram,
 }
 
 #[derive(Clone, Copy)]
@@ -46,14 +49,38 @@ enum LinuxSocketState {
         listener_id: u32,
         local_port: u16,
     },
+    TcpConnecting {
+        tcp_id: u32,
+        remote_ip: [u8; 4],
+        remote_port: u16,
+    },
+    TcpConnectingV6 {
+        tcp_id: u32,
+        remote_ip: [u8; 16],
+        remote_port: u16,
+    },
     TcpConnected {
         tcp_id: u32,
         remote_ip: [u8; 4],
         remote_port: u16,
     },
+    TcpConnectedV6 {
+        tcp_id: u32,
+        remote_ip: [u8; 16],
+        remote_port: u16,
+    },
+    TcpConnectFailed {
+        errno: i32,
+    },
     Udp {
         local_port: u16,
         remote_ip: [u8; 4],
+        remote_port: u16,
+        connected: bool,
+    },
+    UdpV6 {
+        local_port: u16,
+        remote_ip: [u8; 16],
         remote_port: u16,
         connected: bool,
     },
@@ -91,6 +118,13 @@ pub(super) fn linux_socket(domain: u64, type_: u64, protocol: u64) -> u64 {
             LinuxSocketKind::InetDatagram
         }
         (AF_INET, _) => return linux_err(EPROTONOSUPPORT),
+        (AF_INET6, SOCK_STREAM) if protocol == 0 || protocol == IPPROTO_TCP => {
+            LinuxSocketKind::Inet6Stream
+        }
+        (AF_INET6, SOCK_DGRAM) if protocol == 0 || protocol == IPPROTO_UDP => {
+            LinuxSocketKind::Inet6Datagram
+        }
+        (AF_INET6, _) => return linux_err(EPROTONOSUPPORT),
         (AF_UNIX, _) => return linux_err(EAFNOSUPPORT),
         _ => return linux_err(EAFNOSUPPORT),
     };
@@ -121,10 +155,6 @@ pub(super) fn linux_connect(fd: u32, addr_ptr: u64, addr_len: u64) -> u64 {
         Ok(id) => id,
         Err(errno) => return linux_err(errno),
     };
-    let (remote_ip, remote_port) = match read_sockaddr_in(addr_ptr, addr_len) {
-        Ok(addr) => addr,
-        Err(errno) => return linux_err(errno),
-    };
 
     let entry = match socket_entry(socket_id) {
         Some(entry) => entry,
@@ -132,18 +162,99 @@ pub(super) fn linux_connect(fd: u32, addr_ptr: u64, addr_len: u64) -> u64 {
     };
     match entry.kind {
         LinuxSocketKind::InetStream => {
-            let timeout_ticks = if fd_nonblock(fd) {
-                0
-            } else {
-                10 * crate::arch::hal::timer_frequency_hz() as u32
+            let (remote_ip, remote_port) = match read_sockaddr_in(addr_ptr, addr_len) {
+                Ok(addr) => addr,
+                Err(errno) => return linux_err(errno),
             };
-            let tcp_id = crate::net::tcp::connect(remote_ip, remote_port, timeout_ticks);
+            match entry.state {
+                LinuxSocketState::TcpConnected { .. } => return linux_err(EISCONN),
+                LinuxSocketState::TcpConnecting { .. } => return linux_err(EALREADY),
+                LinuxSocketState::TcpConnectFailed { errno } => {
+                    let _ = socket_set_state(socket_id, LinuxSocketState::New);
+                    return linux_err(errno);
+                }
+                _ => {}
+            }
+
+            if fd_nonblock(fd) {
+                let tcp_id = crate::net::tcp::connect_start(remote_ip, remote_port);
+                if tcp_id == u32::MAX {
+                    return linux_err(ECONNREFUSED);
+                }
+                if !socket_set_state(
+                    socket_id,
+                    LinuxSocketState::TcpConnecting {
+                        tcp_id,
+                        remote_ip: remote_ip.0,
+                        remote_port,
+                    },
+                ) {
+                    crate::net::tcp::close(tcp_id);
+                    return linux_err(EBADF);
+                }
+                return linux_err(EINPROGRESS);
+            } else {
+                let timeout_ticks = 10 * crate::arch::hal::timer_frequency_hz() as u32;
+                let tcp_id = crate::net::tcp::connect(remote_ip, remote_port, timeout_ticks);
+                if tcp_id == u32::MAX {
+                    return linux_err(ECONNREFUSED);
+                }
+                if !socket_set_state(
+                    socket_id,
+                    LinuxSocketState::TcpConnected {
+                        tcp_id,
+                        remote_ip: remote_ip.0,
+                        remote_port,
+                    },
+                ) {
+                    crate::net::tcp::close(tcp_id);
+                    return linux_err(EBADF);
+                }
+                0
+            }
+        }
+        LinuxSocketKind::Inet6Stream => {
+            let (remote_ip, remote_port) = match read_sockaddr_in6(addr_ptr, addr_len) {
+                Ok(addr) => addr,
+                Err(errno) => return linux_err(errno),
+            };
+            match entry.state {
+                LinuxSocketState::TcpConnectedV6 { .. } => return linux_err(EISCONN),
+                LinuxSocketState::TcpConnectingV6 { .. } => return linux_err(EALREADY),
+                LinuxSocketState::TcpConnectFailed { errno } => {
+                    let _ = socket_set_state(socket_id, LinuxSocketState::New);
+                    return linux_err(errno);
+                }
+                _ => {}
+            }
+
+            if fd_nonblock(fd) {
+                let tcp_id = crate::net::tcp::connect_start_v6(remote_ip, remote_port);
+                if tcp_id == u32::MAX {
+                    return linux_err(ECONNREFUSED);
+                }
+                if !socket_set_state(
+                    socket_id,
+                    LinuxSocketState::TcpConnectingV6 {
+                        tcp_id,
+                        remote_ip: remote_ip.0,
+                        remote_port,
+                    },
+                ) {
+                    crate::net::tcp::close(tcp_id);
+                    return linux_err(EBADF);
+                }
+                return linux_err(EINPROGRESS);
+            }
+
+            let timeout_ticks = 10 * crate::arch::hal::timer_frequency_hz() as u32;
+            let tcp_id = crate::net::tcp::connect_v6(remote_ip, remote_port, timeout_ticks);
             if tcp_id == u32::MAX {
                 return linux_err(ECONNREFUSED);
             }
             if !socket_set_state(
                 socket_id,
-                LinuxSocketState::TcpConnected {
+                LinuxSocketState::TcpConnectedV6 {
                     tcp_id,
                     remote_ip: remote_ip.0,
                     remote_port,
@@ -155,10 +266,27 @@ pub(super) fn linux_connect(fd: u32, addr_ptr: u64, addr_len: u64) -> u64 {
             0
         }
         LinuxSocketKind::InetDatagram => {
+            let (remote_ip, remote_port) = match read_sockaddr_in(addr_ptr, addr_len) {
+                Ok(addr) => addr,
+                Err(errno) => return linux_err(errno),
+            };
             if ensure_udp_bound(socket_id).is_err() {
                 return linux_err(ENOMEM);
             }
             if !socket_update_udp_remote(socket_id, remote_ip, remote_port) {
+                return linux_err(EBADF);
+            }
+            0
+        }
+        LinuxSocketKind::Inet6Datagram => {
+            let (remote_ip, remote_port) = match read_sockaddr_in6(addr_ptr, addr_len) {
+                Ok(addr) => addr,
+                Err(errno) => return linux_err(errno),
+            };
+            if ensure_udp_bound(socket_id).is_err() {
+                return linux_err(ENOMEM);
+            }
+            if !socket_update_udp_remote_v6(socket_id, remote_ip, remote_port) {
                 return linux_err(EBADF);
             }
             0
@@ -172,22 +300,36 @@ pub(super) fn linux_bind(fd: u32, addr_ptr: u64, addr_len: u64) -> u64 {
         Ok(id) => id,
         Err(errno) => return linux_err(errno),
     };
-    let (_ip, port) = match read_sockaddr_in(addr_ptr, addr_len) {
-        Ok(addr) => addr,
-        Err(errno) => return linux_err(errno),
-    };
     let entry = match socket_entry(socket_id) {
         Some(entry) => entry,
         None => return linux_err(EBADF),
     };
     match entry.kind {
         LinuxSocketKind::InetStream => {
+            let (_ip, port) = match read_sockaddr_in(addr_ptr, addr_len) {
+                Ok(addr) => addr,
+                Err(errno) => return linux_err(errno),
+            };
+            if !socket_set_state(socket_id, LinuxSocketState::TcpBound { local_port: port }) {
+                return linux_err(EBADF);
+            }
+            0
+        }
+        LinuxSocketKind::Inet6Stream => {
+            let (_ip, port) = match read_sockaddr_in6(addr_ptr, addr_len) {
+                Ok(addr) => addr,
+                Err(errno) => return linux_err(errno),
+            };
             if !socket_set_state(socket_id, LinuxSocketState::TcpBound { local_port: port }) {
                 return linux_err(EBADF);
             }
             0
         }
         LinuxSocketKind::InetDatagram => {
+            let (_ip, port) = match read_sockaddr_in(addr_ptr, addr_len) {
+                Ok(addr) => addr,
+                Err(errno) => return linux_err(errno),
+            };
             if !crate::net::udp::bind(port) {
                 return linux_err(EAGAIN);
             }
@@ -196,6 +338,28 @@ pub(super) fn linux_bind(fd: u32, addr_ptr: u64, addr_len: u64) -> u64 {
                 LinuxSocketState::Udp {
                     local_port: port,
                     remote_ip: [0; 4],
+                    remote_port: 0,
+                    connected: false,
+                },
+            ) {
+                crate::net::udp::unbind(port);
+                return linux_err(EBADF);
+            }
+            0
+        }
+        LinuxSocketKind::Inet6Datagram => {
+            let (_ip, port) = match read_sockaddr_in6(addr_ptr, addr_len) {
+                Ok(addr) => addr,
+                Err(errno) => return linux_err(errno),
+            };
+            if !crate::net::udp::bind(port) {
+                return linux_err(EAGAIN);
+            }
+            if !socket_set_state(
+                socket_id,
+                LinuxSocketState::UdpV6 {
+                    local_port: port,
+                    remote_ip: [0; 16],
                     remote_port: 0,
                     connected: false,
                 },
@@ -259,6 +423,32 @@ pub(super) fn linux_accept(fd: u32, addr_ptr: u64, addrlen_ptr: u64) -> u64 {
     } else {
         30 * crate::arch::hal::timer_frequency_hz() as u32
     };
+    if entry.kind == LinuxSocketKind::Inet6Stream {
+        let (tcp_id, remote_ip, remote_port) =
+            crate::net::tcp::accept_v6(listener_id, timeout_ticks);
+        if tcp_id == u32::MAX {
+            return linux_err(EAGAIN);
+        }
+        let accepted_id = match socket_alloc_connected_tcp_v6(tcp_id, remote_ip, remote_port) {
+            Some(id) => id,
+            None => {
+                crate::net::tcp::close(tcp_id);
+                return linux_err(ENOMEM);
+            }
+        };
+        let accepted_fd = match crate::task::scheduler::current_fd_alloc(FdKind::LinuxSocket {
+            socket_id: accepted_id,
+        }) {
+            Some(fd) => fd,
+            None => {
+                socket_decref(accepted_id);
+                return linux_err(ENOMEM);
+            }
+        };
+        let _ = write_sockaddr_in6(addr_ptr, addrlen_ptr, remote_ip, remote_port);
+        return accepted_fd as u64;
+    }
+
     let (tcp_id, remote_ip, remote_port) = crate::net::tcp::accept(listener_id, timeout_ticks);
     if tcp_id == u32::MAX {
         return linux_err(EAGAIN);
@@ -300,7 +490,9 @@ pub(super) fn linux_sendto(
         None => return linux_err(EBADF),
     };
     match entry.state {
-        LinuxSocketState::TcpConnected { .. } => socket_write(fd, buf_ptr, len),
+        LinuxSocketState::TcpConnected { .. } | LinuxSocketState::TcpConnectedV6 { .. } => {
+            socket_write(fd, buf_ptr, len)
+        }
         LinuxSocketState::Udp { .. } | LinuxSocketState::New => {
             let (remote_ip, remote_port) = if addr_ptr != 0 {
                 match read_sockaddr_in(addr_ptr, addr_len) {
@@ -334,6 +526,39 @@ pub(super) fn linux_sendto(
                 linux_err(EAGAIN)
             }
         }
+        LinuxSocketState::UdpV6 { .. } => {
+            let (remote_ip, remote_port) = if addr_ptr != 0 {
+                match read_sockaddr_in6(addr_ptr, addr_len) {
+                    Ok(addr) => addr,
+                    Err(errno) => return linux_err(errno),
+                }
+            } else {
+                match entry.state {
+                    LinuxSocketState::UdpV6 {
+                        remote_ip,
+                        remote_port,
+                        connected: true,
+                        ..
+                    } => (Ipv6Addr(remote_ip), remote_port),
+                    _ => return linux_err(ENOTCONN),
+                }
+            };
+            let local_port = match ensure_udp_bound(socket_id) {
+                Ok(port) => port,
+                Err(errno) => return linux_err(errno),
+            };
+            let copy_len = (len as usize).min(1452);
+            let data = match handlers::helpers::copy_user_bytes(buf_ptr, copy_len, 1452) {
+                Some(data) => data,
+                None => return linux_err(EFAULT),
+            };
+            if crate::net::udp::send_v6(remote_ip, local_port, remote_port, &data) {
+                crate::task::scheduler::record_net_tx(data.len() as u64);
+                data.len() as u64
+            } else {
+                linux_err(EAGAIN)
+            }
+        }
         _ => linux_err(ENOTCONN),
     }
 }
@@ -350,12 +575,19 @@ pub(super) fn linux_recvfrom(
         Ok(id) => id,
         Err(errno) => return linux_err(errno),
     };
+    match refresh_tcp_connect(socket_id) {
+        Ok(true) => {}
+        Ok(false) => return linux_err(EAGAIN),
+        Err(errno) => return linux_err(errno),
+    }
     let entry = match socket_entry(socket_id) {
         Some(entry) => entry,
         None => return linux_err(EBADF),
     };
     match entry.state {
-        LinuxSocketState::TcpConnected { .. } => socket_read(fd, buf_ptr, len),
+        LinuxSocketState::TcpConnected { .. } | LinuxSocketState::TcpConnectedV6 { .. } => {
+            socket_read(fd, buf_ptr, len)
+        }
         LinuxSocketState::Udp { local_port, .. } if local_port != 0 => {
             if buf_ptr == 0 || len > u32::MAX as u64 {
                 return linux_err(EFAULT);
@@ -380,11 +612,49 @@ pub(super) fn linux_recvfrom(
             {
                 return linux_err(EFAULT);
             }
-            let _ = write_sockaddr_in(addr_ptr, addrlen_ptr, dgram.src_ip, dgram.src_port);
+            let src_ip = match dgram.src_ip {
+                IpAddr::V4(ip) => ip,
+                IpAddr::V6(_) => Ipv4Addr::ZERO,
+            };
+            let _ = write_sockaddr_in(addr_ptr, addrlen_ptr, src_ip, dgram.src_port);
             crate::task::scheduler::record_net_rx(copy_len as u64);
             copy_len as u64
         }
-        LinuxSocketState::Udp { .. } | LinuxSocketState::New => linux_err(EAGAIN),
+        LinuxSocketState::UdpV6 { local_port, .. } if local_port != 0 => {
+            if buf_ptr == 0 || len > u32::MAX as u64 {
+                return linux_err(EFAULT);
+            }
+            let dgram = if fd_nonblock(fd) {
+                crate::net::poll();
+                crate::net::udp::recv(local_port)
+            } else {
+                let timeout = 3 * crate::arch::hal::timer_frequency_hz() as u32;
+                crate::net::udp::recv_timeout(local_port, timeout)
+            };
+            let Some(dgram) = dgram else {
+                return linux_err(EAGAIN);
+            };
+            let copy_len = dgram.data.len().min(len as usize);
+            if copy_len != 0
+                && !handlers::helpers::copy_to_user_bytes(
+                    buf_ptr,
+                    &dgram.data[..copy_len],
+                    copy_len,
+                )
+            {
+                return linux_err(EFAULT);
+            }
+            let src_ip = match dgram.src_ip {
+                IpAddr::V6(ip) => ip,
+                IpAddr::V4(ip) => ipv4_mapped_v6(ip),
+            };
+            let _ = write_sockaddr_in6(addr_ptr, addrlen_ptr, src_ip, dgram.src_port);
+            crate::task::scheduler::record_net_rx(copy_len as u64);
+            copy_len as u64
+        }
+        LinuxSocketState::Udp { .. } | LinuxSocketState::UdpV6 { .. } | LinuxSocketState::New => {
+            linux_err(EAGAIN)
+        }
         _ => linux_err(ENOTCONN),
     }
 }
@@ -456,8 +726,13 @@ pub(super) fn linux_shutdown(fd: u32, _how: u64) -> u64 {
         Ok(id) => id,
         Err(errno) => return linux_err(errno),
     };
+    match refresh_tcp_connect(socket_id) {
+        Ok(_) => {}
+        Err(errno) => return linux_err(errno),
+    }
     match socket_entry(socket_id).map(|entry| entry.state) {
-        Some(LinuxSocketState::TcpConnected { tcp_id, .. }) => {
+        Some(LinuxSocketState::TcpConnected { tcp_id, .. })
+        | Some(LinuxSocketState::TcpConnectedV6 { tcp_id, .. }) => {
             let _ = crate::net::tcp::shutdown_write(tcp_id);
             0
         }
@@ -471,14 +746,28 @@ pub(super) fn linux_getsockname(fd: u32, addr_ptr: u64, addrlen_ptr: u64) -> u64
         Ok(id) => id,
         Err(errno) => return linux_err(errno),
     };
-    let local_ip = crate::net::config().ip;
-    let port = match socket_entry(socket_id).map(|entry| entry.state) {
-        Some(LinuxSocketState::TcpBound { local_port })
-        | Some(LinuxSocketState::TcpListener { local_port, .. })
-        | Some(LinuxSocketState::Udp { local_port, .. }) => local_port,
+    let entry = match socket_entry(socket_id) {
+        Some(entry) => entry,
+        None => return linux_err(EBADF),
+    };
+    let port = match entry.state {
+        LinuxSocketState::TcpBound { local_port }
+        | LinuxSocketState::TcpListener { local_port, .. }
+        | LinuxSocketState::Udp { local_port, .. }
+        | LinuxSocketState::UdpV6 { local_port, .. } => local_port,
         _ => 0,
     };
-    write_sockaddr_in(addr_ptr, addrlen_ptr, local_ip, port)
+    if entry.kind == LinuxSocketKind::Inet6Stream || entry.kind == LinuxSocketKind::Inet6Datagram {
+        let cfg = crate::net::config();
+        let local_ip = if !cfg.ipv6_addr.is_unspecified() {
+            cfg.ipv6_addr
+        } else {
+            cfg.ipv6_link_local
+        };
+        write_sockaddr_in6(addr_ptr, addrlen_ptr, local_ip, port)
+    } else {
+        write_sockaddr_in(addr_ptr, addrlen_ptr, crate::net::config().ip, port)
+    }
 }
 
 pub(super) fn linux_getpeername(fd: u32, addr_ptr: u64, addrlen_ptr: u64) -> u64 {
@@ -486,6 +775,11 @@ pub(super) fn linux_getpeername(fd: u32, addr_ptr: u64, addrlen_ptr: u64) -> u64
         Ok(id) => id,
         Err(errno) => return linux_err(errno),
     };
+    match refresh_tcp_connect(socket_id) {
+        Ok(true) => {}
+        Ok(false) => return linux_err(ENOTCONN),
+        Err(errno) => return linux_err(errno),
+    }
     match socket_entry(socket_id).map(|entry| entry.state) {
         Some(LinuxSocketState::TcpConnected {
             remote_ip,
@@ -498,6 +792,17 @@ pub(super) fn linux_getpeername(fd: u32, addr_ptr: u64, addrlen_ptr: u64) -> u64
             connected: true,
             ..
         }) => write_sockaddr_in(addr_ptr, addrlen_ptr, Ipv4Addr(remote_ip), remote_port),
+        Some(LinuxSocketState::TcpConnectedV6 {
+            remote_ip,
+            remote_port,
+            ..
+        })
+        | Some(LinuxSocketState::UdpV6 {
+            remote_ip,
+            remote_port,
+            connected: true,
+            ..
+        }) => write_sockaddr_in6(addr_ptr, addrlen_ptr, Ipv6Addr(remote_ip), remote_port),
         Some(_) => linux_err(ENOTCONN),
         None => linux_err(EBADF),
     }
@@ -527,15 +832,32 @@ pub(super) fn linux_setsockopt(
 }
 
 pub(super) fn linux_getsockopt(fd: u32, level: u64, optname: u64, optval: u64, optlen: u64) -> u64 {
-    if fd_socket_id(fd).is_err() {
-        return linux_err(EBADF);
-    }
+    let socket_id = match fd_socket_id(fd) {
+        Ok(id) => id,
+        Err(errno) => return linux_err(errno),
+    };
     if optval == 0 || optlen == 0 || !handlers::helpers::is_user_range_accessible(optlen, 4) {
         return linux_err(EFAULT);
     }
     if level == SOL_SOCKET && optname == SO_ERROR {
+        let mut so_error = 0i32;
+        match refresh_tcp_connect(socket_id) {
+            Ok(_) => {}
+            Err(errno) => {
+                so_error = errno;
+                let _ = socket_set_state(socket_id, LinuxSocketState::New);
+            }
+        }
+        if let Some(LinuxSocketEntry {
+            state: LinuxSocketState::TcpConnectFailed { errno },
+            ..
+        }) = socket_entry(socket_id)
+        {
+            so_error = errno;
+            let _ = socket_set_state(socket_id, LinuxSocketState::New);
+        }
         unsafe {
-            write_u32(optval, 0, 0);
+            write_u32(optval, 0, so_error as u32);
             write_u32(optlen, 0, 4);
         }
         return 0;
@@ -552,12 +874,18 @@ pub(super) fn socket_read(fd: u32, buf_ptr: u64, len: u64) -> u64 {
         Ok(id) => id,
         Err(errno) => return linux_err(errno),
     };
+    match refresh_tcp_connect(socket_id) {
+        Ok(true) => {}
+        Ok(false) => return linux_err(EAGAIN),
+        Err(errno) => return linux_err(errno),
+    }
     let entry = match socket_entry(socket_id) {
         Some(entry) => entry,
         None => return linux_err(EBADF),
     };
     match entry.state {
-        LinuxSocketState::TcpConnected { tcp_id, .. } => {
+        LinuxSocketState::TcpConnected { tcp_id, .. }
+        | LinuxSocketState::TcpConnectedV6 { tcp_id, .. } => {
             if buf_ptr == 0 || len > u32::MAX as u64 {
                 return linux_err(EFAULT);
             }
@@ -584,7 +912,9 @@ pub(super) fn socket_read(fd: u32, buf_ptr: u64, len: u64) -> u64 {
                 }
             }
         }
-        LinuxSocketState::Udp { .. } => linux_recvfrom(fd, buf_ptr, len, 0, 0, 0),
+        LinuxSocketState::Udp { .. } | LinuxSocketState::UdpV6 { .. } => {
+            linux_recvfrom(fd, buf_ptr, len, 0, 0, 0)
+        }
         _ => linux_err(ENOTCONN),
     }
 }
@@ -594,12 +924,18 @@ pub(super) fn socket_write(fd: u32, buf_ptr: u64, len: u64) -> u64 {
         Ok(id) => id,
         Err(errno) => return linux_err(errno),
     };
+    match refresh_tcp_connect(socket_id) {
+        Ok(true) => {}
+        Ok(false) => return linux_err(EAGAIN),
+        Err(errno) => return linux_err(errno),
+    }
     let entry = match socket_entry(socket_id) {
         Some(entry) => entry,
         None => return linux_err(EBADF),
     };
     match entry.state {
-        LinuxSocketState::TcpConnected { tcp_id, .. } => {
+        LinuxSocketState::TcpConnected { tcp_id, .. }
+        | LinuxSocketState::TcpConnectedV6 { tcp_id, .. } => {
             let mut total = 0usize;
             while total < len as usize {
                 let chunk_len = ((len as usize) - total).min(64 * 1024);
@@ -634,6 +970,9 @@ pub(super) fn socket_write(fd: u32, buf_ptr: u64, len: u64) -> u64 {
             total as u64
         }
         LinuxSocketState::Udp {
+            connected: true, ..
+        }
+        | LinuxSocketState::UdpV6 {
             connected: true, ..
         } => linux_sendto(fd, buf_ptr, len, 0, 0, 0),
         _ => linux_err(ENOTCONN),
@@ -670,6 +1009,76 @@ pub(crate) fn socket_decref(socket_id: u32) {
     close_socket_state(close_state);
 }
 
+pub(super) fn linux_socket_poll_revents(socket_id: u32, events: i16) -> i16 {
+    const POLLIN: i16 = 0x0001;
+    const POLLOUT: i16 = 0x0004;
+    const POLLERR: i16 = 0x0008;
+    const POLLHUP: i16 = 0x0010;
+
+    let state = match socket_entry(socket_id) {
+        Some(entry) => entry.state,
+        None => return POLLERR,
+    };
+
+    match state {
+        LinuxSocketState::TcpConnecting { .. } | LinuxSocketState::TcpConnectingV6 { .. } => {
+            match refresh_tcp_connect(socket_id) {
+                Ok(true) => events & POLLOUT,
+                Ok(false) => 0,
+                Err(_) => (events & POLLOUT) | POLLERR,
+            }
+        }
+        LinuxSocketState::TcpConnectFailed { .. } => (events & POLLOUT) | POLLERR,
+        LinuxSocketState::TcpConnected { tcp_id, .. }
+        | LinuxSocketState::TcpConnectedV6 { tcp_id, .. } => {
+            let mut revents = 0;
+            if events & POLLOUT != 0 {
+                revents |= POLLOUT;
+            }
+            if events & POLLIN != 0 {
+                match crate::net::tcp::recv_available(tcp_id) {
+                    n if n == u32::MAX - 1 => revents |= POLLIN | POLLHUP,
+                    n if n > 0 && n != u32::MAX => revents |= POLLIN,
+                    _ => {}
+                }
+            }
+            revents
+        }
+        LinuxSocketState::Udp { .. } | LinuxSocketState::UdpV6 { .. } => {
+            events & (POLLIN | POLLOUT)
+        }
+        LinuxSocketState::TcpListener { .. } => events & POLLIN,
+        _ => 0,
+    }
+}
+
+pub(super) fn linux_socket_fionread(socket_id: u32, arg: u64) -> u64 {
+    if arg == 0 || !handlers::helpers::is_user_range_accessible(arg, 4) {
+        return linux_err(EFAULT);
+    }
+    let mut available = 0u32;
+    match refresh_tcp_connect(socket_id) {
+        Ok(_) => {}
+        Err(errno) => return linux_err(errno),
+    }
+    if let Some(LinuxSocketEntry {
+        state:
+            LinuxSocketState::TcpConnected { tcp_id, .. }
+            | LinuxSocketState::TcpConnectedV6 { tcp_id, .. },
+        ..
+    }) = socket_entry(socket_id)
+    {
+        available = match crate::net::tcp::recv_available(tcp_id) {
+            n if n == u32::MAX || n == u32::MAX - 1 => 0,
+            n => n,
+        };
+    }
+    unsafe {
+        write_u32(arg, 0, available);
+    }
+    0
+}
+
 fn socket_alloc(kind: LinuxSocketKind, protocol: u16) -> Option<u32> {
     let mut table = LINUX_SOCKETS.lock();
     for (idx, entry) in table.iter_mut().enumerate() {
@@ -686,7 +1095,15 @@ fn socket_alloc(kind: LinuxSocketKind, protocol: u16) -> Option<u32> {
                         remote_port: 0,
                         connected: false,
                     },
-                    LinuxSocketKind::InetStream => LinuxSocketState::New,
+                    LinuxSocketKind::Inet6Datagram => LinuxSocketState::UdpV6 {
+                        local_port: 0,
+                        remote_ip: [0; 16],
+                        remote_port: 0,
+                        connected: false,
+                    },
+                    LinuxSocketKind::InetStream | LinuxSocketKind::Inet6Stream => {
+                        LinuxSocketState::New
+                    }
                     LinuxSocketKind::Empty => LinuxSocketState::Empty,
                 },
             };
@@ -701,6 +1118,27 @@ fn socket_alloc_connected_tcp(tcp_id: u32, remote_ip: Ipv4Addr, remote_port: u16
     if socket_set_state(
         socket_id,
         LinuxSocketState::TcpConnected {
+            tcp_id,
+            remote_ip: remote_ip.0,
+            remote_port,
+        },
+    ) {
+        Some(socket_id)
+    } else {
+        socket_decref(socket_id);
+        None
+    }
+}
+
+fn socket_alloc_connected_tcp_v6(
+    tcp_id: u32,
+    remote_ip: Ipv6Addr,
+    remote_port: u16,
+) -> Option<u32> {
+    let socket_id = socket_alloc(LinuxSocketKind::Inet6Stream, IPPROTO_TCP as u16)?;
+    if socket_set_state(
+        socket_id,
+        LinuxSocketState::TcpConnectedV6 {
             tcp_id,
             remote_ip: remote_ip.0,
             remote_port,
@@ -744,6 +1182,85 @@ fn socket_set_state(socket_id: u32, state: LinuxSocketState) -> bool {
     true
 }
 
+fn refresh_tcp_connect(socket_id: u32) -> Result<bool, i32> {
+    let state = match socket_entry(socket_id) {
+        Some(entry) => entry.state,
+        None => return Err(EBADF),
+    };
+    let LinuxSocketState::TcpConnecting {
+        tcp_id,
+        remote_ip,
+        remote_port,
+    } = state
+    else {
+        if let LinuxSocketState::TcpConnectingV6 {
+            tcp_id,
+            remote_ip,
+            remote_port,
+        } = state
+        {
+            crate::net::poll();
+            return match crate::net::tcp::connect_status(tcp_id) {
+                crate::net::tcp::ConnectStatus::Established => {
+                    if socket_set_state(
+                        socket_id,
+                        LinuxSocketState::TcpConnectedV6 {
+                            tcp_id,
+                            remote_ip,
+                            remote_port,
+                        },
+                    ) {
+                        Ok(true)
+                    } else {
+                        crate::net::tcp::close(tcp_id);
+                        Err(EBADF)
+                    }
+                }
+                crate::net::tcp::ConnectStatus::InProgress => Ok(false),
+                crate::net::tcp::ConnectStatus::Failed => {
+                    let _ = socket_set_state(
+                        socket_id,
+                        LinuxSocketState::TcpConnectFailed {
+                            errno: ECONNREFUSED,
+                        },
+                    );
+                    Err(ECONNREFUSED)
+                }
+            };
+        }
+        return Ok(!matches!(state, LinuxSocketState::TcpConnectFailed { .. }));
+    };
+
+    crate::net::poll();
+    match crate::net::tcp::connect_status(tcp_id) {
+        crate::net::tcp::ConnectStatus::Established => {
+            if socket_set_state(
+                socket_id,
+                LinuxSocketState::TcpConnected {
+                    tcp_id,
+                    remote_ip,
+                    remote_port,
+                },
+            ) {
+                Ok(true)
+            } else {
+                crate::net::tcp::close(tcp_id);
+                Err(EBADF)
+            }
+        }
+        crate::net::tcp::ConnectStatus::InProgress => Ok(false),
+        crate::net::tcp::ConnectStatus::Failed => {
+            let _ = socket_set_state(
+                socket_id,
+                LinuxSocketState::TcpConnectFailed {
+                    errno: ECONNREFUSED,
+                },
+            );
+            Err(ECONNREFUSED)
+        }
+    }
+}
+
 fn socket_update_udp_remote(socket_id: u32, remote_ip: Ipv4Addr, remote_port: u16) -> bool {
     let Some(idx) = socket_index(socket_id) else {
         return false;
@@ -765,15 +1282,48 @@ fn socket_update_udp_remote(socket_id: u32, remote_ip: Ipv4Addr, remote_port: u1
     true
 }
 
+fn socket_update_udp_remote_v6(socket_id: u32, remote_ip: Ipv6Addr, remote_port: u16) -> bool {
+    let Some(idx) = socket_index(socket_id) else {
+        return false;
+    };
+    let mut table = LINUX_SOCKETS.lock();
+    if !table[idx].in_use {
+        return false;
+    }
+    let local_port = match table[idx].state {
+        LinuxSocketState::UdpV6 { local_port, .. } => local_port,
+        _ => 0,
+    };
+    table[idx].state = LinuxSocketState::UdpV6 {
+        local_port,
+        remote_ip: remote_ip.0,
+        remote_port,
+        connected: true,
+    };
+    true
+}
+
 fn close_socket_state(state: LinuxSocketState) {
     match state {
+        LinuxSocketState::TcpConnecting { tcp_id, .. } => {
+            let _ = crate::net::tcp::close(tcp_id);
+        }
+        LinuxSocketState::TcpConnectingV6 { tcp_id, .. } => {
+            let _ = crate::net::tcp::close(tcp_id);
+        }
         LinuxSocketState::TcpConnected { tcp_id, .. } => {
+            let _ = crate::net::tcp::close(tcp_id);
+        }
+        LinuxSocketState::TcpConnectedV6 { tcp_id, .. } => {
             let _ = crate::net::tcp::close(tcp_id);
         }
         LinuxSocketState::TcpListener { listener_id, .. } => {
             let _ = crate::net::tcp::close_listener(listener_id);
         }
         LinuxSocketState::Udp { local_port, .. } if local_port != 0 => {
+            crate::net::udp::unbind(local_port);
+        }
+        LinuxSocketState::UdpV6 { local_port, .. } if local_port != 0 => {
             crate::net::udp::unbind(local_port);
         }
         _ => {}
@@ -804,6 +1354,15 @@ fn ensure_udp_bound(socket_id: u32) -> Result<u16, i32> {
             return Ok(local_port);
         }
     }
+    if let Some(LinuxSocketEntry {
+        state: LinuxSocketState::UdpV6 { local_port, .. },
+        ..
+    }) = socket_entry(socket_id)
+    {
+        if local_port != 0 {
+            return Ok(local_port);
+        }
+    }
     let port = bind_ephemeral_udp().ok_or(ENOMEM)?;
     let Some(idx) = socket_index(socket_id) else {
         crate::net::udp::unbind(port);
@@ -822,6 +1381,20 @@ fn ensure_udp_bound(socket_id: u32) -> Result<u16, i32> {
             ..
         } => {
             table[idx].state = LinuxSocketState::Udp {
+                local_port: port,
+                remote_ip,
+                remote_port,
+                connected,
+            };
+            Ok(port)
+        }
+        LinuxSocketState::UdpV6 {
+            remote_ip,
+            remote_port,
+            connected,
+            ..
+        } => {
+            table[idx].state = LinuxSocketState::UdpV6 {
                 local_port: port,
                 remote_ip,
                 remote_port,
@@ -904,6 +1477,67 @@ fn write_sockaddr_in(addr_ptr: u64, addrlen_ptr: u64, ip: Ipv4Addr, port: u16) -
     0
 }
 
+fn read_sockaddr_in6(addr_ptr: u64, addr_len: u64) -> Result<(Ipv6Addr, u16), i32> {
+    if addr_ptr == 0 || addr_len < 28 || !handlers::helpers::is_user_range_accessible(addr_ptr, 28)
+    {
+        return Err(EFAULT);
+    }
+    let family =
+        unsafe { u16::from_le_bytes([*(addr_ptr as *const u8), *((addr_ptr + 1) as *const u8)]) };
+    if family as u64 != AF_INET6 {
+        return Err(EAFNOSUPPORT);
+    }
+    let port = unsafe {
+        u16::from_be_bytes([
+            *((addr_ptr + 2) as *const u8),
+            *((addr_ptr + 3) as *const u8),
+        ])
+    };
+    let mut ip = [0u8; 16];
+    unsafe {
+        core::ptr::copy_nonoverlapping((addr_ptr + 8) as *const u8, ip.as_mut_ptr(), 16);
+    }
+    Ok((Ipv6Addr(ip), port))
+}
+
+fn write_sockaddr_in6(addr_ptr: u64, addrlen_ptr: u64, ip: Ipv6Addr, port: u16) -> u64 {
+    if addr_ptr == 0 || addrlen_ptr == 0 {
+        return 0;
+    }
+    if !handlers::helpers::is_user_range_accessible(addrlen_ptr, 4) {
+        return linux_err(EFAULT);
+    }
+    let len = unsafe { *((addrlen_ptr) as *const u32) };
+    if len < 28 {
+        unsafe {
+            write_u32(addrlen_ptr, 0, 28);
+        }
+        return linux_err(EINVAL);
+    }
+    if !handlers::helpers::is_user_range_accessible(addr_ptr, 28) {
+        return linux_err(EFAULT);
+    }
+    unsafe {
+        write_u16(addr_ptr, 0, AF_INET6 as u16);
+        let port_be = port.to_be_bytes();
+        *((addr_ptr + 2) as *mut u8) = port_be[0];
+        *((addr_ptr + 3) as *mut u8) = port_be[1];
+        write_u32(addr_ptr, 4, 0);
+        core::ptr::copy_nonoverlapping(ip.0.as_ptr(), (addr_ptr + 8) as *mut u8, 16);
+        write_u32(addr_ptr, 24, 0);
+        write_u32(addrlen_ptr, 0, 28);
+    }
+    0
+}
+
+fn ipv4_mapped_v6(ip: Ipv4Addr) -> Ipv6Addr {
+    let mut out = [0u8; 16];
+    out[10] = 0xff;
+    out[11] = 0xff;
+    out[12..16].copy_from_slice(&ip.0);
+    Ipv6Addr(out)
+}
+
 fn read_msghdr(msg_ptr: u64) -> Result<(u64, u64, u64, u64), i32> {
     if msg_ptr == 0 || !handlers::helpers::is_user_range_accessible(msg_ptr, 56) {
         return Err(EFAULT);
@@ -930,11 +1564,13 @@ fn socket_send_iov(fd: u32, name: u64, namelen: u64, iov: u64, iovlen: u64, flag
     }
     let mut total = 0u64;
     let mut datagram = Vec::new();
-    let is_udp = fd_socket_id(fd)
+    let socket_kind = fd_socket_id(fd)
         .ok()
         .and_then(socket_entry)
-        .map(|entry| entry.kind == LinuxSocketKind::InetDatagram)
-        .unwrap_or(false);
+        .map(|entry| entry.kind)
+        .unwrap_or(LinuxSocketKind::Empty);
+    let is_udp = socket_kind == LinuxSocketKind::InetDatagram
+        || socket_kind == LinuxSocketKind::Inet6Datagram;
     for idx in 0..iovlen {
         let base = unsafe { read_u64(iov, idx * 16) };
         let len = unsafe { read_u64(iov, idx * 16 + 8) };
@@ -971,27 +1607,48 @@ fn socket_send_iov(fd: u32, name: u64, namelen: u64, iov: u64, iovlen: u64, flag
             Some(entry) => entry,
             None => return linux_err(EBADF),
         };
-        let (remote_ip, remote_port) = if name != 0 {
-            match read_sockaddr_in(name, namelen) {
-                Ok(addr) => addr,
-                Err(errno) => return linux_err(errno),
-            }
-        } else {
-            match entry.state {
-                LinuxSocketState::Udp {
-                    remote_ip,
-                    remote_port,
-                    connected: true,
-                    ..
-                } => (Ipv4Addr(remote_ip), remote_port),
-                _ => return linux_err(ENOTCONN),
-            }
-        };
         let local_port = match ensure_udp_bound(socket_id) {
             Ok(port) => port,
             Err(errno) => return linux_err(errno),
         };
-        if crate::net::udp::send(remote_ip, local_port, remote_port, &datagram) {
+        let sent = if socket_kind == LinuxSocketKind::Inet6Datagram {
+            let (remote_ip, remote_port) = if name != 0 {
+                match read_sockaddr_in6(name, namelen) {
+                    Ok(addr) => addr,
+                    Err(errno) => return linux_err(errno),
+                }
+            } else {
+                match entry.state {
+                    LinuxSocketState::UdpV6 {
+                        remote_ip,
+                        remote_port,
+                        connected: true,
+                        ..
+                    } => (Ipv6Addr(remote_ip), remote_port),
+                    _ => return linux_err(ENOTCONN),
+                }
+            };
+            crate::net::udp::send_v6(remote_ip, local_port, remote_port, &datagram)
+        } else {
+            let (remote_ip, remote_port) = if name != 0 {
+                match read_sockaddr_in(name, namelen) {
+                    Ok(addr) => addr,
+                    Err(errno) => return linux_err(errno),
+                }
+            } else {
+                match entry.state {
+                    LinuxSocketState::Udp {
+                        remote_ip,
+                        remote_port,
+                        connected: true,
+                        ..
+                    } => (Ipv4Addr(remote_ip), remote_port),
+                    _ => return linux_err(ENOTCONN),
+                }
+            };
+            crate::net::udp::send(remote_ip, local_port, remote_port, &datagram)
+        };
+        if sent {
             crate::task::scheduler::record_net_tx(datagram.len() as u64);
             datagram.len() as u64
         } else {

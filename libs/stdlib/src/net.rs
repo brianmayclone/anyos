@@ -17,6 +17,16 @@ pub fn ping(ip: &[u8; 4], seq: u32, timeout: u32) -> u32 {
     syscall3(SYS_NET_PING, ip.as_ptr() as u64, seq as u64, timeout as u64)
 }
 
+/// ICMPv6 ping. ip=16 bytes, returns RTT ticks or u32::MAX.
+pub fn ping6(ip: &[u8; 16], seq: u32, timeout: u32) -> u32 {
+    syscall3(
+        SYS_NET_PING6,
+        ip.as_ptr() as u64,
+        seq as u64,
+        timeout as u64,
+    )
+}
+
 /// DHCP discover. Writes result [ip:4, mask:4, gw:4, dns:4] to buf.
 /// Returns 0 on success.
 pub fn dhcp(buf: &mut [u8; 16]) -> u32 {
@@ -32,6 +42,20 @@ pub fn dns(hostname: &str, result: &mut [u8; 4]) -> u32 {
     host_buf[len] = 0;
     syscall2(
         SYS_NET_DNS,
+        host_buf.as_ptr() as u64,
+        result.as_mut_ptr() as u64,
+    )
+}
+
+/// DNS AAAA resolve. Writes resolved IPv6 address (16 bytes) to result.
+/// Returns 0 on success.
+pub fn dns6(hostname: &str, result: &mut [u8; 16]) -> u32 {
+    let mut host_buf = [0u8; 257];
+    let len = hostname.len().min(256);
+    host_buf[..len].copy_from_slice(&hostname.as_bytes()[..len]);
+    host_buf[len] = 0;
+    syscall2(
+        SYS_NET_DNS6,
         host_buf.as_ptr() as u64,
         result.as_mut_ptr() as u64,
     )
@@ -207,6 +231,25 @@ pub fn tcp_connect(ip: &[u8; 4], port: u16, timeout_ms: u32) -> u32 {
     syscall1(SYS_TCP_CONNECT, &params as *const _ as u64)
 }
 
+/// TCP connect to remote IPv6 host. Returns socket_id or u32::MAX on error.
+/// timeout is in milliseconds (0 = default 10s).
+pub fn tcp_connect_v6(ip: &[u8; 16], port: u16, timeout_ms: u32) -> u32 {
+    #[repr(C)]
+    struct TcpConnectV6Params {
+        ip: [u8; 16],
+        port: u16,
+        _pad: u16,
+        timeout: u32,
+    }
+    let params = TcpConnectV6Params {
+        ip: *ip,
+        port,
+        _pad: 0,
+        timeout: timeout_ms,
+    };
+    syscall1(SYS_TCP_CONNECT_V6, &params as *const _ as u64)
+}
+
 /// Send data on a TCP connection. Returns bytes sent or u32::MAX on error.
 pub fn tcp_send(socket_id: u32, data: &[u8]) -> u32 {
     syscall3(
@@ -355,12 +398,43 @@ pub fn udp_sendto(dst_ip: &[u8; 4], dst_port: u16, src_port: u16, data: &[u8], f
     syscall1(SYS_UDP_SENDTO, &params as *const _ as u64)
 }
 
+/// Send a UDP datagram over IPv6. Returns bytes sent or u32::MAX on error.
+pub fn udp_sendto_v6(dst_ip: &[u8; 16], dst_port: u16, src_port: u16, data: &[u8]) -> u32 {
+    #[repr(C)]
+    struct UdpSendV6Params {
+        dst_ip: [u8; 16],
+        dst_port: u16,
+        src_port: u16,
+        data_ptr: u32,
+        data_len: u32,
+    }
+    let params = UdpSendV6Params {
+        dst_ip: *dst_ip,
+        dst_port,
+        src_port,
+        data_ptr: data.as_ptr() as u32,
+        data_len: data.len() as u32,
+    };
+    syscall1(SYS_UDP_SENDTO_V6, &params as *const _ as u64)
+}
+
 /// Receive a UDP datagram on a bound port.
 /// Buffer receives: [src_ip:4, src_port:u16, payload_len:u16, payload...].
 /// Returns total bytes written (8 + payload), 0=no data/timeout, u32::MAX=error.
 pub fn udp_recvfrom(port: u16, buf: &mut [u8]) -> u32 {
     syscall3(
         SYS_UDP_RECVFROM,
+        port as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    )
+}
+
+/// Receive a UDP datagram on a bound port with IPv6 source metadata.
+/// Buffer receives: [src_ip:16, src_port:u16, payload_len:u16, payload...].
+pub fn udp_recvfrom_v6(port: u16, buf: &mut [u8]) -> u32 {
+    syscall3(
+        SYS_UDP_RECVFROM_V6,
         port as u64,
         buf.as_mut_ptr() as u64,
         buf.len() as u64,

@@ -262,7 +262,10 @@ pub(crate) fn dispatch_inner(
         // IPv6
         SYS_NET_PING6 => handlers::sys_net_ping6(arg1, arg2 as u32, arg3 as u32),
         SYS_NET_DNS6 => handlers::sys_net_dns6(arg1, arg2),
+        SYS_UDP_SENDTO_V6 => handlers::sys_udp_sendto_v6(arg1),
         SYS_TCP_CONNECT_V6 => handlers::sys_tcp_connect_v6(arg1),
+        SYS_UDP_RECVFROM_V6 => handlers::sys_udp_recvfrom_v6(arg1 as u32, arg2, arg3 as u32),
+        SYS_TCP_ACCEPT_V6 => handlers::sys_tcp_accept_v6(arg1 as u32, arg2),
 
         // Pipes
         SYS_PIPE_CREATE => handlers::sys_pipe_create(arg1),

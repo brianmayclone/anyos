@@ -47,8 +47,11 @@ const ECHILD: i32 = 10;
 const ELOOP: i32 = 40;
 const ENOMSG: i32 = 42;
 const EAFNOSUPPORT: i32 = 97;
+const EISCONN: i32 = 106;
 const ECONNREFUSED: i32 = 111;
 const ENOTCONN: i32 = 107;
+const EALREADY: i32 = 114;
+const EINPROGRESS: i32 = 115;
 const EPROTONOSUPPORT: i32 = 93;
 
 const LINUX_SYS_READ: u64 = 0;

@@ -47,12 +47,18 @@ pub const SYS_DLL_LOAD: u32 = 80;
 // Networking
 pub const SYS_NET_DNS: u32 = 43;
 pub const SYS_NET_CONFIG: u32 = 40;
+pub const SYS_NET_PING6: u32 = 159;
+pub const SYS_NET_DNS6: u32 = 160;
 pub const SYS_TCP_CONNECT: u32 = 100;
+pub const SYS_TCP_CONNECT_V6: u32 = 163;
+pub const SYS_TCP_ACCEPT_V6: u32 = 165;
 pub const SYS_TCP_SEND: u32 = 101;
 pub const SYS_TCP_RECV: u32 = 102;
 pub const SYS_TCP_CLOSE: u32 = 103;
 pub const SYS_TCP_STATUS: u32 = 104;
 pub const SYS_TCP_RECV_AVAILABLE: u32 = 130;
+pub const SYS_UDP_SENDTO_V6: u32 = 162;
+pub const SYS_UDP_RECVFROM_V6: u32 = 164;
 pub const SYS_PIPE_CREATE: u32 = 45;
 pub const SYS_PIPE_READ: u32 = 46;
 pub const SYS_PIPE_CLOSE: u32 = 47;
@@ -680,6 +686,19 @@ pub fn dns_resolve(hostname: &str, result: &mut [u8; 4]) -> u32 {
     ret as u32
 }
 
+/// Resolve a hostname to an IPv6 address. Returns 0 on success.
+pub fn dns_resolve_v6(hostname: &str, result: &mut [u8; 16]) -> u32 {
+    let mut host_buf = [0u8; 257];
+    let len = hostname.len().min(256);
+    host_buf[..len].copy_from_slice(&hostname.as_bytes()[..len]);
+    host_buf[len] = 0;
+    syscall2(
+        SYS_NET_DNS6,
+        host_buf.as_ptr() as u64,
+        result.as_mut_ptr() as u64,
+    ) as u32
+}
+
 /// Connect to a TCP server. Returns socket id, or `u32::MAX` on error.
 pub fn tcp_connect(ip: &[u8; 4], port: u16, timeout_ms: u32) -> u32 {
     #[repr(C, packed)]
@@ -696,6 +715,29 @@ pub fn tcp_connect(ip: &[u8; 4], port: u16, timeout_ms: u32) -> u32 {
         timeout: timeout_ms,
     };
     let ret = syscall1(SYS_TCP_CONNECT, &params as *const _ as u64);
+    if (ret as i64) < 0 || ret == u64::MAX {
+        u32::MAX
+    } else {
+        ret as u32
+    }
+}
+
+/// Connect to an IPv6 TCP server. Returns socket id, or `u32::MAX` on error.
+pub fn tcp_connect_v6(ip: &[u8; 16], port: u16, timeout_ms: u32) -> u32 {
+    #[repr(C, packed)]
+    struct TcpConnectV6Params {
+        ip: [u8; 16],
+        port: u16,
+        _pad: u16,
+        timeout: u32,
+    }
+    let params = TcpConnectV6Params {
+        ip: *ip,
+        port,
+        _pad: 0,
+        timeout: timeout_ms,
+    };
+    let ret = syscall1(SYS_TCP_CONNECT_V6, &params as *const _ as u64);
     if (ret as i64) < 0 || ret == u64::MAX {
         u32::MAX
     } else {

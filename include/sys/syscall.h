@@ -178,9 +178,16 @@
 #define SYS_UDP_LIST       155
 #define SYS_NET_STATS      156
 #define SYS_PIPE_BYTES_AVAILABLE 157
+#define SYS_WIFI           158
+#define SYS_NET_PING6      159
+#define SYS_NET_DNS6       160
 
 /* ---- Screen capture ---- */
 #define SYS_CAPTURE_SCREEN 161
+#define SYS_UDP_SENDTO_V6  162
+#define SYS_TCP_CONNECT_V6 163
+#define SYS_UDP_RECVFROM_V6 164
+#define SYS_TCP_ACCEPT_V6  165
 
 /* ---- Threading ---- */
 #define SYS_THREAD_CREATE  170

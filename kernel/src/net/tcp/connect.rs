@@ -3,17 +3,22 @@
 //! Implements `connect()`, `listen()`, `accept()`, `close()`,
 //! `close_listener()`, `shutdown_write()`, and `status()`.
 
-use super::send::{
-    send_segment, send_segment_auto, send_segment_v6, send_syn_segment, send_syn_segment_v6,
-};
+use super::send::{send_segment, send_segment_v6, send_syn_segment, send_syn_segment_v6};
 use super::tcb::*;
 use super::util::{alloc_ephemeral_port, insert_slot_hash, remove_slot_hash};
 use super::{TCP_ACTIVE_OPENS, TCP_CONNECTIONS, TCP_PASSIVE_OPENS};
 use crate::net::types::{Ipv4Addr, Ipv6Addr};
 use core::sync::atomic::Ordering;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectStatus {
+    InProgress,
+    Established,
+    Failed,
+}
+
 /// Active open: connect to a remote host. Returns socket ID or u32::MAX on error.
-pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32 {
+pub fn connect_start(remote_ip: Ipv4Addr, remote_port: u16) -> u32 {
     let cfg = crate::net::config();
     let local_ip = if remote_ip.0[0] == 127 {
         Ipv4Addr([127, 0, 0, 1])
@@ -70,65 +75,54 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
         local_port
     );
     TCP_ACTIVE_OPENS.fetch_add(1, Ordering::Relaxed);
-    send_syn_segment(local_ip, local_port, remote_ip, remote_port, iss, 0, SYN);
-
-    // Wait for connection to establish (blocking)
-    let start = crate::arch::hal::timer_current_ticks();
-
-    // Poll once eagerly to process any pending packets.
-    crate::net::poll();
-
-    loop {
-        {
-            let mut conns = TCP_CONNECTIONS.lock();
-            let table = match conns.as_mut() {
-                Some(t) => t,
-                None => return u32::MAX,
-            };
-            if let Some(tcb) = table[slot_id].as_mut() {
-                match tcb.state {
-                    TcpState::Established => {
-                        tcb.waiting_tid = 0;
-                        crate::serial_verbose_println!("TCP: connected socket {}", slot_id);
-                        return slot_id as u32;
-                    }
-                    TcpState::Closed => {
-                        tcb.waiting_tid = 0;
-                        crate::serial_verbose_println!("TCP: connection refused");
-                        return u32::MAX;
-                    }
-                    _ => {}
-                }
-                if tcb.reset_received {
-                    remove_slot_hash(table, slot_id);
-                    table[slot_id] = None;
-                    return u32::MAX;
-                }
-
-                let now = crate::arch::hal::timer_current_ticks();
-                if now.wrapping_sub(start) >= timeout_ticks {
-                    crate::serial_verbose_println!("TCP: connect timeout");
-                    remove_slot_hash(table, slot_id);
-                    table[slot_id] = None;
-                    return u32::MAX;
-                }
-
-                tcb.waiting_tid = tid;
-            } else {
-                return u32::MAX;
-            }
+    if !send_syn_segment(local_ip, local_port, remote_ip, remote_port, iss, 0, SYN) {
+        let mut conns = TCP_CONNECTIONS.lock();
+        if let Some(table) = conns.as_mut() {
+            remove_slot_hash(table, slot_id);
+            table[slot_id] = None;
         }
+        return u32::MAX;
+    }
 
-        let wake_at = crate::arch::hal::timer_current_ticks() + 1;
-        crate::task::scheduler::sleep_until(wake_at);
-        crate::net::poll();
+    slot_id as u32
+}
+
+pub fn connect_status(socket_id: u32) -> ConnectStatus {
+    let slot_id = socket_id as usize;
+    let mut conns = TCP_CONNECTIONS.lock();
+    let table = match conns.as_mut() {
+        Some(t) => t,
+        None => return ConnectStatus::Failed,
+    };
+    let Some(tcb) = table.get_mut(slot_id).and_then(Option::as_mut) else {
+        return ConnectStatus::Failed;
+    };
+    match tcb.state {
+        TcpState::Established => {
+            tcb.waiting_tid = 0;
+            ConnectStatus::Established
+        }
+        TcpState::Closed => {
+            tcb.waiting_tid = 0;
+            remove_slot_hash(table, slot_id);
+            table[slot_id] = None;
+            ConnectStatus::Failed
+        }
+        _ if tcb.reset_received => {
+            remove_slot_hash(table, slot_id);
+            table[slot_id] = None;
+            ConnectStatus::Failed
+        }
+        _ => ConnectStatus::InProgress,
     }
 }
 
-/// Active open over IPv6: connect to a remote host.
-pub fn connect_v6(remote_ip: Ipv6Addr, remote_port: u16, timeout_ticks: u32) -> u32 {
+/// Start an IPv6 active open without blocking.
+pub fn connect_start_v6(remote_ip: Ipv6Addr, remote_port: u16) -> u32 {
     let cfg = crate::net::config();
-    let local_ip6 = if remote_ip.is_link_local() {
+    let local_ip6 = if remote_ip.is_loopback() {
+        Ipv6Addr::LOOPBACK
+    } else if remote_ip.is_link_local() {
         cfg.ipv6_link_local
     } else if !cfg.ipv6_addr.is_unspecified() {
         cfg.ipv6_addr
@@ -169,30 +163,113 @@ pub fn connect_v6(remote_ip: Ipv6Addr, remote_port: u16, timeout_ticks: u32) -> 
     };
 
     TCP_ACTIVE_OPENS.fetch_add(1, Ordering::Relaxed);
-    send_syn_segment_v6(local_ip6, local_port, remote_ip, remote_port, iss, 0, SYN);
+    if !send_syn_segment_v6(local_ip6, local_port, remote_ip, remote_port, iss, 0, SYN) {
+        let mut conns = TCP_CONNECTIONS.lock();
+        if let Some(table) = conns.as_mut() {
+            remove_slot_hash(table, slot_id as usize);
+            table[slot_id as usize] = None;
+        }
+        return u32::MAX;
+    }
 
+    slot_id
+}
+
+/// Active open: connect to a remote host. Returns socket ID or u32::MAX on error.
+pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32 {
+    let socket_id = connect_start(remote_ip, remote_port);
+    if socket_id == u32::MAX {
+        return u32::MAX;
+    }
+    let tid = crate::task::scheduler::current_tid();
+
+    // Wait for connection to establish (blocking)
     let start = crate::arch::hal::timer_current_ticks();
+
+    // Poll once eagerly to process any pending packets.
+    crate::net::poll();
+
     loop {
-        crate::net::poll();
+        match connect_status(socket_id) {
+            ConnectStatus::Established => {
+                crate::serial_verbose_println!("TCP: connected socket {}", socket_id);
+                return socket_id;
+            }
+            ConnectStatus::Failed => {
+                crate::serial_verbose_println!("TCP: connection refused");
+                return u32::MAX;
+            }
+            ConnectStatus::InProgress => {}
+        }
+
         {
-            let conns = TCP_CONNECTIONS.lock();
-            if let Some(table) = conns.as_ref() {
-                if let Some(tcb) = &table[slot_id as usize] {
-                    if tcb.state == TcpState::Established {
-                        return slot_id;
-                    }
-                    if tcb.reset_received {
-                        return u32::MAX;
-                    }
-                }
+            let mut conns = TCP_CONNECTIONS.lock();
+            let table = match conns.as_mut() {
+                Some(t) => t,
+                None => return u32::MAX,
+            };
+            if let Some(tcb) = table.get_mut(socket_id as usize).and_then(Option::as_mut) {
+                tcb.waiting_tid = tid;
+            } else {
+                return u32::MAX;
             }
         }
+
+        let now = crate::arch::hal::timer_current_ticks();
+        if now.wrapping_sub(start) >= timeout_ticks {
+            crate::serial_verbose_println!("TCP: connect timeout");
+            let mut conns = TCP_CONNECTIONS.lock();
+            if let Some(table) = conns.as_mut() {
+                let slot_id = socket_id as usize;
+                remove_slot_hash(table, slot_id);
+                table[slot_id] = None;
+            }
+            return u32::MAX;
+        }
+
+        let wake_at = crate::arch::hal::timer_current_ticks() + 1;
+        crate::task::scheduler::sleep_until(wake_at);
+        crate::net::poll();
+    }
+}
+
+/// Active open over IPv6: connect to a remote host.
+pub fn connect_v6(remote_ip: Ipv6Addr, remote_port: u16, timeout_ticks: u32) -> u32 {
+    let socket_id = connect_start_v6(remote_ip, remote_port);
+    if socket_id == u32::MAX {
+        return u32::MAX;
+    }
+    let tid = crate::task::scheduler::current_tid();
+
+    let start = crate::arch::hal::timer_current_ticks();
+    crate::net::poll();
+
+    loop {
+        match connect_status(socket_id) {
+            ConnectStatus::Established => return socket_id,
+            ConnectStatus::Failed => return u32::MAX,
+            ConnectStatus::InProgress => {}
+        }
+
+        {
+            let mut conns = TCP_CONNECTIONS.lock();
+            let table = match conns.as_mut() {
+                Some(t) => t,
+                None => return u32::MAX,
+            };
+            if let Some(tcb) = table.get_mut(socket_id as usize).and_then(Option::as_mut) {
+                tcb.waiting_tid = tid;
+            } else {
+                return u32::MAX;
+            }
+        }
+
         let now = crate::arch::hal::timer_current_ticks();
         if now.wrapping_sub(start) >= timeout_ticks {
             let mut conns = TCP_CONNECTIONS.lock();
             if let Some(table) = conns.as_mut() {
-                remove_slot_hash(table, slot_id as usize);
-                table[slot_id as usize] = None;
+                remove_slot_hash(table, socket_id as usize);
+                table[socket_id as usize] = None;
             }
             return u32::MAX;
         }
@@ -290,7 +367,8 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
                 let ready = table[i]
                     .as_ref()
                     .map(|tcb| {
-                        tcb.parent_listener == Some(lid as u16)
+                        !tcb.is_ipv6
+                            && tcb.parent_listener == Some(lid as u16)
                             && tcb.state == TcpState::Established
                             && !tcb.accepted
                     })
@@ -327,6 +405,85 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
                     tcb.waiting_tid = 0;
                 }
                 return (u32::MAX, Ipv4Addr([0; 4]), 0);
+            }
+
+            if let Some(tcb) = table[lid].as_mut() {
+                tcb.waiting_tid = tid;
+            }
+        }
+
+        let wake_at = crate::arch::hal::timer_current_ticks() + 1;
+        crate::task::scheduler::sleep_until(wake_at);
+        crate::net::poll();
+    }
+}
+
+/// Accept an IPv6 connection from a listening socket.
+pub fn accept_v6(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv6Addr, u16) {
+    let lid = listener_id as usize;
+    if lid >= MAX_CONNECTIONS {
+        return (u32::MAX, Ipv6Addr::UNSPECIFIED, 0);
+    }
+
+    let tid = crate::task::scheduler::current_tid();
+    let start = crate::arch::hal::timer_current_ticks();
+
+    crate::net::poll();
+
+    loop {
+        {
+            let mut conns = TCP_CONNECTIONS.lock();
+            let table = match conns.as_mut() {
+                Some(t) => t,
+                None => return (u32::MAX, Ipv6Addr::UNSPECIFIED, 0),
+            };
+
+            let listen_valid = table[lid]
+                .as_ref()
+                .map(|t| t.state == TcpState::Listen)
+                .unwrap_or(false);
+            if !listen_valid {
+                if let Some(tcb) = table[lid].as_mut() {
+                    tcb.waiting_tid = 0;
+                }
+                return (u32::MAX, Ipv6Addr::UNSPECIFIED, 0);
+            }
+
+            for i in 0..table.len() {
+                let ready = table[i]
+                    .as_ref()
+                    .map(|tcb| {
+                        tcb.is_ipv6
+                            && tcb.parent_listener == Some(lid as u16)
+                            && tcb.state == TcpState::Established
+                            && !tcb.accepted
+                    })
+                    .unwrap_or(false);
+
+                if ready {
+                    let tcb = match table[i].as_mut() {
+                        Some(t) => t,
+                        None => continue,
+                    };
+                    tcb.accepted = true;
+                    tcb.parent_listener = None;
+                    tcb.owner_tid = crate::task::scheduler::current_tid();
+                    let rip = tcb.remote_ip6;
+                    let rport = tcb.remote_port;
+                    if let Some(listener) = table[lid].as_mut() {
+                        listener.waiting_tid = 0;
+                    }
+                    TCP_PASSIVE_OPENS.fetch_add(1, Ordering::Relaxed);
+                    return (i as u32, rip, rport);
+                }
+            }
+
+            let now = crate::arch::hal::timer_current_ticks();
+            if now.wrapping_sub(start) >= timeout_ticks {
+                if let Some(tcb) = table[lid].as_mut() {
+                    tcb.waiting_tid = 0;
+                }
+                return (u32::MAX, Ipv6Addr::UNSPECIFIED, 0);
             }
 
             if let Some(tcb) = table[lid].as_mut() {

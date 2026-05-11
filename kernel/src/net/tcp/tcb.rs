@@ -3,7 +3,7 @@
 //! Contains the per-connection state, TCP segment representation,
 //! out-of-order buffer entry, and protocol constants.
 
-use crate::net::types::{IpAddr, Ipv4Addr, Ipv6Addr};
+use crate::net::types::{Ipv4Addr, Ipv6Addr};
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 

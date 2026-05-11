@@ -18,7 +18,7 @@ pub const SO_RCVTIMEO: u32 = 2;
 
 /// A received UDP datagram with source address/port and payload.
 pub struct UdpDatagram {
-    pub src_ip: Ipv4Addr,
+    pub src_ip: IpAddr,
     pub src_port: u16,
     pub data: Vec<u8>,
 }
@@ -255,7 +255,7 @@ pub fn handle_udp(pkt: &Ipv4Packet<'_>) {
         if let Some(cfg) = map.get_mut(&dst_port) {
             if cfg.queue.len() < MAX_QUEUE_LEN {
                 cfg.queue.push_back(UdpDatagram {
-                    src_ip: pkt.src,
+                    src_ip: IpAddr::V4(pkt.src),
                     src_port,
                     data: Vec::from(payload),
                 });
@@ -336,16 +336,12 @@ pub fn handle_udp_v6(pkt: &super::ipv6::Ipv6Packet<'_>) {
 
     let payload = &data[UDP_HEADER_LEN..(length as usize)];
 
-    // Map IPv6 source to IPv4-mapped for storage in existing queue
-    // For now, store as 0.0.0.0 source (IPv6 datagrams are delivered but
-    // source IP is not preserved in the IPv4-only UdpDatagram struct).
-    // A proper solution would use IpAddr in UdpDatagram.
     let mut ports = UDP_PORTS.lock();
     if let Some(map) = ports.as_mut() {
         if let Some(cfg) = map.get_mut(&dst_port) {
             if cfg.queue.len() < MAX_QUEUE_LEN {
                 cfg.queue.push_back(UdpDatagram {
-                    src_ip: Ipv4Addr::ZERO, // IPv6 source not representable in v4
+                    src_ip: IpAddr::V6(pkt.src),
                     src_port,
                     data: Vec::from(payload),
                 });

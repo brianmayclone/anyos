@@ -154,7 +154,10 @@ pub const SYS_WIFI: u32 = 158;
 pub const SYS_NET_PING6: u32 = 159;
 pub const SYS_NET_DNS6: u32 = 160;
 pub const SYS_CAPTURE_SCREEN: u32 = 161;
+pub const SYS_UDP_SENDTO_V6: u32 = 162;
 pub const SYS_TCP_CONNECT_V6: u32 = 163;
+pub const SYS_UDP_RECVFROM_V6: u32 = 164;
+pub const SYS_TCP_ACCEPT_V6: u32 = 165;
 
 // Threading
 pub const SYS_THREAD_CREATE: u32 = 170;
