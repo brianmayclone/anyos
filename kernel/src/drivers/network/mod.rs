@@ -18,6 +18,7 @@ pub mod virtio_net;
 
 use crate::sync::spinlock::Spinlock;
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 /// Unified network driver interface.
 pub trait NetworkDriver: Send {
@@ -29,6 +30,8 @@ pub trait NetworkDriver: Send {
     fn get_mac(&self) -> [u8; 6];
     /// Check if the network link is up.
     fn link_up(&self) -> bool;
+    /// Poll this NIC and append all received Ethernet frames to `out`.
+    fn poll_rx_into(&mut self, _out: &mut Vec<Vec<u8>>) {}
     /// Enable the NIC. Default: no-op (always enabled).
     fn set_enabled(&mut self, _enabled: bool) {}
     /// Check if the NIC is enabled. Default: true if registered.
@@ -49,9 +52,13 @@ pub trait NetworkDriver: Send {
 static NET: Spinlock<Option<Box<dyn NetworkDriver>>> = Spinlock::new(None);
 
 /// Register a network driver (called from driver init during PCI probe).
-pub fn register(driver: Box<dyn NetworkDriver>) {
+pub fn register(mut driver: Box<dyn NetworkDriver>) {
     crate::serial_verbose_println!("  Network: registered '{}'", driver.name());
     let mut net = NET.lock();
+    if let Some(old) = net.as_mut() {
+        old.set_enabled(false);
+    }
+    driver.set_enabled(true);
     *net = Some(driver);
 }
 
@@ -68,6 +75,11 @@ where
 /// Transmit a packet via the registered network driver.
 pub fn transmit(data: &[u8]) -> bool {
     with_net(|d| d.transmit(data)).unwrap_or(false)
+}
+
+/// Poll the registered primary NIC for received Ethernet frames.
+pub fn poll_rx_into(out: &mut Vec<Vec<u8>>) {
+    let _ = with_net(|d| d.poll_rx_into(out));
 }
 
 /// Get the MAC address of the registered NIC.
@@ -103,6 +115,11 @@ pub fn get_stats() -> (u64, u64, u64, u64, u64, u64) {
 /// Get NIC driver name for display.
 pub fn driver_name() -> Option<alloc::string::String> {
     with_net(|d| alloc::string::String::from(d.driver_name()))
+}
+
+/// Check whether the named driver is the active primary NIC.
+pub fn is_primary_driver(name: &str) -> bool {
+    with_net(|d| d.driver_name() == name).unwrap_or(false)
 }
 
 // ── WiFi (second network slot) ───────────────────────────────────────────────

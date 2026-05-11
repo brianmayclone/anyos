@@ -124,15 +124,10 @@ pub fn poll_rx() {
     {
         let mut packets: Vec<Vec<u8>> = Vec::new();
 
-        // E1000: batch-drain rx_queue + hardware ring in one driver lock hold.
-        crate::drivers::network::e1000::poll_rx_into(&mut packets);
-        for packet in packets.iter() {
-            ethernet::handle_frame(packet);
-        }
-
-        // VirtIO Net: batch-drain rx_queue + used ring in one driver lock hold.
-        packets.clear();
-        crate::drivers::network::virtio_net::poll_rx_into(&mut packets);
+        // Poll only the primary NIC selected by the network driver registry.
+        // Multiple emulated NICs can exist at once in QEMU; accepting RX from a
+        // non-primary card mixes MAC identities and poisons ARP/TCP state.
+        crate::drivers::network::poll_rx_into(&mut packets);
         for packet in packets.iter() {
             ethernet::handle_frame(packet);
         }

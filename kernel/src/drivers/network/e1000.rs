@@ -7,7 +7,7 @@
 
 use crate::drivers::pci::PciDevice;
 use crate::memory::address::{PhysAddr, VirtAddr};
-use crate::memory::{physical, virtual_mem, FRAME_SIZE};
+use crate::memory::{physical, physmap, virtual_mem, FRAME_SIZE};
 use crate::sync::spinlock::Spinlock;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
@@ -278,8 +278,8 @@ pub fn init() -> bool {
     // Each RxDescriptor is 16 bytes. 32 descriptors = 512 bytes = fits in one page.
     let rx_desc_frame = physical::alloc_frame().expect("E1000: failed to alloc RX desc ring");
     let rx_descs_phys = rx_desc_frame.as_u32();
-    // Identity-mapped region (< 8MiB) so virt == phys for these DMA pages
-    let rx_descs_virt = rx_desc_frame.as_u64();
+    let rx_descs_virt =
+        physmap::phys_to_virt_or_identity(PhysAddr::new(rx_desc_frame.as_u64())) as u64;
 
     // Zero out the descriptor ring
     unsafe {
@@ -291,9 +291,10 @@ pub fn init() -> bool {
     for i in 0..NUM_RX_DESC {
         let buf_frame = physical::alloc_frame().expect("E1000: failed to alloc RX buffer");
         rx_bufs_phys[i] = buf_frame.as_u32();
+        let buf_virt = physmap::phys_to_virt_or_identity(PhysAddr::new(buf_frame.as_u64()));
         // Zero the buffer
         unsafe {
-            core::ptr::write_bytes(buf_frame.as_u64() as *mut u8, 0, FRAME_SIZE);
+            core::ptr::write_bytes(buf_virt, 0, FRAME_SIZE);
         }
         // Write descriptor
         unsafe {
@@ -306,7 +307,8 @@ pub fn init() -> bool {
     // --- Allocate TX descriptor ring and buffers ---
     let tx_desc_frame = physical::alloc_frame().expect("E1000: failed to alloc TX desc ring");
     let tx_descs_phys = tx_desc_frame.as_u32();
-    let tx_descs_virt = tx_desc_frame.as_u64();
+    let tx_descs_virt =
+        physmap::phys_to_virt_or_identity(PhysAddr::new(tx_desc_frame.as_u64())) as u64;
 
     unsafe {
         core::ptr::write_bytes(tx_descs_virt as *mut u8, 0, FRAME_SIZE);
@@ -317,9 +319,10 @@ pub fn init() -> bool {
     for i in 0..NUM_TX_DESC {
         let buf_frame = physical::alloc_frame().expect("E1000: failed to alloc TX buffer");
         tx_bufs_phys[i] = buf_frame.as_u32();
-        tx_bufs_virt[i] = buf_frame.as_u64(); // Identity-mapped
+        tx_bufs_virt[i] =
+            physmap::phys_to_virt_or_identity(PhysAddr::new(buf_frame.as_u64())) as u64;
         unsafe {
-            core::ptr::write_bytes(buf_frame.as_u64() as *mut u8, 0, FRAME_SIZE);
+            core::ptr::write_bytes(tx_bufs_virt[i] as *mut u8, 0, FRAME_SIZE);
             let desc_ptr = (tx_descs_virt as *mut TxDescriptor).add(i);
             (*desc_ptr).buffer_addr = buf_frame.as_u64();
             (*desc_ptr).status = TDESC_STA_DD; // Mark as done (available for use)
@@ -695,7 +698,7 @@ fn process_rx_ring(e1000: &mut E1000) {
         let length = unsafe { core::ptr::read_volatile(&(*desc_ptr).length) } as usize;
         if length > 0 && length <= RX_BUFFER_SIZE && (status & RDESC_STA_EOP != 0) {
             let buf_phys = e1000.rx_bufs_phys[idx] as u64;
-            let buf_ptr = buf_phys as *const u8;
+            let buf_ptr = physmap::phys_to_virt_or_identity(PhysAddr::new(buf_phys)) as *const u8;
 
             let mut packet = Vec::with_capacity(length);
             unsafe {
@@ -736,6 +739,10 @@ fn process_rx_ring(e1000: &mut E1000) {
 
 fn e1000_irq_handler(_irq: u8) {
     let mut has_rx = false;
+
+    if !super::is_primary_driver("e1000") {
+        return;
+    }
 
     // Use try_lock to avoid deadlock if we're already holding the lock
     if let Some(mut state) = E1000_STATE.try_lock() {
@@ -786,6 +793,9 @@ impl super::NetworkDriver for E1000NetworkDriver {
     }
     fn link_up(&self) -> bool {
         is_link_up()
+    }
+    fn poll_rx_into(&mut self, out: &mut Vec<Vec<u8>>) {
+        poll_rx_into(out);
     }
     fn set_enabled(&mut self, enabled: bool) {
         set_enabled(enabled);

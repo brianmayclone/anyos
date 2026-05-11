@@ -318,6 +318,9 @@ fn virtio_net_irq_handler(_irq: u8) {
     if isr_status & 1 == 0 {
         return; // Not our interrupt (shared IRQ line)
     }
+    if !super::is_primary_driver("virtio-net") {
+        return;
+    }
 
     // Queue interrupt: drain received packets from the used ring.
     // Use try_lock to avoid deadlock if we're already holding the lock.
@@ -355,6 +358,12 @@ impl super::NetworkDriver for VirtioNetDriver {
     }
     fn link_up(&self) -> bool {
         is_link_up()
+    }
+    fn poll_rx_into(&mut self, out: &mut Vec<Vec<u8>>) {
+        poll_rx_into(out);
+    }
+    fn driver_name(&self) -> &str {
+        "virtio-net"
     }
 }
 
