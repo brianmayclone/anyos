@@ -457,4 +457,22 @@ mod tests {
         assert_eq!(recv(0xDEAD_BEEF, &mut buf), -1);
         assert_eq!(last_error(0xDEAD_BEEF), -1);
     }
+
+    #[test]
+    #[ignore]
+    fn tls_connects_to_google() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        install_test_transport();
+
+        let tcp = TcpStream::connect(("www.google.de", 443)).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        tcp.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
+        let fd = register_stream(tcp);
+
+        let handle = connect(fd, "www.google.de");
+        assert!(handle > 0, "connect failed with {}", handle);
+
+        close(handle as u32);
+        unregister_stream(fd);
+    }
 }
