@@ -436,10 +436,50 @@ pub(super) fn linux_unlinkat(dirfd: i32, path_ptr: u64, flags: u64) -> u64 {
 }
 
 pub(super) fn linux_unlink_translated(path: &str) -> u64 {
+    if linux_is_protected_rootfs_path(path) {
+        crate::serial_verbose_println!(
+            "licof linux unlink: blocked protected rootfs path '{}'",
+            path
+        );
+        return linux_err(EBUSY);
+    }
     match crate::fs::vfs::delete(path) {
         Ok(()) => 0,
         Err(e) => linux_fs_err(e),
     }
+}
+
+fn linux_is_protected_rootfs_path(path: &str) -> bool {
+    let rootfs = current_linux_rootfs();
+    let normalized = crate::fs::path::normalize(path);
+    if normalized == rootfs {
+        return true;
+    }
+    if !linux_path_under_rootfs(&rootfs, &normalized) {
+        return false;
+    }
+    let rel = &normalized[rootfs.len() + 1..];
+    if rel.contains('/') {
+        return false;
+    }
+    matches!(
+        rel,
+        "bin"
+            | "boot"
+            | "dev"
+            | "etc"
+            | "home"
+            | "lib"
+            | "lib64"
+            | "proc"
+            | "root"
+            | "run"
+            | "sbin"
+            | "sys"
+            | "tmp"
+            | "usr"
+            | "var"
+    )
 }
 
 pub(super) fn linux_creat(path_ptr: u64) -> u64 {
@@ -768,4 +808,126 @@ pub(super) fn linux_statfs_translated(path: &str, buf_ptr: u64) -> u64 {
         write_u64(buf_ptr, 80, block_size);
     }
     0
+}
+
+pub(super) fn linux_setxattr(
+    path_ptr: u64,
+    name_ptr: u64,
+    _value_ptr: u64,
+    _size: u64,
+    _flags: u64,
+    nofollow: bool,
+) -> u64 {
+    match linux_check_xattr_path(path_ptr, nofollow) {
+        Ok(()) => {}
+        Err(errno) => return linux_err(errno),
+    }
+    if name_ptr == 0 || super::handlers::helpers::read_user_str_safe(name_ptr).is_none() {
+        return linux_err(EFAULT);
+    }
+    linux_err(EOPNOTSUPP)
+}
+
+pub(super) fn linux_fsetxattr(
+    fd: u32,
+    name_ptr: u64,
+    _value_ptr: u64,
+    _size: u64,
+    _flags: u64,
+) -> u64 {
+    if crate::task::scheduler::current_fd_get(fd).is_none() {
+        return linux_err(EBADF);
+    }
+    if name_ptr == 0 || super::handlers::helpers::read_user_str_safe(name_ptr).is_none() {
+        return linux_err(EFAULT);
+    }
+    linux_err(EOPNOTSUPP)
+}
+
+pub(super) fn linux_getxattr(
+    path_ptr: u64,
+    name_ptr: u64,
+    _value_ptr: u64,
+    _size: u64,
+    nofollow: bool,
+) -> u64 {
+    match linux_check_xattr_path(path_ptr, nofollow) {
+        Ok(()) => {}
+        Err(errno) => return linux_err(errno),
+    }
+    if name_ptr == 0 || super::handlers::helpers::read_user_str_safe(name_ptr).is_none() {
+        return linux_err(EFAULT);
+    }
+    linux_err(ENODATA)
+}
+
+pub(super) fn linux_fgetxattr(fd: u32, name_ptr: u64, _value_ptr: u64, _size: u64) -> u64 {
+    if crate::task::scheduler::current_fd_get(fd).is_none() {
+        return linux_err(EBADF);
+    }
+    if name_ptr == 0 || super::handlers::helpers::read_user_str_safe(name_ptr).is_none() {
+        return linux_err(EFAULT);
+    }
+    linux_err(ENODATA)
+}
+
+pub(super) fn linux_listxattr(path_ptr: u64, list_ptr: u64, size: u64, nofollow: bool) -> u64 {
+    match linux_check_xattr_path(path_ptr, nofollow) {
+        Ok(()) => {}
+        Err(errno) => return linux_err(errno),
+    }
+    if list_ptr != 0 && size != 0 && !handlers::helpers::is_user_range_accessible(list_ptr, size) {
+        return linux_err(EFAULT);
+    }
+    0
+}
+
+pub(super) fn linux_flistxattr(fd: u32, list_ptr: u64, size: u64) -> u64 {
+    if crate::task::scheduler::current_fd_get(fd).is_none() {
+        return linux_err(EBADF);
+    }
+    if list_ptr != 0 && size != 0 && !handlers::helpers::is_user_range_accessible(list_ptr, size) {
+        return linux_err(EFAULT);
+    }
+    0
+}
+
+pub(super) fn linux_removexattr(path_ptr: u64, name_ptr: u64, nofollow: bool) -> u64 {
+    match linux_check_xattr_path(path_ptr, nofollow) {
+        Ok(()) => {}
+        Err(errno) => return linux_err(errno),
+    }
+    if name_ptr == 0 || super::handlers::helpers::read_user_str_safe(name_ptr).is_none() {
+        return linux_err(EFAULT);
+    }
+    linux_err(ENODATA)
+}
+
+pub(super) fn linux_fremovexattr(fd: u32, name_ptr: u64) -> u64 {
+    if crate::task::scheduler::current_fd_get(fd).is_none() {
+        return linux_err(EBADF);
+    }
+    if name_ptr == 0 || super::handlers::helpers::read_user_str_safe(name_ptr).is_none() {
+        return linux_err(EFAULT);
+    }
+    linux_err(ENODATA)
+}
+
+fn linux_check_xattr_path(path_ptr: u64, nofollow: bool) -> Result<(), i32> {
+    if path_ptr == 0 {
+        return Err(EFAULT);
+    }
+    let raw_path = super::handlers::helpers::read_user_str_safe(path_ptr).ok_or(EFAULT)?;
+    let abs = linux_absolute_path(raw_path);
+    if linux_proc_file_id(&abs).is_some() {
+        return Ok(());
+    }
+    let path = linux_translate_path(&abs);
+    let path = linux_resolve_translated_path(&path, !nofollow, false)?;
+    let ret = if nofollow {
+        crate::fs::vfs::lstat(&path)
+    } else {
+        crate::fs::vfs::stat(&path)
+    };
+    ret.map(|_| ()).map_err(fs_errno)
 }

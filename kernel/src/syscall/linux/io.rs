@@ -118,6 +118,20 @@ pub(super) fn linux_pread64(fd: u32, buf_ptr: u64, len: u64, offset: u64) -> u64
     }
 }
 
+pub(super) fn linux_copy_file_range(
+    _fd_in: u32,
+    _off_in_ptr: u64,
+    _fd_out: u32,
+    _off_out_ptr: u64,
+    _len: u64,
+    flags: u64,
+) -> u64 {
+    if flags != 0 {
+        return linux_err(EINVAL);
+    }
+    linux_err(EXDEV)
+}
+
 pub(super) fn linux_readv(fd: u32, iov_ptr: u64, iovcnt: u64) -> u64 {
     linux_iov_io(fd, iov_ptr, iovcnt, false)
 }
