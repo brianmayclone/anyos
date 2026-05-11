@@ -62,8 +62,8 @@ etc/apt/sources.list
 etc/apt/apt.conf.d/99licof
 ```
 
-`99licof` disables valid-until checks because the default archive target is an
-old Debian suite on `archive.debian.org`.
+`99licof` disables valid-until checks for compatibility with archived or
+mirrored Debian package indexes.
 
 After package installation, `licof init` verifies that the Linux base contains
 an executable shell candidate (`/bin/bash`, `/bin/dash` or `/bin/sh`) and a
@@ -126,10 +126,9 @@ The default bootstrap seed is:
 base-files
 base-passwd
 libc6
-libgcc1
+libgcc-s1
 libstdc++6
 zlib1g
-libapt-pkg4.12
 apt
 dash
 bash
@@ -201,14 +200,14 @@ preferred concrete packages; currently `awk` resolves to `mawk`.
 Default index URL:
 
 ```text
-http://archive.debian.org/debian/dists/wheezy/main/binary-amd64/Packages.gz
+http://deb.debian.org/debian/dists/bookworm/main/binary-amd64/Packages.gz
 ```
 
 Cache paths:
 
 ```text
-/System/var/licof/cache/debian-wheezy-amd64-Packages.gz
-/System/var/licof/cache/debian-wheezy-amd64-Packages
+/System/var/licof/cache/bookworm/debian-bookworm-amd64-Packages.gz
+/System/var/licof/cache/bookworm/debian-bookworm-amd64-Packages
 ```
 
 The index is accepted only when:
@@ -243,16 +242,16 @@ Defaults:
 | --- | --- |
 | `paths/root` | `/System/var/licof` |
 | `paths/rootfs` | `/System/var/licof/rootfs` |
-| `paths/cache` | `/System/var/licof/cache` |
-| `paths/db` | `/System/var/licof/db` |
-| `paths/installed_db` | `/System/var/licof/db/installed` |
-| `apt/base_url` | `http://archive.debian.org/debian` |
-| `apt/suite` | `wheezy` |
+| `paths/cache` | `/System/var/licof/cache/bookworm` |
+| `paths/db` | `/System/var/licof/db/bookworm` |
+| `paths/installed_db` | `/System/var/licof/db/bookworm/installed` |
+| `apt/base_url` | `http://deb.debian.org/debian` |
+| `apt/suite` | `bookworm` |
 | `apt/component` | `main` |
 | `apt/arch` | `amd64` |
-| `apt/index_required_packages_csv` | `apt,base-files,base-passwd,bash,coreutils,dash,libc6,libgcc1,libpam-runtime,libstdc++6,login,multiarch-support,passwd,zlib1g` |
+| `apt/index_required_packages_csv` | `apt,base-files,base-passwd,bash,coreutils,dash,libc6,libgcc-s1,libpam-runtime,libstdc++6,login,passwd,zlib1g` |
 | `apt/download_attempts` | `4` |
-| `bootstrap/packages_csv` | `base-files,base-passwd,libc6,libgcc1,libstdc++6,zlib1g,libapt-pkg4.12,apt,dash,bash,coreutils,libpam-runtime,login,passwd` |
+| `bootstrap/packages_csv` | `base-files,base-passwd,libc6,libgcc-s1,libstdc++6,zlib1g,apt,dash,bash,coreutils,libpam-runtime,login,passwd` |
 | `tools/wget` | `/System/bin/wget` |
 
 All path values are normalized by trimming trailing slashes.

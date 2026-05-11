@@ -51,7 +51,7 @@ Slice:
   und fehlende Interpreter-Pfade sichtbar an und warnt bei fehlendem TTY fuer
   interaktive Linux-Tools.
 - `licof apt install <pkg>` laedt Paketindex und `.deb`-Pakete aus
-  `archive.debian.org`, loest einfache `Pre-Depends`/`Depends` rekursiv auf und
+  `deb.debian.org`, loest einfache `Pre-Depends`/`Depends` rekursiv auf und
   extrahiert `data.tar.gz` in die Linux-Base.
 - Der Paketcache verwendet interne, dateisystemfreundliche Namen; Debian-
   Dateinamen mit `+`, `:` oder anderen Sonderzeichen bleiben nur in der URL.

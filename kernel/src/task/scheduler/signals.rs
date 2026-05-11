@@ -104,6 +104,24 @@ pub fn current_signal_dequeue() -> Option<u32> {
     None
 }
 
+/// Clear one pending signal for the current thread without delivering it.
+///
+/// Linux/POSIX wait-family calls are allowed to accept the pending SIGCHLD
+/// associated with the status they consume. This helper keeps that policy in
+/// the wait layer instead of routing through userspace signal delivery.
+pub fn current_signal_clear_pending(sig: u32) {
+    if sig == 0 || sig >= 32 {
+        return;
+    }
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        let cpu = get_cpu_id();
+        if let Some(idx) = sched.current_idx(cpu) {
+            sched.threads[idx].signals.pending &= !(1u32 << sig);
+        }
+    }
+}
+
 /// Get the handler address for a signal on the current thread.
 pub fn current_signal_handler(sig: u32) -> u64 {
     let guard = SCHEDULER.lock();

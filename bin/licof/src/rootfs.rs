@@ -285,10 +285,7 @@ fn repair_dynamic_loader(rootfs: &str) {
     if is_elf_file(&interp) || path_is_symlink(&interp) {
         return;
     }
-    let candidates = [
-        "/lib/x86_64-linux-gnu/ld-2.13.so",
-        "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
-    ];
+    let candidates = ["/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"];
     for candidate in &candidates {
         let src = linux_path_in_rootfs(rootfs, candidate);
         if is_elf_file(&src) {

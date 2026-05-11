@@ -117,6 +117,9 @@ pub fn exec_update_thread(tid: u32, new_pd: PhysAddr, brk: u64, user_pages: u32)
         #[cfg(target_arch = "aarch64")]
         thread.context.set_page_table(new_pd.as_u64());
         thread.brk = brk;
+        // Linux clears clear_child_tid across execve; otherwise the exiting
+        // replacement image can corrupt four bytes at a stale TLS address.
+        thread.linux_clear_child_tid = 0;
         // ASLR: randomize the mmap base within [0x20000000, 0x20000000 + 16 MiB)
         let mmap_rand =
             crate::task::loader::random_page_offset(crate::task::loader::ASLR_MMAP_MAX_PAGES);

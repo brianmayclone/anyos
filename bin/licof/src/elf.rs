@@ -63,7 +63,7 @@ pub(crate) fn diagnose_linux_binary(config: &LicoConfig, label: &str, path: &str
             print_path_probe(label, &resolved);
             print_path_probe(
                 label,
-                &linux_path_in_rootfs(&rootfs, "/lib/x86_64-linux-gnu/ld-2.13.so"),
+                &linux_path_in_rootfs(&rootfs, "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"),
             );
         }
     }

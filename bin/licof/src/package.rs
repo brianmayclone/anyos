@@ -954,51 +954,28 @@ fn validate_libc6_runtime(rootfs: &str) -> bool {
     ensure_runtime_alias(
         rootfs,
         "/lib64/ld-linux-x86-64.so.2",
-        "/lib/x86_64-linux-gnu/ld-2.13.so",
-        "dynamic loader",
-    );
-    ensure_runtime_alias(
-        rootfs,
         "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
-        "ld-2.13.so",
-        "dynamic loader alias",
-    );
-    ensure_runtime_alias(
-        rootfs,
-        "/lib/x86_64-linux-gnu/libc.so.6",
-        "libc-2.13.so",
-        "libc alias",
+        "dynamic loader",
     );
 
     let loader_ok = validate_runtime_elf(rootfs, "/lib64/ld-linux-x86-64.so.2", "dynamic loader");
+    let loader_alias_ok = validate_runtime_elf(
+        rootfs,
+        "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        "dynamic loader alias",
+    );
     let libc_ok = validate_runtime_elf(rootfs, "/lib/x86_64-linux-gnu/libc.so.6", "libc");
-    loader_ok && libc_ok
+    loader_ok && loader_alias_ok && libc_ok
 }
 
 fn validate_libpam_runtime(rootfs: &str) -> bool {
-    let pam_ok = ensure_runtime_alias(
-        rootfs,
-        "/lib/x86_64-linux-gnu/libpam.so.0",
-        "libpam.so.0.83.0",
-        "libpam alias",
-    ) && validate_runtime_elf(rootfs, "/lib/x86_64-linux-gnu/libpam.so.0", "libpam");
-    let misc_ok = ensure_runtime_alias(
-        rootfs,
-        "/lib/x86_64-linux-gnu/libpam_misc.so.0",
-        "libpam_misc.so.0.82.0",
-        "libpam_misc alias",
-    ) && validate_runtime_elf(
+    let pam_ok = validate_runtime_elf(rootfs, "/lib/x86_64-linux-gnu/libpam.so.0", "libpam");
+    let misc_ok = validate_runtime_elf(
         rootfs,
         "/lib/x86_64-linux-gnu/libpam_misc.so.0",
         "libpam_misc",
     );
-    let pamc_ok =
-        ensure_runtime_alias(
-            rootfs,
-            "/lib/x86_64-linux-gnu/libpamc.so.0",
-            "libpamc.so.0.82.1",
-            "libpamc alias",
-        ) && validate_runtime_elf(rootfs, "/lib/x86_64-linux-gnu/libpamc.so.0", "libpamc");
+    let pamc_ok = validate_runtime_elf(rootfs, "/lib/x86_64-linux-gnu/libpamc.so.0", "libpamc");
     pam_ok && misc_ok && pamc_ok
 }
 

@@ -373,9 +373,10 @@ pub(super) fn linux_wait4(
         return 0;
     }
 
+    let status_value = (code & 0xff) << 8;
     if status_ptr != 0 {
         unsafe {
-            write_u32(status_ptr, 0, (code & 0xff) << 8);
+            write_u32(status_ptr, 0, status_value);
         }
     }
     if rusage_ptr != 0 {
@@ -383,11 +384,14 @@ pub(super) fn linux_wait4(
             core::ptr::write_bytes(rusage_ptr as *mut u8, 0, 144);
         }
     }
+    crate::task::scheduler::current_signal_clear_pending(crate::ipc::signal::SIGCHLD);
     crate::serial_println!(
-        "licof linux wait4: ok tid={} child={} code={} ret={:#x} hw_fs={:#x}",
+        "licof linux wait4: ok tid={} child={} code={} status_ptr={:#x} status={:#x} ret={:#x} hw_fs={:#x}",
         crate::task::scheduler::current_tid(),
         child_tid,
         code,
+        status_ptr,
+        status_value,
         child_tid as u64,
         current_hw_fs_base()
     );

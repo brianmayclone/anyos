@@ -1,22 +1,24 @@
 use alloc::string::String;
 use alloc::vec::Vec;
-use libconf_schema::{default_int, default_string, manifest, RegistryScope, ServiceSchema};
+use libconf_schema::{
+    default_int, default_string, manifest, migration_string, RegistryScope, ServiceSchema,
+};
 
 const DEFAULT_ROOT: &str = "/System/var/licof";
 const DEFAULT_ROOTFS: &str = "/System/var/licof/rootfs";
-const DEFAULT_CACHE: &str = "/System/var/licof/cache";
-const DEFAULT_DB: &str = "/System/var/licof/db";
-const DEFAULT_INSTALLED_DB: &str = "/System/var/licof/db/installed";
-const DEFAULT_APT_BASE: &str = "http://archive.debian.org/debian";
-const DEFAULT_APT_DIST: &str = "wheezy";
+const DEFAULT_CACHE: &str = "/System/var/licof/cache/bookworm";
+const DEFAULT_DB: &str = "/System/var/licof/db/bookworm";
+const DEFAULT_INSTALLED_DB: &str = "/System/var/licof/db/bookworm/installed";
+const DEFAULT_APT_BASE: &str = "http://deb.debian.org/debian";
+const DEFAULT_APT_DIST: &str = "bookworm";
 const DEFAULT_APT_COMPONENT: &str = "main";
 const DEFAULT_APT_ARCH: &str = "amd64";
 const DEFAULT_WGET: &str = "/System/bin/wget";
 const DEFAULT_DOWNLOAD_ATTEMPTS: i64 = 4;
 const DEFAULT_INDEX_REQUIRED_PACKAGES: &str =
-    "apt,base-files,base-passwd,bash,coreutils,dash,libc6,libgcc1,libpam-runtime,libstdc++6,login,multiarch-support,passwd,zlib1g";
+    "apt,base-files,base-passwd,bash,coreutils,dash,libc6,libgcc-s1,libpam-runtime,libstdc++6,login,passwd,zlib1g";
 const DEFAULT_BOOTSTRAP_SEED: &str =
-    "base-files,base-passwd,libc6,libgcc1,libstdc++6,zlib1g,libapt-pkg4.12,apt,dash,bash,coreutils,libpam-runtime,login,passwd";
+    "base-files,base-passwd,libc6,libgcc-s1,libstdc++6,zlib1g,apt,dash,bash,coreutils,libpam-runtime,login,passwd";
 
 const LICOF_DIRS: &[&str] = &["paths", "apt", "bootstrap", "tools"];
 const LICOF_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
@@ -37,11 +39,23 @@ const LICOF_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
     default_string("bootstrap/packages_csv", DEFAULT_BOOTSTRAP_SEED),
     default_string("tools/wget", DEFAULT_WGET),
 ];
-const LICOF_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
+const LICOF_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[
+    migration_string(2, "paths/cache", DEFAULT_CACHE),
+    migration_string(2, "paths/db", DEFAULT_DB),
+    migration_string(2, "paths/installed_db", DEFAULT_INSTALLED_DB),
+    migration_string(2, "apt/base_url", DEFAULT_APT_BASE),
+    migration_string(2, "apt/suite", DEFAULT_APT_DIST),
+    migration_string(
+        2,
+        "apt/index_required_packages_csv",
+        DEFAULT_INDEX_REQUIRED_PACKAGES,
+    ),
+    migration_string(2, "bootstrap/packages_csv", DEFAULT_BOOTSTRAP_SEED),
+];
 const LICOF_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
     "services/licof",
     RegistryScope::System,
-    1,
+    2,
     LICOF_DIRS,
     LICOF_DEFAULTS,
     LICOF_MIGRATIONS,

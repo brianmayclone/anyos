@@ -84,7 +84,7 @@ Linux `open()` and `openat()` failures print the Linux-visible path, the
 translated anyOS path and the final resolved path:
 
 ```text
-licof linux open: failed errno=5 linux='/lib/x86_64-linux-gnu/libpam.so.0' translated='/System/var/licof/rootfs/lib/x86_64-linux-gnu/libpam.so.0' resolved='/System/var/licof/rootfs/lib/x86_64-linux-gnu/libpam.so.0.83.1'
+licof linux open: failed errno=5 linux='/lib/x86_64-linux-gnu/libpam.so.0' translated='/System/var/licof/rootfs/lib/x86_64-linux-gnu/libpam.so.0' resolved='/System/var/licof/rootfs/lib/x86_64-linux-gnu/libpam.so.0'
 ```
 
 Absolute symlink targets inside the Linux base are resolved relative to

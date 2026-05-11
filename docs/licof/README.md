@@ -28,8 +28,8 @@ directory.
 ## Current Scope
 
 The current implementation targets Linux x86_64 ELF64 binaries. The main
-supported path is one Debian Wheezy amd64 Linux base bootstrapped from
-`archive.debian.org`:
+supported path is one Debian 12 Bookworm amd64 Linux base bootstrapped from
+`deb.debian.org`:
 
 ```sh
 licof init
