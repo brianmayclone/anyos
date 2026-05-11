@@ -3,6 +3,44 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 static WAIT4_DEBUG_SEQ: AtomicU32 = AtomicU32::new(0);
 
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn current_hw_fs_base() -> u64 {
+    unsafe { crate::arch::x86::power::rdmsr(0xC000_0100) }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline]
+fn current_hw_fs_base() -> u64 {
+    0
+}
+
+fn log_errno_probe(tag: &str, fs_base: u64) {
+    if fs_base < 0x400 || fs_base > 0x0000_8000_0000_0000 {
+        return;
+    }
+    let mut hits = 0usize;
+    let start = fs_base - 0x200;
+    let end = fs_base + 0x400;
+    let mut addr = start;
+    while addr < end && hits < 12 {
+        if handlers::helpers::is_user_range_accessible(addr, 4) {
+            let value = unsafe { *(addr as *const u32) };
+            if value == EINTR as u32 || value == ECHILD as u32 {
+                crate::serial_println!(
+                    "licof linux errno-probe {}: fs={:#x} off={:+#x} value={}",
+                    tag,
+                    fs_base,
+                    (addr as i64).wrapping_sub(fs_base as i64),
+                    value
+                );
+                hits += 1;
+            }
+        }
+        addr += 4;
+    }
+}
+
 #[inline]
 fn should_log_wait4_debug() -> bool {
     let seq = WAIT4_DEBUG_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -221,7 +259,13 @@ fn read_exec_string_array(ptr: u64, max_entries: usize) -> Result<Vec<String>, i
     Err(E2BIG)
 }
 
-pub(super) fn linux_wait4(pid: i64, status_ptr: u64, options: u64, rusage_ptr: u64) -> u64 {
+pub(super) fn linux_wait4(
+    rip: u64,
+    pid: i64,
+    status_ptr: u64,
+    options: u64,
+    rusage_ptr: u64,
+) -> u64 {
     const WNOHANG: u64 = 1;
     const WUNTRACED: u64 = 2;
     const WCONTINUED: u64 = 8;
@@ -243,12 +287,14 @@ pub(super) fn linux_wait4(pid: i64, status_ptr: u64, options: u64, rusage_ptr: u
     let log_wait4 = should_log_wait4_debug();
     if log_wait4 {
         crate::serial_println!(
-            "licof linux wait4: enter tid={} pid={} options={:#x} status={:#x} rusage={:#x}",
+            "licof linux wait4: enter tid={} rip={:#x} pid={} options={:#x} status={:#x} rusage={:#x} hw_fs={:#x}",
             crate::task::scheduler::current_tid(),
+            rip,
             pid,
             options,
             status_ptr,
-            rusage_ptr
+            rusage_ptr,
+            current_hw_fs_base()
         );
         crate::task::scheduler::debug_wait4_snapshot("enter", pid, options);
     }
@@ -294,12 +340,14 @@ pub(super) fn linux_wait4(pid: i64, status_ptr: u64, options: u64, rusage_ptr: u
     if child_tid == u32::MAX || code == u32::MAX {
         let ret = linux_err(ECHILD);
         if log_wait4 {
+            log_errno_probe("wait4-echild", current_hw_fs_base());
             crate::serial_println!(
-                "licof linux wait4: ECHILD tid={} pid={} raw_ret={:#x} signed_ret={}",
+                "licof linux wait4: ECHILD tid={} pid={} raw_ret={:#x} signed_ret={} hw_fs={:#x}",
                 crate::task::scheduler::current_tid(),
                 pid,
                 ret,
-                ret as i64
+                ret as i64,
+                current_hw_fs_base()
             );
             crate::task::scheduler::debug_wait4_snapshot("echild", pid, options);
         }
@@ -336,10 +384,12 @@ pub(super) fn linux_wait4(pid: i64, status_ptr: u64, options: u64, rusage_ptr: u
         }
     }
     crate::serial_println!(
-        "licof linux wait4: ok tid={} child={} code={}",
+        "licof linux wait4: ok tid={} child={} code={} ret={:#x} hw_fs={:#x}",
         crate::task::scheduler::current_tid(),
         child_tid,
-        code
+        code,
+        child_tid as u64,
+        current_hw_fs_base()
     );
     child_tid as u64
 }

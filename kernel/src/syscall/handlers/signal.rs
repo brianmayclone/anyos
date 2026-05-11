@@ -301,5 +301,14 @@ pub fn linux_rt_sigreturn(regs: &mut super::super::SyscallRegs) -> u64 {
         regs.ss = read_sigframe_reg(frame_base, 19);
     }
 
+    crate::serial_println!(
+        "licof linux rt_sigreturn: ok tid={} restore rax={:#x} rip={:#x} rsp={:#x} blocked={:#x}",
+        crate::task::scheduler::current_tid(),
+        regs.rax,
+        regs.rip,
+        regs.rsp,
+        old_blocked
+    );
+
     regs.rax
 }

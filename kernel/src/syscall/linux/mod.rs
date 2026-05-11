@@ -298,7 +298,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_VFORK => linux_vfork(regs),
         LINUX_SYS_EXECVE => linux_execve(a1, a2, a3),
         LINUX_SYS_UNAME => linux_uname(a1),
-        LINUX_SYS_WAIT4 => linux_wait4(linux_i32_arg(a1) as i64, a2, a3, a4),
+        LINUX_SYS_WAIT4 => linux_wait4(regs.rip, linux_i32_arg(a1) as i64, a2, a3, a4),
         LINUX_SYS_KILL => linux_kill(linux_i32_arg(a1) as i64, a2),
         LINUX_SYS_SEMGET => linux_semget(a1, a2, a3),
         LINUX_SYS_SEMOP => linux_semop(a1, a2, a3),
