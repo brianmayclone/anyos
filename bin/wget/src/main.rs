@@ -14,6 +14,8 @@ const HTTPS_PORT: u16 = 443;
 const CONNECT_TIMEOUT: u32 = 10000;
 const MAX_REDIRECTS: usize = 20;
 const MAX_HTTP_REQUEST: usize = 2048;
+const RECV_BUF_SIZE: usize = 32 * 1024;
+const FILE_WRITE_CHUNK: usize = 16 * 1024;
 const VERSION: &str = "1.0";
 
 // ── URL parsing ─────────────────────────────────────────────────────────────
@@ -614,13 +616,41 @@ fn recv_with_retry(conn: &Conn, buf: &mut [u8]) -> i32 {
 fn write_all(fd: u32, data: &[u8]) -> bool {
     let mut written = 0usize;
     while written < data.len() {
-        let n = fs::write(fd, &data[written..]);
+        let end = (written + FILE_WRITE_CHUNK).min(data.len());
+        let n = fs::write(fd, &data[written..end]);
         if n == u32::MAX || n == 0 {
             return false;
         }
         written += n as usize;
     }
     true
+}
+
+fn buffer_file_write(fd: u32, file_buf: &mut Vec<u8>, data: &[u8]) -> bool {
+    let mut offset = 0usize;
+    while offset < data.len() {
+        if file_buf.len() >= FILE_WRITE_CHUNK && !flush_file_buffer(fd, file_buf) {
+            return false;
+        }
+
+        let space = FILE_WRITE_CHUNK.saturating_sub(file_buf.len());
+        if space == 0 {
+            continue;
+        }
+        let end = (offset + space).min(data.len());
+        file_buf.extend_from_slice(&data[offset..end]);
+        offset = end;
+    }
+    true
+}
+
+fn flush_file_buffer(fd: u32, file_buf: &mut Vec<u8>) -> bool {
+    if file_buf.is_empty() {
+        return true;
+    }
+    let ok = write_all(fd, file_buf);
+    file_buf.clear();
+    ok
 }
 
 // ── Build HTTP request ──────────────────────────────────────────────────────
@@ -908,7 +938,8 @@ fn main() -> u32 {
 
         // Receive headers
         let mut response = Vec::new();
-        let mut recv_buf = [0u8; 32768];
+        let mut recv_buf = Vec::new();
+        recv_buf.resize(RECV_BUF_SIZE, 0);
         let header_end;
         loop {
             let n = recv_with_retry(&conn, &mut recv_buf);
@@ -1040,6 +1071,8 @@ fn main() -> u32 {
 
         // Bytes already read past the headers (start of the body stream).
         let mut carry: Vec<u8> = response[header_end..].to_vec();
+        let mut file_buf = Vec::new();
+        file_buf.reserve(FILE_WRITE_CHUNK);
         let mut received: u32 = 0;
         let start_ticks = sys::uptime();
         let mut last_progress_bytes: u32 = 0;
@@ -1120,7 +1153,7 @@ fn main() -> u32 {
                         carry.extend_from_slice(&recv_buf[..r as usize]);
                     }
                     let take = carry.len().min(to_read);
-                    if !write_all(fd, &carry[..take]) {
+                    if !buffer_file_write(fd, &mut file_buf, &carry[..take]) {
                         transfer_ok = false;
                         break 'chunks;
                     }
@@ -1162,7 +1195,7 @@ fn main() -> u32 {
                 } else {
                     carry.len()
                 };
-                if write_len > 0 && !write_all(fd, &carry[..write_len]) {
+                if write_len > 0 && !buffer_file_write(fd, &mut file_buf, &carry[..write_len]) {
                     transfer_ok = false;
                 }
                 received += write_len as u32;
@@ -1185,7 +1218,7 @@ fn main() -> u32 {
                 } else {
                     n as usize
                 };
-                if write_len > 0 && !write_all(fd, &recv_buf[..write_len]) {
+                if write_len > 0 && !buffer_file_write(fd, &mut file_buf, &recv_buf[..write_len]) {
                     transfer_ok = false;
                     break;
                 }
@@ -1212,6 +1245,10 @@ fn main() -> u32 {
             }
         }
 
+        if transfer_ok && !flush_file_buffer(fd, &mut file_buf) {
+            transfer_ok = false;
+        }
+
         // Final progress
         let elapsed = sys::uptime().wrapping_sub(start_ticks);
         if !quiet && !to_stdout {
@@ -1229,6 +1266,9 @@ fn main() -> u32 {
 
         // Close file and socket
         if !to_stdout {
+            if !fs::fsync(fd as i32) {
+                transfer_ok = false;
+            }
             fs::close(fd);
         }
         conn.close();
@@ -1241,6 +1281,18 @@ fn main() -> u32 {
                 total_size.unwrap_or(0)
             );
             return 4;
+        }
+        if !to_stdout {
+            if let Some(tot) = total_size {
+                let mut stat_buf = [0u32; 7];
+                if fs::stat(&out_filename, &mut stat_buf) != 0 || stat_buf[1] != tot {
+                    println!(
+                        "wget: saved size mismatch for '{}' (stat={}, expected={})",
+                        out_filename, stat_buf[1], tot
+                    );
+                    return 4;
+                }
+            }
         }
 
         // Summary line

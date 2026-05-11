@@ -8,11 +8,16 @@ anyos_std::entry!(main);
 
 const VERSION: &str = "0.1";
 const DEFAULT_TEST_URL: &str =
-    "http://archive.debian.org/debian/dists/wheezy/main/binary-amd64/Packages.gz";
+    "http://deb.debian.org/debian/dists/bookworm/main/binary-amd64/Packages.gz";
 const DEFAULT_SMALL_URL: &str = "http://archive.debian.org/debian/README";
 const DEFAULT_OUT_DIR: &str = "/tmp/httpstress";
+const DEFAULT_WGET: &str = "/System/bin/wget";
 const LARGE_GET_BUF_SIZE: usize = 12 * 1024 * 1024;
 const GZIP_EXPECTED_UNPACKED_MIN: u32 = 20 * 1024 * 1024;
+
+fn anyos_version() -> &'static str {
+    option_env!("ANYOS_VERSION").unwrap_or("dev")
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Profile {
@@ -26,10 +31,13 @@ struct Config {
     url: String,
     small_url: String,
     out_dir: String,
+    wget_path: String,
     profile: Profile,
     keep: bool,
     gzip_check: bool,
+    wget_check: bool,
     memory_rounds: u32,
+    wget_rounds: u32,
 }
 
 impl Config {
@@ -39,10 +47,13 @@ impl Config {
             url: String::from(DEFAULT_TEST_URL),
             small_url: String::from(DEFAULT_SMALL_URL),
             out_dir: String::from(DEFAULT_OUT_DIR),
+            wget_path: String::from(DEFAULT_WGET),
             profile: Profile::Normal,
             keep: false,
             gzip_check: true,
+            wget_check: true,
             memory_rounds: 3,
+            wget_rounds: 3,
         }
     }
 
@@ -59,6 +70,7 @@ impl Config {
 struct Artifact {
     path: String,
     size: u32,
+    crc32: u32,
     md5_hex: [u8; 32],
     download_ms: u32,
     status: u32,
@@ -69,6 +81,7 @@ struct Artifact {
 #[derive(Clone)]
 struct Reference {
     size: u32,
+    crc32: u32,
     md5_hex: [u8; 32],
     gzip: GzipVerdict,
 }
@@ -127,11 +140,20 @@ fn main() {
     println!();
     println!("httpstress {} - libhttp Diagnose", VERSION);
     println!("================================");
+    println!("  anyOS:     {}", anyos_version());
     println!("  profile:   {}", cfg.profile_name());
     println!("  repeat:    {}", cfg.repeat);
     println!("  url:       {}", cfg.url);
     println!("  small-url: {}", cfg.small_url);
     println!("  out-dir:   {}", cfg.out_dir);
+    println!(
+        "  wget:      {}",
+        if cfg.wget_check {
+            cfg.wget_path.as_str()
+        } else {
+            "skip"
+        }
+    );
     println!();
 
     let started = sys::uptime_ms();
@@ -170,8 +192,19 @@ fn main() {
     } else {
         Vec::new()
     };
+    let wget_artifacts = if out_ready && cfg.wget_check {
+        run_wget_matrix(&cfg, reference.as_ref(), &mut summary)
+    } else {
+        Vec::new()
+    };
     compare_memory_artifacts(&memory_artifacts, reference.as_ref(), &mut summary);
     compare_artifacts(&artifacts, reference.as_ref(), &mut summary);
+    compare_wget_artifacts(
+        &wget_artifacts,
+        reference.as_ref(),
+        artifacts.first(),
+        &mut summary,
+    );
     run_drain_probe(&cfg, &artifacts, &mut summary);
     run_full_suite(
         &cfg,
@@ -181,9 +214,11 @@ fn main() {
         &mut summary,
     );
     print_protocol(&artifacts);
+    print_wget_protocol(&wget_artifacts);
 
     if !cfg.keep {
         cleanup_artifacts(&artifacts);
+        cleanup_artifacts(&wget_artifacts);
     } else {
         println!();
         println!("Artefakte bleiben erhalten in {}", cfg.out_dir);
@@ -255,6 +290,15 @@ fn parse_config() -> Option<Config> {
             }
             "--keep" => cfg.keep = true,
             "--no-gzip" => cfg.gzip_check = false,
+            "--no-wget" => cfg.wget_check = false,
+            "--wget" => {
+                i += 1;
+                if i >= args.len() {
+                    println!("httpstress: --wget braucht einen Pfad");
+                    return None;
+                }
+                cfg.wget_path = String::from(args[i]);
+            }
             "--memory-rounds" => {
                 i += 1;
                 if i >= args.len() {
@@ -262,6 +306,14 @@ fn parse_config() -> Option<Config> {
                     return None;
                 }
                 cfg.memory_rounds = clamp(parse_u32(args[i]).unwrap_or(cfg.memory_rounds), 0, 100);
+            }
+            "--wget-rounds" => {
+                i += 1;
+                if i >= args.len() {
+                    println!("httpstress: --wget-rounds braucht eine Zahl");
+                    return None;
+                }
+                cfg.wget_rounds = clamp(parse_u32(args[i]).unwrap_or(cfg.wget_rounds), 0, 100);
             }
             other => {
                 println!("httpstress: unbekannte Option '{}'", other);
@@ -288,12 +340,16 @@ fn apply_profile(cfg: &mut Config) {
             if cfg.memory_rounds == Config::default().memory_rounds {
                 cfg.memory_rounds = 10;
             }
+            if cfg.wget_rounds == Config::default().wget_rounds {
+                cfg.wget_rounds = 10;
+            }
         }
     }
 }
 
 fn print_usage() {
     println!("httpstress - libhttp Stresstest und Download-Protokoll");
+    println!("anyOS {}", anyos_version());
     println!();
     println!("Usage: httpstress [options]");
     println!();
@@ -304,7 +360,10 @@ fn print_usage() {
     println!("  --small-url URL   kleine GET-Test-URL");
     println!("  --out-dir PATH    Artefakt-Verzeichnis (default: /tmp/httpstress)");
     println!("  --memory-rounds N zusaetzliche In-Memory-Downloads (default: 3, heavy: 10)");
+    println!("  --wget-rounds N   zusaetzliche wget-Downloads (default: 3, heavy: 10)");
+    println!("  --wget PATH       wget-Binary (default: /System/bin/wget)");
     println!("  --no-gzip         gzip-Dekompressionscheck auslassen");
+    println!("  --no-wget         wget-Vergleich auslassen");
     println!("  --keep            heruntergeladene Dateien behalten");
     println!("  --help, -h        diese Hilfe anzeigen");
     println!();
@@ -351,6 +410,7 @@ fn run_large_get_probe(cfg: &Config, summary: &mut Summary) -> Option<Reference>
         Some(n) if n > 0 => {
             buf.truncate(n);
             let ms = elapsed_ms(start);
+            let crc32 = crc32(&buf);
             let md5 = crypto::md5_hex(&buf);
             let gzip = if cfg.gzip_check {
                 gzip_verdict(&buf)
@@ -361,15 +421,17 @@ fn run_large_get_probe(cfg: &Config, summary: &mut Summary) -> Option<Reference>
             summary.ok(
                 "large GET reference",
                 &format!(
-                    "{} bytes in {} ms md5={} gzip={}",
+                    "{} bytes in {} ms crc32=0x{:08x} md5={} gzip={}",
                     size,
                     ms,
+                    crc32,
                     hex_str(&md5),
                     gzip_text(gzip)
                 ),
             );
             Some(Reference {
                 size,
+                crc32,
                 md5_hex: md5,
                 gzip,
             })
@@ -419,6 +481,7 @@ fn run_memory_matrix(
             Some(n) if n > 0 => {
                 buf.truncate(n);
                 let ms = elapsed_ms(start);
+                let crc32 = crc32(&buf);
                 let md5 = crypto::md5_hex(&buf);
                 let gzip = if cfg.gzip_check {
                     gzip_verdict(&buf)
@@ -427,16 +490,18 @@ fn run_memory_matrix(
                 };
                 let size = n.min(u32::MAX as usize) as u32;
                 println!(
-                    "  {:>3}: {} bytes  {:>5} ms  md5={}  gzip={}",
+                    "  {:>3}: {} bytes  {:>5} ms  crc32=0x{:08x}  md5={}  gzip={}",
                     round,
                     size,
                     ms,
+                    crc32,
                     hex_str(&md5),
                     gzip_text(gzip)
                 );
                 let mut ok = true;
                 if let Some(reference) = reference {
                     ok = size == reference.size
+                        && crc32 == reference.crc32
                         && md5 == reference.md5_hex
                         && gzip_text(gzip) == gzip_text(reference.gzip);
                 }
@@ -447,6 +512,7 @@ fn run_memory_matrix(
                 }
                 results.push(Reference {
                     size,
+                    crc32,
                     md5_hex: md5,
                     gzip,
                 });
@@ -509,6 +575,7 @@ fn run_download_matrix(cfg: &Config, summary: &mut Summary) -> Vec<Artifact> {
             continue;
         }
 
+        let crc32 = crc32(&data);
         let md5 = crypto::md5_hex(&data);
         let gzip = if cfg.gzip_check {
             gzip_verdict(&data)
@@ -519,6 +586,7 @@ fn run_download_matrix(cfg: &Config, summary: &mut Summary) -> Vec<Artifact> {
         let artifact = Artifact {
             path,
             size,
+            crc32,
             md5_hex: md5,
             download_ms: ms,
             status,
@@ -526,6 +594,109 @@ fn run_download_matrix(cfg: &Config, summary: &mut Summary) -> Vec<Artifact> {
             gzip,
         };
         print_artifact_line(round, &artifact);
+        artifacts.push(artifact);
+    }
+    artifacts
+}
+
+fn run_wget_matrix(
+    cfg: &Config,
+    reference: Option<&Reference>,
+    summary: &mut Summary,
+) -> Vec<Artifact> {
+    let mut artifacts = Vec::new();
+    println!();
+    println!("--- wget-Runden ---");
+
+    if cfg.wget_rounds == 0 {
+        summary.warn("wget count", "wget-Runden deaktiviert");
+        return artifacts;
+    }
+    if !path_exists(&cfg.wget_path) {
+        summary.warn("wget binary", &format!("{} fehlt", cfg.wget_path));
+        return artifacts;
+    }
+
+    for round in 1..=cfg.wget_rounds {
+        let path = format!("{}/httpstress-wget-{}.bin", cfg.out_dir, round);
+        let _ = fs::unlink(&path);
+        let args = format!("wget -q -O {} {}", path, cfg.url);
+        let start = sys::uptime_ms();
+        let tid = process::spawn(&cfg.wget_path, &args);
+        if tid == u32::MAX {
+            summary.fail("wget download", &format!("round={} spawn failed", round));
+            continue;
+        }
+        let code = process::waitpid(tid);
+        let ms = elapsed_ms(start);
+        if code == process::STILL_RUNNING {
+            summary.fail("wget download", &format!("round={} still running", round));
+            continue;
+        }
+        if code == u32::MAX {
+            summary.fail("wget download", &format!("round={} wait failed", round));
+            continue;
+        }
+        if code != 0 {
+            summary.fail(
+                "wget download",
+                &format!("round={} exit={} after {} ms", round, code, ms),
+            );
+            continue;
+        }
+
+        let Ok(data) = fs::read_to_vec(&path) else {
+            summary.fail(
+                "wget readback",
+                &format!("round={} cannot read file", round),
+            );
+            continue;
+        };
+        if data.is_empty() {
+            summary.fail("wget readback", &format!("round={} empty file", round));
+            continue;
+        }
+
+        let crc32 = crc32(&data);
+        let md5 = crypto::md5_hex(&data);
+        let gzip = if cfg.gzip_check {
+            gzip_verdict(&data)
+        } else {
+            GzipVerdict::NotChecked
+        };
+        let size = data.len().min(u32::MAX as usize) as u32;
+        let artifact = Artifact {
+            path,
+            size,
+            crc32,
+            md5_hex: md5,
+            download_ms: ms,
+            status: code,
+            error: 0,
+            gzip,
+        };
+        print_artifact_line(round, &artifact);
+
+        if let Some(reference) = reference {
+            if artifact.size == reference.size
+                && artifact.crc32 == reference.crc32
+                && artifact.md5_hex == reference.md5_hex
+                && gzip_text(artifact.gzip) == gzip_text(reference.gzip)
+            {
+                summary.ok("wget download", &format!("round={} ok", round));
+            } else {
+                summary.fail(
+                    "wget download",
+                    &format!(
+                        "round={} mismatch ref_crc32=0x{:08x}",
+                        round, reference.crc32
+                    ),
+                );
+            }
+        } else {
+            summary.ok("wget download", &format!("round={} captured", round));
+        }
+
         artifacts.push(artifact);
     }
     artifacts
@@ -552,11 +723,15 @@ fn compare_artifacts(artifacts: &[Artifact], reference: Option<&Reference>, summ
 
     let first = &artifacts[0];
     let mut size_mismatch = 0u32;
+    let mut crc_mismatch = 0u32;
     let mut hash_mismatch = 0u32;
     let mut gzip_fail = 0u32;
     for artifact in artifacts {
         if artifact.size != first.size {
             size_mismatch += 1;
+        }
+        if artifact.crc32 != first.crc32 {
+            crc_mismatch += 1;
         }
         if artifact.md5_hex != first.md5_hex {
             hash_mismatch += 1;
@@ -570,6 +745,12 @@ fn compare_artifacts(artifacts: &[Artifact], reference: Option<&Reference>, summ
         summary.ok("size stable", &format!("{} bytes", first.size));
     } else {
         summary.fail("size stable", &format!("{} mismatches", size_mismatch));
+    }
+
+    if crc_mismatch == 0 {
+        summary.ok("crc32 stable", &format!("0x{:08x}", first.crc32));
+    } else {
+        summary.fail("crc32 stable", &format!("{} mismatches", crc_mismatch));
     }
 
     if hash_mismatch == 0 {
@@ -589,11 +770,15 @@ fn compare_artifacts(artifacts: &[Artifact], reference: Option<&Reference>, summ
 
     if let Some(reference) = reference {
         let mut ref_size_mismatch = 0u32;
+        let mut ref_crc_mismatch = 0u32;
         let mut ref_hash_mismatch = 0u32;
         let mut ref_gzip_mismatch = 0u32;
         for artifact in artifacts {
             if artifact.size != reference.size {
                 ref_size_mismatch += 1;
+            }
+            if artifact.crc32 != reference.crc32 {
+                ref_crc_mismatch += 1;
             }
             if artifact.md5_hex != reference.md5_hex {
                 ref_hash_mismatch += 1;
@@ -609,6 +794,15 @@ fn compare_artifacts(artifacts: &[Artifact], reference: Option<&Reference>, summ
             summary.fail(
                 "reference size",
                 &format!("{} mismatches", ref_size_mismatch),
+            );
+        }
+
+        if ref_crc_mismatch == 0 {
+            summary.ok("reference crc32", &format!("0x{:08x}", reference.crc32));
+        } else {
+            summary.fail(
+                "reference crc32",
+                &format!("{} mismatches gegen large GET", ref_crc_mismatch),
             );
         }
 
@@ -632,6 +826,133 @@ fn compare_artifacts(artifacts: &[Artifact], reference: Option<&Reference>, summ
     }
 }
 
+fn compare_wget_artifacts(
+    artifacts: &[Artifact],
+    reference: Option<&Reference>,
+    file_reference: Option<&Artifact>,
+    summary: &mut Summary,
+) {
+    println!();
+    println!("--- wget-Konsistenz ---");
+    if artifacts.is_empty() {
+        summary.warn("wget count", "keine erfolgreichen wget-Downloads");
+        return;
+    }
+
+    let first = &artifacts[0];
+    let mut size_mismatch = 0u32;
+    let mut crc_mismatch = 0u32;
+    let mut hash_mismatch = 0u32;
+    let mut gzip_fail = 0u32;
+    let mut ref_mismatch = 0u32;
+
+    for artifact in artifacts {
+        if artifact.size != first.size {
+            size_mismatch += 1;
+        }
+        if artifact.crc32 != first.crc32 {
+            crc_mismatch += 1;
+        }
+        if artifact.md5_hex != first.md5_hex {
+            hash_mismatch += 1;
+        }
+        if matches!(artifact.gzip, GzipVerdict::Failed(_)) {
+            gzip_fail += 1;
+        }
+        if let Some(reference) = reference {
+            if artifact.size != reference.size
+                || artifact.crc32 != reference.crc32
+                || artifact.md5_hex != reference.md5_hex
+                || gzip_text(artifact.gzip) != gzip_text(reference.gzip)
+            {
+                ref_mismatch += 1;
+            }
+        }
+    }
+
+    if size_mismatch == 0 {
+        summary.ok("wget size", &format!("{} bytes", first.size));
+    } else {
+        summary.fail("wget size", &format!("{} mismatches", size_mismatch));
+    }
+    if crc_mismatch == 0 {
+        summary.ok("wget crc32 stable", &format!("0x{:08x}", first.crc32));
+    } else {
+        summary.fail("wget crc32 stable", &format!("{} mismatches", crc_mismatch));
+    }
+    if hash_mismatch == 0 {
+        summary.ok("wget md5 stable", hex_str(&first.md5_hex));
+    } else {
+        summary.fail("wget md5 stable", &format!("{} mismatches", hash_mismatch));
+    }
+    if gzip_fail == 0 {
+        summary.ok("wget gzip", "keine gzip-Fehler");
+    } else {
+        summary.fail("wget gzip", &format!("{} gzip-Fehler", gzip_fail));
+    }
+    if reference.is_some() {
+        if ref_mismatch == 0 {
+            summary.ok("wget reference", "alle gleich large GET");
+        } else {
+            summary.fail("wget reference", &format!("{} mismatches", ref_mismatch));
+        }
+    }
+
+    if let Some(file_reference) = file_reference {
+        report_wget_first_diffs(artifacts, file_reference, summary);
+    }
+}
+
+fn report_wget_first_diffs(
+    artifacts: &[Artifact],
+    file_reference: &Artifact,
+    summary: &mut Summary,
+) {
+    let Ok(reference_bytes) = fs::read_to_vec(&file_reference.path) else {
+        summary.warn("wget first-diff", "libhttp-Referenzdatei nicht lesbar");
+        return;
+    };
+    let mut mismatches = 0u32;
+    let mut reported = 0u32;
+    for artifact in artifacts {
+        if artifact.crc32 == file_reference.crc32 && artifact.md5_hex == file_reference.md5_hex {
+            continue;
+        }
+        mismatches += 1;
+        if reported >= 4 {
+            continue;
+        }
+        let Ok(bytes) = fs::read_to_vec(&artifact.path) else {
+            summary.warn("wget first-diff", &format!("{} nicht lesbar", artifact.path));
+            reported += 1;
+            continue;
+        };
+        match first_diff(&reference_bytes, &bytes) {
+            Some(off) => summary.fail(
+                "wget first-diff",
+                &format!(
+                    "{} offset={} mod4k={} mod32k={} ref=0x{:02x} got=0x{:02x} zero_run={}",
+                    artifact.path,
+                    off,
+                    off % 4096,
+                    off % (32 * 1024),
+                    byte_at(&reference_bytes, off),
+                    byte_at(&bytes, off),
+                    byte_run(&bytes, off, 0)
+                ),
+            ),
+            None => summary.fail(
+                "wget first-diff",
+                &format!("{} gleicher Inhalt trotz Hash-Mismatch", artifact.path),
+            ),
+        }
+        reported += 1;
+    }
+    if mismatches == 0 {
+        summary.ok("wget first-diff", "keine Abweichung zur libhttp-Datei");
+    }
+}
+
 fn compare_memory_artifacts(
     artifacts: &[Reference],
     reference: Option<&Reference>,
@@ -646,11 +967,15 @@ fn compare_memory_artifacts(
 
     let first = &artifacts[0];
     let mut size_mismatch = 0u32;
+    let mut crc_mismatch = 0u32;
     let mut hash_mismatch = 0u32;
     let mut gzip_fail = 0u32;
     for artifact in artifacts {
         if artifact.size != first.size {
             size_mismatch += 1;
+        }
+        if artifact.crc32 != first.crc32 {
+            crc_mismatch += 1;
         }
         if artifact.md5_hex != first.md5_hex {
             hash_mismatch += 1;
@@ -664,6 +989,11 @@ fn compare_memory_artifacts(
         summary.ok("memory size", &format!("{} bytes", first.size));
     } else {
         summary.fail("memory size", &format!("{} mismatches", size_mismatch));
+    }
+    if crc_mismatch == 0 {
+        summary.ok("memory crc32", &format!("0x{:08x}", first.crc32));
+    } else {
+        summary.fail("memory crc32", &format!("{} mismatches", crc_mismatch));
     }
     if hash_mismatch == 0 {
         summary.ok("memory md5", hex_str(&first.md5_hex));
@@ -680,6 +1010,7 @@ fn compare_memory_artifacts(
         let mut ref_mismatch = 0u32;
         for artifact in artifacts {
             if artifact.size != reference.size
+                || artifact.crc32 != reference.crc32
                 || artifact.md5_hex != reference.md5_hex
                 || gzip_text(artifact.gzip) != gzip_text(reference.gzip)
             {
@@ -1044,10 +1375,11 @@ fn gzip_isize(data: &[u8]) -> Option<u32> {
 fn print_artifact_line(round: u32, artifact: &Artifact) {
     let gzip = format!("gzip={}", gzip_text(artifact.gzip));
     println!(
-        "  {:>3}: {} bytes  {:>5} ms  md5={}  {}",
+        "  {:>3}: {} bytes  {:>5} ms  crc32=0x{:08x}  md5={}  {}",
         round,
         artifact.size,
         artifact.download_ms,
+        artifact.crc32,
         hex_str(&artifact.md5_hex),
         gzip
     );
@@ -1060,15 +1392,39 @@ fn print_protocol(artifacts: &[Artifact]) {
         println!("  keine Artefakte");
         return;
     }
-    println!("  round | bytes | ms | status | error | md5 | gzip | path");
+    println!("  round | bytes | ms | status | error | crc32 | md5 | gzip | path");
     for (i, a) in artifacts.iter().enumerate() {
         println!(
-            "  {} | {} | {} | {} | {} | {} | {} | {}",
+            "  {} | {} | {} | {} | {} | 0x{:08x} | {} | {} | {}",
             i + 1,
             a.size,
             a.download_ms,
             a.status,
             a.error,
+            a.crc32,
+            hex_str(&a.md5_hex),
+            gzip_text(a.gzip),
+            a.path
+        );
+    }
+}
+
+fn print_wget_protocol(artifacts: &[Artifact]) {
+    println!();
+    println!("--- wget-Protokoll ---");
+    if artifacts.is_empty() {
+        println!("  keine Artefakte");
+        return;
+    }
+    println!("  round | bytes | ms | exit | crc32 | md5 | gzip | path");
+    for (i, a) in artifacts.iter().enumerate() {
+        println!(
+            "  {} | {} | {} | {} | 0x{:08x} | {} | {} | {}",
+            i + 1,
+            a.size,
+            a.download_ms,
+            a.status,
+            a.crc32,
             hex_str(&a.md5_hex),
             gzip_text(a.gzip),
             a.path
@@ -1104,6 +1460,11 @@ fn prepare_out_dir(path: &str) -> bool {
     }
     let _ = fs::unlink(&probe);
     true
+}
+
+fn path_exists(path: &str) -> bool {
+    let mut stat_buf = [0u32; 7];
+    fs::stat(path, &mut stat_buf) == 0
 }
 
 fn mkdir_parents(path: &str) {
@@ -1148,6 +1509,46 @@ fn gzip_text(gzip: GzipVerdict) -> &'static str {
         GzipVerdict::Ok(_) => "ok",
         GzipVerdict::Failed(_) => "fail",
     }
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            let mask = 0u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+fn first_diff(a: &[u8], b: &[u8]) -> Option<usize> {
+    let common = a.len().min(b.len());
+    for i in 0..common {
+        if a[i] != b[i] {
+            return Some(i);
+        }
+    }
+    if a.len() != b.len() {
+        Some(common)
+    } else {
+        None
+    }
+}
+
+fn byte_at(data: &[u8], off: usize) -> u8 {
+    data.get(off).copied().unwrap_or(0)
+}
+
+fn byte_run(data: &[u8], off: usize, value: u8) -> usize {
+    let mut len = 0usize;
+    let mut i = off;
+    while i < data.len() && data[i] == value {
+        len += 1;
+        i += 1;
+    }
+    len
 }
 
 fn elapsed_ms(start: u32) -> u32 {

@@ -1412,6 +1412,10 @@ fn print_gzip_diagnostic(path: &str, size: u32) {
         "licof apt: gzip header: {:02x} {:02x} method={:02x} flags={:02x}",
         prefix[0], prefix[1], prefix[2], prefix[3]
     );
+    match compressed_file_crc32(path) {
+        Some(crc) => println!("licof apt: gzip file crc32=0x{:08x}", crc),
+        None => println!("licof apt: cannot compute gzip file crc32"),
+    }
     match read_gzip_trailer(path, size) {
         Some((crc, isize)) => println!(
             "licof apt: gzip trailer: crc32=0x{:08x} isize={} bytes",
@@ -1438,6 +1442,26 @@ fn read_gzip_trailer(path: &str, size: u32) -> Option<(u32, u32)> {
     Some((crc, isize))
 }
 
+fn compressed_file_crc32(path: &str) -> Option<u32> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut crc = 0xffff_ffffu32;
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = file.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        for &byte in &buf[..n] {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                let mask = 0u32.wrapping_sub(crc & 1);
+                crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+            }
+        }
+    }
+    Some(!crc)
+}
+
 fn gzip_status_text(status: u32) -> &'static str {
     match status {
         libzip_client::GZIP_STATUS_OK => "ok",
@@ -1457,15 +1481,20 @@ fn gzip_status_text(status: u32) -> &'static str {
 }
 
 fn download_url(config: &LicoConfig, url: &str, dest: &str) -> bool {
-    if path_exists(&config.wget) {
-        return download_url_with_wget(config, url, dest);
+    if download_url_with_libhttp(config, url, dest) {
+        return true;
     }
 
-    println!(
-        "licof download: wget not found at {}; falling back to libhttp",
-        config.wget
-    );
-    download_url_with_libhttp(config, url, dest)
+    if !path_exists(&config.wget) {
+        println!(
+            "licof download: wget not found at {}; no fallback available",
+            config.wget
+        );
+        return false;
+    }
+
+    println!("licof download: falling back to wget");
+    download_url_with_wget(config, url, dest)
 }
 
 fn download_url_with_libhttp(config: &LicoConfig, url: &str, dest: &str) -> bool {

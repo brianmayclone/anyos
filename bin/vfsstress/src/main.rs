@@ -10,6 +10,14 @@ const VERSION: &str = "0.1";
 const DEFAULT_DIR: &str = "/tmp/vfsstress";
 const MAX_BLOCK: usize = 256 * 1024;
 const STACK_WRITE_SIZE: usize = 64 * 1024;
+const WRITEBACK_STREAM_SIZE: u32 = 12_085_491;
+const WRITEBACK_STREAM_CHUNK_16K: usize = 16 * 1024;
+const WRITEBACK_STREAM_CHUNK_32K: usize = 32 * 1024;
+const USER_COPY_BOUNDARY_TOTAL: u32 = 384 * 1024;
+
+fn anyos_version() -> &'static str {
+    option_env!("ANYOS_VERSION").unwrap_or("dev")
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Profile {
@@ -95,6 +103,7 @@ fn main() {
     println!();
     println!("vfsstress {} - VFS Diagnose", VERSION);
     println!("============================");
+    println!("  anyOS:     {}", anyos_version());
     println!("  profile:   {}", cfg.profile_name());
     println!("  repeat:    {}", cfg.repeat);
     println!("  total:     {} KB", cfg.total_bytes / 1024);
@@ -248,6 +257,7 @@ fn apply_profile(cfg: &mut Config) {
 
 fn print_usage() {
     println!("vfsstress - VFS Schreib-/Readback-Stresstest");
+    println!("anyOS {}", anyos_version());
     println!();
     println!("Usage: vfsstress [options]");
     println!("  --profile P       quick | normal | heavy (default: normal)");
@@ -285,7 +295,18 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
     run_named(summary, "metadata rename", metadata_rename_case(cfg));
     run_named(summary, "directory churn", directory_churn_case(cfg));
     run_named(summary, "fd offsets", fd_offsets_case(cfg));
+    run_named(summary, "user copy boundary", user_copy_boundary_case(cfg));
     run_named(summary, "stack write 64k", stack_write_64k_case(cfg));
+    run_named(
+        summary,
+        "stream write 16k",
+        writeback_stream_case(cfg, WRITEBACK_STREAM_CHUNK_16K),
+    );
+    run_named(
+        summary,
+        "stream write 32k",
+        writeback_stream_case(cfg, WRITEBACK_STREAM_CHUNK_32K),
+    );
 
     fs::sync();
 }
@@ -688,6 +709,142 @@ fn stack_write_64k_case(cfg: &Config) -> Result<String, &'static str> {
     Ok(format!("{} bytes via direkte 64K Stack-Slices ok", total))
 }
 
+fn user_copy_boundary_case(cfg: &Config) -> Result<String, &'static str> {
+    let path = format!("{}/full-user-copy-boundary.bin", cfg.dir);
+    let _ = fs::unlink(&path);
+    let total = match cfg.profile {
+        Profile::Quick => 96 * 1024,
+        _ => USER_COPY_BOUNDARY_TOTAL,
+    };
+    let seed = 0x5C0F_FEE1;
+    let shifts = [1usize, 17, 4095, 4111, 8191];
+    let lens = [32 * 1024usize, 64 * 1024, 33 * 1024 + 17, 7 * 1024 + 31];
+    let guard = 16usize;
+
+    let fd = fs::open(&path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if fd == u32::MAX {
+        return Err("open-write");
+    }
+
+    let mut offset = 0u32;
+    let mut round = 0usize;
+    while offset < total {
+        let shift = shifts[round % shifts.len()];
+        let want = lens[round % lens.len()].min((total - offset) as usize);
+        let mut backing = Vec::new();
+        backing.resize(shift + want + guard, 0xA5);
+        fill_pattern(&mut backing[shift..shift + want], offset, seed);
+        let n = fs::write(fd, &backing[shift..shift + want]);
+        if n != want as u32 {
+            fs::close(fd);
+            return Err("write");
+        }
+        if !guard_intact(&backing, shift, want, 0xA5) {
+            fs::close(fd);
+            return Err("write-guard");
+        }
+        offset += want as u32;
+        round += 1;
+    }
+
+    if !fs::fsync(fd as i32) {
+        fs::close(fd);
+        return Err("fsync");
+    }
+    fs::close(fd);
+
+    if stat_size(&path)? != total {
+        return Err("stat-size");
+    }
+
+    let fd = fs::open(&path, 0);
+    if fd == u32::MAX {
+        return Err("open-read");
+    }
+    offset = 0;
+    round = 0;
+    while offset < total {
+        let shift = shifts[(round + 2) % shifts.len()];
+        let want = lens[(round + 1) % lens.len()].min((total - offset) as usize);
+        let mut backing = Vec::new();
+        backing.resize(shift + want + guard, 0x5A);
+        let n = fs::read(fd, &mut backing[shift..shift + want]);
+        if n != want as u32 {
+            fs::close(fd);
+            return Err("read-short");
+        }
+        if verify_pattern(&backing[shift..shift + want], offset, seed).is_some() {
+            fs::close(fd);
+            return Err("verify");
+        }
+        if !guard_intact(&backing, shift, want, 0x5A) {
+            fs::close(fd);
+            return Err("read-guard");
+        }
+        offset += want as u32;
+        round += 1;
+    }
+    fs::close(fd);
+
+    if !cfg.keep {
+        let _ = fs::unlink(&path);
+    }
+    Ok(format!(
+        "{} bytes via misaligned 32K/64K user buffers ok",
+        total
+    ))
+}
+
+fn writeback_stream_case(cfg: &Config, chunk_size: usize) -> Result<String, &'static str> {
+    let path = format!("{}/full-writeback-stream-{}.bin", cfg.dir, chunk_size);
+    let _ = fs::unlink(&path);
+    let total = match cfg.profile {
+        Profile::Quick => 2 * 1024 * 1024,
+        _ => WRITEBACK_STREAM_SIZE,
+    };
+    let seed = 0x1208_5491;
+
+    let fd = fs::open(&path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if fd == u32::MAX {
+        return Err("open-write");
+    }
+
+    let mut buf = Vec::new();
+    buf.resize(chunk_size, 0);
+    let mut offset = 0u32;
+    while offset < total {
+        let len = (total - offset).min(chunk_size as u32) as usize;
+        fill_pattern(&mut buf[..len], offset, seed);
+        let n = fs::write(fd, &buf[..len]);
+        if n != len as u32 {
+            fs::close(fd);
+            return Err("write");
+        }
+        offset += len as u32;
+    }
+
+    // Intentionally no fsync here: this matches wget/licof, where close()
+    // must commit dirty block-cache data before the next process reads it.
+    fs::close(fd);
+
+    if stat_size(&path)? != total {
+        return Err("stat-size");
+    }
+    verify_file_pattern_large(&path, total, seed, 32 * 1024)?;
+
+    fs::sync();
+    verify_file_pattern_large(&path, total, seed, 64 * 1024)?;
+
+    if !cfg.keep {
+        let _ = fs::unlink(&path);
+    }
+    Ok(format!(
+        "{} bytes via {}K writes ohne fsync, readback vor/nach sync ok",
+        total,
+        chunk_size / 1024
+    ))
+}
+
 fn run_case(cfg: &Config, path: &str, block_size: usize, seed: u32) -> CaseResult {
     let _ = fs::unlink(path);
     let mut write_buf = Vec::new();
@@ -839,6 +996,10 @@ fn verify_pattern(buf: &[u8], start: u32, seed: u32) -> Option<usize> {
     None
 }
 
+fn guard_intact(buf: &[u8], start: usize, len: usize, value: u8) -> bool {
+    buf[..start].iter().all(|&b| b == value) && buf[start + len..].iter().all(|&b| b == value)
+}
+
 fn pattern_byte(pos: u32, seed: u32) -> u8 {
     let x = pos
         .wrapping_mul(1_103_515_245)
@@ -923,6 +1084,36 @@ fn verify_file_pattern(
         }
         offset += want as u32;
         idx += 1;
+    }
+    fs::close(fd);
+    Ok(())
+}
+
+fn verify_file_pattern_large(
+    path: &str,
+    total_bytes: u32,
+    seed: u32,
+    read_size: usize,
+) -> Result<(), &'static str> {
+    let fd = fs::open(path, 0);
+    if fd == u32::MAX {
+        return Err("open-read");
+    }
+    let mut buf = Vec::new();
+    buf.resize(read_size.min(MAX_BLOCK), 0);
+    let mut offset = 0u32;
+    while offset < total_bytes {
+        let want = (total_bytes - offset).min(buf.len() as u32) as usize;
+        let n = fs::read(fd, &mut buf[..want]);
+        if n != want as u32 {
+            fs::close(fd);
+            return Err("read-short");
+        }
+        if verify_pattern(&buf[..want], offset, seed).is_some() {
+            fs::close(fd);
+            return Err("verify");
+        }
+        offset += want as u32;
     }
     fs::close(fd);
     Ok(())

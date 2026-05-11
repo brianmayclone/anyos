@@ -13,6 +13,10 @@ const THREAD_WAIT_TIMEOUT_MS: u32 = 10_000;
 const PROCESS_WAIT_TIMEOUT_MS: u32 = 5_000;
 const KILL_GRACE_MS: u32 = 1_000;
 
+fn anyos_version() -> &'static str {
+    option_env!("ANYOS_VERSION").unwrap_or("dev")
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Profile {
     Normal,
@@ -98,6 +102,7 @@ fn print_metric(name: &str, value: u32, unit: &str) {
 
 fn print_usage() {
     println!("kstress - Kernel-Stresstest");
+    println!("anyOS {}", anyos_version());
     println!();
     println!("Usage: kstress [options]");
     println!();
@@ -1962,6 +1967,7 @@ fn main() {
     println!("========================================");
     println!(" kstress v{} — Kernel-Stresstest", VERSION);
     println!("========================================");
+    println!(" anyOS:      {}", anyos_version());
     println!(" Profil:     {}", cfg.profile_name());
     println!(" Repeat:     {}", cfg.repeat);
     if cfg.seconds > 0 {

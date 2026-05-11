@@ -4,8 +4,11 @@
 //! network polling/statistics.
 
 #[allow(unused_imports)]
-use super::helpers::is_valid_user_ptr;
+use super::helpers::{copy_to_user_bytes, is_valid_user_ptr};
 use super::helpers::read_user_str;
+use alloc::vec;
+
+const TCP_RECV_COPY_CHUNK: usize = 256 * 1024;
 
 // =========================================================================
 // Networking (SYS_NET_*)
@@ -355,8 +358,19 @@ pub fn sys_tcp_recv(socket_id: u32, buf_ptr: u64, len: u32) -> u32 {
     if buf_ptr == 0 || len == 0 {
         return u32::MAX;
     }
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
-    let result = crate::net::tcp::recv(socket_id, buf, 3000); // 3s timeout (3000 ticks @ 1 kHz)
+    let recv_len = (len as usize).min(TCP_RECV_COPY_CHUNK);
+    if !is_valid_user_ptr(buf_ptr, recv_len as u64) {
+        return u32::MAX;
+    }
+
+    let mut buf = vec![0u8; recv_len];
+    let result = crate::net::tcp::recv(socket_id, &mut buf, 3000); // 3s timeout (3000 ticks @ 1 kHz)
+    if result != u32::MAX && result > 0 {
+        let n = result as usize;
+        if !copy_to_user_bytes(buf_ptr, &buf[..n], TCP_RECV_COPY_CHUNK) {
+            return u32::MAX;
+        }
+    }
     if result != u32::MAX && result > 0 {
         crate::task::scheduler::record_net_rx(result as u64);
     }

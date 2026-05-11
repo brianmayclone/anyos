@@ -9,13 +9,18 @@ anyos_std::entry!(main);
 const VERSION: &str = "0.1";
 const DEFAULT_URL: &str =
     "http://archive.debian.org/debian/dists/wheezy/main/binary-amd64/Packages.gz";
-const RECV_BUF_SIZE: usize = 64 * 1024;
+const DEFAULT_RECV_BUF_SIZE: usize = 64 * 1024;
+const MAX_RECV_BUF_SIZE: usize = 256 * 1024;
 const MAX_HEADER_SIZE: usize = 16 * 1024;
 const MAX_BODY_SIZE: usize = 32 * 1024 * 1024;
 const CONNECT_TIMEOUT_MS: u32 = 10_000;
 const TAIL_RETRIES: u32 = 30;
 const LOOPBACK_PORT: u16 = 18181;
 const LOOPBACK_BODY_LEN: usize = 128 * 1024;
+
+fn anyos_version() -> &'static str {
+    option_env!("ANYOS_VERSION").unwrap_or("dev")
+}
 
 struct Config {
     repeat: u32,
@@ -96,6 +101,7 @@ fn main() {
     println!();
     println!("tcpstress {} - TCP Diagnose", VERSION);
     println!("===========================");
+    println!("  anyOS:  {}", anyos_version());
     println!("  repeat: {}", cfg.repeat);
     println!("  url:    {}", cfg.url);
     println!(
@@ -201,6 +207,7 @@ fn parse_config() -> Option<Config> {
 
 fn print_usage() {
     println!("tcpstress - roher TCP/HTTP Download-Stresstest");
+    println!("anyOS {}", anyos_version());
     println!();
     println!("Usage: tcpstress [options]");
     println!("  --repeat N       Wiederholungen (default: 5)");
@@ -249,7 +256,7 @@ fn run_round(round: u32, url: &Url, ip: &[u8; 4], keep_body: bool) -> RunResult 
         ip,
         RunOptions {
             keep_body,
-            read_limit: RECV_BUF_SIZE,
+            read_limit: DEFAULT_RECV_BUF_SIZE,
             split_send: false,
         },
     )
@@ -276,8 +283,13 @@ fn run_round_with_options(round: u32, url: &Url, ip: &[u8; 4], opts: RunOptions)
         return failed(round, elapsed_ms(start), "send");
     }
 
-    let mut recv_buf = [0u8; RECV_BUF_SIZE];
-    let read_limit = opts.read_limit.clamp(1, RECV_BUF_SIZE);
+    let mut recv_buf = Vec::new();
+    if recv_buf.try_reserve_exact(MAX_RECV_BUF_SIZE).is_err() {
+        let _ = net::tcp_close(sock);
+        return failed(round, elapsed_ms(start), "alloc");
+    }
+    recv_buf.resize(MAX_RECV_BUF_SIZE, 0);
+    let read_limit = opts.read_limit.clamp(1, MAX_RECV_BUF_SIZE);
     let mut header = Vec::new();
     let header_end;
     loop {
@@ -305,7 +317,7 @@ fn run_round_with_options(round: u32, url: &Url, ip: &[u8; 4], opts: RunOptions)
     if opts.keep_body {
         let cap = content_length
             .map(|n| n as usize)
-            .unwrap_or(RECV_BUF_SIZE)
+            .unwrap_or(DEFAULT_RECV_BUF_SIZE)
             .min(MAX_BODY_SIZE);
         let _ = body.try_reserve_exact(cap);
     }
@@ -387,7 +399,7 @@ fn run_extended_tests(url: &Url, ip: &[u8; 4], summary: &mut Summary) {
         ip,
         RunOptions {
             keep_body: false,
-            read_limit: RECV_BUF_SIZE,
+            read_limit: DEFAULT_RECV_BUF_SIZE,
             split_send: false,
         },
     );
@@ -409,7 +421,7 @@ fn run_extended_tests(url: &Url, ip: &[u8; 4], summary: &mut Summary) {
         ip,
         RunOptions {
             keep_body: false,
-            read_limit: RECV_BUF_SIZE,
+            read_limit: DEFAULT_RECV_BUF_SIZE,
             split_send: true,
         },
     );
@@ -425,9 +437,87 @@ fn run_extended_tests(url: &Url, ip: &[u8; 4], summary: &mut Summary) {
         );
     }
 
+    run_recv_buffer_matrix(url, ip, summary);
+
     match loopback_case() {
         Ok(detail) => summary.ok("loopback tcp", &detail),
         Err(detail) => summary.fail("loopback tcp", &detail),
+    }
+}
+
+fn run_recv_buffer_matrix(url: &Url, ip: &[u8; 4], summary: &mut Summary) {
+    println!();
+    println!("--- Receive-Buffer-Matrix ---");
+
+    let limits = [
+        4 * 1024,
+        16 * 1024,
+        32 * 1024,
+        64 * 1024,
+        128 * 1024,
+        256 * 1024,
+    ];
+    let mut reference: Option<(u32, [u8; 32], bool, u16)> = None;
+
+    for (idx, limit) in limits.iter().enumerate() {
+        let result = run_round_with_options(
+            (idx + 1) as u32,
+            url,
+            ip,
+            RunOptions {
+                keep_body: true,
+                read_limit: *limit,
+                split_send: false,
+            },
+        );
+        let name = format!("recv {}K", limit / 1024);
+        if result.error != "ok" {
+            summary.fail(
+                &name,
+                &format!("error={} bytes={}", result.error, result.bytes),
+            );
+            continue;
+        }
+
+        match reference {
+            None => {
+                reference = Some((result.bytes, result.md5, result.gzip_magic, result.status));
+                summary.ok(
+                    &name,
+                    &format!(
+                        "{} bytes md5={} gzip={}",
+                        result.bytes,
+                        hex_str(&result.md5),
+                        if result.gzip_magic { "yes" } else { "no" }
+                    ),
+                );
+            }
+            Some((ref_bytes, ref_md5, ref_gzip, ref_status)) => {
+                if result.bytes == ref_bytes
+                    && result.md5 == ref_md5
+                    && result.gzip_magic == ref_gzip
+                    && result.status == ref_status
+                {
+                    summary.ok(
+                        &name,
+                        &format!("{} bytes md5={} ok", result.bytes, hex_str(&result.md5)),
+                    );
+                } else {
+                    summary.fail(
+                        &name,
+                        &format!(
+                            "mismatch bytes={} ref={} md5={} ref_md5={} gzip={} ref_gzip={}",
+                            result.bytes,
+                            ref_bytes,
+                            hex_str(&result.md5),
+                            hex_str(&ref_md5),
+                            if result.gzip_magic { "yes" } else { "no" },
+                            if ref_gzip { "yes" } else { "no" }
+                        ),
+                    );
+                }
+            }
+        }
     }
 }
 
