@@ -991,14 +991,29 @@ fn create_user_page_directory_inner(map_low_identity: bool) -> Option<PhysAddr> 
                 new_pd_ptr.add(i).write_volatile(0);
             }
 
-            // Copy identity-map PD entries [0..31] from kernel (covers first 64 MiB).
-            // These are kernel-only (no PAGE_USER), so Ring 3 can't access them.
-            // Entries [32+] left empty for DLLs (0x04000000+) and user programs.
-            let kernel_pd = recursive_pd_base(VirtAddr::new(0)) as *const u64;
-            for i in 0..32 {
-                new_pd_ptr
-                    .add(i)
-                    .write_volatile(kernel_pd.add(i).read_volatile());
+            // Copy identity-map PD entries [0..31] from the current address space
+            // when it has them. Linux/LICOF tasks intentionally use a no-low-identity
+            // address space; touching recursive_pd_base(0) there would fault.
+            let low_identity_pd = {
+                let pml4e0 = cur_pml4.read_volatile();
+                if pml4e0 & PAGE_PRESENT != 0 {
+                    let pdpt0 = recursive_pdpt_base(VirtAddr::new(0)) as *const u64;
+                    let pdpte0 = pdpt0.read_volatile();
+                    if pdpte0 & PAGE_PRESENT != 0 {
+                        Some(recursive_pd_base(VirtAddr::new(0)) as *const u64)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+            if let Some(kernel_pd) = low_identity_pd {
+                for i in 0..32 {
+                    new_pd_ptr
+                        .add(i)
+                        .write_volatile(kernel_pd.add(i).read_volatile());
+                }
             }
 
             // Wire PDPT[0] -> new PD (PAGE_USER so user program pages in PD[64+] work)
