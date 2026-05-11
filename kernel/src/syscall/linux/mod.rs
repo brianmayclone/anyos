@@ -189,6 +189,7 @@ const LINUX_SYS_RENAMEAT: u64 = 264;
 const LINUX_SYS_READLINKAT: u64 = 267;
 const LINUX_SYS_FCHMODAT: u64 = 268;
 const LINUX_SYS_FACCESSAT: u64 = 269;
+const LINUX_SYS_PSELECT6: u64 = 270;
 const LINUX_SYS_SET_ROBUST_LIST: u64 = 273;
 const LINUX_SYS_UTIMENSAT: u64 = 280;
 const LINUX_SYS_DUP3: u64 = 292;
@@ -196,9 +197,11 @@ const LINUX_SYS_PIPE2: u64 = 293;
 const LINUX_SYS_PRLIMIT64: u64 = 302;
 const LINUX_SYS_GETRANDOM: u64 = 318;
 const LINUX_SYS_RSEQ: u64 = 334;
+const LINUX_SYS_FACCESSAT2: u64 = 439;
 
 const LINUX_AT_FDCWD: i32 = -100;
 const LINUX_AT_SYMLINK_NOFOLLOW: u64 = 0x100;
+const LINUX_AT_EACCESS: u64 = 0x200;
 const LINUX_AT_REMOVEDIR: u64 = 0x200;
 const LINUX_AT_EMPTY_PATH: u64 = 0x1000;
 const LINUX_MAP_ANONYMOUS: u64 = 0x20;
@@ -262,6 +265,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_PIPE => anyos_u32_ret(handlers::sys_pipe2(a1, 0)),
         LINUX_SYS_PIPE2 => anyos_u32_ret(handlers::sys_pipe2(a1, a2 as u32)),
         LINUX_SYS_SELECT => linux_select(a1, a2, a3, a4, a5),
+        LINUX_SYS_PSELECT6 => linux_pselect6(a1, a2, a3, a4, a5, a6),
         LINUX_SYS_DUP => anyos_u32_ret(handlers::sys_dup(a1 as u32)),
         LINUX_SYS_DUP2 => anyos_u32_ret(handlers::sys_dup2(a1 as u32, a2 as u32)),
         LINUX_SYS_DUP3 => {
@@ -389,6 +393,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_READLINKAT => linux_readlinkat(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_FCHMODAT => linux_fchmodat(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_FACCESSAT => linux_faccessat(linux_i32_arg(a1), a2, a3, a4),
+        LINUX_SYS_FACCESSAT2 => linux_faccessat2(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_SET_ROBUST_LIST => 0,
         LINUX_SYS_UTIMENSAT => 0,
         LINUX_SYS_PRLIMIT64 => linux_prlimit64(linux_i32_arg(a1), a2, a3, a4),

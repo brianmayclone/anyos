@@ -540,16 +540,57 @@ pub(super) fn linux_chown_translated(path: &str, uid: u32, gid: u32) -> u64 {
     }
 }
 
-pub(super) fn linux_faccessat(dirfd: i32, path_ptr: u64, mode: u64, _flags: u64) -> u64 {
+pub(super) fn linux_faccessat(dirfd: i32, path_ptr: u64, mode: u64, flags: u64) -> u64 {
+    linux_faccessat_impl(dirfd, path_ptr, mode, flags)
+}
+
+pub(super) fn linux_faccessat2(dirfd: i32, path_ptr: u64, mode: u64, flags: u64) -> u64 {
+    linux_faccessat_impl(dirfd, path_ptr, mode, flags)
+}
+
+fn linux_faccessat_impl(dirfd: i32, path_ptr: u64, mode: u64, flags: u64) -> u64 {
+    const ACCESS_MODE_MASK: u64 = 0x7; // R_OK | W_OK | X_OK
+    const ALLOWED_FLAGS: u64 = LINUX_AT_SYMLINK_NOFOLLOW | LINUX_AT_EACCESS | LINUX_AT_EMPTY_PATH;
+
+    if (mode & !ACCESS_MODE_MASK) != 0 || (flags & !ALLOWED_FLAGS) != 0 {
+        return linux_err(EINVAL);
+    }
+    if path_ptr == 0 {
+        return linux_err(EFAULT);
+    }
+    let raw_path = match super::handlers::helpers::read_user_str_safe(path_ptr) {
+        Some(path) => path,
+        None => return linux_err(EFAULT),
+    };
+    if raw_path.is_empty() && (flags & LINUX_AT_EMPTY_PATH) != 0 {
+        if dirfd == LINUX_AT_FDCWD
+            || crate::task::scheduler::current_fd_get(dirfd as u32).is_some()
+        {
+            return 0;
+        }
+        return linux_err(EBADF);
+    }
+    if raw_path.starts_with('/') || dirfd == LINUX_AT_FDCWD {
+        let abs = linux_absolute_path(&raw_path);
+        if linux_proc_file_id(&abs).is_some() {
+            return 0;
+        }
+    }
     let path = match linux_translate_at_path(dirfd, path_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
-    let resolved = match linux_resolve_translated_path(&path, true, false) {
+    let follow_last = (flags & LINUX_AT_SYMLINK_NOFOLLOW) == 0;
+    let resolved = match linux_resolve_translated_path(&path, follow_last, false) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
-    match crate::fs::vfs::stat(&resolved) {
+    let ret = if follow_last {
+        crate::fs::vfs::stat(&resolved)
+    } else {
+        crate::fs::vfs::lstat(&resolved)
+    };
+    match ret {
         Ok(_) => {
             let _ = mode;
             0

@@ -221,6 +221,36 @@ pub(super) fn linux_select(
     ready
 }
 
+pub(super) fn linux_pselect6(
+    nfds: u64,
+    readfds: u64,
+    writefds: u64,
+    exceptfds: u64,
+    timeout: u64,
+    sigmask_data: u64,
+) -> u64 {
+    if timeout != 0 && !handlers::helpers::is_user_range_accessible(timeout, 16) {
+        return linux_err(EFAULT);
+    }
+    if sigmask_data != 0 {
+        if !handlers::helpers::is_user_range_accessible(sigmask_data, 16) {
+            return linux_err(EFAULT);
+        }
+        let sigmask = unsafe { read_u64(sigmask_data, 0) };
+        let sigsetsize = unsafe { read_u64(sigmask_data, 8) };
+        if sigmask != 0 {
+            if sigsetsize != 8 {
+                return linux_err(EINVAL);
+            }
+            if !handlers::helpers::is_user_range_accessible(sigmask, sigsetsize) {
+                return linux_err(EFAULT);
+            }
+        }
+    }
+
+    linux_select(nfds, readfds, writefds, exceptfds, timeout)
+}
+
 fn select_fd_is_set(set_ptr: u64, fd: u64) -> bool {
     if set_ptr == 0 {
         return false;
@@ -284,6 +314,7 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
     const TIOCGPGRP: u64 = 0x540F;
     const TIOCSPGRP: u64 = 0x5410;
     const TIOCGWINSZ: u64 = 0x5413;
+    const TIOCSWINSZ: u64 = 0x5414;
     match request {
         TCGETS => {
             if !linux_fd_is_tty(fd) {
@@ -364,6 +395,16 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
                 }
             }
             crate::serial_println!("licof linux ioctl: TIOCGWINSZ fd={} -> ok", fd);
+            0
+        }
+        TIOCSWINSZ => {
+            if !linux_fd_is_tty(fd) {
+                return linux_err(EBADF);
+            }
+            if arg != 0 && !handlers::helpers::is_user_range_accessible(arg, 8) {
+                return linux_err(EFAULT);
+            }
+            crate::serial_println!("licof linux ioctl: TIOCSWINSZ fd={} -> ok", fd);
             0
         }
         _ => {
