@@ -5,6 +5,9 @@ pub(super) fn linux_open(path_ptr: u64, linux_flags: u64) -> u64 {
         Some(path) => path,
         None => return linux_err(EFAULT),
     };
+    if raw_path.is_empty() {
+        return linux_err(ENOENT);
+    }
     linux_open_linux_path(raw_path, linux_flags)
 }
 
@@ -13,6 +16,9 @@ pub(super) fn linux_openat(dirfd: i32, path_ptr: u64, linux_flags: u64) -> u64 {
         Some(path) => path,
         None => return linux_err(EFAULT),
     };
+    if raw_path.is_empty() {
+        return linux_err(ENOENT);
+    }
     if dirfd == LINUX_AT_FDCWD || raw_path.starts_with('/') {
         return linux_open_linux_path(raw_path, linux_flags);
     }
@@ -31,6 +37,9 @@ pub(super) fn linux_stat(path_ptr: u64, stat_ptr: u64, nofollow: bool) -> u64 {
         Some(path) => path,
         None => return linux_err(EFAULT),
     };
+    if raw_path.is_empty() {
+        return linux_err(ENOENT);
+    }
     let abs = linux_absolute_path(raw_path);
     if let Some(file) = linux_proc_file_id(&abs) {
         return linux_write_proc_stat(stat_ptr, file);
@@ -72,6 +81,9 @@ pub(super) fn linux_access(path_ptr: u64, _mode: u64) -> u64 {
         Some(path) => path,
         None => return linux_err(EFAULT),
     };
+    if raw_path.is_empty() {
+        return linux_err(ENOENT);
+    }
     let abs = linux_absolute_path(raw_path);
     if linux_proc_file_id(&abs).is_some() {
         return 0;
@@ -302,6 +314,9 @@ pub(super) fn linux_chdir(path_ptr: u64) -> u64 {
         Some(path) => path,
         None => return linux_err(EFAULT),
     };
+    if raw_path.is_empty() {
+        return linux_err(ENOENT);
+    }
     let linux_path = linux_absolute_path(raw_path);
     let host_path = linux_translate_path(&linux_path);
     match crate::fs::vfs::read_dir(&host_path) {
@@ -324,6 +339,9 @@ pub(super) fn linux_readlink(path_ptr: u64, buf_ptr: u64, buf_size: u64) -> u64 
         Some(path) => path,
         None => return linux_err(EFAULT),
     };
+    if raw_path.is_empty() {
+        return linux_err(ENOENT);
+    }
     if raw_path == "/proc/self/exe" {
         return linux_err(ENOENT);
     }
@@ -369,11 +387,13 @@ pub(super) fn linux_readlink_translated(path: &str, buf_ptr: u64, buf_size: u64)
 }
 
 pub(super) fn linux_rename(old_ptr: u64, new_ptr: u64) -> u64 {
-    let Some(old_path) = linux_translate_user_path(old_ptr) else {
-        return linux_err(EFAULT);
+    let old_path = match linux_translate_user_path(old_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
     };
-    let Some(new_path) = linux_translate_user_path(new_ptr) else {
-        return linux_err(EFAULT);
+    let new_path = match linux_translate_user_path(new_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
     };
     match crate::fs::vfs::rename(&old_path, &new_path) {
         Ok(()) => 0,
@@ -397,8 +417,9 @@ pub(super) fn linux_renameat(old_dirfd: i32, old_ptr: u64, new_dirfd: i32, new_p
 }
 
 pub(super) fn linux_mkdir(path_ptr: u64, _mode: u64) -> u64 {
-    let Some(path) = linux_translate_user_path(path_ptr) else {
-        return linux_err(EFAULT);
+    let path = match linux_translate_user_path(path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
     };
     match crate::fs::vfs::mkdir(&path) {
         Ok(()) => 0,
@@ -418,8 +439,9 @@ pub(super) fn linux_mkdirat(dirfd: i32, path_ptr: u64, _mode: u64) -> u64 {
 }
 
 pub(super) fn linux_unlink_path(path_ptr: u64) -> u64 {
-    let Some(path) = linux_translate_user_path(path_ptr) else {
-        return linux_err(EFAULT);
+    let path = match linux_translate_user_path(path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
     };
     linux_unlink_translated(&path)
 }
@@ -491,8 +513,9 @@ pub(super) fn linux_truncate(path_ptr: u64, len: u64) -> u64 {
     if len != 0 {
         return linux_err(ENOSYS);
     }
-    let Some(path) = linux_translate_user_path(path_ptr) else {
-        return linux_err(EFAULT);
+    let path = match linux_translate_user_path(path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
     };
     match crate::fs::vfs::truncate(&path) {
         Ok(()) => 0,
@@ -508,8 +531,9 @@ pub(super) fn linux_ftruncate(fd: u32, len: u64) -> u64 {
 }
 
 pub(super) fn linux_chmod(path_ptr: u64, mode: u64) -> u64 {
-    let Some(path) = linux_translate_user_path(path_ptr) else {
-        return linux_err(EFAULT);
+    let path = match linux_translate_user_path(path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
     };
     match crate::fs::vfs::set_mode(&path, mode as u16) {
         Ok(()) => 0,
@@ -540,8 +564,9 @@ pub(super) fn linux_fchmodat(dirfd: i32, path_ptr: u64, mode: u64, _flags: u64) 
 }
 
 pub(super) fn linux_chown(path_ptr: u64, uid: u32, gid: u32) -> u64 {
-    let Some(path) = linux_translate_user_path(path_ptr) else {
-        return linux_err(EFAULT);
+    let path = match linux_translate_user_path(path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
     };
     linux_chown_translated(&path, uid, gid)
 }
@@ -768,8 +793,9 @@ pub(super) fn linux_statfs(path_ptr: u64, buf_ptr: u64) -> u64 {
     if buf_ptr == 0 {
         return linux_err(EFAULT);
     }
-    let Some(path) = linux_translate_user_path(path_ptr) else {
-        return linux_err(EFAULT);
+    let path = match linux_translate_user_path(path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
     };
     linux_statfs_translated(&path, buf_ptr)
 }
@@ -918,6 +944,9 @@ fn linux_check_xattr_path(path_ptr: u64, nofollow: bool) -> Result<(), i32> {
         return Err(EFAULT);
     }
     let raw_path = super::handlers::helpers::read_user_str_safe(path_ptr).ok_or(EFAULT)?;
+    if raw_path.is_empty() {
+        return Err(ENOENT);
+    }
     let abs = linux_absolute_path(raw_path);
     if linux_proc_file_id(&abs).is_some() {
         return Ok(());

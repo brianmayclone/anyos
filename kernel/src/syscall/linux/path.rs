@@ -1,11 +1,18 @@
 use super::*;
 
-pub(super) fn linux_translate_user_path(path_ptr: u64) -> Option<String> {
-    super::handlers::helpers::read_user_str_safe(path_ptr).map(linux_translate_path)
+pub(super) fn linux_translate_user_path(path_ptr: u64) -> Result<String, i32> {
+    let path = super::handlers::helpers::read_user_str_safe(path_ptr).ok_or(EFAULT)?;
+    if path.is_empty() {
+        return Err(ENOENT);
+    }
+    Ok(linux_translate_path(path))
 }
 
 pub(super) fn linux_translate_at_path(dirfd: i32, path_ptr: u64) -> Result<String, i32> {
     let path = super::handlers::helpers::read_user_str_safe(path_ptr).ok_or(EFAULT)?;
+    if path.is_empty() {
+        return Err(ENOENT);
+    }
     if path.starts_with('/') || dirfd == LINUX_AT_FDCWD {
         return Ok(linux_translate_path(path));
     }
