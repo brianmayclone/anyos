@@ -564,7 +564,8 @@ mod imp {
         userdata: u64,
         resume_from: u32,
     ) -> bool {
-        let result = if let Some(download_progress_resume) = lib().libhttp_download_progress_resume {
+        let result = if let Some(download_progress_resume) = lib().libhttp_download_progress_resume
+        {
             download_progress_resume(
                 url.as_ptr(),
                 url.len() as u32,

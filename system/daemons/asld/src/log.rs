@@ -155,10 +155,7 @@ mod tests {
         let out = tail_lines(&sample(), 1, Some("ubuntu-dev"));
         // Two ubuntu-dev lines, limit=1 keeps the latest.
         assert_eq!(out.len(), 1);
-        assert_eq!(
-            out[0],
-            "[300] [info] [runtime] start: distro='ubuntu-dev'"
-        );
+        assert_eq!(out[0], "[300] [info] [runtime] start: distro='ubuntu-dev'");
     }
 
     #[test]
@@ -181,7 +178,10 @@ mod tests {
         // pin that here so a partial last line doesn't get lost or
         // double-counted.
         let out = tail_lines("alpha\nbeta\ngamma", 2, None);
-        assert_eq!(out, alloc::vec![String::from("beta"), String::from("gamma")]);
+        assert_eq!(
+            out,
+            alloc::vec![String::from("beta"), String::from("gamma")]
+        );
     }
 
     #[test]

@@ -232,12 +232,11 @@ fn output_config_from_info(idx: usize, info: &display::DisplayInfo) -> displayd:
     // baseline (used by the Keep/Revert dialog) matches what the user
     // was looking at before they edited. Falls back to defaults derived
     // from the live OutputInfo when displayd has no record yet.
-    let persisted = displayd::DisplaydClient::connect()
-        .and_then(|c| {
-            let cfg = c.get_output_config(info.edid_hash);
-            c.disconnect();
-            cfg
-        });
+    let persisted = displayd::DisplaydClient::connect().and_then(|c| {
+        let cfg = c.get_output_config(info.edid_hash);
+        c.disconnect();
+        cfg
+    });
     let mut cfg = persisted.unwrap_or_else(displayd::OutputConfig::default);
     cfg.edid_hash = info.edid_hash;
     if cfg.mode_w == 0 || cfg.mode_h == 0 {
@@ -325,7 +324,9 @@ fn output_config_from_controls(ui_state: &OutputUi) -> displayd::OutputConfig {
     // DropDown index n → 100 + n*25 (clamped to the 9-entry range so
     // an out-of-range state from a stale UI session still produces a
     // sane percentage).
-    let scale_idx = ui::Control::from_id(ui_state.scale_seg_id).get_state().min(8);
+    let scale_idx = ui::Control::from_id(ui_state.scale_seg_id)
+        .get_state()
+        .min(8);
     cfg.scale_percent = 100 + scale_idx * 25;
     cfg.fractional_scale = if ui::Control::from_id(ui_state.frac_toggle_id).get_state() != 0 {
         1
@@ -761,12 +762,11 @@ fn build_output_card(panel: &ui::View, idx: usize) {
     // before building widgets so each widget can be initialized with
     // the right value. If displayd has no record yet the call returns
     // None and we use defaults.
-    let persisted = displayd::DisplaydClient::connect()
-        .and_then(|c| {
-            let cfg = c.get_output_config(info.edid_hash);
-            c.disconnect();
-            cfg
-        });
+    let persisted = displayd::DisplaydClient::connect().and_then(|c| {
+        let cfg = c.get_output_config(info.edid_hash);
+        c.disconnect();
+        cfg
+    });
 
     // Header row: name + enabled toggle
     let hdr = layout::build_setting_row(&card, &friendly_name(&info), true);
@@ -824,9 +824,7 @@ fn build_output_card(panel: &ui::View, idx: usize) {
     // primary output's value is also mirrored into the UISYS shared
     // page so all anyui apps pick it up. Index n → percent = 100 + n*25.
     let scale_row = layout::build_setting_row(&card, i18n::t("Scale"), false);
-    let scale_seg = ui::DropDown::new(
-        "100 %|125 %|150 %|175 %|200 %|225 %|250 %|275 %|300 %",
-    );
+    let scale_seg = ui::DropDown::new("100 %|125 %|150 %|175 %|200 %|225 %|250 %|275 %|300 %");
     scale_seg.set_position(200, 8);
     scale_seg.set_size(280, 28);
     let saved_scale = persisted.map(|p| p.scale_percent).unwrap_or(100);

@@ -1057,11 +1057,7 @@ impl RuntimeService {
             } else {
                 DoctorVerdict::Pass
             },
-            message: format!(
-                "mounts={} unhealthy={}",
-                cfg.mounts.len(),
-                unhealthy_mounts
-            ),
+            message: format!("mounts={} unhealthy={}", cfg.mounts.len(), unhealthy_mounts),
         });
 
         // Agent: only meaningful while running. When VM isn't running

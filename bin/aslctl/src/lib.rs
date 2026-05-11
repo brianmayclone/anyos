@@ -1820,8 +1820,14 @@ mod tests {
         let b = anyos_std::args::parse("vm-events ubuntu-dev", b"");
         let parsed_a = parse_command(&a);
         let parsed_b = parse_command(&b);
-        assert!(matches!(parsed_a, Some(ClientCommand::VmEvents("ubuntu-dev"))));
-        assert!(matches!(parsed_b, Some(ClientCommand::VmEvents("ubuntu-dev"))));
+        assert!(matches!(
+            parsed_a,
+            Some(ClientCommand::VmEvents("ubuntu-dev"))
+        ));
+        assert!(matches!(
+            parsed_b,
+            Some(ClientCommand::VmEvents("ubuntu-dev"))
+        ));
         // Wire output must be byte-identical so a script that uses
         // either form gets the same response.
         assert_eq!(parsed_a.unwrap().as_wire(), parsed_b.unwrap().as_wire());
@@ -2050,9 +2056,7 @@ mod tests {
 
     #[test]
     fn parses_run_with_multiple_env_pairs() {
-        match parse_cli_command(
-            "run ubuntu-dev --env FOO=1 --env BAR=baz -- printenv",
-        ) {
+        match parse_cli_command("run ubuntu-dev --env FOO=1 --env BAR=baz -- printenv") {
             Some(ClientCommand::Exec { env, argv, .. }) => {
                 assert_eq!(env, Vec::from(["FOO=1", "BAR=baz"]));
                 assert_eq!(argv, Vec::from(["printenv"]));
@@ -2071,9 +2075,7 @@ mod tests {
     #[test]
     fn run_with_unknown_flag_is_rejected() {
         // Defense-in-depth: unknown flags must not silently be swallowed as argv.
-        assert!(
-            parse_cli_command("run ubuntu-dev --bogus -- cargo test").is_none()
-        );
+        assert!(parse_cli_command("run ubuntu-dev --bogus -- cargo test").is_none());
     }
 
     #[test]
@@ -2089,9 +2091,7 @@ mod tests {
 
     #[test]
     fn run_with_fallback_console_flag() {
-        match parse_cli_command(
-            "run ubuntu-dev --fallback-console -- bash -lc 'echo hi'",
-        ) {
+        match parse_cli_command("run ubuntu-dev --fallback-console -- bash -lc 'echo hi'") {
             Some(ClientCommand::Exec {
                 fallback_console, ..
             }) => {
@@ -2154,11 +2154,13 @@ mod tests {
         // `--cwd` belongs to the `exec` subcommand, not the global
         // parser. The stripper must stop as soon as it sees something
         // it doesn't recognise.
-        let (flags, rest) = strip_global_flags(
-            "exec ubuntu-dev --cwd /workspace --env A=1 -- cargo test",
-        );
+        let (flags, rest) =
+            strip_global_flags("exec ubuntu-dev --cwd /workspace --env A=1 -- cargo test");
         assert_eq!(flags.format, OutputFormat::Text);
-        assert_eq!(rest, "exec ubuntu-dev --cwd /workspace --env A=1 -- cargo test");
+        assert_eq!(
+            rest,
+            "exec ubuntu-dev --cwd /workspace --env A=1 -- cargo test"
+        );
     }
 
     #[test]
@@ -2243,7 +2245,11 @@ mod tests {
 
     #[test]
     fn json_err_response_has_expected_shape() {
-        let s = format_json_err(&ClientCommand::Status("ubuntu-dev"), "not_found", "no such distro");
+        let s = format_json_err(
+            &ClientCommand::Status("ubuntu-dev"),
+            "not_found",
+            "no such distro",
+        );
         assert_eq!(
             s,
             "{\"ok\":false,\"command\":\"status\",\"code\":\"not_found\",\"message\":\"no such distro\"}"

@@ -32,7 +32,12 @@ const NUM_CPU_TESTS: usize = 6;
 const NUM_DISK_TESTS: usize = 4;
 
 const CPU_BASELINES: [u64; NUM_CPU_TESTS] = [
-    30_000_000, 10_000_000, 500_000_000, 500_000_000, 500_000, 10_000_000,
+    30_000_000,
+    10_000_000,
+    500_000_000,
+    500_000_000,
+    500_000,
+    10_000_000,
 ];
 
 const DISK_BASELINES: [u64; NUM_DISK_TESTS] = [8_000_000, 4_000_000, 2_000, 500];
@@ -108,9 +113,13 @@ fn print_usage() {
     anyos_std::println!("anyBench");
     anyos_std::println!("Usage:");
     anyos_std::println!("  anybench                       Start GUI");
-    anyos_std::println!("  anybench --cli [--cpu|--disk|--all] [--format text|md|json] [--out PATH]");
+    anyos_std::println!(
+        "  anybench --cli [--cpu|--disk|--all] [--format text|md|json] [--out PATH]"
+    );
     anyos_std::println!("");
-    anyos_std::println!("Terminal mode runs CPU and Disk I/O tests. GPU and 3D tests need the GUI canvas.");
+    anyos_std::println!(
+        "Terminal mode runs CPU and Disk I/O tests. GPU and 3D tests need the GUI canvas."
+    );
 }
 
 fn mode_name(mode: BenchMode) -> &'static str {
@@ -450,13 +459,31 @@ fn format_results_json(r: &BenchResults) -> String {
     let _ = writeln!(out, "  }},");
     let _ = writeln!(out, "  \"tests\": {{");
     let _ = writeln!(out, "    \"cpu_single\": ");
-    write_json_array(&mut out, &CPU_TEST_NAMES, &r.cpu_single_raw, &CPU_BASELINES, false);
+    write_json_array(
+        &mut out,
+        &CPU_TEST_NAMES,
+        &r.cpu_single_raw,
+        &CPU_BASELINES,
+        false,
+    );
     let _ = writeln!(out, ",");
     let _ = writeln!(out, "    \"cpu_multi\": ");
-    write_json_array(&mut out, &CPU_TEST_NAMES, &r.cpu_multi_raw, &CPU_BASELINES, false);
+    write_json_array(
+        &mut out,
+        &CPU_TEST_NAMES,
+        &r.cpu_multi_raw,
+        &CPU_BASELINES,
+        false,
+    );
     let _ = writeln!(out, ",");
     let _ = writeln!(out, "    \"disk\": ");
-    write_json_array(&mut out, &DISK_TEST_NAMES, &r.disk_raw, &DISK_BASELINES, true);
+    write_json_array(
+        &mut out,
+        &DISK_TEST_NAMES,
+        &r.disk_raw,
+        &DISK_BASELINES,
+        true,
+    );
     let _ = writeln!(out);
     let _ = writeln!(out, "  }}");
     let _ = writeln!(out, "}}");

@@ -101,8 +101,7 @@ impl LayoutEntry {
 
     /// Insert a rotation value (0..=3) into a flags word.
     pub fn flags_with_rotation(flags: u32, rotation: u32) -> u32 {
-        (flags & !Self::FLAG_ROTATION_MASK)
-            | ((rotation & 0b11) << Self::FLAG_ROTATION_SHIFT)
+        (flags & !Self::FLAG_ROTATION_MASK) | ((rotation & 0b11) << Self::FLAG_ROTATION_SHIFT)
     }
 
     /// Convenience: a 90° rotation swaps the logical width and height.

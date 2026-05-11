@@ -466,7 +466,8 @@ mod tests {
 
         let tcp = TcpStream::connect(("www.google.de", 443)).unwrap();
         tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        tcp.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
+        tcp.set_write_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         let fd = register_stream(tcp);
 
         let handle = connect(fd, "www.google.de");

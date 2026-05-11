@@ -67,10 +67,7 @@ pub fn is_safe_artifact_path(path: &str, images_dir: &str) -> bool {
     let in_images = path.len() > images_dir.len()
         && path.starts_with(images_dir)
         && path.as_bytes().get(images_dir.len()) == Some(&b'/');
-    in_images
-        && !path.contains('\0')
-        && !path.contains("/../")
-        && !path.ends_with("/..")
+    in_images && !path.contains('\0') && !path.contains("/../") && !path.ends_with("/..")
 }
 
 // ============================================================================
