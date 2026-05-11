@@ -698,6 +698,72 @@ pub(super) fn linux_clock_gettime(_clock_id: u64, ts_ptr: u64) -> u64 {
     0
 }
 
+pub(super) fn linux_nanosleep(req_ptr: u64, rem_ptr: u64) -> u64 {
+    linux_sleep_timespec(req_ptr, rem_ptr, false, 0)
+}
+
+pub(super) fn linux_clock_nanosleep(clock_id: u64, flags: u64, req_ptr: u64, rem_ptr: u64) -> u64 {
+    const CLOCK_REALTIME: u64 = 0;
+    const CLOCK_MONOTONIC: u64 = 1;
+    const CLOCK_MONOTONIC_RAW: u64 = 4;
+    const TIMER_ABSTIME: u64 = 1;
+
+    if flags & !TIMER_ABSTIME != 0 {
+        return linux_err(EINVAL);
+    }
+    match clock_id {
+        CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_MONOTONIC_RAW => {}
+        _ => return linux_err(EINVAL),
+    }
+
+    linux_sleep_timespec(req_ptr, rem_ptr, (flags & TIMER_ABSTIME) != 0, clock_id)
+}
+
+fn linux_sleep_timespec(req_ptr: u64, _rem_ptr: u64, absolute: bool, _clock_id: u64) -> u64 {
+    if req_ptr == 0 || !handlers::helpers::is_user_range_accessible(req_ptr, 16) {
+        return linux_err(EFAULT);
+    }
+
+    let sec = unsafe { read_u64(req_ptr, 0) as i64 };
+    let nsec = unsafe { read_u64(req_ptr, 8) as i64 };
+    if sec < 0 || !(0..1_000_000_000).contains(&nsec) {
+        return linux_err(EINVAL);
+    }
+
+    let hz = crate::arch::hal::timer_frequency_hz().max(1) as u128;
+    let now_ticks = crate::arch::hal::timer_current_ticks();
+    let sleep_ticks = if absolute {
+        let target_ns = (sec as u128)
+            .saturating_mul(1_000_000_000)
+            .saturating_add(nsec as u128);
+        let now_ns = (now_ticks as u128).saturating_mul(1_000_000_000) / hz;
+        if target_ns <= now_ns {
+            0
+        } else {
+            ns_to_ticks(target_ns - now_ns, hz)
+        }
+    } else {
+        let duration_ns = (sec as u128)
+            .saturating_mul(1_000_000_000)
+            .saturating_add(nsec as u128);
+        ns_to_ticks(duration_ns, hz)
+    };
+
+    if sleep_ticks != 0 {
+        let capped_ticks = sleep_ticks.min(u32::MAX as u128 / 2) as u32;
+        crate::task::scheduler::sleep_until(now_ticks.wrapping_add(capped_ticks));
+    }
+    0
+}
+
+fn ns_to_ticks(ns: u128, hz: u128) -> u128 {
+    if ns == 0 {
+        0
+    } else {
+        ns.saturating_mul(hz).saturating_add(999_999_999) / 1_000_000_000
+    }
+}
+
 pub(super) fn linux_sysinfo(info_ptr: u64) -> u64 {
     if info_ptr == 0 {
         return linux_err(EFAULT);

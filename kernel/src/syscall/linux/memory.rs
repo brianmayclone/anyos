@@ -178,6 +178,29 @@ pub(super) fn linux_mprotect(_addr: u64, len: u64, _prot: u64) -> u64 {
     }
 }
 
+pub(super) fn linux_msync(addr: u64, len: u64, flags: u64) -> u64 {
+    const PAGE_SIZE: u64 = 4096;
+    const MS_ASYNC: u64 = 0x1;
+    const MS_INVALIDATE: u64 = 0x2;
+    const MS_SYNC: u64 = 0x4;
+    const VALID_FLAGS: u64 = MS_ASYNC | MS_INVALIDATE | MS_SYNC;
+
+    if addr & (PAGE_SIZE - 1) != 0 || (flags & !VALID_FLAGS) != 0 {
+        return linux_err(EINVAL);
+    }
+    if (flags & MS_ASYNC) != 0 && (flags & MS_SYNC) != 0 {
+        return linux_err(EINVAL);
+    }
+    if len == 0 {
+        return 0;
+    }
+    if !handlers::helpers::is_user_range_accessible(addr, len) {
+        return linux_err(ENOMEM);
+    }
+
+    0
+}
+
 pub(super) fn linux_arch_prctl(code: u64, addr: u64) -> u64 {
     match code {
         LINUX_ARCH_SET_FS => {

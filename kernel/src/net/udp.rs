@@ -206,6 +206,21 @@ pub fn recv(port: u16) -> Option<UdpDatagram> {
     None
 }
 
+/// Return the number of bytes in the first queued datagram for a bound port.
+pub fn recv_available(port: u16) -> u32 {
+    let ports = UDP_PORTS.lock();
+    if let Some(map) = ports.as_ref() {
+        if let Some(cfg) = map.get(&port) {
+            return cfg
+                .queue
+                .front()
+                .map(|dgram| dgram.data.len().min(u32::MAX as usize) as u32)
+                .unwrap_or(0);
+        }
+    }
+    0
+}
+
 /// Receive a UDP datagram with timeout (blocking with polling)
 pub fn recv_timeout(port: u16, timeout_ticks: u32) -> Option<UdpDatagram> {
     let start = crate::arch::hal::timer_current_ticks();

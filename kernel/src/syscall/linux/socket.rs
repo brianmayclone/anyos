@@ -1044,8 +1044,18 @@ pub(super) fn linux_socket_poll_revents(socket_id: u32, events: i16) -> i16 {
             }
             revents
         }
-        LinuxSocketState::Udp { .. } | LinuxSocketState::UdpV6 { .. } => {
-            events & (POLLIN | POLLOUT)
+        LinuxSocketState::Udp { local_port, .. } | LinuxSocketState::UdpV6 { local_port, .. } => {
+            let mut revents = 0;
+            if events & POLLOUT != 0 {
+                revents |= POLLOUT;
+            }
+            if events & POLLIN != 0
+                && local_port != 0
+                && crate::net::udp::recv_available(local_port) > 0
+            {
+                revents |= POLLIN;
+            }
+            revents
         }
         LinuxSocketState::TcpListener { .. } => events & POLLIN,
         _ => 0,
@@ -1071,6 +1081,16 @@ pub(super) fn linux_socket_fionread(socket_id: u32, arg: u64) -> u64 {
         available = match crate::net::tcp::recv_available(tcp_id) {
             n if n == u32::MAX || n == u32::MAX - 1 => 0,
             n => n,
+        };
+    } else if let Some(LinuxSocketEntry {
+        state: LinuxSocketState::Udp { local_port, .. } | LinuxSocketState::UdpV6 { local_port, .. },
+        ..
+    }) = socket_entry(socket_id)
+    {
+        available = if local_port == 0 {
+            0
+        } else {
+            crate::net::udp::recv_available(local_port)
         };
     }
     unsafe {
