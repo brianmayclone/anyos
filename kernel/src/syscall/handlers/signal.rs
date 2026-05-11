@@ -249,9 +249,13 @@ pub fn deliver_pending_signal_linux64(regs: &mut super::super::SyscallRegs, resu
     regs.rip = handler;
     regs.rsp = frame_slot;
     regs.rdi = sig as u64;
-    regs.rsi = 0;
-    regs.rdx = 0;
-    result
+    // Match Linux x86_64 signal-entry register state: even handlers that were
+    // installed without SA_SIGINFO receive valid second/third argument
+    // pointers, and RAX is cleared for handlers declared without prototypes.
+    regs.rax = 0;
+    regs.rsi = frame_base;
+    regs.rdx = frame_base;
+    0
 }
 
 pub fn linux_rt_sigreturn(regs: &mut super::super::SyscallRegs) -> u64 {
