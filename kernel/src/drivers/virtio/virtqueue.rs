@@ -4,6 +4,7 @@
 //! Supports synchronous polled I/O with descriptor chaining for request/response pairs.
 
 use crate::memory::physical;
+use crate::memory::{address::PhysAddr, physmap};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -42,11 +43,13 @@ pub struct VirtQueue {
     avail_phys: u64,
     /// Physical address of the used ring.
     used_phys: u64,
-    /// Virtual pointer to descriptor table (identity-mapped).
+    /// Kernel-virtual pointer to descriptor table.
     desc: *mut VirtqDesc,
-    /// Virtual pointer to available ring: [flags:u16, idx:u16, ring[queue_size]:u16, used_event:u16].
+    /// Kernel-virtual pointer to available ring:
+    /// [flags:u16, idx:u16, ring[queue_size]:u16, used_event:u16].
     avail: *mut u16,
-    /// Virtual pointer to used ring: [flags:u16, idx:u16, ring[queue_size]:{id:u32,len:u32}, avail_event:u16].
+    /// Kernel-virtual pointer to used ring:
+    /// [flags:u16, idx:u16, ring[queue_size]:{id:u32,len:u32}, avail_event:u16].
     used: *mut u8,
     /// Head of the free descriptor chain.
     free_head: u16,
@@ -88,18 +91,22 @@ impl VirtQueue {
         let phys = physical::alloc_contiguous(num_pages)?;
         let base = phys.as_u64();
 
-        // Zero the entire allocation (identity-mapped, so virt == phys for low memory)
+        let base_virt = physmap::phys_to_virt_or_identity(phys);
+
+        // Zero the entire allocation through the kernel physmap. The device
+        // still receives physical addresses below; CPU access must never rely
+        // on a low identity mapping because syscalls can run under user CR3s.
         unsafe {
-            core::ptr::write_bytes(base as *mut u8, 0, num_pages * 4096);
+            core::ptr::write_bytes(base_virt, 0, num_pages * 4096);
         }
 
         let desc_phys = base;
         let avail_phys = base + avail_offset as u64;
         let used_phys = base + used_offset as u64;
 
-        let desc = desc_phys as *mut VirtqDesc;
-        let avail = avail_phys as *mut u16;
-        let used = used_phys as *mut u8;
+        let desc = physmap::phys_to_virt_or_identity(PhysAddr::new(desc_phys)) as *mut VirtqDesc;
+        let avail = physmap::phys_to_virt_or_identity(PhysAddr::new(avail_phys)) as *mut u16;
+        let used = physmap::phys_to_virt_or_identity(PhysAddr::new(used_phys));
 
         // Initialize free descriptor chain: each descriptor's `next` points to the next one
         unsafe {

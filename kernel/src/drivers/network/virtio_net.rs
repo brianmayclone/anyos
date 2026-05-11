@@ -17,7 +17,9 @@ use alloc::vec::Vec;
 use crate::drivers::pci::PciDevice;
 use crate::drivers::virtio::virtqueue::VirtQueue;
 use crate::drivers::virtio::{self, VirtioDevice, VIRTIO_F_VERSION_1};
+use crate::memory::address::PhysAddr;
 use crate::memory::physical;
+use crate::memory::physmap;
 use crate::sync::spinlock::Spinlock;
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -26,8 +28,8 @@ use crate::sync::spinlock::Spinlock;
 const NUM_BUFFERS: usize = 256;
 /// Number of dedicated TX buffers kept in flight concurrently.
 const NUM_TX_BUFFERS: usize = 128;
-const TX_DESC_MAP_SIZE: usize = NUM_BUFFERS;
-const INVALID_TX_SLOT: u16 = u16::MAX;
+const DESC_MAP_SIZE: usize = NUM_BUFFERS;
+const INVALID_BUFFER_SLOT: u16 = u16::MAX;
 const MAX_PENDING_TX_FRAMES: usize = 1024;
 
 /// Max Ethernet frame size + VirtIO net header.
@@ -47,9 +49,12 @@ struct VirtioNet {
     transmitq: VirtQueue,
     mac: [u8; 6],
     rx_bufs_phys: [u64; NUM_BUFFERS],
+    rx_bufs_virt: [u64; NUM_BUFFERS],
+    rx_desc_to_slot: [u16; DESC_MAP_SIZE],
     tx_bufs_phys: [u64; NUM_TX_BUFFERS],
+    tx_bufs_virt: [u64; NUM_TX_BUFFERS],
     tx_free_slots: VecDeque<u16>,
-    tx_desc_to_slot: [u16; TX_DESC_MAP_SIZE],
+    tx_desc_to_slot: [u16; DESC_MAP_SIZE],
     tx_in_flight: usize,
     pending_tx: VecDeque<Vec<u8>>,
     rx_queue: VecDeque<Vec<u8>>,
@@ -70,8 +75,8 @@ impl VirtioNet {
             let desc_idx = id as usize;
             if desc_idx < self.tx_desc_to_slot.len() {
                 let slot = self.tx_desc_to_slot[desc_idx];
-                if slot != INVALID_TX_SLOT {
-                    self.tx_desc_to_slot[desc_idx] = INVALID_TX_SLOT;
+                if slot != INVALID_BUFFER_SLOT {
+                    self.tx_desc_to_slot[desc_idx] = INVALID_BUFFER_SLOT;
                     self.tx_free_slots.push_back(slot);
                 }
             }
@@ -83,13 +88,14 @@ impl VirtioNet {
 
     fn submit_tx_slot(&mut self, slot: usize, data: &[u8]) -> bool {
         let buf_phys = self.tx_bufs_phys[slot];
+        let buf_virt = self.tx_bufs_virt[slot];
 
         // Write virtio-net header (all zeros = no offload) + frame to a dedicated TX buffer.
         unsafe {
-            core::ptr::write_bytes(buf_phys as *mut u8, 0, VIRTIO_NET_HDR_SIZE);
+            core::ptr::write_bytes(buf_virt as *mut u8, 0, VIRTIO_NET_HDR_SIZE);
             core::ptr::copy_nonoverlapping(
                 data.as_ptr(),
-                (buf_phys + VIRTIO_NET_HDR_SIZE as u64) as *mut u8,
+                (buf_virt + VIRTIO_NET_HDR_SIZE as u64) as *mut u8,
                 data.len(),
             );
         }
@@ -136,14 +142,19 @@ impl VirtioNet {
     fn post_rx_buffers(&mut self) {
         let mut posted = 0usize;
         while self.rx_posted < NUM_BUFFERS {
-            let buf_phys = self.rx_bufs_phys[self.rx_posted];
+            let slot = self.rx_posted;
+            let buf_phys = self.rx_bufs_phys[slot];
             let writable = [(buf_phys, RX_BUF_SIZE as u32)];
-            if self.receiveq.push(&[], &writable).is_some() {
-                self.rx_posted += 1;
-                posted += 1;
-            } else {
+            let desc_id = match self.receiveq.push(&[], &writable) {
+                Some(id) => id as usize,
+                None => break,
+            };
+            if desc_id >= self.rx_desc_to_slot.len() {
                 break;
             }
+            self.rx_desc_to_slot[desc_id] = slot as u16;
+            self.rx_posted += 1;
+            posted += 1;
         }
         if posted > 0 {
             self.vdev.notify_queue(0);
@@ -155,17 +166,26 @@ impl VirtioNet {
         let mut reposted = 0usize;
         while let Some((id, len)) = self.receiveq.poll_used() {
             let bytes = len as usize;
-            let buf_idx = id as usize;
+            let desc_idx = id as usize;
+            if desc_idx >= self.rx_desc_to_slot.len() {
+                continue;
+            }
+            let slot = self.rx_desc_to_slot[desc_idx];
+            if slot == INVALID_BUFFER_SLOT {
+                continue;
+            }
+            self.rx_desc_to_slot[desc_idx] = INVALID_BUFFER_SLOT;
+            let buf_idx = slot as usize;
 
             // Skip the virtio-net header, copy only the Ethernet frame.
             if bytes > VIRTIO_NET_HDR_SIZE && bytes <= RX_BUF_SIZE && buf_idx < NUM_BUFFERS {
                 let frame_len = bytes - VIRTIO_NET_HDR_SIZE;
-                let buf_phys = self.rx_bufs_phys[buf_idx];
+                let buf_virt = self.rx_bufs_virt[buf_idx];
                 let mut packet = Vec::with_capacity(frame_len);
                 unsafe {
                     packet.set_len(frame_len);
                     core::ptr::copy_nonoverlapping(
-                        (buf_phys + VIRTIO_NET_HDR_SIZE as u64) as *const u8,
+                        (buf_virt + VIRTIO_NET_HDR_SIZE as u64) as *const u8,
                         packet.as_mut_ptr(),
                         frame_len,
                     );
@@ -179,7 +199,11 @@ impl VirtioNet {
             if buf_idx < NUM_BUFFERS {
                 let buf_phys = self.rx_bufs_phys[buf_idx];
                 let writable = [(buf_phys, RX_BUF_SIZE as u32)];
-                if self.receiveq.push(&[], &writable).is_some() {
+                if let Some(new_desc_id) = self.receiveq.push(&[], &writable) {
+                    let new_desc_idx = new_desc_id as usize;
+                    if new_desc_idx < self.rx_desc_to_slot.len() {
+                        self.rx_desc_to_slot[new_desc_idx] = slot;
+                    }
                     reposted += 1;
                 }
             }
@@ -400,22 +424,28 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
 
     // 9. Allocate RX buffers (one page per buffer).
     let mut rx_bufs_phys = [0u64; NUM_BUFFERS];
+    let mut rx_bufs_virt = [0u64; NUM_BUFFERS];
     for i in 0..NUM_BUFFERS {
         let phys = physical::alloc_contiguous(1)?.as_u64();
+        let virt = physmap::phys_to_virt_or_identity(PhysAddr::new(phys)) as u64;
         unsafe {
-            core::ptr::write_bytes(phys as *mut u8, 0, 4096);
+            core::ptr::write_bytes(virt as *mut u8, 0, 4096);
         }
         rx_bufs_phys[i] = phys;
+        rx_bufs_virt[i] = virt;
     }
 
     // 10. Allocate TX buffer (one page).
     let mut tx_bufs_phys = [0u64; NUM_TX_BUFFERS];
-    for slot in tx_bufs_phys.iter_mut() {
+    let mut tx_bufs_virt = [0u64; NUM_TX_BUFFERS];
+    for i in 0..NUM_TX_BUFFERS {
         let phys = physical::alloc_contiguous(1)?.as_u64();
+        let virt = physmap::phys_to_virt_or_identity(PhysAddr::new(phys)) as u64;
         unsafe {
-            core::ptr::write_bytes(phys as *mut u8, 0, 4096);
+            core::ptr::write_bytes(virt as *mut u8, 0, 4096);
         }
-        *slot = phys;
+        tx_bufs_phys[i] = phys;
+        tx_bufs_virt[i] = virt;
     }
 
     // 11. Initialize state.
@@ -425,9 +455,12 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
         transmitq,
         mac,
         rx_bufs_phys,
+        rx_bufs_virt,
+        rx_desc_to_slot: [INVALID_BUFFER_SLOT; DESC_MAP_SIZE],
         tx_bufs_phys,
+        tx_bufs_virt,
         tx_free_slots: (0..NUM_TX_BUFFERS as u16).collect(),
-        tx_desc_to_slot: [INVALID_TX_SLOT; TX_DESC_MAP_SIZE],
+        tx_desc_to_slot: [INVALID_BUFFER_SLOT; DESC_MAP_SIZE],
         tx_in_flight: 0,
         pending_tx: VecDeque::new(),
         rx_queue: VecDeque::new(),
