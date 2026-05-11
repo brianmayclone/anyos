@@ -791,6 +791,7 @@ pub fn exec_current_linux_process(
     crate::memory::vma::init_process(new_pd, mmap_start);
     close_current_cloexec_fds();
 
+    crate::task::scheduler::current_signal_reset_caught_for_exec();
     crate::task::scheduler::exec_update_thread(tid, new_pd, result.brk, result.user_pages);
     crate::task::scheduler::set_thread_mmap_next(tid, mmap_start);
     crate::task::scheduler::set_thread_abi(tid, crate::task::abi::AbiPersonality::LinuxX86_64);

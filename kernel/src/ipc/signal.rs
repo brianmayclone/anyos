@@ -157,6 +157,22 @@ impl SignalState {
         }
     }
 
+    /// Reset caught signal handlers for execve().
+    ///
+    /// POSIX/Linux exec preserves ignored dispositions and the blocked mask, but
+    /// handlers pointing into the old program image must become SIG_DFL.
+    pub fn reset_caught_for_exec(&mut self) {
+        for sig in 1..32usize {
+            let handler = self.handlers[sig];
+            if handler != SIG_DFL && handler != SIG_IGN {
+                self.handlers[sig] = SIG_DFL;
+                self.flags[sig] = 0;
+                self.restorers[sig] = 0;
+                self.masks[sig] = 0;
+            }
+        }
+    }
+
     /// Returns true if the default action for this signal is to terminate the process.
     pub fn default_is_terminate(sig: u32) -> bool {
         matches!(

@@ -271,6 +271,20 @@ pub fn set_thread_signals(tid: u32, signals: crate::ipc::signal::SignalState) {
     }
 }
 
+/// Reset caught signal handlers on successful execve().
+///
+/// Ignored dispositions and the blocked mask intentionally survive exec, but
+/// user handler addresses belong to the old executable image.
+pub fn current_signal_reset_caught_for_exec() {
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        let cpu = get_cpu_id();
+        if let Some(idx) = sched.current_idx(cpu) {
+            sched.threads[idx].signals.reset_caught_for_exec();
+        }
+    }
+}
+
 /// Check if a thread exists (for kill(pid, 0) semantics).
 pub fn thread_exists(tid: u32) -> bool {
     let guard = SCHEDULER.lock();
