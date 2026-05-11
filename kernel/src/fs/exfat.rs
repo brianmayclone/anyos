@@ -1304,6 +1304,23 @@ impl ExFatFs {
         }
     }
 
+    fn dir_raw_has_active_entries(buf: &[u8]) -> bool {
+        let mut i = 0;
+        while i + 32 <= buf.len() {
+            let etype = buf[i];
+            if etype == 0x00 {
+                i += 32;
+                continue;
+            }
+            if etype != ENTRY_FILE {
+                i += 32;
+                continue;
+            }
+            return true;
+        }
+        false
+    }
+
     /// Convert UTF-16LE code units to an ASCII `String`.
     fn utf16_to_string(chars: &[u16]) -> String {
         let mut s = String::new();
@@ -2133,6 +2150,12 @@ impl ExFatFs {
             self.read_cluster(cur, &mut cbuf)?;
 
             if let Some(found) = self.find_entry_in_buf(&cbuf, name) {
+                if found.attributes & ATTR_DIRECTORY != 0 && found.first_cluster >= 2 {
+                    let child_raw = self.read_dir_raw(found.first_cluster)?;
+                    if Self::dir_raw_has_active_entries(&child_raw) {
+                        return Err(FsError::DirectoryNotEmpty);
+                    }
+                }
                 let total = 1 + found.secondary_count as usize;
                 let off = found.file_entry_offset;
                 // Mark all entries as deleted (clear InUse bit 7)
