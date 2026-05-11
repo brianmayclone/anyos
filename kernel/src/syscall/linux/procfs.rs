@@ -16,7 +16,7 @@ pub(super) fn linux_open_proc_file(abs: &str, file: u8, linux_flags: u64) -> u64
     if (linux_flags & 0o2000000) != 0 {
         crate::task::scheduler::current_fd_set_cloexec(fd, true);
     }
-    crate::serial_println!("licof linux open-proc: ok linux='{}' fd={}", abs, fd);
+    crate::serial_verbose_println!("licof linux open-proc: ok linux='{}' fd={}", abs, fd);
     fd as u64
 }
 

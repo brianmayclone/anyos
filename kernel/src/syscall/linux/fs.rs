@@ -178,7 +178,7 @@ pub(super) fn linux_log_library_open(
     match crate::fs::vfs::fstat(global_id) {
         Ok((_file_type, size, _position, _mtime)) => {
             let (dev, ino) = linux_fd_identity(global_id);
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "licof linux open-resolve: ok linux='{}' resolved='{}' fd={} size={} dev={} ino={}",
                 linux_path,
                 resolved_path,
@@ -189,7 +189,7 @@ pub(super) fn linux_log_library_open(
             );
         }
         Err(_) => {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "licof linux open-resolve: ok linux='{}' resolved='{}' fd={}",
                 linux_path,
                 resolved_path,
@@ -563,8 +563,7 @@ fn linux_faccessat_impl(dirfd: i32, path_ptr: u64, mode: u64, flags: u64) -> u64
         None => return linux_err(EFAULT),
     };
     if raw_path.is_empty() && (flags & LINUX_AT_EMPTY_PATH) != 0 {
-        if dirfd == LINUX_AT_FDCWD
-            || crate::task::scheduler::current_fd_get(dirfd as u32).is_some()
+        if dirfd == LINUX_AT_FDCWD || crate::task::scheduler::current_fd_get(dirfd as u32).is_some()
         {
             return 0;
         }

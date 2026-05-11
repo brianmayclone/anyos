@@ -332,7 +332,7 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
                     linux_write_termios(arg);
                 }
             }
-            crate::serial_println!("licof linux ioctl: TCGETS fd={} -> ok", fd);
+            crate::serial_verbose_println!("licof linux ioctl: TCGETS fd={} -> ok", fd);
             0
         }
         TCSETS | TCSETSW | TCSETSF => {
@@ -348,7 +348,7 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
                     crate::ipc::pty::set_termios(pty_id, termios);
                 }
             }
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "licof linux ioctl: TCSETS* fd={} request={:#x} -> ok",
                 fd,
                 request
@@ -394,7 +394,7 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
                     *((arg + 6) as *mut u16) = 0;
                 }
             }
-            crate::serial_println!("licof linux ioctl: TIOCGWINSZ fd={} -> ok", fd);
+            crate::serial_verbose_println!("licof linux ioctl: TIOCGWINSZ fd={} -> ok", fd);
             0
         }
         TIOCSWINSZ => {
@@ -404,11 +404,11 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
             if arg != 0 && !handlers::helpers::is_user_range_accessible(arg, 8) {
                 return linux_err(EFAULT);
             }
-            crate::serial_println!("licof linux ioctl: TIOCSWINSZ fd={} -> ok", fd);
+            crate::serial_verbose_println!("licof linux ioctl: TIOCSWINSZ fd={} -> ok", fd);
             0
         }
         _ => {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "licof linux ioctl: unsupported fd={} request={:#x}",
                 fd,
                 request

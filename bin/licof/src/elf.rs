@@ -40,12 +40,6 @@ pub(crate) fn diagnose_linux_binary(config: &LicoConfig, label: &str, path: &str
         );
         return;
     };
-    if info.is_dyn {
-        println!(
-            "[OK]\t{}: ELF64 ET_DYN binary; licof will use a compatibility load bias",
-            label
-        );
-    }
     if info.entry == 0 {
         println!(
             "[WARN]\t{}: ELF64 entry point is 0; loader may reject this binary",

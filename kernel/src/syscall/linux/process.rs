@@ -27,7 +27,7 @@ fn log_errno_probe(tag: &str, fs_base: u64) {
         if handlers::helpers::is_user_range_accessible(addr, 4) {
             let value = unsafe { *(addr as *const u32) };
             if value == EINTR as u32 || value == ECHILD as u32 {
-                crate::serial_println!(
+                crate::serial_verbose_println!(
                     "licof linux errno-probe {}: fs={:#x} off={:+#x} value={}",
                     tag,
                     fs_base,
@@ -56,7 +56,7 @@ pub(super) fn linux_unsupported_syscall(
     a5: u64,
     a6: u64,
 ) -> u64 {
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "licof linux: unsupported syscall nr={} rip={:#x} args={:#x},{:#x},{:#x},{:#x},{:#x},{:#x}",
         regs.rax,
         regs.rip,
@@ -92,7 +92,7 @@ pub(super) fn linux_clone(
         return linux_err(EINVAL);
     }
     if (flags & (CLONE_VM | CLONE_THREAD | CLONE_SETTLS)) != 0 || tls != 0 {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "licof linux clone: unsupported flags={:#x} child_stack={:#x} tls={:#x}",
             flags,
             child_stack,
@@ -101,7 +101,7 @@ pub(super) fn linux_clone(
         return linux_err(ENOSYS);
     }
     if child_stack != 0 {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "licof linux clone: unsupported custom child_stack={:#x} flags={:#x}",
             child_stack,
             flags
@@ -135,7 +135,7 @@ pub(super) fn linux_clone(
     let child_tid = handlers::sys_fork_with_child_tidptr(regs, child_tidptr, clear_child_tidptr);
     #[cfg(not(target_arch = "x86_64"))]
     let child_tid = handlers::sys_fork(regs);
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "licof linux clone: tid={} flags={:#x} child_stack={:#x} child_tidptr={:#x} clear_child_tidptr={:#x} -> child={}",
         crate::task::scheduler::current_tid(),
         flags,
@@ -157,7 +157,7 @@ pub(super) fn linux_clone(
 
 pub(super) fn linux_fork(regs: &SyscallRegs) -> u64 {
     let child_tid = handlers::sys_fork(regs);
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "licof linux fork: tid={} -> child={}",
         crate::task::scheduler::current_tid(),
         child_tid
@@ -210,7 +210,7 @@ pub(super) fn linux_execve(filename_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> u
         Err(errno) => return linux_err(errno),
     };
 
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "licof linux execve: tid={} linux='{}' resolved='{}' argv0='{}' argc={} envc={}",
         crate::task::scheduler::current_tid(),
         linux_path,
@@ -221,7 +221,7 @@ pub(super) fn linux_execve(filename_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> u
     );
 
     let err = crate::task::loader::exec_current_linux_process(&resolved, &argv, &envp);
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "licof linux execve: failed linux='{}' resolved='{}': {}",
         linux_path,
         resolved,
@@ -286,7 +286,7 @@ pub(super) fn linux_wait4(
 
     let log_wait4 = should_log_wait4_debug();
     if log_wait4 {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "licof linux wait4: enter tid={} rip={:#x} pid={} options={:#x} status={:#x} rusage={:#x} hw_fs={:#x}",
             crate::task::scheduler::current_tid(),
             rip,
@@ -315,7 +315,7 @@ pub(super) fn linux_wait4(
         (pid as u32, code)
     } else {
         if log_wait4 {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "licof linux wait4: immediate ECHILD tid={} pid={} options={:#x}",
                 crate::task::scheduler::current_tid(),
                 pid,
@@ -327,7 +327,7 @@ pub(super) fn linux_wait4(
     };
 
     if log_wait4 || (child_tid != u32::MAX && child_tid != u32::MAX - 1) {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "licof linux wait4: result tid={} pid={} -> child={} code={}",
             crate::task::scheduler::current_tid(),
             pid,
@@ -341,7 +341,7 @@ pub(super) fn linux_wait4(
         let ret = linux_err(ECHILD);
         if log_wait4 {
             log_errno_probe("wait4-echild", current_hw_fs_base());
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "licof linux wait4: ECHILD tid={} pid={} raw_ret={:#x} signed_ret={} hw_fs={:#x}",
                 crate::task::scheduler::current_tid(),
                 pid,
@@ -355,7 +355,7 @@ pub(super) fn linux_wait4(
     }
     if child_tid == u32::MAX - 1 || code == u32::MAX - 1 {
         if log_wait4 {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "licof linux wait4: WNOHANG-none tid={} pid={}",
                 crate::task::scheduler::current_tid(),
                 pid
@@ -364,7 +364,7 @@ pub(super) fn linux_wait4(
         return 0;
     }
     if code == u32::MAX - 2 {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "licof linux wait4: stopped tid={} pid={} child={}",
             crate::task::scheduler::current_tid(),
             pid,
@@ -385,7 +385,7 @@ pub(super) fn linux_wait4(
         }
     }
     crate::task::scheduler::current_signal_clear_pending(crate::ipc::signal::SIGCHLD);
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "licof linux wait4: ok tid={} child={} code={} status_ptr={:#x} status={:#x} ret={:#x} hw_fs={:#x}",
         crate::task::scheduler::current_tid(),
         child_tid,
@@ -605,7 +605,7 @@ pub(super) fn linux_rt_sigaction(sig: u64, act: u64, oldact: u64, sigsetsize: u6
             restorer,
             mask as u64,
         );
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "licof linux rt_sigaction: tid={} sig={} handler={:#x} flags={:#x} restorer={:#x} mask={:#x}->{:#x} old={:#x}",
             crate::task::scheduler::current_tid(),
             sig,
@@ -654,7 +654,7 @@ pub(super) fn linux_rt_sigprocmask(how: u64, set: u64, oldset: u64, sigsetsize: 
             _ => old_mask,
         };
         crate::task::scheduler::current_signal_set_blocked(new_mask);
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "licof linux rt_sigprocmask: tid={} how={} set={:#x} old={:#x} new={:#x}",
             crate::task::scheduler::current_tid(),
             how,
@@ -864,7 +864,7 @@ pub(super) fn linux_setrlimit(resource: u64, limit_ptr: u64) -> u64 {
     if limit_ptr == 0 || !handlers::helpers::is_user_range_accessible(limit_ptr, 16) {
         return linux_err(EFAULT);
     }
-    crate::serial_println!("licof linux setrlimit: resource={} -> ok", resource);
+    crate::serial_verbose_println!("licof linux setrlimit: resource={} -> ok", resource);
     0
 }
 

@@ -1720,6 +1720,36 @@ struct ForegroundProcess {
     command: String,
 }
 
+fn foreground_local_echo_enabled(fp: &ForegroundProcess, buf: &TerminalBuffer) -> bool {
+    let cmd = fp.command.trim();
+    let shell_like = cmd == "bash"
+        || cmd.starts_with("bash ")
+        || cmd == "sh"
+        || cmd.starts_with("sh ")
+        || cmd.starts_with("licof shell")
+        || cmd.contains("/bin/bash")
+        || cmd.contains("/bin/sh");
+
+    shell_like && !current_line_looks_secret(buf)
+}
+
+fn current_line_looks_secret(buf: &TerminalBuffer) -> bool {
+    if buf.cursor_row >= buf.lines.len() {
+        return false;
+    }
+
+    let mut line = String::new();
+    for cell in &buf.lines[buf.cursor_row] {
+        let ch = cell.ch;
+        if ch == '\0' {
+            continue;
+        }
+        line.push(ch.to_ascii_lowercase());
+    }
+
+    line.contains("password") || line.contains("passwort") || line.contains("passwd")
+}
+
 // ─── Profile ─────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -6656,15 +6686,28 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                 app().term_kbd_pipe
             };
             if kbd_target != 0 {
+                let local_echo = foreground_local_echo_enabled(fp, &sess.buf);
                 match key_code {
                     KEY_ENTER => {
                         ipc::pipe_write(kbd_target, b"\n");
+                        if local_echo {
+                            sess.buf.write_char('\n');
+                            sess.dirty = true;
+                        }
                     }
                     KEY_BACKSPACE => {
                         ipc::pipe_write(kbd_target, &[0x7f]);
+                        if local_echo {
+                            sess.buf.backspace();
+                            sess.dirty = true;
+                        }
                     }
                     KEY_TAB => {
                         ipc::pipe_write(kbd_target, b"\t");
+                        if local_echo {
+                            sess.buf.write_char('\t');
+                            sess.dirty = true;
+                        }
                     }
                     KEY_ESCAPE => {
                         ipc::pipe_write(kbd_target, b"\x1b");
@@ -6716,11 +6759,14 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                                     let mut utf8_buf = [0u8; 4];
                                     let encoded = c.encode_utf8(&mut utf8_buf);
                                     ipc::pipe_write(kbd_target, encoded.as_bytes());
+                                    if local_echo {
+                                        sess.buf.write_char(c);
+                                        sess.dirty = true;
+                                    }
                                 }
                             }
                         }
-                    } // (Note: local echo is NOT done here — foreground processes
-                      //  handle their own echo via stdout pipe, which poll_fg_processes reads.)
+                    }
                 }
             }
         }

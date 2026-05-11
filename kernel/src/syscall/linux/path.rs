@@ -192,7 +192,7 @@ pub(super) fn linux_log_path_error(
     resolved_path: &str,
     errno: i32,
 ) {
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "licof linux {}: failed errno={} linux='{}' translated='{}' resolved='{}'",
         op,
         errno,

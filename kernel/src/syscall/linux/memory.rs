@@ -3,13 +3,13 @@ use super::*;
 pub(super) fn linux_brk(new_brk: u64) -> u64 {
     let current = crate::task::scheduler::current_thread_brk();
     if new_brk == 0 {
-        crate::serial_println!("licof linux brk: query -> {:#x}", current);
+        crate::serial_verbose_println!("licof linux brk: query -> {:#x}", current);
         return current;
     }
     let delta = new_brk as i64 - current as i64;
     let old = handlers::sys_sbrk_u64(delta);
     if old == u64::MAX {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "licof linux brk: failed current={:#x} requested={:#x} delta={}",
             current,
             new_brk,
@@ -18,7 +18,7 @@ pub(super) fn linux_brk(new_brk: u64) -> u64 {
         current
     } else {
         let updated = crate::task::scheduler::current_thread_brk();
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "licof linux brk: current={:#x} requested={:#x} delta={} -> {:#x}",
             current,
             new_brk,
@@ -31,7 +31,7 @@ pub(super) fn linux_brk(new_brk: u64) -> u64 {
 
 pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, offset: u64) -> u64 {
     if len == 0 {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "licof linux mmap: reject zero len addr={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
             addr,
             prot,
@@ -45,7 +45,7 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
     let private = (flags & LINUX_MAP_PRIVATE) != 0;
     let fixed = (flags & LINUX_MAP_FIXED) != 0;
     if !private {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "licof linux mmap: reject !private addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
             addr,
             len,
@@ -57,7 +57,7 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
         return linux_err(ENOSYS);
     }
     if anonymous && !linux_fd_is_minus_one(fd) {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "licof linux mmap: reject anon fd addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
             addr,
             len,
@@ -69,7 +69,7 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
         return linux_err(EINVAL);
     }
     if !anonymous && linux_fd_is_minus_one(fd) {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "licof linux mmap: reject file fd addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
             addr,
             len,
@@ -83,7 +83,7 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
 
     let mapped = if fixed {
         if addr == 0 {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "licof linux mmap: reject fixed-null len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
                 len,
                 prot,
@@ -96,7 +96,7 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
         match linux_map_fixed(addr, len) {
             Some(addr) => addr,
             None => {
-                crate::serial_println!(
+                crate::serial_verbose_println!(
                     "licof linux mmap: fixed failed addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
                     addr,
                     len,
@@ -112,7 +112,7 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
         handlers::sys_mmap_u64(len)
     };
     if mapped == u64::MAX {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "licof linux mmap: alloc failed addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
             addr,
             len,
@@ -127,7 +127,7 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
     if !anonymous {
         if let Err(errno) = linux_fill_mapping_from_fd(fd as u32, mapped, len, offset) {
             let _ = handlers::sys_munmap_u64(mapped, len);
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "licof linux mmap: fill failed mapped={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x} errno={}",
                 mapped,
                 len,
@@ -140,7 +140,7 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
             return linux_err(errno);
         }
     }
-    crate::serial_println!(
+    crate::serial_verbose_println!(
         "licof linux mmap: ok addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x} -> {:#x}",
         addr,
         len,
@@ -186,7 +186,7 @@ pub(super) fn linux_arch_prctl(code: u64, addr: u64) -> u64 {
             unsafe {
                 crate::arch::x86::power::wrmsr(0xC000_0100, addr);
             }
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "licof linux arch_prctl: tid={} SET_FS {:#x}",
                 crate::task::scheduler::current_tid(),
                 addr

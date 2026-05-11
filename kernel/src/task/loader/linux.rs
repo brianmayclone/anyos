@@ -539,7 +539,7 @@ fn load_linux_image_into_pd(
         let resolved_interp = match licof_resolve_rootfs_path(linux_rootfs, &translated_interp) {
             Ok(path) => path,
             Err(err) => {
-                crate::serial_println!(
+                crate::serial_verbose_println!(
                     "licof loader: failed to resolve PT_INTERP '{}' translated='{}': {}",
                     interp_path,
                     translated_interp,
@@ -549,7 +549,7 @@ fn load_linux_image_into_pd(
             }
         };
         let interp_data = crate::fs::vfs::read_file_to_vec(&resolved_interp).map_err(|_| {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "licof loader: failed to read PT_INTERP '{}' resolved='{}'",
                 interp_path,
                 resolved_interp
@@ -631,7 +631,7 @@ fn load_and_run_with_args_x86_64(path: &str, name: &str, args: &str) -> Result<u
     let load_path = match licof_resolve_rootfs_path(&linux_rootfs, path) {
         Ok(path) => path,
         Err(err) => {
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "licof loader: failed to resolve binary path='{}': {}",
                 path,
                 err
@@ -698,7 +698,7 @@ fn load_and_run_with_args_x86_64(path: &str, name: &str, args: &str) -> Result<u
     }
 
     if !try_store_pending_program(tid, result.entry, result.stack_top, 0) {
-        crate::serial_println!(
+        crate::serial_verbose_println!(
             "licof load_and_run: pending-program table full for '{}' (tid={})",
             path,
             tid

@@ -246,7 +246,7 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
         if crate::task::scheduler::current_thread_abi()
             == crate::task::abi::AbiPersonality::LinuxX86_64
         {
-            crate::serial_println!("licof linux sbrk: reject old_brk=0 inc={}", increment);
+            crate::serial_verbose_println!("licof linux sbrk: reject old_brk=0 inc={}", increment);
         }
         return u64::MAX;
     }
@@ -263,7 +263,7 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
                 if crate::task::scheduler::current_thread_abi()
                     == crate::task::abi::AbiPersonality::LinuxX86_64
                 {
-                    crate::serial_println!(
+                    crate::serial_verbose_println!(
                         "licof linux sbrk: reject overflow old={:#x} inc={}",
                         old_brk,
                         increment
@@ -281,7 +281,7 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
                 if crate::task::scheduler::current_thread_abi()
                     == crate::task::abi::AbiPersonality::LinuxX86_64
                 {
-                    crate::serial_println!(
+                    crate::serial_verbose_println!(
                         "licof linux sbrk: reject dlib-cross old={:#x} new={:#x} inc={}",
                         old_brk,
                         new_brk,
@@ -298,7 +298,7 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
                 if crate::task::scheduler::current_thread_abi()
                     == crate::task::abi::AbiPersonality::LinuxX86_64
                 {
-                    crate::serial_println!(
+                    crate::serial_verbose_println!(
                         "licof linux sbrk: reject low-limit old={:#x} new={:#x} inc={} limit={:#x}",
                         old_brk,
                         new_brk,
@@ -317,7 +317,7 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
                 if crate::task::scheduler::current_thread_abi()
                     == crate::task::abi::AbiPersonality::LinuxX86_64
                 {
-                    crate::serial_println!(
+                    crate::serial_verbose_println!(
                         "licof linux sbrk: reject high-limit old={:#x} new={:#x} inc={} limit={:#x}",
                         old_brk,
                         new_brk,
@@ -344,7 +344,7 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
                         if crate::task::scheduler::current_thread_abi()
                             == crate::task::abi::AbiPersonality::LinuxX86_64
                         {
-                            crate::serial_println!(
+                            crate::serial_verbose_println!(
                                 "licof linux sbrk: reject zero-frame old={:#x} new={:#x} addr={:#x}",
                                 old_brk,
                                 new_brk,
@@ -358,7 +358,7 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
                         if crate::task::scheduler::current_thread_abi()
                             == crate::task::abi::AbiPersonality::LinuxX86_64
                         {
-                            crate::serial_println!(
+                            crate::serial_verbose_println!(
                                 "licof linux sbrk: reject map-page old={:#x} new={:#x} addr={:#x}",
                                 old_brk,
                                 new_brk,
@@ -372,7 +372,7 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
                     if crate::task::scheduler::current_thread_abi()
                         == crate::task::abi::AbiPersonality::LinuxX86_64
                     {
-                        crate::serial_println!(
+                        crate::serial_verbose_println!(
                             "licof linux sbrk: reject phys-oom old={:#x} new={:#x} addr={:#x}",
                             old_brk,
                             new_brk,
