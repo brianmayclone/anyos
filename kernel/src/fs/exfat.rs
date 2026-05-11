@@ -542,6 +542,17 @@ impl ExFatFs {
     /// Convert a cluster number (>=2) to an absolute LBA.
     #[inline]
     fn cluster_to_lba(&self, cluster: u32) -> u32 {
+        if cluster < 2 || cluster >= self.cluster_count + 2 {
+            panic!(
+                "exfat::cluster_to_lba: bogus cluster {} (#x={:#x}) — valid range [2, {}); part_start={} heap_off={} spc={}",
+                cluster,
+                cluster,
+                self.cluster_count + 2,
+                self.partition_start_lba,
+                self.cluster_heap_offset,
+                self.sectors_per_cluster()
+            );
+        }
         self.partition_start_lba
             + self.cluster_heap_offset
             + (cluster - 2) * self.sectors_per_cluster()

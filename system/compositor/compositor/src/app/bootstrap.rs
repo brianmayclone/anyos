@@ -91,6 +91,28 @@ fn register_with_ami(width: u32, height: u32, setup_mode: bool) {
     println!("compositor: WARNING — AMID not reachable during bootstrap");
 }
 
+fn clear_primary_framebuffer(fb_info: &ipc::FbMapInfo) {
+    if fb_info.fb_addr == 0 || fb_info.width == 0 || fb_info.height == 0 || fb_info.pitch < 4 {
+        return;
+    }
+
+    let fb = fb_info.fb_addr as *mut u32;
+    let stride = (fb_info.pitch / 4) as usize;
+    let width = fb_info.width as usize;
+    let height = fb_info.height as usize;
+
+    unsafe {
+        for y in 0..height {
+            let row = fb.add(y * stride);
+            for x in 0..width {
+                row.add(x).write_volatile(0xFF00_0000);
+            }
+        }
+    }
+
+    let _ = anyos_std::display::flush(0, 0, 0, fb_info.width, fb_info.height);
+}
+
 pub fn is_init_done() -> bool {
     INIT_DONE.load(Ordering::Acquire)
 }
@@ -134,6 +156,7 @@ pub fn run() {
         "compositor: framebuffer mapped at 0x{:08X} ({}x{}, pitch={})",
         fb_info.fb_addr, fb_info.width, fb_info.height, fb_info.pitch
     );
+    clear_primary_framebuffer(&fb_info);
 
     let width = fb_info.width;
     let height = fb_info.height;
