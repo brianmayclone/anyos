@@ -66,6 +66,7 @@ const LINUX_SYS_MUNMAP: u64 = 11;
 const LINUX_SYS_BRK: u64 = 12;
 const LINUX_SYS_RT_SIGACTION: u64 = 13;
 const LINUX_SYS_RT_SIGPROCMASK: u64 = 14;
+const LINUX_SYS_RT_SIGRETURN: u64 = 15;
 const LINUX_SYS_IOCTL: u64 = 16;
 const LINUX_SYS_PREAD64: u64 = 17;
 const LINUX_SYS_READV: u64 = 19;
@@ -252,6 +253,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_SHMCTL => linux_shmctl(a1, a2, a3),
         LINUX_SYS_RT_SIGACTION => linux_rt_sigaction(a1, a2, a3, a4),
         LINUX_SYS_RT_SIGPROCMASK => linux_rt_sigprocmask(a1, a2, a3, a4),
+        LINUX_SYS_RT_SIGRETURN => handlers::linux_rt_sigreturn(regs),
         LINUX_SYS_IOCTL => linux_ioctl(a1 as u32, a2, a3),
         LINUX_SYS_PREAD64 => linux_pread64(a1 as u32, a2, a3, a4),
         LINUX_SYS_READV => linux_readv(a1 as u32, a2, a3),

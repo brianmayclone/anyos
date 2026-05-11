@@ -186,6 +186,11 @@ pub(super) fn linux_arch_prctl(code: u64, addr: u64) -> u64 {
             unsafe {
                 crate::arch::x86::power::wrmsr(0xC000_0100, addr);
             }
+            crate::serial_println!(
+                "licof linux arch_prctl: tid={} SET_FS {:#x}",
+                crate::task::scheduler::current_tid(),
+                addr
+            );
             0
         }
         LINUX_ARCH_GET_FS => {
