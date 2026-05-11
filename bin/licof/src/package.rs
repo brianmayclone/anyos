@@ -1064,8 +1064,8 @@ fn validate_installed_package(rootfs: &str, info: &PackageInfo) -> bool {
 
 fn validate_coreutils_runtime(rootfs: &str) -> bool {
     let tee_ok = validate_runtime_elf(rootfs, "/usr/bin/tee", "coreutils tee");
-    let ls_ok = validate_runtime_elf(rootfs, "/usr/bin/ls", "coreutils ls");
-    let cat_ok = validate_runtime_elf(rootfs, "/usr/bin/cat", "coreutils cat");
+    let ls_ok = validate_runtime_elf(rootfs, "/bin/ls", "coreutils ls");
+    let cat_ok = validate_runtime_elf(rootfs, "/bin/cat", "coreutils cat");
     tee_ok && ls_ok && cat_ok
 }
 
