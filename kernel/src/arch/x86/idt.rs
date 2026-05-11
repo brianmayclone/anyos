@@ -594,13 +594,7 @@ fn try_handle_linux_vsyscall_fault(frame: &InterruptFrame, cr2: u64) -> bool {
 }
 
 fn linux_compat_now_seconds() -> u64 {
-    let ticks = crate::arch::hal::timer_current_ticks() as u64;
-    let hz = crate::arch::hal::timer_frequency_hz() as u64;
-    if hz == 0 {
-        0
-    } else {
-        ticks / hz
-    }
+    crate::time::wall_clock_unix_secs()
 }
 
 fn copy_user_u64(ptr: u64, value: u64) -> bool {

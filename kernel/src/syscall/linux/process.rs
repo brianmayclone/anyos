@@ -666,12 +666,23 @@ pub(super) fn linux_rt_sigprocmask(how: u64, set: u64, oldset: u64, sigsetsize: 
     0
 }
 
-pub(super) fn linux_gettimeofday(tv_ptr: u64) -> u64 {
+pub(super) fn linux_gettimeofday(tv_ptr: u64, tz_ptr: u64) -> u64 {
     if tv_ptr != 0 {
         let sec = linux_now_seconds();
+        if !handlers::helpers::is_user_range_accessible(tv_ptr, 16) {
+            return linux_err(EFAULT);
+        }
         unsafe {
             write_u64(tv_ptr, 0, sec);
             write_u64(tv_ptr, 8, 0);
+        }
+    }
+    if tz_ptr != 0 {
+        if !handlers::helpers::is_user_range_accessible(tz_ptr, 8) {
+            return linux_err(EFAULT);
+        }
+        unsafe {
+            write_u64(tz_ptr, 0, 0);
         }
     }
     0
@@ -680,6 +691,9 @@ pub(super) fn linux_gettimeofday(tv_ptr: u64) -> u64 {
 pub(super) fn linux_time(time_ptr: u64) -> u64 {
     let sec = linux_now_seconds();
     if time_ptr != 0 {
+        if !handlers::helpers::is_user_range_accessible(time_ptr, 8) {
+            return linux_err(EFAULT);
+        }
         unsafe {
             write_u64(time_ptr, 0, sec);
         }
@@ -687,13 +701,27 @@ pub(super) fn linux_time(time_ptr: u64) -> u64 {
     sec
 }
 
-pub(super) fn linux_clock_gettime(_clock_id: u64, ts_ptr: u64) -> u64 {
-    if ts_ptr == 0 {
+pub(super) fn linux_clock_gettime(clock_id: u64, ts_ptr: u64) -> u64 {
+    const CLOCK_REALTIME: u64 = 0;
+    const CLOCK_MONOTONIC: u64 = 1;
+    const CLOCK_MONOTONIC_RAW: u64 = 4;
+    const CLOCK_REALTIME_COARSE: u64 = 5;
+    const CLOCK_MONOTONIC_COARSE: u64 = 6;
+    const CLOCK_BOOTTIME: u64 = 7;
+
+    if ts_ptr == 0 || !handlers::helpers::is_user_range_accessible(ts_ptr, 16) {
         return linux_err(EFAULT);
     }
+    let (sec, nsec) = match clock_id {
+        CLOCK_REALTIME | CLOCK_REALTIME_COARSE => (linux_now_seconds(), 0),
+        CLOCK_MONOTONIC | CLOCK_MONOTONIC_RAW | CLOCK_MONOTONIC_COARSE | CLOCK_BOOTTIME => {
+            linux_monotonic_time()
+        }
+        _ => return linux_err(EINVAL),
+    };
     unsafe {
-        write_u64(ts_ptr, 0, linux_now_seconds());
-        write_u64(ts_ptr, 8, 0);
+        write_u64(ts_ptr, 0, sec);
+        write_u64(ts_ptr, 8, nsec);
     }
     0
 }
@@ -719,7 +747,7 @@ pub(super) fn linux_clock_nanosleep(clock_id: u64, flags: u64, req_ptr: u64, rem
     linux_sleep_timespec(req_ptr, rem_ptr, (flags & TIMER_ABSTIME) != 0, clock_id)
 }
 
-fn linux_sleep_timespec(req_ptr: u64, _rem_ptr: u64, absolute: bool, _clock_id: u64) -> u64 {
+fn linux_sleep_timespec(req_ptr: u64, _rem_ptr: u64, absolute: bool, clock_id: u64) -> u64 {
     if req_ptr == 0 || !handlers::helpers::is_user_range_accessible(req_ptr, 16) {
         return linux_err(EFAULT);
     }
@@ -736,7 +764,11 @@ fn linux_sleep_timespec(req_ptr: u64, _rem_ptr: u64, absolute: bool, _clock_id: 
         let target_ns = (sec as u128)
             .saturating_mul(1_000_000_000)
             .saturating_add(nsec as u128);
-        let now_ns = (now_ticks as u128).saturating_mul(1_000_000_000) / hz;
+        let now_ns = if clock_id == 0 {
+            (linux_now_seconds() as u128).saturating_mul(1_000_000_000)
+        } else {
+            (now_ticks as u128).saturating_mul(1_000_000_000) / hz
+        };
         if target_ns <= now_ns {
             0
         } else {
@@ -944,11 +976,15 @@ pub(super) fn linux_futex(_uaddr: u64, op: u64, _val: u64) -> u64 {
 }
 
 pub(super) fn linux_now_seconds() -> u64 {
-    let ticks = crate::arch::hal::timer_current_ticks() as u64;
-    let hz = crate::arch::hal::timer_frequency_hz() as u64;
-    if hz == 0 {
-        0
-    } else {
-        ticks / hz
-    }
+    crate::time::wall_clock_unix_secs()
+}
+
+fn linux_monotonic_time() -> (u64, u64) {
+    let hz = crate::arch::hal::timer_frequency_hz().max(1) as u128;
+    let ticks = crate::arch::hal::timer_current_ticks() as u128;
+    let total_ns = ticks.saturating_mul(1_000_000_000) / hz;
+    (
+        (total_ns / 1_000_000_000) as u64,
+        (total_ns % 1_000_000_000) as u64,
+    )
 }

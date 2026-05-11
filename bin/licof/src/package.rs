@@ -1007,6 +1007,7 @@ fn find_tar_entry(reader: &libzip_client::TarReader, wanted: &str) -> Option<u32
 fn validate_installed_package(rootfs: &str, info: &PackageInfo) -> bool {
     match info.package.as_str() {
         "coreutils" => validate_coreutils_runtime(rootfs),
+        "debian-archive-keyring" => validate_debian_archive_keyring_runtime(rootfs),
         "libc6" => validate_libc6_runtime(rootfs),
         "libpam0g" => validate_libpam_runtime(rootfs),
         _ => true,
@@ -1047,6 +1048,32 @@ fn validate_libpam_runtime(rootfs: &str) -> bool {
     );
     let pamc_ok = validate_runtime_elf(rootfs, "/lib/x86_64-linux-gnu/libpamc.so.0", "libpamc");
     pam_ok && misc_ok && pamc_ok
+}
+
+fn validate_debian_archive_keyring_runtime(rootfs: &str) -> bool {
+    let required = [
+        "/usr/share/keyrings/debian-archive-keyring.gpg",
+        "/usr/share/keyrings/debian-archive-bookworm-automatic.gpg",
+        "/usr/share/keyrings/debian-archive-bookworm-security-automatic.gpg",
+        "/usr/share/keyrings/debian-archive-bookworm-stable.gpg",
+        "/etc/apt/trusted.gpg.d/debian-archive-bookworm-automatic.asc",
+        "/etc/apt/trusted.gpg.d/debian-archive-bookworm-security-automatic.asc",
+        "/etc/apt/trusted.gpg.d/debian-archive-bookworm-stable.asc",
+    ];
+    let mut ok = true;
+    for linux_path in required {
+        let path = linux_path_in_rootfs(rootfs, linux_path);
+        let size = file_size(&path);
+        if size < 1024 {
+            println!(
+                "licof pkg: debian archive keyring check failed: {} size={}",
+                path, size
+            );
+            print_path_probe("licof pkg", &path);
+            ok = false;
+        }
+    }
+    ok
 }
 
 fn ensure_runtime_alias(rootfs: &str, dest_linux: &str, target: &str, label: &str) -> bool {
@@ -1245,6 +1272,7 @@ fn is_installed(config: &LicoConfig, pkg: &str, rootfs: &str) -> bool {
 fn installed_payload_sane(rootfs: &str, pkg: &str) -> bool {
     match pkg {
         "coreutils" => validate_coreutils_runtime(rootfs),
+        "debian-archive-keyring" => validate_debian_archive_keyring_runtime(rootfs),
         _ => true,
     }
 }

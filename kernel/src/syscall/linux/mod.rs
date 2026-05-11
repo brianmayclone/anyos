@@ -356,7 +356,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_CHOWN | LINUX_SYS_LCHOWN => linux_chown(a1, linux_u32_arg(a2), linux_u32_arg(a3)),
         LINUX_SYS_FCHOWN => linux_fchown(a1 as u32, linux_u32_arg(a2), linux_u32_arg(a3)),
         LINUX_SYS_UMASK => 0,
-        LINUX_SYS_GETTIMEOFDAY => linux_gettimeofday(a1),
+        LINUX_SYS_GETTIMEOFDAY => linux_gettimeofday(a1, a2),
         LINUX_SYS_GETRLIMIT => linux_prlimit64(0, a1, 0, a2),
         LINUX_SYS_GETRUSAGE => linux_getrusage(a1, a2),
         LINUX_SYS_SYSINFO => linux_sysinfo(a1),

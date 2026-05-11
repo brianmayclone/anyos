@@ -30,7 +30,7 @@ pub(crate) fn ensure_rootfs_layout(config: &LicoConfig) {
     let _ = fs::write_bytes(
         &alloc::format!("{}/etc/apt/sources.list", rootfs),
         alloc::format!(
-            "deb {} {} {}\n",
+            "deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] {} {} {}\n",
             config.apt_base,
             config.apt_dist,
             config.apt_component
