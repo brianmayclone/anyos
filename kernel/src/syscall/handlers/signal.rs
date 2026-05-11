@@ -136,6 +136,7 @@ const LINUX_RT_SIGFRAME_MAGIC: u64 = 0x5349_4746_524d_3634;
 const LINUX_RT_SIGFRAME_REGS_OFFSET: u64 = 8;
 const LINUX_RT_SIGFRAME_BLOCKED_OFFSET: u64 = LINUX_RT_SIGFRAME_REGS_OFFSET + 20 * 8;
 const LINUX_RT_SIGFRAME_SIZE: u64 = LINUX_RT_SIGFRAME_BLOCKED_OFFSET + 8;
+const LINUX_X86_64_RED_ZONE_SIZE: u64 = 128;
 const LINUX_SA_NODEFER: u64 = 0x4000_0000;
 
 unsafe fn write_sigframe_regs(base: u64, regs: &super::super::SyscallRegs, result: u64) {
@@ -210,7 +211,11 @@ pub fn deliver_pending_signal_linux64(regs: &mut super::super::SyscallRegs, resu
         return result;
     }
 
-    let frame_slot = ((regs.rsp.wrapping_sub(LINUX_RT_SIGFRAME_SIZE + 16)) & !0xf) + 8;
+    // Linux signal delivery must preserve the SysV x86_64 red zone. Shells
+    // like dash can keep wait/job state there across a blocking wait4; placing
+    // the rt frame directly below RSP corrupts that state before rt_sigreturn.
+    let signal_stack_top = regs.rsp.wrapping_sub(LINUX_X86_64_RED_ZONE_SIZE);
+    let frame_slot = ((signal_stack_top.wrapping_sub(LINUX_RT_SIGFRAME_SIZE + 16)) & !0xf) + 8;
     let frame_base = frame_slot + 8;
     if !super::helpers::is_user_range_accessible(frame_slot, LINUX_RT_SIGFRAME_SIZE + 8) {
         super::sys_exit(128 + crate::ipc::signal::SIGSEGV);
