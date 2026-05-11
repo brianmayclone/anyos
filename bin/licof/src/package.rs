@@ -964,14 +964,19 @@ fn install_package_link(
             println!("licof pkg: hardlink {} -> {}", link.rel, link.target);
         }
     }
-    if materialize_hardlink_target(rootfs, &link.dest, &link.target) {
+    if materialize_hardlink_target(rootfs, reader, &link.dest, &link.target) {
         apply_tar_metadata(reader, link.index, &link.dest);
         return true;
     }
     false
 }
 
-fn materialize_hardlink_target(rootfs: &str, dest: &str, target: &str) -> bool {
+fn materialize_hardlink_target(
+    rootfs: &str,
+    reader: &libzip_client::TarReader,
+    dest: &str,
+    target: &str,
+) -> bool {
     let Some(src) = resolve_package_link_target(rootfs, dest, target, false) else {
         return false;
     };
@@ -980,7 +985,7 @@ fn materialize_hardlink_target(rootfs: &str, dest: &str, target: &str) -> bool {
     }
     let mut stat_buf = [0u32; 7];
     if fs::stat(&src, &mut stat_buf) != 0 {
-        return false;
+        return materialize_hardlink_from_archive(rootfs, reader, dest, target, 0);
     }
     let _ = fs::unlink(dest);
     if stat_buf[0] == FS_TYPE_DIRECTORY {
@@ -991,12 +996,77 @@ fn materialize_hardlink_target(rootfs: &str, dest: &str, target: &str) -> bool {
     }
 }
 
+fn materialize_hardlink_from_archive(
+    rootfs: &str,
+    reader: &libzip_client::TarReader,
+    dest: &str,
+    target: &str,
+    depth: u8,
+) -> bool {
+    if depth > 8 || !path_under_rootfs(rootfs, dest) {
+        return false;
+    }
+    let Some(index) = find_tar_entry(reader, target) else {
+        return false;
+    };
+    let typeflag = reader.entry_typeflag(index) as u8;
+    let name = reader.entry_name(index);
+    let Some(rel) = sanitize_tar_path(&name) else {
+        return false;
+    };
+    if reader.entry_is_dir(index) || typeflag == b'5' {
+        let _ = fs::unlink(dest);
+        ensure_dir_recursive(dest);
+        return true;
+    }
+    if typeflag == b'1' {
+        let next = reader.entry_link_name(index);
+        return materialize_hardlink_from_archive(rootfs, reader, dest, &next, depth + 1);
+    }
+    if typeflag == b'2' {
+        let link_target = reader.entry_link_name(index);
+        let _ = fs::unlink(dest);
+        return fs::symlink(&link_target, dest) == 0 && symlink_points_to(dest, &link_target);
+    }
+
+    ensure_parent_dirs(dest);
+    let _ = fs::unlink(dest);
+    if reader.extract_to_file(index, dest) {
+        apply_tar_metadata(reader, index, dest);
+        return true;
+    }
+    println!(
+        "licof pkg: failed to extract hardlink target {} for {}",
+        rel, target
+    );
+    false
+}
+
+fn find_tar_entry(reader: &libzip_client::TarReader, wanted: &str) -> Option<u32> {
+    let clean_wanted = sanitize_tar_path(wanted)?;
+    for i in 0..reader.entry_count() {
+        let name = reader.entry_name(i);
+        if sanitize_tar_path(&name).as_deref() == Some(clean_wanted.as_str()) {
+            return Some(i);
+        }
+    }
+    None
+}
+
 fn validate_installed_package(rootfs: &str, info: &PackageInfo) -> bool {
     match info.package.as_str() {
+        "coreutils" => validate_coreutils_runtime(rootfs),
         "libc6" => validate_libc6_runtime(rootfs),
         "libpam0g" => validate_libpam_runtime(rootfs),
         _ => true,
     }
+}
+
+fn validate_coreutils_runtime(rootfs: &str) -> bool {
+    let tee_ok = validate_runtime_elf(rootfs, "/usr/bin/tee", "coreutils tee");
+    let ls_ok = validate_runtime_elf(rootfs, "/usr/bin/ls", "coreutils ls");
+    let cat_ok = validate_runtime_elf(rootfs, "/usr/bin/cat", "coreutils cat");
+    tee_ok && ls_ok && cat_ok
 }
 
 fn validate_libc6_runtime(rootfs: &str) -> bool {
@@ -1210,7 +1280,7 @@ fn is_installed(config: &LicoConfig, pkg: &str, rootfs: &str) -> bool {
     let Ok(data) = fs::read_to_vec(&path) else {
         return false;
     };
-    if installed_manifest_valid(rootfs, pkg, &data) {
+    if installed_manifest_valid(rootfs, pkg, &data) && installed_payload_sane(rootfs, pkg) {
         return true;
     }
     println!(
@@ -1219,6 +1289,13 @@ fn is_installed(config: &LicoConfig, pkg: &str, rootfs: &str) -> bool {
     );
     let _ = fs::unlink(&path);
     false
+}
+
+fn installed_payload_sane(rootfs: &str, pkg: &str) -> bool {
+    match pkg {
+        "coreutils" => validate_coreutils_runtime(rootfs),
+        _ => true,
+    }
 }
 
 fn installed_manifest_valid(rootfs: &str, pkg: &str, data: &[u8]) -> bool {
