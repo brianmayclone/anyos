@@ -8927,6 +8927,9 @@ fn main() {
             }
             a.update_pane_sizes();
         }
+        if key_code == KEY_TAB && !ke.ctrl() {
+            get_canvas().focus();
+        }
         redraw();
     });
 
