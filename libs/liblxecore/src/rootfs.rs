@@ -8,6 +8,8 @@ use anyos_std::{
 
 const FS_TYPE_REGULAR: u32 = 0;
 const FS_TYPE_DIRECTORY: u32 = 1;
+const LXE_APT_UID: u16 = 100;
+const LXE_ROOT_GID: u16 = 0;
 
 pub(crate) fn ensure_rootfs_layout(config: &LxeConfig) {
     ensure_dir_recursive(&config.root);
@@ -27,6 +29,7 @@ pub(crate) fn ensure_rootfs_layout(config: &LxeConfig) {
     ensure_dir(&alloc::format!("{}/etc/apt/apt.conf.d", rootfs));
     ensure_dir(&alloc::format!("{}/etc/pam.d", rootfs));
     ensure_dir(&alloc::format!("{}/root", rootfs));
+    ensure_linux_apt_dirs(rootfs);
     let _ = write_bytes_atomic(
         &alloc::format!("{}/etc/apt/sources.list", rootfs),
         alloc::format!(
@@ -55,6 +58,42 @@ fn ensure_linux_account_files(rootfs: &str) {
     ensure_rootfs_file(rootfs, "/etc/group", b"root:x:0:\n", 0o644);
     ensure_rootfs_file(rootfs, "/etc/shadow", b"root:*:19700:0:99999:7:::\n", 0o640);
     ensure_rootfs_file(rootfs, "/etc/gshadow", b"root:*::\n", 0o640);
+    ensure_rootfs_line(
+        rootfs,
+        "/etc/passwd",
+        "_apt:",
+        "_apt:x:100:65534::/nonexistent:/usr/sbin/nologin\n",
+        0o644,
+    );
+    ensure_rootfs_line(
+        rootfs,
+        "/etc/passwd",
+        "nobody:",
+        "nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n",
+        0o644,
+    );
+    ensure_rootfs_line(
+        rootfs,
+        "/etc/group",
+        "nogroup:",
+        "nogroup:x:65534:\n",
+        0o644,
+    );
+    ensure_rootfs_line(
+        rootfs,
+        "/etc/shadow",
+        "_apt:",
+        "_apt:*:19700:0:99999:7:::\n",
+        0o640,
+    );
+    ensure_rootfs_line(
+        rootfs,
+        "/etc/shadow",
+        "nobody:",
+        "nobody:*:19700:0:99999:7:::\n",
+        0o640,
+    );
+    ensure_rootfs_line(rootfs, "/etc/gshadow", "nogroup:", "nogroup:*::\n", 0o640);
     ensure_rootfs_file(
         rootfs,
         "/etc/nsswitch.conf",
@@ -62,6 +101,35 @@ fn ensure_linux_account_files(rootfs: &str) {
         0o644,
     );
     ensure_linux_pam_files(rootfs);
+}
+
+fn ensure_linux_apt_dirs(rootfs: &str) {
+    for dir in [
+        "/var",
+        "/var/cache",
+        "/var/cache/apt",
+        "/var/cache/apt/archives",
+        "/var/lib",
+        "/var/lib/apt",
+        "/var/lib/apt/lists",
+        "/var/log",
+        "/var/log/apt",
+        "/tmp",
+        "/nonexistent",
+    ] {
+        ensure_dir_recursive(&linux_path_in_rootfs(rootfs, dir));
+    }
+
+    for dir in [
+        "/var/cache/apt/archives/partial",
+        "/var/lib/apt/lists/partial",
+    ] {
+        let path = linux_path_in_rootfs(rootfs, dir);
+        ensure_dir_recursive(&path);
+        let _ = fs::chown(&path, LXE_APT_UID, LXE_ROOT_GID);
+        // AnyOS mode bits are RMDC nibbles; keep these writable after apt drops to _apt.
+        let _ = fs::chmod(&path, 0xFFF);
+    }
 }
 
 fn ensure_linux_network_files(rootfs: &str) {
@@ -175,6 +243,35 @@ fn ensure_rootfs_file(rootfs: &str, linux_path: &str, data: &[u8], mode: u16) {
     if write_bytes_atomic(&path, data) {
         let _ = fs::chmod(&path, mode);
     }
+}
+
+fn ensure_rootfs_line(rootfs: &str, linux_path: &str, key: &str, line: &str, mode: u16) {
+    let path = linux_path_in_rootfs(rootfs, linux_path);
+    let mut body = read_text_file(&path).unwrap_or_default();
+    if body.lines().any(|existing| existing.starts_with(key)) {
+        return;
+    }
+    if !body.is_empty() && !body.ends_with('\n') {
+        body.push('\n');
+    }
+    body.push_str(line);
+    if write_bytes_atomic(&path, body.as_bytes()) {
+        let _ = fs::chmod(&path, mode);
+    }
+}
+
+fn read_text_file(path: &str) -> Option<String> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut data = Vec::new();
+    let mut buf = [0u8; 512];
+    loop {
+        let n = file.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        data.extend_from_slice(&buf[..n]);
+    }
+    String::from_utf8(data).ok()
 }
 
 fn temp_file_path(path: &str) -> String {

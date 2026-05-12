@@ -842,8 +842,22 @@ pub(super) fn linux_setgroups(size: i32, _list_ptr: u64) -> u64 {
 }
 
 pub(super) fn linux_setres_id(real: u32, effective: u32, saved: u32, uid: bool) -> u64 {
+    let current = current_linux_id(uid);
+    if current == 0 {
+        let next = if effective != u32::MAX {
+            effective
+        } else if real != u32::MAX {
+            real
+        } else if saved != u32::MAX {
+            saved
+        } else {
+            current
+        };
+        return set_current_linux_id(next, uid);
+    }
+
     for value in [real, effective, saved] {
-        if value != u32::MAX && value != 0 && value != current_linux_id(uid) {
+        if value != u32::MAX && value != current {
             return linux_err(EPERM);
         }
     }
@@ -865,7 +879,14 @@ pub(super) fn linux_getres_id(real_ptr: u64, effective_ptr: u64, saved_ptr: u64,
 
 pub(super) fn linux_setfs_id(id: u32, uid: bool) -> u64 {
     let old = current_linux_id(uid);
-    if id != u32::MAX && id != 0 && id != old {
+    if id == u32::MAX || id == old {
+        return old as u64;
+    }
+    if old == 0 {
+        let _ = set_current_linux_id(id, uid);
+        return old as u64;
+    }
+    if id != 0 {
         return linux_err(EPERM);
     }
     old as u64
@@ -880,11 +901,26 @@ pub(super) fn current_linux_id(uid: bool) -> u32 {
 }
 
 pub(super) fn linux_set_root_or_current(id: u32, uid: bool) -> u64 {
-    if id == 0 || id == current_linux_id(uid) {
-        0
-    } else {
-        linux_err(EPERM)
+    let current = current_linux_id(uid);
+    if current == 0 || id == current {
+        return set_current_linux_id(id, uid);
     }
+    linux_err(EPERM)
+}
+
+fn set_current_linux_id(id: u32, uid: bool) -> u64 {
+    if id > u16::MAX as u32 {
+        return linux_err(EINVAL);
+    }
+    let tid = crate::task::scheduler::current_tid();
+    let current_uid = handlers::sys_getuid() as u16;
+    let current_gid = handlers::sys_getgid() as u16;
+    if uid {
+        crate::task::scheduler::set_process_identity(tid, id as u16, current_gid);
+    } else {
+        crate::task::scheduler::set_process_identity(tid, current_uid, id as u16);
+    }
+    0
 }
 
 pub(super) fn linux_capget(header_ptr: u64, data_ptr: u64) -> u64 {

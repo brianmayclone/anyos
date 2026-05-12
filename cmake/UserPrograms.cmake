@@ -1126,6 +1126,7 @@ add_app_in_folder(amiconsole  ${CMAKE_SOURCE_DIR}/system/utilities/amiconsole  "
 add_app_in_folder(backuprestore ${CMAKE_SOURCE_DIR}/system/utilities/backuprestore "Backup & Restore" "Management")
 add_app_in_folder(configexplorer ${CMAKE_SOURCE_DIR}/system/utilities/configexplorer "Config Explorer" "Management")
 add_app_in_folder(servicemanager ${CMAKE_SOURCE_DIR}/system/utilities/servicemanager "Service Manager" "Management")
+add_app_in_folder(lxemanager ${CMAKE_SOURCE_DIR}/apps/lxemanager "LXE Manager" "Management")
 add_app(notifications ${CMAKE_SOURCE_DIR}/apps/notifications "Notifications")
 add_app(installer    ${CMAKE_SOURCE_DIR}/apps/installer     "Installer")
 add_app(keyboard     ${CMAKE_SOURCE_DIR}/apps/keyboard      "Keyboard")

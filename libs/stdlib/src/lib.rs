@@ -96,6 +96,8 @@ pub mod kbd;
 #[cfg(not(feature = "host"))]
 pub mod log;
 #[cfg(not(feature = "host"))]
+mod mem;
+#[cfg(not(feature = "host"))]
 pub mod permissions;
 #[cfg(not(feature = "host"))]
 pub mod prelude;

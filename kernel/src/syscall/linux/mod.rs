@@ -47,7 +47,6 @@ const E2BIG: i32 = 7;
 const ENOEXEC: i32 = 8;
 const ECHILD: i32 = 10;
 const EBUSY: i32 = 16;
-const EXDEV: i32 = 18;
 const ELOOP: i32 = 40;
 const ENOMSG: i32 = 42;
 const ENODATA: i32 = 61;
@@ -78,6 +77,7 @@ const LINUX_SYS_RT_SIGPROCMASK: u64 = 14;
 const LINUX_SYS_RT_SIGRETURN: u64 = 15;
 const LINUX_SYS_IOCTL: u64 = 16;
 const LINUX_SYS_PREAD64: u64 = 17;
+const LINUX_SYS_PWRITE64: u64 = 18;
 const LINUX_SYS_READV: u64 = 19;
 const LINUX_SYS_WRITEV: u64 = 20;
 const LINUX_SYS_ACCESS: u64 = 21;
@@ -95,6 +95,7 @@ const LINUX_SYS_DUP2: u64 = 33;
 const LINUX_SYS_NANOSLEEP: u64 = 35;
 const LINUX_SYS_ALARM: u64 = 37;
 const LINUX_SYS_GETPID: u64 = 39;
+const LINUX_SYS_SENDFILE: u64 = 40;
 const LINUX_SYS_SOCKET: u64 = 41;
 const LINUX_SYS_CONNECT: u64 = 42;
 const LINUX_SYS_ACCEPT: u64 = 43;
@@ -135,11 +136,13 @@ const LINUX_SYS_FCNTL: u64 = 72;
 const LINUX_SYS_FLOCK: u64 = 73;
 const LINUX_SYS_GETCWD: u64 = 79;
 const LINUX_SYS_CHDIR: u64 = 80;
+const LINUX_SYS_FCHDIR: u64 = 81;
 const LINUX_SYS_RENAME: u64 = 82;
 const LINUX_SYS_MKDIR: u64 = 83;
 const LINUX_SYS_RMDIR: u64 = 84;
 const LINUX_SYS_CREAT: u64 = 85;
 const LINUX_SYS_UNLINK: u64 = 87;
+const LINUX_SYS_SYMLINK: u64 = 88;
 const LINUX_SYS_READLINK: u64 = 89;
 const LINUX_SYS_CHMOD: u64 = 90;
 const LINUX_SYS_FCHMOD: u64 = 91;
@@ -209,6 +212,7 @@ const LINUX_SYS_FCHOWNAT: u64 = 260;
 const LINUX_SYS_NEWFSTATAT: u64 = 262;
 const LINUX_SYS_UNLINKAT: u64 = 263;
 const LINUX_SYS_RENAMEAT: u64 = 264;
+const LINUX_SYS_SYMLINKAT: u64 = 266;
 const LINUX_SYS_READLINKAT: u64 = 267;
 const LINUX_SYS_FCHMODAT: u64 = 268;
 const LINUX_SYS_FACCESSAT: u64 = 269;
@@ -219,6 +223,7 @@ const LINUX_SYS_DUP3: u64 = 292;
 const LINUX_SYS_PIPE2: u64 = 293;
 const LINUX_SYS_PRLIMIT64: u64 = 302;
 const LINUX_SYS_SENDMMSG: u64 = 307;
+const LINUX_SYS_RENAMEAT2: u64 = 316;
 const LINUX_SYS_GETRANDOM: u64 = 318;
 const LINUX_SYS_COPY_FILE_RANGE: u64 = 326;
 const LINUX_SYS_RSEQ: u64 = 334;
@@ -306,6 +311,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_RT_SIGRETURN => handlers::linux_rt_sigreturn(regs),
         LINUX_SYS_IOCTL => linux_ioctl(a1 as u32, a2, a3),
         LINUX_SYS_PREAD64 => linux_pread64(a1 as u32, a2, a3, a4),
+        LINUX_SYS_PWRITE64 => linux_pwrite64(a1 as u32, a2, a3, a4),
         LINUX_SYS_READV => linux_readv(a1 as u32, a2, a3),
         LINUX_SYS_WRITEV => linux_writev(a1 as u32, a2, a3),
         LINUX_SYS_ACCESS => linux_access(a1, a2),
@@ -330,6 +336,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_ALARM => 0,
         LINUX_SYS_ARCH_PRCTL => linux_arch_prctl(a1, a2),
         LINUX_SYS_GETPID => handlers::sys_getpid() as u64,
+        LINUX_SYS_SENDFILE => linux_sendfile(a1 as u32, a2 as u32, a3, a4),
         LINUX_SYS_SOCKET => linux_socket(a1, a2, a3),
         LINUX_SYS_CONNECT => linux_connect(a1 as u32, a2, a3),
         LINUX_SYS_ACCEPT => linux_accept(a1 as u32, a2, a3),
@@ -368,11 +375,13 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_FLOCK => linux_flock(a1 as u32, a2),
         LINUX_SYS_GETCWD => linux_getcwd(a1, a2),
         LINUX_SYS_CHDIR => linux_chdir(a1),
+        LINUX_SYS_FCHDIR => linux_fchdir(a1 as u32),
         LINUX_SYS_RENAME => linux_rename(a1, a2),
         LINUX_SYS_MKDIR => linux_mkdir(a1, a2),
         LINUX_SYS_RMDIR => linux_unlink_path(a1),
         LINUX_SYS_CREAT => linux_creat(a1),
         LINUX_SYS_UNLINK => linux_unlink_path(a1),
+        LINUX_SYS_SYMLINK => linux_symlink(a1, a2),
         LINUX_SYS_READLINK => linux_readlink(a1, a2, a3),
         LINUX_SYS_CHMOD => linux_chmod(a1, a2),
         LINUX_SYS_FCHMOD => linux_fchmod(a1 as u32, a2),
@@ -452,6 +461,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_NEWFSTATAT => linux_newfstatat(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_UNLINKAT => linux_unlinkat(linux_i32_arg(a1), a2, a3),
         LINUX_SYS_RENAMEAT => linux_renameat(linux_i32_arg(a1), a2, linux_i32_arg(a3), a4),
+        LINUX_SYS_SYMLINKAT => linux_symlinkat(a1, linux_i32_arg(a2), a3),
         LINUX_SYS_READLINKAT => linux_readlinkat(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_FCHMODAT => linux_fchmodat(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_FACCESSAT => linux_faccessat(linux_i32_arg(a1), a2, a3, a4),
@@ -459,6 +469,13 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_SET_ROBUST_LIST => 0,
         LINUX_SYS_UTIMENSAT => 0,
         LINUX_SYS_PRLIMIT64 => linux_prlimit64(linux_i32_arg(a1), a2, a3, a4),
+        LINUX_SYS_RENAMEAT2 => {
+            if a5 == 0 {
+                linux_renameat(linux_i32_arg(a1), a2, linux_i32_arg(a3), a4)
+            } else {
+                linux_err(EINVAL)
+            }
+        }
         LINUX_SYS_GETRANDOM => linux_getrandom(a1, a2),
         LINUX_SYS_COPY_FILE_RANGE => linux_copy_file_range(a1 as u32, a2, a3 as u32, a4, a5, a6),
         LINUX_SYS_RSEQ => linux_err(ENOSYS),

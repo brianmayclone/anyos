@@ -113,7 +113,23 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
     haystack.find(needle).is_some()
 }
 
-pub(crate) struct InstallProgress {
+pub(crate) trait InstallProgressObserver {
+    fn on_install_progress(
+        &mut self,
+        overall_done: u32,
+        overall_total: u32,
+        overall_unit: &'static str,
+        phase: &str,
+        detail: &str,
+        package_done: u32,
+        package_total: u32,
+        files_written: u32,
+        download_done: u32,
+        download_total: u32,
+    );
+}
+
+pub(crate) struct InstallProgress<'a> {
     verbose: bool,
     overall_done: u32,
     overall_total: u32,
@@ -123,9 +139,10 @@ pub(crate) struct InstallProgress {
     package_done: u32,
     package_total: u32,
     files_written: u32,
+    observer: Option<&'a mut dyn InstallProgressObserver>,
 }
 
-impl InstallProgress {
+impl<'a> InstallProgress<'a> {
     pub(crate) fn new(verbose: bool, overall_total: u32, overall_unit: &'static str) -> Self {
         Self {
             verbose,
@@ -137,7 +154,19 @@ impl InstallProgress {
             package_done: 0,
             package_total: 0,
             files_written: 0,
+            observer: None,
         }
+    }
+
+    pub(crate) fn with_observer(
+        verbose: bool,
+        overall_total: u32,
+        overall_unit: &'static str,
+        observer: &'a mut dyn InstallProgressObserver,
+    ) -> Self {
+        let mut progress = Self::new(verbose, overall_total, overall_unit);
+        progress.observer = Some(observer);
+        progress
     }
 
     pub(crate) fn verbose(&self) -> bool {
@@ -151,6 +180,7 @@ impl InstallProgress {
             "lxe: overall {}/{} {}",
             self.overall_done, self.overall_total, self.overall_unit
         );
+        self.emit(0, 0);
     }
 
     pub(crate) fn phase(&mut self, name: &str, detail: &str) {
@@ -166,6 +196,7 @@ impl InstallProgress {
         } else {
             println!("lxe: {}: {}", name, detail);
         }
+        self.emit(0, 0);
     }
 
     fn package_start(&mut self, name: &str, version: &str, total: u32) {
@@ -181,6 +212,7 @@ impl InstallProgress {
         } else {
             println!("lxe: unpacking {} {} ({} entries)", name, version, total);
         }
+        self.emit(0, 0);
     }
 
     fn package_file(&mut self, done: u32, files_written: u32) {
@@ -192,6 +224,7 @@ impl InstallProgress {
                 self.package_done, self.package_total, self.files_written
             );
         }
+        self.emit(0, 0);
     }
 
     fn package_done(&mut self, files_written: u32) {
@@ -201,9 +234,31 @@ impl InstallProgress {
             "lxe: unpacked {} {} ({} files)",
             self.package_name, self.package_version, self.files_written
         );
+        self.emit(0, 0);
+    }
+
+    pub(crate) fn download_progress(&mut self, received: u32, total: u32) {
+        self.emit(received, total);
     }
 
     pub(crate) fn finish(&mut self) {}
+
+    fn emit(&mut self, download_done: u32, download_total: u32) {
+        if let Some(observer) = self.observer.as_deref_mut() {
+            observer.on_install_progress(
+                self.overall_done,
+                self.overall_total,
+                self.overall_unit,
+                &self.package_name,
+                &self.package_version,
+                self.package_done,
+                self.package_total,
+                self.files_written,
+                download_done,
+                download_total,
+            );
+        }
+    }
 }
 
 pub(crate) fn install_package(
@@ -368,7 +423,7 @@ fn download_verified_package(
             );
         }
         progress.finish();
-        if !download_url(config, url, dest) {
+        if !download_url(config, url, dest, progress) {
             progress.finish();
             println!("lxe apt: download failed: {}", url);
             return false;
@@ -463,7 +518,7 @@ fn ensure_apt_index(config: &LxeConfig, progress: &mut InstallProgress) -> bool 
             );
         }
         progress.finish();
-        if !download_url(config, &url, &packages_gz) {
+        if !download_url(config, &url, &packages_gz, progress) {
             progress.finish();
             println!("lxe apt: failed to download {}", url);
             continue;
@@ -1539,8 +1594,8 @@ fn gzip_status_text(status: u32) -> &'static str {
     }
 }
 
-fn download_url(config: &LxeConfig, url: &str, dest: &str) -> bool {
-    if download_url_with_libhttp(config, url, dest) {
+fn download_url(config: &LxeConfig, url: &str, dest: &str, progress: &mut InstallProgress) -> bool {
+    if download_url_with_libhttp(config, url, dest, progress) {
         return true;
     }
 
@@ -1553,10 +1608,15 @@ fn download_url(config: &LxeConfig, url: &str, dest: &str) -> bool {
     }
 
     println!("lxe download: falling back to wget");
-    download_url_with_wget(config, url, dest)
+    download_url_with_wget(config, url, dest, progress)
 }
 
-fn download_url_with_libhttp(config: &LxeConfig, url: &str, dest: &str) -> bool {
+fn download_url_with_libhttp(
+    config: &LxeConfig,
+    url: &str,
+    dest: &str,
+    progress: &mut InstallProgress,
+) -> bool {
     if !libhttp_client::init() {
         println!("lxe download: libhttp unavailable");
         return false;
@@ -1572,7 +1632,8 @@ fn download_url_with_libhttp(config: &LxeConfig, url: &str, dest: &str) -> bool 
             attempt, config.download_attempts, dest
         );
         println!("lxe download: url {}", url);
-        if !libhttp_client::download_progress(url, dest, download_progress, 0) {
+        let progress_ptr = progress as *mut InstallProgress as u64;
+        if !libhttp_client::download_progress(url, dest, download_progress, progress_ptr) {
             let status = libhttp_client::last_status();
             last_error = alloc::format!(
                 "libhttp failed with status {} error {}",
@@ -1606,7 +1667,12 @@ fn download_url_with_libhttp(config: &LxeConfig, url: &str, dest: &str) -> bool 
     false
 }
 
-fn download_url_with_wget(config: &LxeConfig, url: &str, dest: &str) -> bool {
+fn download_url_with_wget(
+    config: &LxeConfig,
+    url: &str,
+    dest: &str,
+    progress: &mut InstallProgress,
+) -> bool {
     let mut last_error = String::new();
     let mut permanent_http_error = false;
     for attempt in 1..=config.download_attempts {
@@ -1649,6 +1715,7 @@ fn download_url_with_wget(config: &LxeConfig, url: &str, dest: &str) -> bool {
             last_error = alloc::format!("wget produced an empty file: {}", dest);
             continue;
         }
+        progress.download_progress(file_size(dest), file_size(dest));
         let ms = sys::uptime_ms().wrapping_sub(started);
         println!(
             "lxe download: received {} bytes in {} ms",
@@ -1668,14 +1735,20 @@ fn download_url_with_wget(config: &LxeConfig, url: &str, dest: &str) -> bool {
         return false;
     }
     println!("lxe download: falling back to libhttp");
-    download_url_with_libhttp(config, url, dest)
+    download_url_with_libhttp(config, url, dest, progress)
 }
 
 fn is_permanent_http_status(status: u32) -> bool {
     (400..500).contains(&status) && status != 408 && status != 429
 }
 
-extern "C" fn download_progress(received: u32, total: u32, _userdata: u64) {
+extern "C" fn download_progress(received: u32, total: u32, userdata: u64) {
+    if userdata != 0 {
+        unsafe {
+            let progress = &mut *(userdata as *mut InstallProgress);
+            progress.download_progress(received, total);
+        }
+    }
     let should_print = unsafe {
         if received == total && total > 0 {
             DOWNLOAD_LAST_PRINT = received;

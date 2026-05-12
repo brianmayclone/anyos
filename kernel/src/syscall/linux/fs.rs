@@ -348,6 +348,24 @@ pub(super) fn linux_chdir(path_ptr: u64) -> u64 {
     }
 }
 
+pub(super) fn linux_fchdir(fd: u32) -> u64 {
+    let path = match linux_fd_path(fd) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    match crate::fs::vfs::read_dir(&path) {
+        Ok(_) => {
+            let linux_path = linux_strip_rootfs(&path);
+            crate::task::scheduler::set_thread_cwd(
+                crate::task::scheduler::current_tid(),
+                &linux_path,
+            );
+            0
+        }
+        Err(e) => linux_fs_err(e),
+    }
+}
+
 pub(super) fn linux_readlink(path_ptr: u64, buf_ptr: u64, buf_size: u64) -> u64 {
     if buf_ptr == 0 || buf_size == 0 {
         return linux_err(EFAULT);
@@ -456,6 +474,34 @@ pub(super) fn linux_renameat(old_dirfd: i32, old_ptr: u64, new_dirfd: i32, new_p
         Err(errno) => return linux_err(errno),
     };
     match crate::fs::vfs::rename(&old_path, &new_path) {
+        Ok(()) => 0,
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+pub(super) fn linux_symlink(target_ptr: u64, link_path_ptr: u64) -> u64 {
+    let link_path = match linux_translate_user_path(link_path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    linux_symlink_translated(target_ptr, &link_path)
+}
+
+pub(super) fn linux_symlinkat(target_ptr: u64, dirfd: i32, link_path_ptr: u64) -> u64 {
+    let link_path = match linux_translate_at_path(dirfd, link_path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    linux_symlink_translated(target_ptr, &link_path)
+}
+
+fn linux_symlink_translated(target_ptr: u64, link_path: &str) -> u64 {
+    let target = match super::handlers::helpers::read_user_str_safe(target_ptr) {
+        Some(target) if !target.is_empty() => target,
+        Some(_) => return linux_err(ENOENT),
+        None => return linux_err(EFAULT),
+    };
+    match crate::fs::vfs::create_symlink(link_path, target) {
         Ok(()) => 0,
         Err(e) => linux_fs_err(e),
     }

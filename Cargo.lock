@@ -1504,6 +1504,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lxemanager"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+ "liblxecore",
+]
+
+[[package]]
 name = "mdview"
 version = "0.1.0"
 dependencies = [

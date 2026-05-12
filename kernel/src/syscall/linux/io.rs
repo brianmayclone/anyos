@@ -1,5 +1,7 @@
 use super::*;
 
+const LINUX_COPY_CHUNK: usize = 16 * 1024;
+
 pub(super) fn linux_fcntl(fd: u32, cmd: u32, arg: u64) -> u64 {
     const F_GETLK: u32 = 5;
     const F_SETLK: u32 = 6;
@@ -127,18 +129,248 @@ pub(super) fn linux_pread64(fd: u32, buf_ptr: u64, len: u64, offset: u64) -> u64
     }
 }
 
+pub(super) fn linux_pwrite64(fd: u32, buf_ptr: u64, len: u64, offset: u64) -> u64 {
+    if len == 0 {
+        return 0;
+    }
+    if buf_ptr == 0 || len > u32::MAX as u64 {
+        return linux_err(EFAULT);
+    }
+    match linux_write_fd_at(fd, buf_ptr, len as usize, offset) {
+        Ok(n) => n as u64,
+        Err(errno) => linux_err(errno),
+    }
+}
+
+pub(super) fn linux_sendfile(out_fd: u32, in_fd: u32, offset_ptr: u64, count: u64) -> u64 {
+    if count == 0 {
+        return 0;
+    }
+    if offset_ptr != 0 && !handlers::helpers::is_user_range_accessible(offset_ptr, 8) {
+        return linux_err(EFAULT);
+    }
+    let mut explicit_offset = if offset_ptr != 0 {
+        let raw = unsafe { read_u64(offset_ptr, 0) } as i64;
+        if raw < 0 {
+            return linux_err(EINVAL);
+        }
+        Some(raw as u64)
+    } else {
+        None
+    };
+
+    let mut total = 0usize;
+    let limit = count.min(u32::MAX as u64) as usize;
+    let mut buf = [0u8; LINUX_COPY_CHUNK];
+    while total < limit {
+        let want = core::cmp::min(buf.len(), limit - total);
+        let read_offset = explicit_offset;
+        let nread = match linux_read_fd_kernel(in_fd, &mut buf[..want], read_offset) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(errno) => {
+                return if total > 0 {
+                    total as u64
+                } else {
+                    linux_err(errno)
+                };
+            }
+        };
+        let nwritten = match linux_write_fd_kernel(out_fd, &buf[..nread], None) {
+            Ok(n) => n,
+            Err(errno) => {
+                return if total > 0 {
+                    total as u64
+                } else {
+                    linux_err(errno)
+                };
+            }
+        };
+        if let Some(off) = explicit_offset {
+            explicit_offset = Some(off.saturating_add(nwritten as u64));
+        }
+        total += nwritten;
+        if nwritten < nread {
+            break;
+        }
+    }
+
+    if let Some(off) = explicit_offset {
+        unsafe {
+            write_u64(offset_ptr, 0, off);
+        }
+    }
+    total as u64
+}
+
 pub(super) fn linux_copy_file_range(
-    _fd_in: u32,
-    _off_in_ptr: u64,
-    _fd_out: u32,
-    _off_out_ptr: u64,
-    _len: u64,
+    fd_in: u32,
+    off_in_ptr: u64,
+    fd_out: u32,
+    off_out_ptr: u64,
+    len: u64,
     flags: u64,
 ) -> u64 {
     if flags != 0 {
         return linux_err(EINVAL);
     }
-    linux_err(EXDEV)
+    if len == 0 {
+        return 0;
+    }
+    if off_in_ptr != 0 && !handlers::helpers::is_user_range_accessible(off_in_ptr, 8) {
+        return linux_err(EFAULT);
+    }
+    if off_out_ptr != 0 && !handlers::helpers::is_user_range_accessible(off_out_ptr, 8) {
+        return linux_err(EFAULT);
+    }
+
+    let mut off_in = if off_in_ptr != 0 {
+        Some(unsafe { read_u64(off_in_ptr, 0) })
+    } else {
+        None
+    };
+    let mut off_out = if off_out_ptr != 0 {
+        Some(unsafe { read_u64(off_out_ptr, 0) })
+    } else {
+        None
+    };
+
+    let mut total = 0usize;
+    let limit = len.min(u32::MAX as u64) as usize;
+    let mut buf = [0u8; LINUX_COPY_CHUNK];
+    while total < limit {
+        let want = core::cmp::min(buf.len(), limit - total);
+        let nread = match linux_read_fd_kernel(fd_in, &mut buf[..want], off_in) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(errno) => {
+                return if total > 0 {
+                    total as u64
+                } else {
+                    linux_err(errno)
+                };
+            }
+        };
+        let nwritten = match linux_write_fd_kernel(fd_out, &buf[..nread], off_out) {
+            Ok(n) => n,
+            Err(errno) => {
+                return if total > 0 {
+                    total as u64
+                } else {
+                    linux_err(errno)
+                };
+            }
+        };
+        if let Some(off) = off_in {
+            off_in = Some(off.saturating_add(nwritten as u64));
+        }
+        if let Some(off) = off_out {
+            off_out = Some(off.saturating_add(nwritten as u64));
+        }
+        total += nwritten;
+        if nwritten < nread {
+            break;
+        }
+    }
+
+    if let Some(off) = off_in {
+        unsafe {
+            write_u64(off_in_ptr, 0, off);
+        }
+    }
+    if let Some(off) = off_out {
+        unsafe {
+            write_u64(off_out_ptr, 0, off);
+        }
+    }
+    total as u64
+}
+
+fn linux_file_global_id(fd: u32) -> Result<u32, i32> {
+    let entry = crate::task::scheduler::current_fd_get(fd).ok_or(EBADF)?;
+    match entry.kind {
+        crate::fs::fd_table::FdKind::File { global_id } => Ok(global_id),
+        _ => Err(EBADF),
+    }
+}
+
+fn linux_read_fd_kernel(fd: u32, buf: &mut [u8], offset: Option<u64>) -> Result<usize, i32> {
+    let global_id = linux_file_global_id(fd)?;
+    if let Some(offset) = offset {
+        if offset > i32::MAX as u64 {
+            return Err(EINVAL);
+        }
+        let (_file_type, _size, old_pos, _mtime) =
+            crate::fs::vfs::fstat(global_id).map_err(fs_errno)?;
+        crate::fs::vfs::lseek(global_id, offset as i32, 0).map_err(fs_errno)?;
+        let result = crate::fs::vfs::read(global_id, buf).map_err(fs_errno);
+        let _ = crate::fs::vfs::lseek(global_id, old_pos as i32, 0);
+        result
+    } else {
+        crate::fs::vfs::read(global_id, buf).map_err(fs_errno)
+    }
+}
+
+fn linux_write_fd_kernel(fd: u32, buf: &[u8], offset: Option<u64>) -> Result<usize, i32> {
+    let global_id = linux_file_global_id(fd)?;
+    if let Some(offset) = offset {
+        if offset > i32::MAX as u64 {
+            return Err(EINVAL);
+        }
+        let (_file_type, _size, old_pos, _mtime) =
+            crate::fs::vfs::fstat(global_id).map_err(fs_errno)?;
+        crate::fs::vfs::lseek(global_id, offset as i32, 0).map_err(fs_errno)?;
+        let result = crate::fs::vfs::write(global_id, buf).map_err(fs_errno);
+        let _ = crate::fs::vfs::lseek(global_id, old_pos as i32, 0);
+        result
+    } else {
+        crate::fs::vfs::write(global_id, buf).map_err(fs_errno)
+    }
+}
+
+fn linux_write_fd_at(fd: u32, buf_ptr: u64, len: usize, offset: u64) -> Result<usize, i32> {
+    if offset > i32::MAX as u64 {
+        return Err(EINVAL);
+    }
+    let global_id = linux_file_global_id(fd)?;
+    let (_file_type, _size, old_pos, _mtime) =
+        crate::fs::vfs::fstat(global_id).map_err(fs_errno)?;
+    crate::fs::vfs::lseek(global_id, offset as i32, 0).map_err(fs_errno)?;
+
+    let mut total = 0usize;
+    let mut result = Ok(0usize);
+    while total < len {
+        let chunk_len = core::cmp::min(LINUX_COPY_CHUNK, len - total);
+        let Some(buf) = handlers::helpers::copy_user_bytes(
+            buf_ptr.wrapping_add(total as u64),
+            chunk_len,
+            LINUX_COPY_CHUNK,
+        ) else {
+            result = if total > 0 { Ok(total) } else { Err(EFAULT) };
+            break;
+        };
+        match crate::fs::vfs::write(global_id, &buf).map_err(fs_errno) {
+            Ok(0) => {
+                result = Ok(total);
+                break;
+            }
+            Ok(n) => {
+                total += n;
+                if n < chunk_len {
+                    result = Ok(total);
+                    break;
+                }
+                result = Ok(total);
+            }
+            Err(errno) => {
+                result = if total > 0 { Ok(total) } else { Err(errno) };
+                break;
+            }
+        }
+    }
+
+    let _ = crate::fs::vfs::lseek(global_id, old_pos as i32, 0);
+    result
 }
 
 pub(super) fn linux_readv(fd: u32, iov_ptr: u64, iovcnt: u64) -> u64 {
