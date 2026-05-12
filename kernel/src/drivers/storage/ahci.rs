@@ -8,6 +8,7 @@ use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::physmap;
 use crate::memory::{physical, virtual_mem};
 use alloc::boxed::Box;
+use core::sync::atomic::{compiler_fence, fence, Ordering};
 
 // AHCI MMIO virtual base — after E1000 (0xD000_0000) and VMware SVGA FIFO (0xD002_0000)
 const AHCI_MMIO_VIRT: u64 = 0xFFFF_FFFF_D006_0000;
@@ -232,6 +233,23 @@ fn dma_ptr<T>(phys: u64) -> *mut T {
 #[inline(always)]
 unsafe fn dma_zero(phys: u64, len: usize) {
     core::ptr::write_bytes(dma_ptr::<u8>(phys), 0, len);
+}
+
+#[inline(always)]
+fn dma_publish_before_command() {
+    // Publish the command table, PRDT and write-bounce-buffer contents before
+    // the MMIO write to PORT_CI makes the command visible to the controller.
+    compiler_fence(Ordering::SeqCst);
+    fence(Ordering::SeqCst);
+}
+
+#[inline(always)]
+fn dma_acquire_after_command() {
+    // Pair with device DMA writes before the CPU copies read data out of the
+    // bounce buffer. x86 DMA is coherent, but this keeps compiler/CPU ordering
+    // explicit across the AHCI MMIO completion boundary.
+    fence(Ordering::SeqCst);
+    compiler_fence(Ordering::SeqCst);
 }
 
 // ── Port Start / Stop ───────────────────────────────
@@ -540,6 +558,8 @@ unsafe fn issue_command_once(
     // Reset IRQ completion flag
     AHCI_IRQ_FIRED.store(false, core::sync::atomic::Ordering::Release);
 
+    dma_publish_before_command();
+
     // Issue command (slot 0)
     port_write(ahci.mmio_base, ahci.active_port, PORT_CI, 1);
 
@@ -552,6 +572,7 @@ unsafe fn issue_command_once(
                 crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
                 return false;
             }
+            dma_acquire_after_command();
             return true;
         }
         core::hint::spin_loop();
@@ -598,6 +619,7 @@ unsafe fn issue_command_once(
                     crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
                     return false;
                 }
+                dma_acquire_after_command();
                 return true;
             }
 
@@ -723,6 +745,7 @@ unsafe fn issue_command_on_port(
         }
 
         port_write(mmio_base, port, PORT_IS, 0xFFFF_FFFF);
+        dma_publish_before_command();
         port_write(mmio_base, port, PORT_CI, 1);
 
         // Polled wait with timeout (~5 seconds).
@@ -739,6 +762,7 @@ unsafe fn issue_command_on_port(
                     if tfd & 0x01 != 0 {
                         break; // error — will retry
                     }
+                    dma_acquire_after_command();
                     return true;
                 }
                 let now = crate::arch::hal::timer_current_ticks();
@@ -762,6 +786,7 @@ unsafe fn issue_command_on_port(
                     if tfd & 0x01 != 0 {
                         break; // error — will retry
                     }
+                    dma_acquire_after_command();
                     return true;
                 }
                 core::hint::spin_loop();
@@ -791,6 +816,7 @@ unsafe fn poll_completion(ahci: &AhciController) -> bool {
                     crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
                     return false;
                 }
+                dma_acquire_after_command();
                 return true;
             }
 
@@ -818,6 +844,7 @@ unsafe fn poll_completion(ahci: &AhciController) -> bool {
                     crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
                     return false;
                 }
+                dma_acquire_after_command();
                 return true;
             }
 
