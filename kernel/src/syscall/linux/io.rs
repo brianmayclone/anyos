@@ -53,8 +53,12 @@ pub(super) fn linux_read(fd: u32, buf_ptr: u64, len: u64) -> u64 {
     }
     if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
         match entry.kind {
-            crate::fs::fd_table::FdKind::LinuxProc { file, position } => {
-                return linux_read_proc_file(fd, file, position, buf_ptr, len as u32);
+            crate::fs::fd_table::FdKind::LinuxProc {
+                file,
+                pid,
+                position,
+            } => {
+                return linux_read_proc_file(fd, file, pid, position, buf_ptr, len as u32);
             }
             crate::fs::fd_table::FdKind::LinuxSocket { .. } => {
                 return socket_read(fd, buf_ptr, len);
@@ -79,8 +83,13 @@ pub(super) fn linux_write(fd: u32, buf_ptr: u64, len: u64) -> u64 {
 
 pub(super) fn linux_lseek(fd: u32, offset: u64, whence: u64) -> u64 {
     if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
-        if let crate::fs::fd_table::FdKind::LinuxProc { file, position } = entry.kind {
-            let size = linux_proc_content(file).len() as i64;
+        if let crate::fs::fd_table::FdKind::LinuxProc {
+            file,
+            pid,
+            position,
+        } = entry.kind
+        {
+            let size = linux_proc_content_len(file, pid) as i64;
             let base = match whence {
                 0 => 0,
                 1 => position as i64,
@@ -105,11 +114,11 @@ pub(super) fn linux_pread64(fd: u32, buf_ptr: u64, len: u64, offset: u64) -> u64
         return linux_err(EFAULT);
     }
     if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
-        if let crate::fs::fd_table::FdKind::LinuxProc { file, .. } = entry.kind {
+        if let crate::fs::fd_table::FdKind::LinuxProc { file, pid, .. } = entry.kind {
             if offset > u32::MAX as u64 || len > u32::MAX as u64 {
                 return linux_err(EINVAL);
             }
-            return linux_copy_proc_content(file, offset as u32, buf_ptr, len as u32);
+            return linux_copy_proc_content(file, pid, offset as u32, buf_ptr, len as u32);
         }
     }
     match linux_read_fd_at(fd, buf_ptr, len as usize, offset) {

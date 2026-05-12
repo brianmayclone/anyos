@@ -576,7 +576,11 @@ impl LzmaDecoder {
     }
 
     fn decode_literal(&mut self, rd: &mut RangeDecoder, out: &mut Vec<u8>) -> Option<()> {
-        let prev_byte = out.last().copied().unwrap_or(0);
+        let prev_byte = if out.len() > self.dict_start {
+            out.last().copied().unwrap_or(0)
+        } else {
+            0
+        };
         let pos = out.len().saturating_sub(self.dict_start) as u32;
         let lp_mask = (1u32 << self.lp) - 1;
         let literal_state = ((pos & lp_mask) << self.lc) + (prev_byte as u32 >> (8 - self.lc));
@@ -881,5 +885,13 @@ mod tests {
             expected.extend_from_slice(b"The quick brown fox jumps over the lazy dog. ");
         }
         assert_eq!(xz_decompress(&data), Some(expected));
+    }
+
+    #[test]
+    #[ignore]
+    fn decodes_external_xz_file() {
+        let path = std::env::var("LIBZIP_XZ_TEST_FILE").expect("LIBZIP_XZ_TEST_FILE");
+        let data = std::fs::read(path).expect("read xz test file");
+        assert!(xz_decompress(&data).is_some());
     }
 }

@@ -3,9 +3,9 @@
 //! Covers general network config, TCP, UDP, DNS, DHCP, ARP, and
 //! network polling/statistics.
 
+use super::helpers::read_user_str;
 #[allow(unused_imports)]
 use super::helpers::{copy_to_user_bytes, is_valid_user_ptr};
-use super::helpers::read_user_str;
 use alloc::vec;
 
 const TCP_RECV_COPY_CHUNK: usize = 256 * 1024;

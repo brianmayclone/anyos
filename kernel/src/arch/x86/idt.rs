@@ -1440,6 +1440,20 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
         }
         13 => {
             if is_user_mode {
+                let (saved_ds, saved_es) = unsafe { (SAVED_FAULT_DS, SAVED_FAULT_ES) };
+                if frame.err_code == 0 && (saved_ds == 0x10 || saved_es == 0x10) {
+                    crate::serial_println!(
+                        "RECOVER: user #GP with kernel DS/ES leaked (DS={:#06x} ES={:#06x}) - retrying RIP={:#018x}",
+                        saved_ds,
+                        saved_es,
+                        frame.rip
+                    );
+                    unsafe {
+                        SAVED_FAULT_DS = 0x23;
+                        SAVED_FAULT_ES = 0x23;
+                    }
+                    return;
+                }
                 crate::serial_println!(
                     "EXCEPTION: General Protection Fault err={:#x} RIP={:#018x} CS={:#x}",
                     frame.err_code,
@@ -1475,7 +1489,6 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                     frame.r15
                 );
                 // Print DS/ES captured by ISR stub BEFORE overwrite
-                let (saved_ds, saved_es) = unsafe { (SAVED_FAULT_DS, SAVED_FAULT_ES) };
                 crate::serial_println!(
                     "  DS={:#06x}  ES={:#06x} (at fault time)",
                     saved_ds,

@@ -22,6 +22,12 @@ pub(super) fn linux_openat(dirfd: i32, path_ptr: u64, linux_flags: u64) -> u64 {
     if dirfd == LINUX_AT_FDCWD || raw_path.starts_with('/') {
         return linux_open_linux_path(raw_path, linux_flags);
     }
+    if let Some(result) = linux_proc_at_path(dirfd, &raw_path) {
+        return match result {
+            Ok(abs) => linux_open_linux_path(&abs, linux_flags),
+            Err(errno) => linux_err(errno),
+        };
+    }
     let path = match linux_translate_at_path(dirfd, path_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
@@ -41,8 +47,8 @@ pub(super) fn linux_stat(path_ptr: u64, stat_ptr: u64, nofollow: bool) -> u64 {
         return linux_err(ENOENT);
     }
     let abs = linux_absolute_path(raw_path);
-    if let Some(file) = linux_proc_file_id(&abs) {
-        return linux_write_proc_stat(stat_ptr, file);
+    if let Some((file, pid)) = linux_proc_node(&abs) {
+        return linux_write_proc_stat(stat_ptr, file, pid);
     }
     let path = linux_translate_path(&abs);
     linux_stat_translated(&path, stat_ptr, nofollow)
@@ -65,8 +71,18 @@ pub(super) fn linux_newfstatat(dirfd: i32, path_ptr: u64, stat_ptr: u64, flags: 
     }
     if raw_path.starts_with('/') || dirfd == LINUX_AT_FDCWD {
         let abs = linux_absolute_path(&raw_path);
-        if let Some(file) = linux_proc_file_id(&abs) {
-            return linux_write_proc_stat(stat_ptr, file);
+        if let Some((file, pid)) = linux_proc_node(&abs) {
+            return linux_write_proc_stat(stat_ptr, file, pid);
+        }
+    } else if let Some(result) = linux_proc_at_path(dirfd, &raw_path) {
+        match result {
+            Ok(abs) => {
+                if let Some((file, pid)) = linux_proc_node(&abs) {
+                    return linux_write_proc_stat(stat_ptr, file, pid);
+                }
+                return linux_err(ENOENT);
+            }
+            Err(errno) => return linux_err(errno),
         }
     }
     let path = match linux_translate_at_path(dirfd, path_ptr) {
@@ -85,7 +101,7 @@ pub(super) fn linux_access(path_ptr: u64, _mode: u64) -> u64 {
         return linux_err(ENOENT);
     }
     let abs = linux_absolute_path(raw_path);
-    if linux_proc_file_id(&abs).is_some() {
+    if linux_proc_node(&abs).is_some() {
         return 0;
     }
     let path = linux_translate_path(&abs);
@@ -119,8 +135,8 @@ pub(super) fn linux_open_linux_path(path: &str, linux_flags: u64) -> u64 {
         }
         return fd as u64;
     }
-    if let Some(proc_file) = linux_proc_file_id(&abs) {
-        return linux_open_proc_file(&abs, proc_file, linux_flags);
+    if let Some((proc_file, pid)) = linux_proc_node(&abs) {
+        return linux_open_proc_file(&abs, proc_file, pid, linux_flags);
     }
     let translated = linux_translate_absolute_path(&abs);
     linux_open_translated(&translated, linux_flags, &abs)
@@ -286,7 +302,7 @@ pub(super) fn linux_fstat(fd: u32, stat_ptr: u64) -> u64 {
                 write_linux_stat(stat_ptr, 0, 2, 2, 0, 0, 0, 0o666, 0);
                 0
             }
-            FdKind::LinuxProc { file, .. } => linux_write_proc_stat(stat_ptr, file),
+            FdKind::LinuxProc { file, pid, .. } => linux_write_proc_stat(stat_ptr, file, pid),
             FdKind::None => linux_err(EBADF),
         },
         None if fd < 3 => {
@@ -345,22 +361,49 @@ pub(super) fn linux_readlink(path_ptr: u64, buf_ptr: u64, buf_size: u64) -> u64 
     if raw_path == "/proc/self/exe" {
         return linux_err(ENOENT);
     }
-    let path = linux_translate_path(raw_path);
+    let abs = linux_absolute_path(raw_path);
+    if let Some(result) = linux_proc_readlink(&abs) {
+        return match result {
+            Ok(target) => linux_copy_readlink_target(&target, buf_ptr, buf_size),
+            Err(errno) => linux_err(errno),
+        };
+    }
+    let path = linux_translate_absolute_path(&abs);
     match crate::fs::vfs::readlink(&path) {
-        Ok(target) => {
-            let visible = linux_strip_rootfs(&target);
-            let bytes = visible.as_bytes();
-            let to_copy = bytes.len().min(buf_size as usize);
-            if !super::handlers::helpers::copy_to_user_bytes(buf_ptr, &bytes[..to_copy], to_copy) {
-                return linux_err(EFAULT);
-            }
-            to_copy as u64
-        }
+        Ok(target) => linux_copy_readlink_target(&linux_strip_rootfs(&target), buf_ptr, buf_size),
         Err(e) => linux_fs_err(e),
     }
 }
 
 pub(super) fn linux_readlinkat(dirfd: i32, path_ptr: u64, buf_ptr: u64, buf_size: u64) -> u64 {
+    if buf_ptr == 0 || buf_size == 0 {
+        return linux_err(EFAULT);
+    }
+    let raw_path = match super::handlers::helpers::read_user_str_safe(path_ptr) {
+        Some(path) => path,
+        None => return linux_err(EFAULT),
+    };
+    if raw_path.is_empty() {
+        return linux_err(ENOENT);
+    }
+    if raw_path.starts_with('/') || dirfd == LINUX_AT_FDCWD {
+        let abs = linux_absolute_path(&raw_path);
+        if let Some(result) = linux_proc_readlink(&abs) {
+            return match result {
+                Ok(target) => linux_copy_readlink_target(&target, buf_ptr, buf_size),
+                Err(errno) => linux_err(errno),
+            };
+        }
+    } else if let Some(result) = linux_proc_at_path(dirfd, &raw_path) {
+        return match result {
+            Ok(abs) => match linux_proc_readlink(&abs) {
+                Some(Ok(target)) => linux_copy_readlink_target(&target, buf_ptr, buf_size),
+                Some(Err(errno)) => linux_err(errno),
+                None => linux_err(ENOENT),
+            },
+            Err(errno) => linux_err(errno),
+        };
+    }
     let path = match linux_translate_at_path(dirfd, path_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
@@ -373,17 +416,18 @@ pub(super) fn linux_readlink_translated(path: &str, buf_ptr: u64, buf_size: u64)
         return linux_err(EFAULT);
     }
     match crate::fs::vfs::readlink(path) {
-        Ok(target) => {
-            let visible = linux_strip_rootfs(&target);
-            let bytes = visible.as_bytes();
-            let to_copy = bytes.len().min(buf_size as usize);
-            if !super::handlers::helpers::copy_to_user_bytes(buf_ptr, &bytes[..to_copy], to_copy) {
-                return linux_err(EFAULT);
-            }
-            to_copy as u64
-        }
+        Ok(target) => linux_copy_readlink_target(&linux_strip_rootfs(&target), buf_ptr, buf_size),
         Err(e) => linux_fs_err(e),
     }
+}
+
+fn linux_copy_readlink_target(target: &str, buf_ptr: u64, buf_size: u64) -> u64 {
+    let bytes = target.as_bytes();
+    let to_copy = bytes.len().min(buf_size as usize);
+    if !super::handlers::helpers::copy_to_user_bytes(buf_ptr, &bytes[..to_copy], to_copy) {
+        return linux_err(EFAULT);
+    }
+    to_copy as u64
 }
 
 pub(super) fn linux_rename(old_ptr: u64, new_ptr: u64) -> u64 {
@@ -636,9 +680,15 @@ fn linux_faccessat_impl(dirfd: i32, path_ptr: u64, mode: u64, flags: u64) -> u64
     }
     if raw_path.starts_with('/') || dirfd == LINUX_AT_FDCWD {
         let abs = linux_absolute_path(&raw_path);
-        if linux_proc_file_id(&abs).is_some() {
+        if linux_proc_node(&abs).is_some() {
             return 0;
         }
+    } else if let Some(result) = linux_proc_at_path(dirfd, &raw_path) {
+        return match result {
+            Ok(abs) if linux_proc_node(&abs).is_some() => 0,
+            Ok(_) => linux_err(ENOENT),
+            Err(errno) => linux_err(errno),
+        };
     }
     let path = match linux_translate_at_path(dirfd, path_ptr) {
         Ok(path) => path,
@@ -675,6 +725,11 @@ pub(super) fn linux_getdents64(fd: u32, dirent_ptr: u64, count: u64) -> u64 {
         None => return linux_err(EBADF),
     };
     let global_id = match entry.kind {
+        crate::fs::fd_table::FdKind::LinuxProc {
+            file,
+            pid,
+            position,
+        } => return linux_getdents64_proc(fd, file, pid, position, dirent_ptr, count),
         crate::fs::fd_table::FdKind::File { global_id } => global_id,
         _ => return linux_err(EBADF),
     };
@@ -738,6 +793,11 @@ pub(super) fn linux_getdents(fd: u32, dirent_ptr: u64, count: u64) -> u64 {
         None => return linux_err(EBADF),
     };
     let global_id = match entry.kind {
+        crate::fs::fd_table::FdKind::LinuxProc {
+            file,
+            pid,
+            position,
+        } => return linux_getdents_proc(fd, file, pid, position, dirent_ptr, count),
         crate::fs::fd_table::FdKind::File { global_id } => global_id,
         _ => return linux_err(EBADF),
     };
@@ -793,6 +853,17 @@ pub(super) fn linux_statfs(path_ptr: u64, buf_ptr: u64) -> u64 {
     if buf_ptr == 0 {
         return linux_err(EFAULT);
     }
+    let raw_path = match super::handlers::helpers::read_user_str_safe(path_ptr) {
+        Some(path) => path,
+        None => return linux_err(EFAULT),
+    };
+    if raw_path.is_empty() {
+        return linux_err(ENOENT);
+    }
+    let abs = linux_absolute_path(&raw_path);
+    if linux_proc_node(&abs).is_some() {
+        return linux_write_proc_statfs(buf_ptr);
+    }
     let path = match linux_translate_user_path(path_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
@@ -803,6 +874,11 @@ pub(super) fn linux_statfs(path_ptr: u64, buf_ptr: u64) -> u64 {
 pub(super) fn linux_fstatfs(fd: u32, buf_ptr: u64) -> u64 {
     if buf_ptr == 0 {
         return linux_err(EFAULT);
+    }
+    if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
+        if let crate::fs::fd_table::FdKind::LinuxProc { .. } = entry.kind {
+            return linux_write_proc_statfs(buf_ptr);
+        }
     }
     let path = match linux_fd_path(fd) {
         Ok(path) => path,

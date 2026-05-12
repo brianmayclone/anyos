@@ -137,6 +137,7 @@ coreutils
 libpam-runtime
 login
 passwd
+libcom-err2
 mc
 procps
 htop
@@ -257,7 +258,7 @@ Defaults:
 | `apt/arch` | `amd64` |
 | `apt/index_required_packages_csv` | `apt,base-files,base-passwd,bash,coreutils,dash,debian-archive-keyring,libc6,libgcc-s1,libpam-runtime,libstdc++6,login,passwd,zlib1g` |
 | `apt/download_attempts` | `4` |
-| `bootstrap/packages_csv` | `base-files,base-passwd,libc6,libgcc-s1,libstdc++6,zlib1g,apt,debian-archive-keyring,dash,bash,coreutils,libpam-runtime,login,passwd,mc,procps,htop,gcc,make` |
+| `bootstrap/packages_csv` | `base-files,base-passwd,libc6,libgcc-s1,libstdc++6,zlib1g,apt,debian-archive-keyring,dash,bash,coreutils,libpam-runtime,login,passwd,libcom-err2,mc,procps,htop,gcc,make` |
 | `tools/wget` | `/System/bin/wget` |
 
 All path values are normalized by trimming trailing slashes.

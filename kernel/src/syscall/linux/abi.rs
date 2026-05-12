@@ -21,6 +21,7 @@ pub(super) fn write_linux_stat(
     let file_type_bits = match anyos_type {
         1 => 0o040000,
         2 => 0o020000,
+        3 => 0o120000,
         _ => 0o100000,
     };
     let full_mode = file_type_bits | (mode & 0o7777);

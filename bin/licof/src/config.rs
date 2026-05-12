@@ -18,7 +18,7 @@ const DEFAULT_DOWNLOAD_ATTEMPTS: i64 = 4;
 const DEFAULT_INDEX_REQUIRED_PACKAGES: &str =
     "apt,base-files,base-passwd,bash,coreutils,dash,debian-archive-keyring,libc6,libgcc-s1,libpam-runtime,libstdc++6,login,passwd,zlib1g";
 const DEFAULT_BOOTSTRAP_SEED: &str =
-    "base-files,base-passwd,libc6,libgcc-s1,libstdc++6,zlib1g,apt,debian-archive-keyring,dash,bash,coreutils,libpam-runtime,login,passwd,mc,procps,htop,gcc,make";
+    "base-files,base-passwd,libc6,libgcc-s1,libstdc++6,zlib1g,apt,debian-archive-keyring,dash,bash,coreutils,libpam-runtime,login,passwd,libcom-err2,mc,procps,htop,gcc,make";
 
 const LICOF_DIRS: &[&str] = &["paths", "apt", "bootstrap", "tools"];
 const LICOF_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
@@ -58,11 +58,12 @@ const LICOF_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[
     ),
     migration_string(3, "bootstrap/packages_csv", DEFAULT_BOOTSTRAP_SEED),
     migration_string(4, "bootstrap/packages_csv", DEFAULT_BOOTSTRAP_SEED),
+    migration_string(5, "bootstrap/packages_csv", DEFAULT_BOOTSTRAP_SEED),
 ];
 const LICOF_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
     "services/licof",
     RegistryScope::System,
-    4,
+    5,
     LICOF_DIRS,
     LICOF_DEFAULTS,
     LICOF_MIGRATIONS,

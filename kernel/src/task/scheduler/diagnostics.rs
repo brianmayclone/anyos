@@ -10,6 +10,7 @@ pub struct ThreadInfo {
     pub priority: u8,
     pub state: &'static str,
     pub name: alloc::string::String,
+    pub args: alloc::string::String,
     pub cpu_ticks: u32,
     pub arch_mode: u8,
     pub io_read_bytes: u64,
@@ -18,13 +19,14 @@ pub struct ThreadInfo {
     pub net_rx_bytes: u64,
     pub user_pages: u32,
     pub uid: u16,
+    pub gid: u16,
     pub parent_tid: u32,
     pub pd_shared: bool,
 }
 
 /// List all live threads (lock-free heap allocation pattern).
 pub fn list_threads() -> Vec<ThreadInfo> {
-    const MAX_SNAP: usize = 64;
+    const MAX_SNAP: usize = 256;
     struct ThreadSnap {
         tid: u32,
         priority: u8,
@@ -38,7 +40,10 @@ pub fn list_threads() -> Vec<ThreadInfo> {
         user_pages: u32,
         name: [u8; 32],
         name_len: u8,
+        args: [u8; 256],
+        args_len: u16,
         uid: u16,
+        gid: u16,
         parent_tid: u32,
         pd_shared: bool,
     }
@@ -56,7 +61,10 @@ pub fn list_threads() -> Vec<ThreadInfo> {
             user_pages: 0,
             name: [0; 32],
             name_len: 0,
+            args: [0; 256],
+            args_len: 0,
             uid: 0,
+            gid: 0,
             parent_tid: 0,
             pd_shared: false,
         }
@@ -94,6 +102,9 @@ pub fn list_threads() -> Vec<ThreadInfo> {
                 let len = name_str.len().min(32);
                 let mut name_buf = [0u8; 32];
                 name_buf[..len].copy_from_slice(&name_str.as_bytes()[..len]);
+                let args_len = thread.args.iter().position(|&b| b == 0).unwrap_or(256);
+                let mut args_buf = [0u8; 256];
+                args_buf[..args_len].copy_from_slice(&thread.args[..args_len]);
                 buf[count] = ThreadSnap {
                     tid: thread.tid,
                     priority: thread.priority,
@@ -107,7 +118,10 @@ pub fn list_threads() -> Vec<ThreadInfo> {
                     user_pages: thread.user_pages,
                     name: name_buf,
                     name_len: len as u8,
+                    args: args_buf,
+                    args_len: args_len as u16,
                     uid: thread.uid,
+                    gid: thread.gid,
                     parent_tid: thread.parent_tid,
                     pd_shared: thread.pd_shared,
                 };
@@ -132,6 +146,9 @@ pub fn list_threads() -> Vec<ThreadInfo> {
             name: alloc::string::String::from(
                 core::str::from_utf8(&snap.name[..snap.name_len as usize]).unwrap_or("?"),
             ),
+            args: alloc::string::String::from(
+                core::str::from_utf8(&snap.args[..snap.args_len as usize]).unwrap_or(""),
+            ),
             cpu_ticks: snap.cpu_ticks,
             arch_mode: snap.arch_mode,
             io_read_bytes: snap.io_read_bytes,
@@ -140,6 +157,7 @@ pub fn list_threads() -> Vec<ThreadInfo> {
             net_rx_bytes: snap.net_rx_bytes,
             user_pages: snap.user_pages,
             uid: snap.uid,
+            gid: snap.gid,
             parent_tid: snap.parent_tid,
             pd_shared: snap.pd_shared,
         });

@@ -2,6 +2,7 @@
 
 use super::{get_cpu_id, SCHEDULER};
 use crate::fs::fd_table::{FdEntry, FdKind, FdTable, MAX_FDS};
+use alloc::vec::Vec;
 
 /// Allocate an FD in the current thread's FD table.
 pub fn current_fd_alloc(kind: FdKind) -> Option<u32> {
@@ -29,6 +30,38 @@ pub fn current_fd_get(fd: u32) -> Option<FdEntry> {
     let cpu = get_cpu_id();
     let idx = sched.current_idx(cpu)?;
     sched.threads[idx].fd_table.get(fd).copied()
+}
+
+/// Return the open file descriptor numbers for a thread.
+pub fn thread_fd_numbers(tid: u32) -> Vec<u32> {
+    let guard = SCHEDULER.lock();
+    let Some(sched) = guard.as_ref() else {
+        return Vec::new();
+    };
+    let Some(thread) = sched.threads.iter().find(|thread| thread.tid == tid) else {
+        return Vec::new();
+    };
+    thread
+        .fd_table
+        .entries
+        .iter()
+        .enumerate()
+        .filter_map(|(fd, entry)| {
+            if matches!(entry.kind, FdKind::None) {
+                None
+            } else {
+                Some(fd as u32)
+            }
+        })
+        .collect()
+}
+
+/// Look up an FD in another thread's FD table.
+pub fn thread_fd_get(tid: u32, fd: u32) -> Option<FdEntry> {
+    let guard = SCHEDULER.lock();
+    let sched = guard.as_ref()?;
+    let thread = sched.threads.iter().find(|thread| thread.tid == tid)?;
+    thread.fd_table.get(fd).copied()
 }
 
 /// Duplicate old_fd to new_fd in the current thread's FD table.

@@ -923,7 +923,10 @@ fn report_wget_first_diffs(
             continue;
         }
         let Ok(bytes) = fs::read_to_vec(&artifact.path) else {
-            summary.warn("wget first-diff", &format!("{} nicht lesbar", artifact.path));
+            summary.warn(
+                "wget first-diff",
+                &format!("{} nicht lesbar", artifact.path),
+            );
             reported += 1;
             continue;
         };

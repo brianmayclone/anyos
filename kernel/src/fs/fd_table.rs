@@ -23,8 +23,8 @@ pub enum FdKind {
     Tty,
     /// Pseudo-terminal slave endpoint backed by a terminal master pipe pair.
     PtySlave { pty_id: u32 },
-    /// Small read-only pseudo-file exposed by the licof Linux ABI.
-    LinuxProc { file: u8, position: u32 },
+    /// Read-only procfs node exposed by the licof Linux ABI.
+    LinuxProc { file: u16, pid: u32, position: u32 },
     /// Socket exposed by the licof Linux ABI.
     LinuxSocket { socket_id: u32 },
 }
