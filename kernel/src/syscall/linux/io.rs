@@ -196,13 +196,10 @@ pub(super) fn linux_select(
     readfds: u64,
     writefds: u64,
     exceptfds: u64,
-    _timeout: u64,
+    timeout: u64,
 ) -> u64 {
     if nfds > 1024 {
         return linux_err(EINVAL);
-    }
-    if nfds == 0 {
-        return 0;
     }
     let fdset_bytes = (((nfds + 63) / 64) * 8) as usize;
     for ptr in [readfds, writefds, exceptfds] {
@@ -211,52 +208,34 @@ pub(super) fn linux_select(
         }
     }
 
-    let mut ready = 0u64;
-    for fd in 0..nfds {
-        let entry = if fd < 3 {
-            None
-        } else {
-            crate::task::scheduler::current_fd_get(fd as u32)
-        };
-        let valid = fd < 3 || entry.is_some();
-        let requested = (if select_fd_is_set(readfds, fd) {
-            0x0001
-        } else {
-            0
-        }) | (if select_fd_is_set(writefds, fd) {
-            0x0004
-        } else {
-            0
-        });
-        let revents = if valid {
-            match entry.map(|e| e.kind) {
-                Some(crate::fs::fd_table::FdKind::LinuxSocket { socket_id }) => {
-                    linux_socket_poll_revents(socket_id, requested)
-                }
-                _ => requested,
-            }
-        } else {
-            0
-        };
-        if select_fd_is_set(readfds, fd) {
-            if revents & 0x0001 != 0 {
-                ready += 1;
-            } else {
-                select_fd_clear(readfds, fd);
+    let mut read_in = [0u8; 128];
+    let mut write_in = [0u8; 128];
+    select_fdset_snapshot(readfds, fdset_bytes, &mut read_in);
+    select_fdset_snapshot(writefds, fdset_bytes, &mut write_in);
+
+    let start = crate::arch::hal::timer_current_ticks();
+    let timeout_ticks = match select_timeval_ticks(timeout) {
+        Ok(ticks) => ticks,
+        Err(errno) => return linux_err(errno),
+    };
+
+    loop {
+        crate::net::poll();
+        let ready = linux_select_once(nfds, &read_in, &write_in, readfds, writefds, exceptfds);
+        if ready != 0 || timeout_ticks == Some(0) {
+            return ready;
+        }
+        if let Some(limit) = timeout_ticks {
+            let now = crate::arch::hal::timer_current_ticks();
+            if now.wrapping_sub(start) >= limit {
+                select_fdset_zero(readfds, fdset_bytes);
+                select_fdset_zero(writefds, fdset_bytes);
+                select_fdset_zero(exceptfds, fdset_bytes);
+                return 0;
             }
         }
-        if select_fd_is_set(writefds, fd) {
-            if revents & 0x0004 != 0 {
-                ready += 1;
-            } else {
-                select_fd_clear(writefds, fd);
-            }
-        }
-        if select_fd_is_set(exceptfds, fd) {
-            select_fd_clear(exceptfds, fd);
-        }
+        crate::net::wait_for_poll_progress();
     }
-    ready
 }
 
 pub(super) fn linux_pselect6(
@@ -286,26 +265,130 @@ pub(super) fn linux_pselect6(
         }
     }
 
-    linux_select(nfds, readfds, writefds, exceptfds, timeout)
+    linux_pselect(nfds, readfds, writefds, exceptfds, timeout)
 }
 
-fn select_fd_is_set(set_ptr: u64, fd: u64) -> bool {
+fn linux_pselect(nfds: u64, readfds: u64, writefds: u64, exceptfds: u64, timeout: u64) -> u64 {
+    if nfds > 1024 {
+        return linux_err(EINVAL);
+    }
+    let fdset_bytes = (((nfds + 63) / 64) * 8) as usize;
+    for ptr in [readfds, writefds, exceptfds] {
+        if ptr != 0 && !handlers::helpers::is_user_range_accessible(ptr, fdset_bytes as u64) {
+            return linux_err(EFAULT);
+        }
+    }
+
+    let mut read_in = [0u8; 128];
+    let mut write_in = [0u8; 128];
+    select_fdset_snapshot(readfds, fdset_bytes, &mut read_in);
+    select_fdset_snapshot(writefds, fdset_bytes, &mut write_in);
+
+    let start = crate::arch::hal::timer_current_ticks();
+    let timeout_ticks = match select_timespec_ticks(timeout) {
+        Ok(ticks) => ticks,
+        Err(errno) => return linux_err(errno),
+    };
+
+    loop {
+        crate::net::poll();
+        let ready = linux_select_once(nfds, &read_in, &write_in, readfds, writefds, exceptfds);
+        if ready != 0 || timeout_ticks == Some(0) {
+            return ready;
+        }
+        if let Some(limit) = timeout_ticks {
+            let now = crate::arch::hal::timer_current_ticks();
+            if now.wrapping_sub(start) >= limit {
+                select_fdset_zero(readfds, fdset_bytes);
+                select_fdset_zero(writefds, fdset_bytes);
+                select_fdset_zero(exceptfds, fdset_bytes);
+                return 0;
+            }
+        }
+        crate::net::wait_for_poll_progress();
+    }
+}
+
+fn linux_select_once(
+    nfds: u64,
+    read_in: &[u8; 128],
+    write_in: &[u8; 128],
+    readfds: u64,
+    writefds: u64,
+    exceptfds: u64,
+) -> u64 {
+    let mut ready = 0u64;
+    select_fdset_zero(readfds, (((nfds + 63) / 64) * 8) as usize);
+    select_fdset_zero(writefds, (((nfds + 63) / 64) * 8) as usize);
+    select_fdset_zero(exceptfds, (((nfds + 63) / 64) * 8) as usize);
+
+    for fd in 0..nfds {
+        let want_read = select_fd_is_set_snapshot(read_in, fd);
+        let want_write = select_fd_is_set_snapshot(write_in, fd);
+        if !want_read && !want_write {
+            continue;
+        }
+
+        let entry = if fd < 3 {
+            None
+        } else {
+            crate::task::scheduler::current_fd_get(fd as u32)
+        };
+        let valid = fd < 3 || entry.is_some();
+        let requested =
+            (if want_read { 0x0001 } else { 0 }) | (if want_write { 0x0004 } else { 0 });
+        let revents = match entry.map(|e| e.kind) {
+            Some(crate::fs::fd_table::FdKind::LinuxSocket { socket_id }) => {
+                linux_socket_poll_revents(socket_id, requested)
+            }
+            _ if valid => requested,
+            _ => 0,
+        };
+
+        if want_read && revents & 0x0001 != 0 {
+            ready += 1;
+            select_fd_set(readfds, fd);
+        }
+        if want_write && revents & 0x0004 != 0 {
+            ready += 1;
+            select_fd_set(writefds, fd);
+        }
+    }
+    ready
+}
+
+fn select_fdset_snapshot(set_ptr: u64, len: usize, out: &mut [u8; 128]) {
     if set_ptr == 0 {
-        return false;
+        return;
     }
-    unsafe {
-        let byte = *((set_ptr + fd / 8) as *const u8);
-        (byte & (1u8 << (fd & 7))) != 0
+    for i in 0..len {
+        out[i] = unsafe { *((set_ptr + i as u64) as *const u8) };
     }
 }
 
-fn select_fd_clear(set_ptr: u64, fd: u64) {
+fn select_fdset_zero(set_ptr: u64, len: usize) {
+    if set_ptr == 0 {
+        return;
+    }
+    for i in 0..len {
+        unsafe {
+            *((set_ptr + i as u64) as *mut u8) = 0;
+        }
+    }
+}
+
+fn select_fd_is_set_snapshot(set: &[u8; 128], fd: u64) -> bool {
+    let idx = (fd / 8) as usize;
+    (set[idx] & (1u8 << (fd & 7))) != 0
+}
+
+fn select_fd_set(set_ptr: u64, fd: u64) {
     if set_ptr == 0 {
         return;
     }
     unsafe {
         let byte = (set_ptr + fd / 8) as *mut u8;
-        *byte &= !(1u8 << (fd & 7));
+        *byte |= 1u8 << (fd & 7);
     }
 }
 
@@ -376,6 +459,42 @@ fn linux_poll_once(fds_ptr: u64, nfds: u64) -> u64 {
         }
     }
     ready
+}
+
+fn select_timeval_ticks(timeout: u64) -> Result<Option<u32>, i32> {
+    if timeout == 0 {
+        return Ok(None);
+    }
+    if !handlers::helpers::is_user_range_accessible(timeout, 16) {
+        return Err(EFAULT);
+    }
+    let sec = unsafe { read_u64(timeout, 0) } as i64;
+    let usec = unsafe { read_u64(timeout, 8) } as i64;
+    if sec < 0 || !(0..1_000_000).contains(&usec) {
+        return Err(EINVAL);
+    }
+    let ms = (sec as u64)
+        .saturating_mul(1000)
+        .saturating_add((usec as u64).saturating_add(999) / 1000);
+    Ok(Some(ms_to_ticks(ms)))
+}
+
+fn select_timespec_ticks(timeout: u64) -> Result<Option<u32>, i32> {
+    if timeout == 0 {
+        return Ok(None);
+    }
+    if !handlers::helpers::is_user_range_accessible(timeout, 16) {
+        return Err(EFAULT);
+    }
+    let sec = unsafe { read_u64(timeout, 0) } as i64;
+    let nsec = unsafe { read_u64(timeout, 8) } as i64;
+    if sec < 0 || !(0..1_000_000_000).contains(&nsec) {
+        return Err(EINVAL);
+    }
+    let ms = (sec as u64)
+        .saturating_mul(1000)
+        .saturating_add((nsec as u64).saturating_add(999_999) / 1_000_000);
+    Ok(Some(ms_to_ticks(ms)))
 }
 
 fn ms_to_ticks(ms: u64) -> u32 {
