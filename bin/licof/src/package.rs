@@ -1082,17 +1082,35 @@ fn validate_debian_archive_keyring_runtime(rootfs: &str) -> bool {
     let mut ok = true;
     for linux_path in required {
         let path = linux_path_in_rootfs(rootfs, linux_path);
-        let size = file_size(&path);
-        if size < 1024 {
+        if !validate_keyring_payload(&path) {
             println!(
                 "licof pkg: debian archive keyring check failed: {} size={}",
-                path, size
+                path,
+                file_size(&path)
             );
             print_path_probe("licof pkg", &path);
             ok = false;
         }
     }
     ok
+}
+
+fn validate_keyring_payload(path: &str) -> bool {
+    let Ok(data) = fs::read_to_vec(path) else {
+        return false;
+    };
+    if data.is_empty() {
+        return false;
+    }
+    if path.ends_with(".asc") {
+        return core::str::from_utf8(&data)
+            .map(|text| text.contains("BEGIN PGP PUBLIC KEY BLOCK"))
+            .unwrap_or(false);
+    }
+    if path.ends_with(".gpg") {
+        return data.len() >= 64 && data.iter().any(|&byte| byte != 0);
+    }
+    false
 }
 
 fn ensure_runtime_alias(rootfs: &str, dest_linux: &str, target: &str, label: &str) -> bool {
