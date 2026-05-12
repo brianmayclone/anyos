@@ -2,8 +2,8 @@
 
 use super::{
     PER_CPU_CURRENT_TID, PER_CPU_HAS_THREAD, PER_CPU_IDLE_STACK_TOP, PER_CPU_IN_SCHEDULER,
-    PER_CPU_IS_USER, PER_CPU_LAST_SYSCALL, PER_CPU_STACK_BOTTOM, PER_CPU_STACK_TOP,
-    PER_CPU_THREAD_NAME, SCHEDULER,
+    PER_CPU_IS_USER, PER_CPU_LAST_SYSCALL, PER_CPU_LAST_SYSCALL_ABI, PER_CPU_STACK_BOTTOM,
+    PER_CPU_STACK_TOP, PER_CPU_THREAD_NAME, SCHEDULER,
 };
 use crate::arch::hal::MAX_CPUS;
 use crate::task::thread::ThreadState;
@@ -193,6 +193,15 @@ pub fn get_stack_bounds(cpu_id: usize) -> (u64, u64) {
 pub fn set_last_syscall(cpu_id: usize, num: u32) {
     if cpu_id < MAX_CPUS {
         PER_CPU_LAST_SYSCALL[cpu_id].store(num, Ordering::Relaxed);
+        PER_CPU_LAST_SYSCALL_ABI[cpu_id].store(0, Ordering::Relaxed);
+    }
+}
+
+/// Record the last Linux/LXE syscall number on this CPU.
+pub fn set_last_linux_syscall(cpu_id: usize, num: u32) {
+    if cpu_id < MAX_CPUS {
+        PER_CPU_LAST_SYSCALL[cpu_id].store(num, Ordering::Relaxed);
+        PER_CPU_LAST_SYSCALL_ABI[cpu_id].store(1, Ordering::Relaxed);
     }
 }
 
@@ -200,6 +209,15 @@ pub fn set_last_syscall(cpu_id: usize, num: u32) {
 pub fn get_last_syscall(cpu_id: usize) -> u32 {
     if cpu_id < MAX_CPUS {
         PER_CPU_LAST_SYSCALL[cpu_id].load(Ordering::Relaxed)
+    } else {
+        0
+    }
+}
+
+/// Get the ABI namespace for the last syscall on this CPU (0=anyOS, 1=Linux/LXE).
+pub fn get_last_syscall_abi(cpu_id: usize) -> u32 {
+    if cpu_id < MAX_CPUS {
+        PER_CPU_LAST_SYSCALL_ABI[cpu_id].load(Ordering::Relaxed)
     } else {
         0
     }

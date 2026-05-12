@@ -167,6 +167,29 @@ struct TextBuffer {
     len: usize,
 }
 
+impl TextBuffer {
+    fn new() -> Self {
+        Self {
+            bytes: [0; 128],
+            len: 0,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.bytes[..self.len]).unwrap_or("")
+    }
+}
+
+impl Write for TextBuffer {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let remaining = self.bytes.len().saturating_sub(self.len);
+        let copy_len = remaining.min(s.len());
+        self.bytes[self.len..self.len + copy_len].copy_from_slice(&s.as_bytes()[..copy_len]);
+        self.len += copy_len;
+        Ok(())
+    }
+}
+
 const BOOT_ENTRIES: [BootEntry; 4] = [
     BootEntry {
         title: "anyOS",
@@ -678,96 +701,212 @@ fn pack_pixel(format: FramebufferFormat, r: u8, g: u8, b: u8) -> u32 {
     }
 }
 
-fn draw_splash_text(remaining: u64) {
-    let rows = text_dimensions().1;
-    let base = rows.saturating_sub(6);
+fn draw_splash_text(
+    fb_addr: u32,
+    fb_width: u32,
+    fb_height: u32,
+    fb_pitch: u32,
+    fb_format: FramebufferFormat,
+    remaining: u64,
+) {
+    let base_y = fb_height.saturating_sub(FONT_HEIGHT * 6);
 
-    print_centered(
-        base,
-        Color::LightGray,
-        Color::Black,
+    draw_centered_text(
+        fb_addr,
+        fb_width,
+        fb_pitch,
+        fb_format,
+        base_y,
+        (0xD0, 0xD0, 0xD0),
         "anyOS UEFI Bootloader",
     );
-    print_centered(
-        base + 2,
-        Color::DarkGray,
-        Color::Black,
+    draw_centered_text(
+        fb_addr,
+        fb_width,
+        fb_pitch,
+        fb_format,
+        base_y + FONT_HEIGHT * 2,
+        (0x68, 0x72, 0x80),
         "Esc Boot Menu   V Verbose   N Textmode   Enter Boot",
     );
-    print_countdown(base + 3, remaining);
+
+    let countdown_y = base_y + FONT_HEIGHT * 3;
+    fill_rect(
+        fb_addr,
+        fb_pitch,
+        fb_format,
+        0,
+        countdown_y,
+        fb_width,
+        FONT_HEIGHT,
+        (0, 0, 0),
+    );
+    let mut text = TextBuffer::new();
+    let _ = write!(&mut text, "Booting default in {}s", remaining);
+    draw_centered_text(
+        fb_addr,
+        fb_width,
+        fb_pitch,
+        fb_format,
+        countdown_y,
+        (0x68, 0x72, 0x80),
+        text.as_str(),
+    );
 }
 
-fn draw_menu_text(selected: usize) {
-    let (cols, rows) = text_dimensions();
-    let start = rows / 2;
+fn draw_menu_text(
+    fb_addr: u32,
+    fb_width: u32,
+    fb_height: u32,
+    fb_pitch: u32,
+    fb_format: FramebufferFormat,
+    selected: usize,
+) {
+    let start_y = fb_height / 2;
 
-    print_centered(
-        start.saturating_sub(2),
-        Color::White,
-        Color::Black,
+    draw_centered_text(
+        fb_addr,
+        fb_width,
+        fb_pitch,
+        fb_format,
+        start_y.saturating_sub(FONT_HEIGHT * 2),
+        (0xFF, 0xFF, 0xFF),
         "anyOS Boot Menu",
     );
+
     for (index, entry) in BOOT_ENTRIES.iter().enumerate() {
-        let row = start + index;
-        let (fg, bg) = if index == selected {
-            (Color::Black, Color::Cyan)
+        let y = start_y + index as u32 * FONT_HEIGHT;
+        let mut label = TextBuffer::new();
+        let _ = write!(&mut label, "{}. {}", index + 1, entry.title);
+
+        if index == selected {
+            fill_rect(
+                fb_addr,
+                fb_pitch,
+                fb_format,
+                0,
+                y,
+                fb_width,
+                FONT_HEIGHT,
+                (0x00, 0xAA, 0xAA),
+            );
+            draw_centered_text(
+                fb_addr,
+                fb_width,
+                fb_pitch,
+                fb_format,
+                y,
+                (0x00, 0x00, 0x00),
+                label.as_str(),
+            );
         } else {
-            (Color::LightGray, Color::Black)
-        };
-
-        system::with_stdout(|stdout| {
-            let _ = stdout.set_color(fg, bg);
-            let _ = stdout.set_cursor_position(0, row);
-            for _ in 0..cols {
-                let _ = write!(stdout, " ");
-            }
-
-            let label_len = entry.title.len() + 3;
-            let col = cols.saturating_sub(label_len) / 2;
-            let _ = stdout.set_cursor_position(col, row);
-            let _ = write!(stdout, "{}. {}", index + 1, entry.title);
-        });
+            draw_centered_text(
+                fb_addr,
+                fb_width,
+                fb_pitch,
+                fb_format,
+                y,
+                (0xD0, 0xD0, 0xD0),
+                label.as_str(),
+            );
+        }
     }
 
-    print_centered(
-        rows.saturating_sub(2),
-        Color::DarkGray,
-        Color::Black,
+    draw_centered_text(
+        fb_addr,
+        fb_width,
+        fb_pitch,
+        fb_format,
+        fb_height.saturating_sub(FONT_HEIGHT * 2),
+        (0x68, 0x72, 0x80),
         "Up/Down Select   Enter Boot   Esc Default",
     );
 }
 
-fn print_countdown(row: usize, remaining: u64) {
-    system::with_stdout(|stdout| {
-        let _ = stdout.set_color(Color::DarkGray, Color::Black);
-        let _ = stdout.set_cursor_position(0, row);
-        let _ = write!(
-            stdout,
-            "                              Booting default in {}s                              ",
-            remaining
-        );
-    });
+fn draw_centered_text(
+    fb_addr: u32,
+    fb_width: u32,
+    fb_pitch: u32,
+    fb_format: FramebufferFormat,
+    y: u32,
+    color: (u8, u8, u8),
+    text: &str,
+) {
+    let text_width = text.len() as u32 * FONT_WIDTH;
+    let x = fb_width.saturating_sub(text_width) / 2;
+    draw_text(fb_addr, fb_width, fb_pitch, fb_format, x, y, color, text);
 }
 
-fn print_centered(row: usize, fg: Color, bg: Color, text: &str) {
-    let (cols, _) = text_dimensions();
-    let col = cols.saturating_sub(text.len()) / 2;
-    system::with_stdout(|stdout| {
-        let _ = stdout.set_color(fg, bg);
-        let _ = stdout.set_cursor_position(col, row);
-        let _ = write!(stdout, "{}", text);
-    });
+fn draw_text(
+    fb_addr: u32,
+    fb_width: u32,
+    fb_pitch: u32,
+    fb_format: FramebufferFormat,
+    mut x: u32,
+    y: u32,
+    color: (u8, u8, u8),
+    text: &str,
+) {
+    for byte in text.bytes() {
+        if x + FONT_WIDTH > fb_width {
+            break;
+        }
+        draw_char(fb_addr, fb_pitch, fb_format, x, y, color, byte);
+        x += FONT_WIDTH;
+    }
 }
 
-fn text_dimensions() -> (usize, usize) {
-    system::with_stdout(|stdout| {
-        stdout
-            .current_mode()
-            .ok()
-            .flatten()
-            .map(|mode| (mode.columns(), mode.rows()))
-            .unwrap_or((80, 25))
-    })
+fn draw_char(
+    fb_addr: u32,
+    fb_pitch: u32,
+    fb_format: FramebufferFormat,
+    x: u32,
+    y: u32,
+    color: (u8, u8, u8),
+    ch: u8,
+) {
+    if !(32..=126).contains(&ch) {
+        return;
+    }
+
+    let glyph_offset = (ch - 32) as usize * FONT_HEIGHT as usize;
+    if glyph_offset + FONT_HEIGHT as usize > FONT_DATA.len() {
+        return;
+    }
+
+    let pixel = pack_pixel(fb_format, color.0, color.1, color.2);
+    for row in 0..FONT_HEIGHT {
+        let bits = FONT_DATA[glyph_offset + row as usize];
+        let dst_row = (fb_addr as usize + (y + row) as usize * fb_pitch as usize) as *mut u32;
+        for col in 0..FONT_WIDTH {
+            if bits & (0x80 >> col) != 0 {
+                unsafe {
+                    dst_row.add((x + col) as usize).write_volatile(pixel);
+                }
+            }
+        }
+    }
+}
+
+fn fill_rect(
+    fb_addr: u32,
+    fb_pitch: u32,
+    fb_format: FramebufferFormat,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    color: (u8, u8, u8),
+) {
+    let pixel = pack_pixel(fb_format, color.0, color.1, color.2);
+    for row in 0..height {
+        let dst_row = (fb_addr as usize + (y + row) as usize * fb_pitch as usize) as *mut u32;
+        for col in 0..width {
+            unsafe {
+                dst_row.add((x + col) as usize).write_volatile(pixel);
+            }
+        }
+    }
 }
 
 fn copy_boot_params(dst: &mut [u8; 64], params: &[u8]) {

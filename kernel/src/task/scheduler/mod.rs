@@ -186,6 +186,12 @@ static PER_CPU_LAST_SYSCALL: [AtomicU32; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
+/// ABI namespace for [`PER_CPU_LAST_SYSCALL`]: 0=anyOS, 1=Linux/LXE.
+static PER_CPU_LAST_SYSCALL_ABI: [AtomicU32; MAX_CPUS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; MAX_CPUS]
+};
+
 #[cfg(target_arch = "aarch64")]
 static ARM64_FIRST_USER_SWITCH_LOGGED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "aarch64")]
