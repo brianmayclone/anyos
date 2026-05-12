@@ -22,7 +22,7 @@ NO_CROSS=1
 RESET=0
 ANYOS_ARCH="x86_64"
 ANYOS_VERSION="$(tr -d '[:space:]' < "${PROJECT_DIR}/VERSION")"
-SYSTEM_FS=""
+SYSTEM_FS="exfat"
 SYSTEM_FS_SIZE_MIB=""
 CMAKE_PASSTHROUGH=()
 
@@ -44,7 +44,7 @@ Options:
   --no-cross             Keep C/C++ cross toolchain disabled (default).
   --with-cross           Let CMake try external C/C++ cross builds.
   --reset                Recreate the disk image.
-  --system-fs {exfat|corefs}
+  --system-fs exfat
   --system-fs-size <MiB>
   --version <VERSION>    Override ANYOS_VERSION for this build.
   -D<VAR>=<VAL>          Pass an additional CMake cache definition.
@@ -127,9 +127,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$SYSTEM_FS" in
-  ""|exfat|corefs) ;;
+  ""|exfat) ;;
   *)
-    echo "build_with_anyrc: --system-fs expects 'exfat' or 'corefs', got '${SYSTEM_FS}'"
+    echo "build_with_anyrc: --system-fs currently supports only 'exfat', got '${SYSTEM_FS}'"
     exit 2
     ;;
 esac
@@ -404,10 +404,10 @@ cmake_args=(
   "-DANYOS_RESET=$([[ "$RESET" -eq 1 ]] && echo ON || echo OFF)"
   "-DANYOS_VERSION=${ANYOS_VERSION}"
   "-DANYOS_ARCH=${ANYOS_ARCH}"
+  "-DANYOS_BOOT_MODE=uefi"
 )
-if [[ -n "$SYSTEM_FS" ]]; then
-  cmake_args+=("-DANYOS_SYSTEM_FS=${SYSTEM_FS}")
-fi
+cmake_args+=("-DANYOS_SYSTEM_FS=${SYSTEM_FS}")
+cmake_args+=("-DANYOS_DUAL_PARTITION=OFF")
 if [[ -n "$SYSTEM_FS_SIZE_MIB" ]]; then
   cmake_args+=("-DANYOS_SYSTEM_FS_SIZE_MIB=${SYSTEM_FS_SIZE_MIB}")
 fi

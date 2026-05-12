@@ -37,6 +37,10 @@ global _boot_start
 ; Paging is already enabled: identity map + higher-half map active.
 ; =============================================================================
 _boot_start:
+    ; Firmware/bootloaders should hand off with interrupts disabled, but make
+    ; the kernel entry defensive so UEFI cannot leak IF=1 into early init.
+    cli
+
     ; Save boot_info_addr (RDI) in RSI before we use RDI for rep stosq
     mov rsi, rdi
 

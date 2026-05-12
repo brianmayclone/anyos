@@ -36,78 +36,28 @@ add_custom_command(
 set(BOOT_CFG ${CMAKE_SOURCE_DIR}/sysroot/boot/boot.cfg)
 set(BOOT_LOGO ${CMAKE_SOURCE_DIR}/kernel/src/graphics/boot_logo.bin)
 
-# Optional post-processing step: append a CoreFS system partition to the
-# exFAT-only image produced by mkimage.  Controlled by the top-level
-# ANYOS_SYSTEM_FS cache variable — defaults to "exfat" (no-op) for full
-# backwards compatibility.
-if(ANYOS_SYSTEM_FS STREQUAL "corefs")
-  # Where the CoreFS partition descriptor lands in the MBR depends on
-  # whether the base image is single-partition (slot 0 = exFAT, CoreFS
-  # goes into slot 1) or dual-partition (slot 0 = /boot, slot 1 = /,
-  # CoreFS goes into slot 2).
-  #
-  # In dual-partition layouts we also populate the CoreFS volume with
-  # the contents of sysroot/System, so that once the kernel mounts
-  # the partition under /System (via the auto-activate path in Phase
-  # 5c/1) every binary, library and app bundle is served from CoreFS.
-  # In single-partition layouts we leave the CoreFS partition empty —
-  # it exists as a sandbox/test target next to the main exFAT root.
-  if(ANYOS_DUAL_PARTITION)
-    set(COREFS_MBR_SLOT "2")
-    set(COREFS_POPULATE_ARGS --populate ${SYSROOT_DIR}/System)
-  else()
-    set(COREFS_MBR_SLOT "1")
-    set(COREFS_POPULATE_ARGS)
-  endif()
-  set(COREFS_POST_CMD
-    COMMAND ${PYTHON_EXECUTABLE}
-      ${CMAKE_SOURCE_DIR}/tools/anyos_append_corefs.py
-      --image ${DISK_IMAGE}
-      --size ${ANYOS_SYSTEM_FS_SIZE_MIB}M
-      --slot ${COREFS_MBR_SLOT}
-      --mkfs-corefs-host ${MKFS_COREFS_HOST_EXECUTABLE}
-      --label system
-      ${COREFS_POPULATE_ARGS})
-  set(COREFS_POST_DEPS ${MKFS_COREFS_HOST_EXECUTABLE})
-else()
-  set(COREFS_POST_CMD "")
-  set(COREFS_POST_DEPS "")
-endif()
+# CoreFS system-image generation is intentionally disabled for now.
+set(COREFS_POST_CMD "")
+set(COREFS_POST_DEPS "")
 
 # Image layout:
 #
-#   * Single-partition (default)  — built by the fast C mkimage
+#   * Single-partition (default exFAT system image)  — built by the fast C mkimage
 #     tool.  Kernel + all sysroot files end up on one exFAT
-#     filesystem starting at sector 128.  Optional CoreFS post-
-#     processing (see above) appends a CoreFS partition at the end.
+#     filesystem starting at sector 128.
 #
-#   * Dual-partition (ANYOS_DUAL_PARTITION=ON)  — built by the
-#     Python tools/__mkimage.py.  Partition 1 (exFAT /boot, default
+#   * Dual-partition (opt-in)  — built by the C mkimage.  Partition 1
+#     (exFAT /boot, default
 #     32 MiB) contains Stage2's required files + /System/krnl64;
-#     Partition 2 (exFAT /) holds everything else — /System/bin,
-#     /Applications, /Users, /Libraries, …  The kernel mounts them
+#     Partition 2 (exFAT) holds
+#     everything else — /System/bin, /Applications, /Users, /Libraries.
+#     The kernel mounts them
 #     as / and /boot respectively (see kernel/src/boot/x86/storage.rs).
 if(ANYOS_DUAL_PARTITION)
   # Dual-partition path uses the same C mkimage, with --dual-partition
   # + --boot-partition-size-mib switching it to the two-partition
   # layout (see buildsystem/mkimage/src/mkimage.c:create_bios_image_dual).
-  #
-  # When ANYOS_SYSTEM_FS=corefs, mkimage skips the exFAT format on
-  # Partition 2, marks the MBR slot as 0xCF (CoreFS), and invokes
-  # mkfs-corefs-host as a subprocess after the image is on disk.  The
-  # legacy COREFS_POST_CMD (anyos_append_corefs.py, which appended a
-  # 3rd partition) is suppressed in this branch — Partition 2 *is* the
-  # CoreFS root.
   set(DUAL_ROOT_FS_ARGS "")
-  if(ANYOS_SYSTEM_FS STREQUAL "corefs")
-    set(DUAL_ROOT_FS_ARGS
-      --root-fs corefs
-      --mkfs-corefs-host ${MKFS_COREFS_HOST_EXECUTABLE})
-    # Suppress the legacy 3rd-partition appender — Partition 2 carries
-    # CoreFS now, an additional CoreFS region would be redundant.
-    set(COREFS_POST_CMD "")
-    set(COREFS_POST_DEPS ${MKFS_COREFS_HOST_EXECUTABLE})
-  endif()
 
   set(IMAGE_BUILD_CMD
     ${MKIMAGE_EXECUTABLE}
@@ -126,11 +76,7 @@ if(ANYOS_DUAL_PARTITION)
       ${DUAL_ROOT_FS_ARGS}
       ${MKIMAGE_RESET_FLAG})
   set(IMAGE_BUILD_DEP ${MKIMAGE_EXECUTABLE})
-  if(ANYOS_SYSTEM_FS STREQUAL "corefs")
-    set(IMAGE_COMMENT "Creating dual-partition image (${ANYOS_IMAGE_SIZE_MIB} MiB, /boot ${ANYOS_BOOT_PARTITION_SIZE_MIB} MiB exFAT + / CoreFS)")
-  else()
-    set(IMAGE_COMMENT "Creating dual-partition disk image (${ANYOS_IMAGE_SIZE_MIB} MiB, /boot ${ANYOS_BOOT_PARTITION_SIZE_MIB} MiB + /)")
-  endif()
+  set(IMAGE_COMMENT "Creating dual-partition disk image (${ANYOS_IMAGE_SIZE_MIB} MiB, /boot ${ANYOS_BOOT_PARTITION_SIZE_MIB} MiB + / exFAT)")
 else()
   set(IMAGE_BUILD_CMD
     ${MKIMAGE_EXECUTABLE}
@@ -207,9 +153,9 @@ add_custom_command(
 
 add_custom_target(manifest DEPENDS ${SYSTEM_MANIFEST})
 
-add_custom_target(image ALL DEPENDS ${DISK_IMAGE} programs)
+add_custom_target(bios-image DEPENDS ${DISK_IMAGE} programs)
 
-add_custom_target(run
+add_custom_target(run-bios
   COMMAND ${QEMU_EXECUTABLE}
     ${QEMU_CPU_FLAGS}
     -drive format=raw,file=${DISK_IMAGE}
@@ -221,7 +167,7 @@ add_custom_target(run
     -no-reboot -no-shutdown
   DEPENDS ${DISK_IMAGE}
   USES_TERMINAL
-  COMMENT "Launching anyOS in QEMU"
+  COMMENT "Launching anyOS in QEMU with legacy BIOS"
 )
 
 add_custom_target(run-vmware
@@ -359,13 +305,36 @@ add_custom_target(debug
 # ============================================================
 set(UEFI_BOOTLOADER_EFI "${CMAKE_BINARY_DIR}/bootx64.efi")
 set(UEFI_DISK_IMAGE "${CMAKE_BINARY_DIR}/anyos-uefi.img")
-set(OVMF_FW "/opt/homebrew/share/qemu/edk2-x86_64-code.fd")
+set(ANYOS_OVMF_CODE "" CACHE FILEPATH "Path to OVMF_CODE/edk2 x86_64 firmware for UEFI QEMU runs")
+find_program(RUSTUP_EXECUTABLE rustup
+  HINTS "$ENV{USERPROFILE}/.cargo/bin" "$ENV{HOME}/.cargo/bin")
+set(UEFI_CARGO_COMMAND ${CARGO_EXECUTABLE})
+if(RUSTUP_EXECUTABLE)
+  set(UEFI_CARGO_COMMAND ${RUSTUP_EXECUTABLE} run nightly cargo)
+endif()
+if(NOT ANYOS_OVMF_CODE)
+  find_file(ANYOS_OVMF_CODE
+    NAMES edk2-x86_64-code.fd OVMF_CODE.fd OVMF.fd
+    PATHS
+      /opt/homebrew/share/qemu
+      /usr/share/OVMF
+      /usr/share/edk2/x64
+      /usr/share/qemu
+      /usr/share/edk2-ovmf
+    NO_DEFAULT_PATH)
+endif()
+if(ANYOS_OVMF_CODE)
+  set(OVMF_FW "${ANYOS_OVMF_CODE}")
+else()
+  set(OVMF_FW "OVMF_CODE.fd")
+  message(STATUS "OVMF firmware not found at configure time; run-uefi needs ANYOS_OVMF_CODE")
+endif()
 
 # Build UEFI bootloader
 add_custom_command(
   OUTPUT ${UEFI_BOOTLOADER_EFI}
   COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
-    ${CARGO_EXECUTABLE} build --release --quiet
+    ${UEFI_CARGO_COMMAND} build --release --quiet
     --manifest-path ${CMAKE_SOURCE_DIR}/bootloader/uefi/Cargo.toml
     --target-dir ${CMAKE_BINARY_DIR}/uefi-boot
     --target x86_64-unknown-uefi
@@ -395,10 +364,13 @@ add_custom_command(
     ${KERNEL_ELF}
     ${RUST_USER_BINS}
     ${SYSTEM_BINS}
+    ${APP_BINS}
     ${DLL_BINS}
+    ${DRIVER_BINS}
     ${SYSROOT_DIR}/.stamp
     ${SELFHOST_SYSROOT_DEPS}
     ${C_TOOLCHAIN_DEPS}
+    ${PROVISION_DEPS}
     ${MKIMAGE_EXECUTABLE}
   COMMENT "Creating UEFI bootable disk image (${ANYOS_IMAGE_SIZE_MIB} MiB, GPT + ESP + exFAT)"
 )
@@ -441,6 +413,14 @@ add_custom_target(run-uefi-std
   USES_TERMINAL
   COMMENT "Launching anyOS in QEMU with UEFI (OVMF + AHCI + Bochs VGA)"
 )
+
+if(ANYOS_BOOT_MODE STREQUAL "uefi")
+  add_custom_target(image ALL DEPENDS uefi-image)
+  add_custom_target(run DEPENDS run-uefi)
+else()
+  add_custom_target(image ALL DEPENDS bios-image)
+  add_custom_target(run DEPENDS run-bios)
+endif()
 
 # ============================================================
 # ISO 9660 Live CD Support (El Torito BIOS boot)

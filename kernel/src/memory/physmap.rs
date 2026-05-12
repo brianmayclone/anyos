@@ -220,10 +220,9 @@ static PHYSMAP_PT_POOL_NEXT: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
 
 /// Hand out one zeroed page-table page from the bootstrap pool.
-/// Returns the page's physical address (== virtual since the pool
-/// lives in the kernel image, which is identity-mapped + higher-half
-/// aliased; we use the physical address derived from the linker
-/// layout). Returns 0 if the pool is exhausted.
+/// Returns the page's physical address. The pool lives in the kernel image, so
+/// the linker-derived physical address must be adjusted when UEFI relocated the
+/// kernel away from its 1 MiB LMA. Returns 0 if the pool is exhausted.
 fn alloc_pt_page_from_pool() -> u64 {
     let next = PHYSMAP_PT_POOL_NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     if next >= PHYSMAP_PT_POOL_PAGES {
@@ -232,13 +231,12 @@ fn alloc_pt_page_from_pool() -> u64 {
     // SAFETY: each pool entry is exclusively assigned via the atomic
     // counter, so no two callers ever see the same `next`.
     let page_va = unsafe { (&PHYSMAP_PT_POOL.pages[next] as *const _) as u64 };
-    // Convert kernel-virtual to physical: the kernel image is mapped
-    // both at its physical load address (low identity-map) and at
-    // KERNEL_VIRT_BASE in the higher half. The linker places statics
-    // in the higher half, so subtract KERNEL_VIRT_BASE to get phys.
+    // Convert kernel-virtual to physical. The linker places statics in the
+    // higher half; subtracting KERNEL_VIRT_BASE gives the link-time physical
+    // address, then kernel_phys_offset() accounts for UEFI relocation.
     const KERNEL_VIRT_BASE: u64 = 0xFFFF_FFFF_8000_0000;
     let page_phys = if page_va >= KERNEL_VIRT_BASE {
-        page_va - KERNEL_VIRT_BASE
+        crate::memory::virtual_mem::kernel_phys_offset() + (page_va - KERNEL_VIRT_BASE)
     } else {
         page_va
     };

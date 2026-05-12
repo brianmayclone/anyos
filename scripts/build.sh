@@ -27,9 +27,8 @@ NO_CROSS=0
 VER_MODE="patch"
 ANYOS_ARCH="x86_64"
 IMAGE_SIZE_MIB="4096"
-# Empty unless --system-fs / --system-fs-size is explicitly given.
-# Forwarded to CMake as -DANYOS_SYSTEM_FS / -DANYOS_SYSTEM_FS_SIZE_MIB.
-SYSTEM_FS=""
+# UEFI is the default boot path, but exFAT remains the system filesystem for now.
+SYSTEM_FS="exfat"
 SYSTEM_FS_SIZE_MIB=""
 CMAKE_PASSTHROUGH=()
 
@@ -125,11 +124,11 @@ while [ $i -lt ${#argv[@]} ]; do
             i=$((i + 1))
             next="${argv[$i]:-}"
             case "$next" in
-                exfat|corefs)
+                exfat)
                     SYSTEM_FS="$next"
                     ;;
                 *)
-                    echo "Error: --system-fs expects 'exfat' or 'corefs', got '$next'"
+                    echo "Error: --system-fs currently supports only 'exfat', got '$next'"
                     exit 1
                     ;;
             esac
@@ -137,11 +136,11 @@ while [ $i -lt ${#argv[@]} ]; do
         --system-fs=*)
             val="${arg#--system-fs=}"
             case "$val" in
-                exfat|corefs)
+                exfat)
                     SYSTEM_FS="$val"
                     ;;
                 *)
-                    echo "Error: --system-fs expects 'exfat' or 'corefs', got '$val'"
+                    echo "Error: --system-fs currently supports only 'exfat', got '$val'"
                     exit 1
                     ;;
             esac
@@ -168,18 +167,18 @@ while [ $i -lt ${#argv[@]} ]; do
         -D*)
             # Transparent CMake pass-through — allow any -D<VAR>=<VAL>
             # flag to be forwarded to cmake without build.sh having to
-            # know about it.  Example: ./build.sh -DANYOS_SYSTEM_FS=corefs
+            # know about it.  Example: ./build.sh -DANYOS_IMAGE_SIZE_MIB=8192
             CMAKE_PASSTHROUGH+=("$arg")
             ;;
         *)
             echo "Usage: $0 [--clean] [--reset] [--uefi] [--iso] [--all] [--debug] [--debug-surf] [--no-cross]"
             echo "       [--iminor] [--imajor] [--nover] [--arm64] [--image-size SIZE]"
-            echo "       [--system-fs {exfat|corefs}] [--system-fs-size <MiB>]"
+            echo "       [--system-fs exfat]"
             echo "       [-D<VAR>=<VAL> ...]"
             echo ""
             echo "  --clean       Force full rebuild of all components"
             echo "  --reset       Force fresh disk image (destroy runtime data)"
-            echo "  --uefi        Build UEFI disk image (in addition to BIOS)"
+            echo "  --uefi        Build UEFI disk image (default; accepted for compatibility)"
             echo "  --iso         Build bootable ISO 9660 image (El Torito, CD-ROM)"
             echo "  --all         Build BIOS, UEFI, and ISO images"
             echo "  --debug       Enable verbose kernel debug prints"
@@ -190,9 +189,7 @@ while [ $i -lt ${#argv[@]} ]; do
             echo "  --nover       Skip version increment"
             echo "  --arm64       Build for AArch64 (ARM64) instead of x86_64"
             echo "  --image-size  Disk image size: bare/M/MiB = MiB, G/GiB = GiB (default 4096M)"
-            echo "  --system-fs   System filesystem: exfat (default) or corefs"
-            echo "                (adds CoreFS partition at the end of the disk image)"
-            echo "  --system-fs-size  Size of the CoreFS partition in MiB (default 128)"
+            echo "  --system-fs   System filesystem: exfat (default; CoreFS rollout disabled)"
             echo "  -D<VAR>=<VAL>    Pass additional CMake variables through"
             exit 1
             ;;
@@ -259,14 +256,12 @@ fi
 echo "Version: ${ANYOS_VERSION}"
 
 # CMake flags
-CMAKE_EXTRA_FLAGS="-DANYOS_DEBUG_VERBOSE=$([ "$DEBUG_VERBOSE" -eq 1 ] && echo ON || echo OFF) -DANYOS_DEBUG_SURF=$([ "$DEBUG_SURF" -eq 1 ] && echo ON || echo OFF) -DANYOS_RESET=$([ "$RESET" -eq 1 ] && echo ON || echo OFF) -DANYOS_VERSION=${ANYOS_VERSION} -DANYOS_ARCH=${ANYOS_ARCH} -DANYOS_IMAGE_SIZE_MIB=${IMAGE_SIZE_MIB}"
+CMAKE_EXTRA_FLAGS="-DANYOS_DEBUG_VERBOSE=$([ "$DEBUG_VERBOSE" -eq 1 ] && echo ON || echo OFF) -DANYOS_DEBUG_SURF=$([ "$DEBUG_SURF" -eq 1 ] && echo ON || echo OFF) -DANYOS_RESET=$([ "$RESET" -eq 1 ] && echo ON || echo OFF) -DANYOS_VERSION=${ANYOS_VERSION} -DANYOS_ARCH=${ANYOS_ARCH} -DANYOS_IMAGE_SIZE_MIB=${IMAGE_SIZE_MIB} -DANYOS_BOOT_MODE=uefi"
 
-# System-filesystem switches — only appended when the user opted in, so
-# existing builds without the flag keep using whatever value is currently
-# in the CMake cache (typically the default "exfat").
-if [ -n "$SYSTEM_FS" ]; then
-    CMAKE_EXTRA_FLAGS="$CMAKE_EXTRA_FLAGS -DANYOS_SYSTEM_FS=${SYSTEM_FS}"
-fi
+# System filesystem.  Force exFAT back into CMake so existing CoreFS caches
+# do not keep using the withdrawn CoreFS-root rollout.
+CMAKE_EXTRA_FLAGS="$CMAKE_EXTRA_FLAGS -DANYOS_SYSTEM_FS=${SYSTEM_FS}"
+CMAKE_EXTRA_FLAGS="$CMAKE_EXTRA_FLAGS -DANYOS_DUAL_PARTITION=OFF"
 if [ -n "$SYSTEM_FS_SIZE_MIB" ]; then
     CMAKE_EXTRA_FLAGS="$CMAKE_EXTRA_FLAGS -DANYOS_SYSTEM_FS_SIZE_MIB=${SYSTEM_FS_SIZE_MIB}"
 fi
@@ -323,30 +318,30 @@ if [ "$ANYOS_ARCH" = "arm64" ]; then
 else
     # ── x86_64 build ────────────────────────────────────────────────────
 
-    # Build BIOS image (default target)
-    echo "Building anyOS (BIOS)..."
-    ninja -C "$BUILD_DIR"
+    # Build default x86_64 image (UEFI).
+    echo "Building anyOS (UEFI)..."
+    ninja -C "$BUILD_DIR" image
     BUILD_RC=$?
 
     if [ $BUILD_RC -ne 0 ]; then
-        echo "BIOS build failed!"
+        echo "UEFI build failed!"
         exit $BUILD_RC
     fi
 
-    echo "BIOS build successful."
+    echo "UEFI build successful."
 
-    # Build UEFI image if requested
-    if [ "$BUILD_UEFI" -eq 1 ] || [ "$BUILD_ALL" -eq 1 ]; then
-        echo "Building anyOS (UEFI)..."
-        ninja -C "$BUILD_DIR" uefi-image
-        UEFI_RC=$?
+    # Build legacy BIOS image only as part of --all.
+    if [ "$BUILD_ALL" -eq 1 ]; then
+        echo "Building anyOS (legacy BIOS)..."
+        ninja -C "$BUILD_DIR" bios-image
+        BIOS_RC=$?
 
-        if [ $UEFI_RC -ne 0 ]; then
-            echo "UEFI build failed!"
-            exit $UEFI_RC
+        if [ $BIOS_RC -ne 0 ]; then
+            echo "Legacy BIOS build failed!"
+            exit $BIOS_RC
         fi
 
-        echo "UEFI build successful."
+        echo "Legacy BIOS build successful."
     fi
 
     # Build ISO image if requested

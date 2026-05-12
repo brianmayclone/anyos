@@ -56,18 +56,13 @@
 #                   Created with SIZE (e.g. 4G, 512M) if the file does not yet
 #                   exist. Default SIZE is 2G. Repeatable to attach multiple
 #                   disks. Example: --disk data.img:4G --disk /tmp/extra.img
-#   --uefi        Boot via UEFI (OVMF firmware) instead of BIOS
-#   --system-fs {exfat|corefs}
+#   --uefi        Boot via UEFI (OVMF firmware; default)
+#   --bios        Boot via the legacy BIOS image instead
+#   --system-fs exfat
 #                   Choose the image layout for the system partition and
-#                   (re)configure CMake accordingly.  `exfat` (default) is the
-#                   classic single-partition layout; `corefs` appends a CoreFS
-#                   partition (MBR type 0xCF, default 128 MiB) at the end of
-#                   the disk image.  Equivalent to:
-#                   `cmake .. -DANYOS_SYSTEM_FS=corefs`
-#   --system-fs-size N
-#                   Override the size (in MiB) of the CoreFS system partition.
-#                   Only meaningful together with `--system-fs corefs`.
-#                   Equivalent to: `cmake .. -DANYOS_SYSTEM_FS_SIZE_MIB=N`
+#                   (re)configure CMake accordingly.  `exfat` is the default
+#                   and only supported system filesystem for now. Equivalent to:
+#                   `cmake .. -DANYOS_SYSTEM_FS=exfat`
 #
 # ── CPU / Acceleration ────────────────────────────────────────────────────────
 #   --kvm         Enable hardware virtualization (KVM on Linux, HVF on macOS).
@@ -124,7 +119,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-UEFI_MODE=false
+UEFI_MODE=true
 CDROM_MODE=false
 VGA="std"
 VGA_LABEL="Bochs VGA (standard)"
@@ -297,11 +292,11 @@ for arg in "$@"; do
     if [ "$EXPECT_SYSTEM_FS" = true ]; then
         EXPECT_SYSTEM_FS=false
         case "$arg" in
-            exfat|corefs)
+            exfat)
                 SYSTEM_FS_OPT="$arg"
                 ;;
             *)
-                echo "Error: --system-fs expects 'exfat' or 'corefs', got '$arg'"
+                echo "Error: --system-fs currently supports only 'exfat', got '$arg'"
                 exit 1
                 ;;
         esac
@@ -405,6 +400,9 @@ for arg in "$@"; do
         --uefi)
             UEFI_MODE=true
             ;;
+        --bios)
+            UEFI_MODE=false
+            ;;
         --kvm)
             if [ "$(uname -s)" = "Darwin" ]; then
                 # macOS: use Hypervisor.framework (HVF)
@@ -476,7 +474,7 @@ for arg in "$@"; do
             PERSIST_POWER=true
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--displays N] [--ide] [--cdrom] [--tempdisk] [--disk PATH[:SIZE] ...] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--spice | --spice-app | --clipboard] [--arm64] [--headless] [--snapshot] [--persist-power]"
+            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--displays N] [--ide] [--cdrom] [--tempdisk] [--disk PATH[:SIZE] ...] [--audio] [--usb | --tablet] [--uefi | --bios] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--spice | --spice-app | --clipboard] [--arm64] [--headless] [--snapshot] [--persist-power]"
             exit 1
             ;;
     esac
@@ -514,7 +512,7 @@ if [ "$EXPECT_DISK" = true ]; then
 fi
 
 if [ "$EXPECT_SYSTEM_FS" = true ]; then
-    echo "Error: --system-fs requires an argument (exfat | corefs)"
+    echo "Error: --system-fs requires an argument (exfat)"
     exit 1
 fi
 if [ "$EXPECT_SYSTEM_FS_SIZE" = true ]; then
@@ -536,7 +534,10 @@ if [ -n "$SYSTEM_FS_OPT" ] || [ -n "$SYSTEM_FS_SIZE_OPT" ]; then
         exit 1
     fi
     CMAKE_DEFS=()
-    [ -n "$SYSTEM_FS_OPT" ] && CMAKE_DEFS+=("-DANYOS_SYSTEM_FS=${SYSTEM_FS_OPT}")
+    if [ -n "$SYSTEM_FS_OPT" ]; then
+        CMAKE_DEFS+=("-DANYOS_SYSTEM_FS=${SYSTEM_FS_OPT}")
+        CMAKE_DEFS+=("-DANYOS_DUAL_PARTITION=OFF")
+    fi
     [ -n "$SYSTEM_FS_SIZE_OPT" ] && CMAKE_DEFS+=("-DANYOS_SYSTEM_FS_SIZE_MIB=${SYSTEM_FS_SIZE_OPT}")
     echo ">>> reconfiguring build dir with ${CMAKE_DEFS[*]}"
     (cd "$RECONFIG_BUILD_DIR" && cmake "${CMAKE_DEFS[@]}" .)

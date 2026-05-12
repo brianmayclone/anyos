@@ -12,7 +12,7 @@ use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::physical;
 use crate::memory::FRAME_SIZE;
 use core::arch::asm;
-use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
 /// Spinlock for serializing demand page faults across CPUs.
 /// Prevents TOCTOU race where two CPUs fault on the same unmapped page simultaneously,
@@ -154,6 +154,9 @@ const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 /// Kernel higher-half virtual base (must match link.ld).
 const KERNEL_VIRT_BASE: u64 = 0xFFFF_FFFF_8000_0000;
 
+/// Kernel link-time physical base (must match KERNEL_LMA in link.ld).
+const KERNEL_LINK_PHYS_BASE: u64 = 0x0010_0000;
+
 /// Recursive mapping index in PML4 (entry 510).
 /// PML4[510] points to the PML4 itself, providing access to all page tables.
 const RECURSIVE_INDEX: usize = 510;
@@ -247,6 +250,13 @@ pub fn debug_recursive_pt(vaddr: u64) -> u64 {
 // PML4 physical address (set during init, used for kernel_cr3)
 static mut PML4_PHYS: u64 = 0;
 
+/// Actual physical relocation offset for the kernel image.
+///
+/// BIOS loads at the link-time 1 MiB LMA, so this is zero there. UEFI may have
+/// to load elsewhere because firmware owns 1 MiB; then every linker-derived
+/// kernel physical address needs this offset added.
+static KERNEL_PHYS_OFFSET: AtomicU64 = AtomicU64::new(0);
+
 /// Initialize virtual memory: transition from bootloader's 2MB page tables to
 /// fine-grained 4K pages with recursive mapping.
 ///
@@ -257,6 +267,11 @@ static mut PML4_PHYS: u64 = 0;
 /// 4. Map the framebuffer
 /// 5. Switch CR3 to the new PML4
 pub fn init(boot_info: &BootInfo) {
+    let kernel_phys_start =
+        unsafe { core::ptr::addr_of!((*boot_info).kernel_phys_start).read_unaligned() } as u64;
+    let kernel_phys_offset = kernel_phys_start.saturating_sub(KERNEL_LINK_PHYS_BASE);
+    KERNEL_PHYS_OFFSET.store(kernel_phys_offset, Ordering::Release);
+
     // Allocate new PML4
     let pml4_phys = physical::alloc_frame().expect("Failed to allocate PML4");
     // We're running with the bootloader's page tables, so boot-time page-table
@@ -303,7 +318,9 @@ pub fn init(boot_info: &BootInfo) {
         }
     }
 
-    // Map higher-half kernel: PML4[511] → same physical memory as identity map
+    // Map higher-half kernel. Link-time physical addresses start at 1 MiB,
+    // but UEFI can relocate the flat kernel if that range is reserved.
+    // Translate each linker physical page by the actual load offset.
     // Kernel is at virtual 0xFFFFFFFF80000000 → PML4[511], PDPT[510], PD[0..3]
     // (0xFFFFFFFF80000000: PML4 idx = 511, PDPT idx = 510, PD idx = 0)
     {
@@ -333,7 +350,8 @@ pub fn init(boot_info: &BootInfo) {
             let pt = pt_phys_alloc.as_u64() as *mut u64;
 
             for pte in 0..ENTRIES_PER_TABLE {
-                let phys = mb * 0x0020_0000 + (pte as u64) * FRAME_SIZE as u64;
+                let link_phys = mb * 0x0020_0000 + (pte as u64) * FRAME_SIZE as u64;
+                let phys = kernel_phys_offset + link_phys;
                 unsafe {
                     pt.add(pte)
                         .write_volatile(phys | PAGE_PRESENT | PAGE_WRITABLE);
@@ -901,6 +919,11 @@ pub fn kernel_pml4_phys() -> u64 {
     unsafe { PML4_PHYS }
 }
 
+#[cfg(target_arch = "x86_64")]
+pub fn kernel_phys_offset() -> u64 {
+    KERNEL_PHYS_OFFSET.load(Ordering::Acquire)
+}
+
 /// Get the current page table root physical address (CR3).
 pub fn current_cr3() -> u64 {
     let cr3: u64;
@@ -1329,7 +1352,9 @@ pub fn unmap_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr) {
 /// Allocates physical frames internally. Uses chunked CR3 switches (64 pages
 /// per chunk) to avoid long interrupt-disabled windows while still being much
 /// faster than per-page CR3 switches.
-/// Optionally zeroes each page after mapping.
+/// Optionally zeroes each frame through a kernel alias before exposing it at the
+/// target user address. Writing through the user VA would fault with SMAP
+/// enabled and is also fragile while CR3 is temporarily switched.
 ///
 /// Returns the number of pages mapped on success.
 pub fn map_pages_range_in_pd(
@@ -1362,13 +1387,15 @@ pub fn map_pages_range_in_pd(
                 let virt = VirtAddr::new(start_virt.as_u64() + j * FRAME_SIZE as u64);
                 match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
                     Some(phys) => {
-                        if !map_page(virt, phys, flags) {
+                        if zero && !zero_frame(phys) {
                             physical::free_frame(phys);
                             err = true;
                             break;
                         }
-                        if zero {
-                            core::ptr::write_bytes(virt.as_u64() as *mut u8, 0, FRAME_SIZE);
+                        if !map_page(virt, phys, flags) {
+                            physical::free_frame(phys);
+                            err = true;
+                            break;
                         }
                         mapped += 1;
                     }

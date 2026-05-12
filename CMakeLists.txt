@@ -35,31 +35,35 @@ if(NOT ANYOS_IMAGE_SIZE_MIB MATCHES "^[1-9][0-9]*$")
 endif()
 message(STATUS "Disk image size: ${ANYOS_IMAGE_SIZE_MIB} MiB")
 
-# System-filesystem selection.  `exfat` (default) keeps the classic
-# single-partition layout — everything lives on the exFAT boot filesystem.
-# `corefs` appends a second partition (MBR type 0xCF) at the end of the
-# disk image, formatted as CoreFS, and leaves the boot exFAT untouched.
-# Size of the appended partition is controlled by ANYOS_SYSTEM_FS_SIZE_MIB.
-set(ANYOS_SYSTEM_FS "exfat" CACHE STRING "System filesystem: exfat | corefs")
-set_property(CACHE ANYOS_SYSTEM_FS PROPERTY STRINGS exfat corefs)
+set(ANYOS_BOOT_MODE "uefi" CACHE STRING "Default x86_64 boot mode: uefi | bios")
+set_property(CACHE ANYOS_BOOT_MODE PROPERTY STRINGS uefi bios)
+if(NOT ANYOS_BOOT_MODE MATCHES "^(uefi|bios)$")
+  message(FATAL_ERROR
+    "ANYOS_BOOT_MODE must be 'uefi' or 'bios', got '${ANYOS_BOOT_MODE}'")
+endif()
+message(STATUS "Default boot mode: ${ANYOS_BOOT_MODE}")
+
+# System-filesystem selection. `exfat` is the system filesystem for now.
+# CoreFS remains buildable as an explicit experimental option, but it is not
+# used for the default system/root partition.
+set(ANYOS_SYSTEM_FS "exfat" CACHE STRING "System filesystem: exfat")
+set_property(CACHE ANYOS_SYSTEM_FS PROPERTY STRINGS exfat)
 set(ANYOS_SYSTEM_FS_SIZE_MIB "128" CACHE STRING
     "Size of the CoreFS system partition in MiB (only used when ANYOS_SYSTEM_FS=corefs)")
-if(NOT ANYOS_SYSTEM_FS MATCHES "^(exfat|corefs)$")
-  message(FATAL_ERROR
-    "ANYOS_SYSTEM_FS must be 'exfat' or 'corefs', got '${ANYOS_SYSTEM_FS}'")
-endif()
 if(ANYOS_SYSTEM_FS STREQUAL "corefs")
-  message(STATUS "System filesystem: corefs (+${ANYOS_SYSTEM_FS_SIZE_MIB} MiB CoreFS partition)")
-else()
-  message(STATUS "System filesystem: exfat (single-partition)")
+  message(FATAL_ERROR
+    "CoreFS as system filesystem is temporarily disabled; use ANYOS_SYSTEM_FS=exfat")
 endif()
+if(NOT ANYOS_SYSTEM_FS STREQUAL "exfat")
+  message(FATAL_ERROR
+    "ANYOS_SYSTEM_FS must be 'exfat', got '${ANYOS_SYSTEM_FS}'")
+endif()
+message(STATUS "System filesystem: exfat")
 
 # Dual-partition image layout (Phase 5):
 #   Partition 1 (exFAT /boot, small)     — kernel + boot assets
-#   Partition 2 (exFAT /, large)         — /System, /Applications, /Users, …
-# This is produced by the Python tools/__mkimage.py (not the C mkimage,
-# which only knows single-partition).  When OFF (default), the C
-# builder is used exactly as before — full backwards compatibility.
+#   Partition 2 (optional)               — /System, /Applications, /Users, ...
+# When OFF, the C builder keeps the legacy single-partition exFAT layout.
 option(ANYOS_DUAL_PARTITION "Create a dual-partition disk image (/boot + /)" OFF)
 set(ANYOS_BOOT_PARTITION_SIZE_MIB "32" CACHE STRING
     "Size of the /boot partition in MiB (only used when ANYOS_DUAL_PARTITION=ON)")

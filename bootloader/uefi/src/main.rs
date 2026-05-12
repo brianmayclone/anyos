@@ -1,6 +1,6 @@
 //! anyOS UEFI Bootloader
 //!
-//! Loads `/System/kernel.bin` from the exFAT data partition, sets up page tables,
+//! Loads `/System/kernel.bin` from the EFI System Partition, sets up page tables,
 //! fills the BootInfo struct (identical to the BIOS Stage 2 format), and jumps
 //! to the kernel entry point.
 //!
@@ -8,7 +8,7 @@
 //!   1. UEFI firmware loads this EFI application from ESP
 //!   2. Query/set GOP framebuffer (1024x768x32)
 //!   3. Find data partition, read kernel.bin (fallback: kernel.bak)
-//!   4. Copy flat binary to 0x100000
+//!   4. Copy flat binary to a low physical address compatible with the kernel LMA
 //!   5. Convert UEFI memory map -> E820 format
 //!   6. Fill BootInfo at 0x9000
 //!   7. Build 4-level page tables (identity + higher-half)
@@ -19,24 +19,33 @@
 
 extern crate alloc;
 
-use core::arch::asm;
-use uefi::prelude::*;
+use core::{arch::asm, fmt::Write, time::Duration};
 use uefi::boot::{self, AllocateType, MemoryType};
 use uefi::mem::memory_map::MemoryMap;
+use uefi::prelude::*;
 use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
-use uefi::proto::media::file::{File, FileAttribute, FileMode, FileInfo};
+use uefi::proto::console::text::{Color, Key, ScanCode};
+use uefi::proto::media::file::{File, FileAttribute, FileInfo, FileMode};
 use uefi::proto::media::fs::SimpleFileSystem;
+use uefi::system;
 
 // -- Constants (must match kernel expectations) --------------------------------
 
-/// Physical address where kernel flat binary is loaded (1 MiB mark).
+/// Preferred physical address where the kernel flat binary is loaded.
 const KERNEL_LOAD_ADDR: u64 = 0x0010_0000;
+
+/// Link-time physical base used by kernel/link.ld.
+const KERNEL_LINK_PHYS_BASE: u64 = 0x0010_0000;
 
 /// Physical address for the BootInfo struct.
 const BOOT_INFO_ADDR: u64 = 0x9000;
 
 /// Physical address for the E820 memory map entries.
-const MEMORY_MAP_ADDR: u64 = 0x1000;
+///
+/// Keep this away from page-table pages (0x3000..0xAFFF), the trampoline
+/// (0x8000), and BootInfo (0x9000). The first 2 MiB are reserved by the kernel
+/// physical allocator, so this remains stable after handoff.
+const MEMORY_MAP_ADDR: u64 = 0x1_0000;
 
 /// Maximum number of E820 entries we can store (fits in 0x1000..0x9000 = 32 KiB).
 const MAX_E820_ENTRIES: usize = 1024;
@@ -50,6 +59,7 @@ const PDPT_LOW_ADDR: u64 = 0x5000;
 const PD_LOW_ADDR: u64 = 0x6000;
 const PDPT_HIGH_ADDR: u64 = 0x7000;
 const PD_FB_ADDR: u64 = 0x3000;
+const PD_HIGH_ADDR: u64 = 0xA000;
 
 /// Address for the trampoline code (between page tables and BootInfo).
 const TRAMPOLINE_ADDR: u64 = 0x8000;
@@ -61,19 +71,36 @@ const PT_PS: u64 = 0x80; // 2 MiB page
 const PT_BASE_FLAGS: u64 = PT_PRESENT | PT_RW;
 const PT_PAGE_FLAGS: u64 = PT_PRESENT | PT_RW | PT_PS;
 
+/// Amount of low physical memory identity-mapped for early execution.
+const LOW_IDENTITY_MAP_SIZE: u64 = 128 * 1024 * 1024;
+
+/// Size of the kernel higher-half physical window.
+const KERNEL_HIGH_MAP_SIZE: u64 = 128 * 1024 * 1024;
+
+/// Candidate load addresses. They are all congruent to 1 MiB modulo 2 MiB so
+/// the higher-half 2 MiB page mapping can preserve the kernel's 1 MiB LMA.
+const KERNEL_LOAD_CANDIDATES: [u64; 4] = [KERNEL_LOAD_ADDR, 0x0110_0000, 0x0210_0000, 0x0410_0000];
+
 /// Preferred video mode.
 const PREFERRED_WIDTH: usize = 1024;
 const PREFERRED_HEIGHT: usize = 768;
+
+/// Splash timeout before booting the default entry.
+const BOOT_TIMEOUT_SECONDS: u64 = 5;
 
 /// Kernel file paths (looked up on all volumes — ESP and data partition).
 const KERNEL_PATH: &str = "\\System\\kernel.bin";
 const KERNEL_FALLBACK: &str = "\\System\\kernel.bak";
 
-/// Maximum kernel size: 8 MiB.
-const MAX_KERNEL_SIZE: usize = 8 * 1024 * 1024;
+/// Maximum kernel size: keep this comfortably above release kernels with
+/// embedded assets and debug metadata stripped by mkimage's ELF-to-flat pass.
+const MAX_KERNEL_SIZE: usize = 64 * 1024 * 1024;
 
 /// Serial port for debug output.
 const COM1: u16 = 0x3F8;
+
+/// Embedded boot logo: u32 width, u32 height, then RGB888 pixels.
+const BOOT_LOGO: &[u8] = include_bytes!("../../../kernel/src/graphics/boot_logo.bin");
 
 // -- E820 entry (matches kernel/src/boot_info.rs) -----------------------------
 
@@ -112,6 +139,47 @@ struct BootInfo {
     edid_data: [u8; 128],
     edid_valid: u8,
     _padding2: [u8; 3],
+}
+
+struct KernelImage {
+    phys_start: u64,
+    size: usize,
+}
+
+#[derive(Copy, Clone)]
+enum FramebufferFormat {
+    Rgb,
+    Bgr,
+}
+
+struct BootEntry {
+    title: &'static str,
+    params: &'static [u8],
+}
+
+const BOOT_ENTRIES: [BootEntry; 4] = [
+    BootEntry {
+        title: "anyOS",
+        params: b"",
+    },
+    BootEntry {
+        title: "anyOS (Verbose)",
+        params: b"verbose",
+    },
+    BootEntry {
+        title: "anyOS (Textmode)",
+        params: b"nogui",
+    },
+    BootEntry {
+        title: "anyOS (Verbose + 1920x1080)",
+        params: b"verbose res=1920x1080",
+    },
+];
+
+enum BootDecision {
+    Default,
+    Menu,
+    Entry(usize),
 }
 
 // -- Serial debug output ------------------------------------------------------
@@ -155,7 +223,11 @@ fn serial_print_hex(val: u64) {
         let nibble = ((val >> (i * 4)) & 0xF) as u8;
         if nibble != 0 || started || i == 0 {
             started = true;
-            let c = if nibble < 10 { b'0' + nibble } else { b'A' + nibble - 10 };
+            let c = if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'A' + nibble - 10
+            };
             serial_write_byte(c);
         }
     }
@@ -183,7 +255,9 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     }
     serial_print("\n");
     loop {
-        unsafe { asm!("cli; hlt"); }
+        unsafe {
+            asm!("cli; hlt");
+        }
     }
 }
 
@@ -198,7 +272,7 @@ fn main() -> Status {
 
     // -- Step 1: Set up GOP framebuffer ---------------------------------------
     serial_print("[UEFI] Querying GOP...\n");
-    let (fb_addr, fb_width, fb_height, fb_pitch, fb_bpp) = setup_gop();
+    let (fb_addr, fb_width, fb_height, fb_pitch, fb_bpp, fb_format) = setup_gop();
     serial_print("[UEFI] Framebuffer: ");
     serial_print_hex(fb_addr as u64);
     serial_print(" ");
@@ -207,11 +281,25 @@ fn main() -> Status {
     serial_print_hex(fb_height as u64);
     serial_print("\n");
 
+    let selected_entry = run_boot_menu(fb_addr, fb_width, fb_height, fb_pitch, fb_format);
+    serial_print("[UEFI] Boot entry: ");
+    serial_print(BOOT_ENTRIES[selected_entry].title);
+    if !BOOT_ENTRIES[selected_entry].params.is_empty() {
+        serial_print(" params=\"");
+        if let Ok(params) = core::str::from_utf8(BOOT_ENTRIES[selected_entry].params) {
+            serial_print(params);
+        }
+        serial_print("\"");
+    }
+    serial_print("\n");
+
     // -- Step 2: Load kernel from data partition ------------------------------
     serial_print("[UEFI] Loading kernel...\n");
-    let kernel_size = load_kernel();
+    let kernel = load_kernel();
     serial_print("[UEFI] Kernel loaded, size=");
-    serial_print_hex(kernel_size as u64);
+    serial_print_hex(kernel.size as u64);
+    serial_print(" addr=");
+    serial_print_hex(kernel.phys_start);
     serial_print("\n");
 
     // -- Step 2b: Find ACPI RSDP (must be before ExitBootServices) ------------
@@ -237,10 +325,14 @@ fn main() -> Status {
     boot_info.boot_drive = 0;
     boot_info.boot_mode = 1; // UEFI
     boot_info._padding = 0;
-    boot_info.kernel_phys_start = KERNEL_LOAD_ADDR as u32;
-    boot_info.kernel_phys_end = KERNEL_LOAD_ADDR as u32 + kernel_size as u32;
+    boot_info.kernel_phys_start = kernel.phys_start as u32;
+    boot_info.kernel_phys_end = kernel.phys_start as u32 + kernel.size as u32;
     boot_info.rsdp_addr = rsdp_addr;
     boot_info.boot_params = [0u8; 64];
+    copy_boot_params(
+        &mut boot_info.boot_params,
+        BOOT_ENTRIES[selected_entry].params,
+    );
     boot_info.edid_data = [0u8; 128];
     boot_info.edid_valid = 0;
     boot_info._padding2 = [0u8; 3];
@@ -301,23 +393,22 @@ fn main() -> Status {
 
     // -- Step 6: Build page tables --------------------------------------------
     serial_print("[UEFI] Building page tables...\n");
-    build_page_tables(fb_addr);
+    build_page_tables(fb_addr, kernel.phys_start);
 
     // -- Step 7: Enable FPU/SSE, load CR3, jump to kernel ---------------------
     serial_print("[UEFI] Jumping to kernel...\n");
     unsafe {
-        jump_to_kernel();
+        jump_to_kernel(kernel.phys_start);
     }
 }
 
 // -- GOP setup ----------------------------------------------------------------
 
-fn setup_gop() -> (u32, u32, u32, u32, u8) {
-    let gop_handle = boot::get_handle_for_protocol::<GraphicsOutput>()
-        .expect("GOP not available");
+fn setup_gop() -> (u32, u32, u32, u32, u8, FramebufferFormat) {
+    let gop_handle = boot::get_handle_for_protocol::<GraphicsOutput>().expect("GOP not available");
 
-    let mut gop = boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle)
-        .expect("Failed to open GOP");
+    let mut gop =
+        boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle).expect("Failed to open GOP");
 
     // Try to find 1024x768x32 mode
     let mut best_mode = None;
@@ -347,15 +438,318 @@ fn setup_gop() -> (u32, u32, u32, u32, u8) {
     let stride = mode_info.stride();
     let fb_base = gop.frame_buffer().as_mut_ptr() as u64;
     let bpp = 32u8;
+    let format = match mode_info.pixel_format() {
+        PixelFormat::Rgb => FramebufferFormat::Rgb,
+        _ => FramebufferFormat::Bgr,
+    };
 
-    (fb_base as u32, w as u32, h as u32, stride as u32 * 4, bpp)
+    (
+        fb_base as u32,
+        w as u32,
+        h as u32,
+        stride as u32 * 4,
+        bpp,
+        format,
+    )
+}
+
+// -- Boot menu ----------------------------------------------------------------
+
+fn run_boot_menu(
+    fb_addr: u32,
+    fb_width: u32,
+    fb_height: u32,
+    fb_pitch: u32,
+    fb_format: FramebufferFormat,
+) -> usize {
+    draw_boot_background(fb_addr, fb_width, fb_height, fb_pitch, fb_format);
+    draw_splash_text(BOOT_TIMEOUT_SECONDS);
+    flush_keyboard();
+
+    match wait_for_splash_choice() {
+        BootDecision::Default => 0,
+        BootDecision::Entry(index) => index,
+        BootDecision::Menu => {
+            show_interactive_menu(fb_addr, fb_width, fb_height, fb_pitch, fb_format)
+        }
+    }
+}
+
+fn wait_for_splash_choice() -> BootDecision {
+    for remaining in (1..=BOOT_TIMEOUT_SECONDS).rev() {
+        draw_splash_text(remaining);
+        for _ in 0..10 {
+            if let Some(decision) = poll_splash_key() {
+                return decision;
+            }
+            boot::stall(Duration::from_millis(100));
+        }
+    }
+
+    BootDecision::Default
+}
+
+fn poll_splash_key() -> Option<BootDecision> {
+    system::with_stdin(|stdin| match stdin.read_key().ok().flatten() {
+        Some(Key::Special(ScanCode::ESCAPE)) => Some(BootDecision::Menu),
+        Some(Key::Printable(ch)) => match char::from(ch) {
+            '\r' | '\n' => Some(BootDecision::Default),
+            'v' | 'V' => Some(BootDecision::Entry(1)),
+            'n' | 'N' => Some(BootDecision::Entry(2)),
+            '1' => Some(BootDecision::Entry(0)),
+            '2' => Some(BootDecision::Entry(1)),
+            '3' => Some(BootDecision::Entry(2)),
+            '4' => Some(BootDecision::Entry(3)),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+fn show_interactive_menu(
+    fb_addr: u32,
+    fb_width: u32,
+    fb_height: u32,
+    fb_pitch: u32,
+    fb_format: FramebufferFormat,
+) -> usize {
+    let mut selected = 0usize;
+    loop {
+        draw_boot_background(fb_addr, fb_width, fb_height, fb_pitch, fb_format);
+        draw_menu_text(selected);
+
+        match wait_for_menu_key() {
+            MenuKey::Up => {
+                selected = selected.saturating_sub(1);
+            }
+            MenuKey::Down => {
+                if selected + 1 < BOOT_ENTRIES.len() {
+                    selected += 1;
+                }
+            }
+            MenuKey::Select => return selected,
+            MenuKey::Entry(index) => return index,
+            MenuKey::Cancel => return 0,
+            MenuKey::Ignored => {}
+        }
+    }
+}
+
+enum MenuKey {
+    Up,
+    Down,
+    Select,
+    Cancel,
+    Entry(usize),
+    Ignored,
+}
+
+fn wait_for_menu_key() -> MenuKey {
+    loop {
+        if let Some(key) = system::with_stdin(|stdin| stdin.read_key().ok().flatten()) {
+            match key {
+                Key::Special(ScanCode::UP) => return MenuKey::Up,
+                Key::Special(ScanCode::DOWN) => return MenuKey::Down,
+                Key::Special(ScanCode::ESCAPE) => return MenuKey::Cancel,
+                Key::Printable(ch) => match char::from(ch) {
+                    '\r' | '\n' => return MenuKey::Select,
+                    '1' => return MenuKey::Entry(0),
+                    '2' => return MenuKey::Entry(1),
+                    '3' => return MenuKey::Entry(2),
+                    '4' => return MenuKey::Entry(3),
+                    _ => return MenuKey::Ignored,
+                },
+                _ => return MenuKey::Ignored,
+            }
+        }
+        boot::stall(Duration::from_millis(20));
+    }
+}
+
+fn flush_keyboard() {
+    loop {
+        let had_key = system::with_stdin(|stdin| stdin.read_key().ok().flatten().is_some());
+        if !had_key {
+            break;
+        }
+    }
+}
+
+fn draw_boot_background(
+    fb_addr: u32,
+    fb_width: u32,
+    fb_height: u32,
+    fb_pitch: u32,
+    fb_format: FramebufferFormat,
+) {
+    clear_framebuffer(fb_addr, fb_width, fb_height, fb_pitch);
+    draw_logo(fb_addr, fb_width, fb_height, fb_pitch, fb_format);
+}
+
+fn clear_framebuffer(fb_addr: u32, fb_width: u32, fb_height: u32, fb_pitch: u32) {
+    for y in 0..fb_height as usize {
+        let row = (fb_addr as usize + y * fb_pitch as usize) as *mut u32;
+        for x in 0..fb_width as usize {
+            unsafe {
+                row.add(x).write_volatile(0);
+            }
+        }
+    }
+}
+
+fn draw_logo(
+    fb_addr: u32,
+    fb_width: u32,
+    fb_height: u32,
+    fb_pitch: u32,
+    fb_format: FramebufferFormat,
+) {
+    if BOOT_LOGO.len() < 8 {
+        return;
+    }
+
+    let logo_w = u32::from_le_bytes([BOOT_LOGO[0], BOOT_LOGO[1], BOOT_LOGO[2], BOOT_LOGO[3]]);
+    let logo_h = u32::from_le_bytes([BOOT_LOGO[4], BOOT_LOGO[5], BOOT_LOGO[6], BOOT_LOGO[7]]);
+    let pixel_bytes = logo_w as usize * logo_h as usize * 3;
+    if logo_w == 0 || logo_h == 0 || BOOT_LOGO.len() < 8 + pixel_bytes {
+        return;
+    }
+
+    let dst_x = fb_width.saturating_sub(logo_w) / 2;
+    let dst_y = (fb_height.saturating_sub(logo_h) / 2).saturating_sub(fb_height / 10);
+    let src = &BOOT_LOGO[8..8 + pixel_bytes];
+    let draw_w = logo_w.min(fb_width.saturating_sub(dst_x));
+    let draw_h = logo_h.min(fb_height.saturating_sub(dst_y));
+
+    for y in 0..draw_h as usize {
+        let dst_row = (fb_addr as usize + (dst_y as usize + y) * fb_pitch as usize) as *mut u32;
+        for x in 0..draw_w as usize {
+            let si = (y * logo_w as usize + x) * 3;
+            let r = src[si];
+            let g = src[si + 1];
+            let b = src[si + 2];
+            if r == 0 && g == 0 && b == 0 {
+                continue;
+            }
+            let pixel = pack_pixel(fb_format, r, g, b);
+            unsafe {
+                dst_row.add(dst_x as usize + x).write_volatile(pixel);
+            }
+        }
+    }
+}
+
+fn pack_pixel(format: FramebufferFormat, r: u8, g: u8, b: u8) -> u32 {
+    match format {
+        // UEFI RGB means byte order R,G,B,Reserved; as little-endian u32 that is
+        // 0x00BBGGRR. BGR is the reverse and matches the old VESA path.
+        FramebufferFormat::Rgb => ((b as u32) << 16) | ((g as u32) << 8) | r as u32,
+        FramebufferFormat::Bgr => ((r as u32) << 16) | ((g as u32) << 8) | b as u32,
+    }
+}
+
+fn draw_splash_text(remaining: u64) {
+    let rows = text_dimensions().1;
+    let base = rows.saturating_sub(6);
+
+    print_centered(
+        base,
+        Color::LightGray,
+        Color::Black,
+        "anyOS UEFI Bootloader",
+    );
+    print_centered(
+        base + 2,
+        Color::DarkGray,
+        Color::Black,
+        "Esc Boot Menu   V Verbose   N Textmode   Enter Boot",
+    );
+    print_countdown(base + 3, remaining);
+}
+
+fn draw_menu_text(selected: usize) {
+    let (cols, rows) = text_dimensions();
+    let start = rows / 2;
+
+    print_centered(
+        start.saturating_sub(2),
+        Color::White,
+        Color::Black,
+        "anyOS Boot Menu",
+    );
+    for (index, entry) in BOOT_ENTRIES.iter().enumerate() {
+        let row = start + index;
+        let (fg, bg) = if index == selected {
+            (Color::Black, Color::Cyan)
+        } else {
+            (Color::LightGray, Color::Black)
+        };
+
+        system::with_stdout(|stdout| {
+            let _ = stdout.set_color(fg, bg);
+            let _ = stdout.set_cursor_position(0, row);
+            for _ in 0..cols {
+                let _ = write!(stdout, " ");
+            }
+
+            let label_len = entry.title.len() + 3;
+            let col = cols.saturating_sub(label_len) / 2;
+            let _ = stdout.set_cursor_position(col, row);
+            let _ = write!(stdout, "{}. {}", index + 1, entry.title);
+        });
+    }
+
+    print_centered(
+        rows.saturating_sub(2),
+        Color::DarkGray,
+        Color::Black,
+        "Up/Down Select   Enter Boot   Esc Default",
+    );
+}
+
+fn print_countdown(row: usize, remaining: u64) {
+    system::with_stdout(|stdout| {
+        let _ = stdout.set_color(Color::DarkGray, Color::Black);
+        let _ = stdout.set_cursor_position(0, row);
+        let _ = write!(
+            stdout,
+            "                              Booting default in {}s                              ",
+            remaining
+        );
+    });
+}
+
+fn print_centered(row: usize, fg: Color, bg: Color, text: &str) {
+    let (cols, _) = text_dimensions();
+    let col = cols.saturating_sub(text.len()) / 2;
+    system::with_stdout(|stdout| {
+        let _ = stdout.set_color(fg, bg);
+        let _ = stdout.set_cursor_position(col, row);
+        let _ = write!(stdout, "{}", text);
+    });
+}
+
+fn text_dimensions() -> (usize, usize) {
+    system::with_stdout(|stdout| {
+        stdout
+            .current_mode()
+            .ok()
+            .flatten()
+            .map(|mode| (mode.columns(), mode.rows()))
+            .unwrap_or((80, 25))
+    })
+}
+
+fn copy_boot_params(dst: &mut [u8; 64], params: &[u8]) {
+    *dst = [0u8; 64];
+    let len = core::cmp::min(params.len(), dst.len() - 1);
+    dst[..len].copy_from_slice(&params[..len]);
 }
 
 // -- Kernel loading -----------------------------------------------------------
 
-fn load_kernel() -> usize {
-    let fs_handles = boot::find_handles::<SimpleFileSystem>()
-        .expect("No filesystem handles found");
+fn load_kernel() -> KernelImage {
+    let fs_handles = boot::find_handles::<SimpleFileSystem>().expect("No filesystem handles found");
 
     for handle in &fs_handles {
         let mut fs = match boot::open_protocol_exclusive::<SimpleFileSystem>(*handle) {
@@ -369,8 +763,8 @@ fn load_kernel() -> usize {
         };
 
         for path in &[KERNEL_PATH, KERNEL_FALLBACK] {
-            if let Some(size) = try_load_kernel_from(&mut root, path) {
-                return size;
+            if let Some(kernel) = try_load_kernel_from(&mut root, path) {
+                return kernel;
             }
         }
     }
@@ -381,7 +775,7 @@ fn load_kernel() -> usize {
 fn try_load_kernel_from(
     root: &mut uefi::proto::media::file::Directory,
     path: &str,
-) -> Option<usize> {
+) -> Option<KernelImage> {
     // Convert path to UCS-2
     let mut path_buf = [0u16; 64];
     for (i, b) in path.bytes().enumerate() {
@@ -417,18 +811,13 @@ fn try_load_kernel_from(
     serial_print_hex(file_size as u64);
     serial_print(" bytes)\n");
 
-    // Allocate pages at the kernel load address
-    let pages_needed = (file_size + 4095) / 4096;
-    boot::allocate_pages(
-        AllocateType::Address(KERNEL_LOAD_ADDR),
-        MemoryType::LOADER_DATA,
-        pages_needed,
-    )
-    .expect("Failed to allocate kernel memory at 0x100000");
+    let load_addr = allocate_kernel_region(file_size)?;
+    serial_print("[UEFI] Kernel load address: ");
+    serial_print_hex(load_addr);
+    serial_print("\n");
 
     // Read kernel into memory
-    let kernel_buf =
-        unsafe { core::slice::from_raw_parts_mut(KERNEL_LOAD_ADDR as *mut u8, file_size) };
+    let kernel_buf = unsafe { core::slice::from_raw_parts_mut(load_addr as *mut u8, file_size) };
 
     let mut total_read = 0;
     while total_read < file_size {
@@ -445,17 +834,96 @@ fn try_load_kernel_from(
         serial_print("[UEFI] WARNING: short read!\n");
     }
 
-    Some(file_size)
+    Some(KernelImage {
+        phys_start: load_addr,
+        size: file_size,
+    })
+}
+
+fn allocate_kernel_region(file_size: usize) -> Option<u64> {
+    let pages_needed = (file_size + 4095) / 4096;
+
+    for &addr in &KERNEL_LOAD_CANDIDATES {
+        if !kernel_load_addr_is_valid(addr, file_size) {
+            continue;
+        }
+
+        if boot::allocate_pages(
+            AllocateType::Address(addr),
+            MemoryType::LOADER_DATA,
+            pages_needed,
+        )
+        .is_ok()
+        {
+            return Some(addr);
+        }
+    }
+
+    allocate_relocatable_kernel_region(file_size, pages_needed)
+}
+
+fn allocate_relocatable_kernel_region(file_size: usize, pages_needed: usize) -> Option<u64> {
+    let slack_pages = (0x20_0000 / 4096) + 1;
+    let raw_pages = pages_needed.checked_add(slack_pages)?;
+    let raw = boot::allocate_pages(
+        AllocateType::MaxAddress(LOW_IDENTITY_MAP_SIZE - 1),
+        MemoryType::LOADER_DATA,
+        raw_pages,
+    )
+    .ok()?;
+
+    let raw_start = raw.as_ptr() as u64;
+    let raw_end = raw_start + raw_pages as u64 * 4096;
+    let load_addr = align_kernel_load_addr(raw_start);
+    let load_end = load_addr.checked_add(file_size as u64)?;
+
+    if load_addr >= raw_start
+        && load_end <= raw_end
+        && kernel_load_addr_is_valid(load_addr, file_size)
+    {
+        return Some(load_addr);
+    }
+
+    None
+}
+
+fn kernel_load_addr_is_valid(addr: u64, file_size: usize) -> bool {
+    let end = match addr.checked_add(file_size as u64) {
+        Some(end) => end,
+        None => return false,
+    };
+
+    addr >= KERNEL_LINK_PHYS_BASE
+        && end <= LOW_IDENTITY_MAP_SIZE
+        && ((addr - KERNEL_LINK_PHYS_BASE) & 0x1F_FFFF) == 0
+}
+
+fn align_kernel_load_addr(addr: u64) -> u64 {
+    let base = addr & !0x1F_FFFF;
+    let candidate = base + KERNEL_LINK_PHYS_BASE;
+    if candidate >= addr {
+        candidate
+    } else {
+        candidate + 0x20_0000
+    }
 }
 
 // -- Page table construction --------------------------------------------------
 
-fn build_page_tables(fb_addr: u32) {
-    // Clear page table area (0x3000..0x8000 = 5 pages = 20 KiB)
-    unsafe {
-        let base = PD_FB_ADDR as *mut u8;
-        core::ptr::write_bytes(base, 0, 5 * 4096);
+fn build_page_tables(fb_addr: u32, kernel_phys_start: u64) {
+    let kernel_high_phys_base = kernel_phys_start - KERNEL_LINK_PHYS_BASE;
+    if (kernel_high_phys_base & 0x1F_FFFF) != 0 {
+        panic!("Kernel physical load address is not compatible with 2 MiB higher-half mapping");
     }
+
+    // Clear page table pages. Keep this explicit because the low boot layout is
+    // intentionally sparse around the trampoline and BootInfo pages.
+    zero_page(PD_FB_ADDR);
+    zero_page(PML4_ADDR);
+    zero_page(PDPT_LOW_ADDR);
+    zero_page(PD_LOW_ADDR);
+    zero_page(PDPT_HIGH_ADDR);
+    zero_page(PD_HIGH_ADDR);
 
     let write64 = |addr: u64, val: u64| unsafe {
         core::ptr::write_volatile(addr as *mut u64, val);
@@ -469,13 +937,24 @@ fn build_page_tables(fb_addr: u32) {
     // PDPT_LOW[0] -> PD_LOW (first 1 GiB)
     write64(PDPT_LOW_ADDR + 0 * 8, PD_LOW_ADDR | PT_BASE_FLAGS);
 
-    // PD_LOW: identity map first 16 MiB with 2 MiB pages
-    for i in 0u64..8 {
+    // PD_LOW: identity map first 128 MiB with 2 MiB pages. This matches the
+    // BIOS Stage 2 window and leaves room for the current kernel plus BSS/stack.
+    for i in 0u64..(LOW_IDENTITY_MAP_SIZE / 0x20_0000) {
         write64(PD_LOW_ADDR + i * 8, (i * 0x20_0000) | PT_PAGE_FLAGS);
     }
 
-    // PDPT_HIGH[510] -> PD_LOW (higher-half kernel reuses identity PD)
-    write64(PDPT_HIGH_ADDR + 510 * 8, PD_LOW_ADDR | PT_BASE_FLAGS);
+    // PDPT_HIGH[510] -> dedicated kernel high-half PD.
+    write64(PDPT_HIGH_ADDR + 510 * 8, PD_HIGH_ADDR | PT_BASE_FLAGS);
+
+    // Higher-half kernel mapping. The kernel is linked as if its physical LMA
+    // starts at 1 MiB, but UEFI may reserve that exact address. Map the linked
+    // virtual window onto the actual selected physical load region.
+    for i in 0u64..(KERNEL_HIGH_MAP_SIZE / 0x20_0000) {
+        write64(
+            PD_HIGH_ADDR + i * 8,
+            (kernel_high_phys_base + i * 0x20_0000) | PT_PAGE_FLAGS,
+        );
+    }
 
     // Framebuffer mapping: dynamically determine the correct PDPT entry.
     // BIOS VBE typically returns ~0xFD000000 (PDPT[3], 3-4 GiB range),
@@ -492,7 +971,11 @@ fn build_page_tables(fb_addr: u32) {
         let pd_index = ((fb_addr as u64) & 0x3FFF_FFFF) >> 21;
 
         // Use PD_FB for non-zero PDPT entries, PD_LOW for PDPT[0]
-        let target_pd = if pdpt_index == 0 { PD_LOW_ADDR } else { PD_FB_ADDR };
+        let target_pd = if pdpt_index == 0 {
+            PD_LOW_ADDR
+        } else {
+            PD_FB_ADDR
+        };
 
         // Map 8 × 2 MiB = 16 MiB of VRAM
         for i in 0u64..8 {
@@ -504,6 +987,12 @@ fn build_page_tables(fb_addr: u32) {
                 );
             }
         }
+    }
+}
+
+fn zero_page(addr: u64) {
+    unsafe {
+        core::ptr::write_bytes(addr as *mut u8, 0, 4096);
     }
 }
 
@@ -549,11 +1038,13 @@ fn find_rsdp() -> u32 {
 
 // -- Jump to kernel -----------------------------------------------------------
 
-unsafe fn jump_to_kernel() -> ! {
+unsafe fn jump_to_kernel(kernel_entry_phys: u64) -> ! {
+    asm!("cli", options(nomem, nostack, preserves_flags));
+
     // Build a small trampoline at TRAMPOLINE_ADDR (0x8000), which is within
-    // the identity-mapped first 16 MiB. We MUST switch CR3 from code that is
+    // the identity-mapped first 128 MiB. We MUST switch CR3 from code that is
     // mapped in BOTH the old (UEFI) and new (our) page tables. The UEFI
-    // bootloader's code is at a UEFI-allocated address (likely above 16 MiB)
+    // bootloader's code is at a UEFI-allocated address (likely above 128 MiB)
     // which is NOT in our identity map — switching CR3 here would triple-fault.
     //
     // Trampoline expects:
@@ -562,16 +1053,18 @@ unsafe fn jump_to_kernel() -> ! {
     //   RDX = boot_info address (passed to kernel in RDI)
     //   RCX = kernel entry address
     //
-    // Trampoline code (10 bytes):
+    // Trampoline code:
+    //   cli               ; FA           — firmware must not leak IF=1 to kernel
     //   mov cr3, rdi      ; 0F 22 DF     — switch to our page tables
     //   mov rsp, rsi      ; 48 89 F4     — set up kernel stack
     //   mov rdi, rdx      ; 48 89 D7     — RDI = boot_info for kernel
     //   jmp rcx           ; FF E1        — jump to kernel entry
-    let trampoline: [u8; 11] = [
-        0x0F, 0x22, 0xDF,       // mov cr3, rdi
-        0x48, 0x89, 0xF4,       // mov rsp, rsi
-        0x48, 0x89, 0xD7,       // mov rdi, rdx
-        0xFF, 0xE1,             // jmp rcx
+    let trampoline: [u8; 12] = [
+        0xFA, // cli
+        0x0F, 0x22, 0xDF, // mov cr3, rdi
+        0x48, 0x89, 0xF4, // mov rsp, rsi
+        0x48, 0x89, 0xD7, // mov rdi, rdx
+        0xFF, 0xE1, // jmp rcx
     ];
 
     core::ptr::copy_nonoverlapping(
@@ -610,7 +1103,7 @@ unsafe fn jump_to_kernel() -> ! {
         in("rdi") PML4_ADDR,
         in("rsi") 0x200000u64,
         in("rdx") BOOT_INFO_ADDR,
-        in("rcx") KERNEL_LOAD_ADDR,
+        in("rcx") kernel_entry_phys,
         trampoline = in(reg) TRAMPOLINE_ADDR,
         options(noreturn),
     );

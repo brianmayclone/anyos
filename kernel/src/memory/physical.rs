@@ -71,6 +71,7 @@ mod backend {
     use core::sync::atomic::{AtomicBool, Ordering};
 
     const KERNEL_VIRT_BASE: u64 = 0xFFFF_FFFF_8000_0000;
+    const KERNEL_LINK_PHYS_BASE: u64 = 0x0010_0000;
 
     extern "C" {
         static _kernel_end: u8;
@@ -244,15 +245,16 @@ mod backend {
             }
         }
 
-        // Reserve kernel image.
+        // Reserve kernel image, including linker-only sections such as BSS and
+        // the boot stack. BIOS loads at the link-time 1 MiB LMA; UEFI may load
+        // the same flat image elsewhere, so translate linker physical offsets
+        // by the actual BootInfo load address.
         let kernel_start_phys = boot_info.kernel_phys_start as u64;
+        let kernel_phys_offset = kernel_start_phys.saturating_sub(KERNEL_LINK_PHYS_BASE);
         let linker_kernel_end_phys =
             unsafe { (&_kernel_end as *const u8 as u64) - KERNEL_VIRT_BASE };
-        let kernel_end_phys = if linker_kernel_end_phys > boot_info.kernel_phys_end as u64 {
-            linker_kernel_end_phys
-        } else {
-            boot_info.kernel_phys_end as u64
-        };
+        let relocated_kernel_end_phys = kernel_phys_offset + linker_kernel_end_phys;
+        let kernel_end_phys = relocated_kernel_end_phys.max(boot_info.kernel_phys_end as u64);
         let ks = PhysAddr::new(kernel_start_phys)
             .frame_align_down()
             .frame_index();
