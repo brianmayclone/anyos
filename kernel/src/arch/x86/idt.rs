@@ -626,6 +626,14 @@ fn signal_name(signal: u32) -> &'static str {
     }
 }
 
+fn last_syscall_diag(cpu: usize) -> (u32, &'static str, &'static str) {
+    let num = crate::task::scheduler::get_last_syscall(cpu);
+    match crate::task::scheduler::get_last_syscall_abi(cpu) {
+        1 => (num, "linux", crate::syscall::linux::syscall_name(num)),
+        _ => (num, "anyos", crate::syscall::table::syscall_name(num)),
+    }
+}
+
 fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
     let tid = crate::task::scheduler::debug_current_tid();
     // TID 0 = idle context
@@ -687,12 +695,8 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         );
         {
             let crash_cpu = crate::arch::x86::smp::current_cpu_id() as usize;
-            let last_sc = crate::task::scheduler::get_last_syscall(crash_cpu);
-            crate::serial_println!(
-                "  LastSC: {} ({})",
-                last_sc,
-                crate::syscall::table::syscall_name(last_sc)
-            );
+            let (last_sc, last_abi, last_name) = last_syscall_diag(crash_cpu);
+            crate::serial_println!("  LastSC: {}:{} ({})", last_abi, last_sc, last_name);
             if last_sc == crate::syscall::SYS_GPU_COMMAND {
                 let (driver_data, driver_vtable) = crate::drivers::gpu::last_driver_ptrs();
                 let (virtio_ctrl, virtio_cursor) =
@@ -1334,12 +1338,8 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             // Last syscall diagnostics
             {
                 let crash_cpu = crate::arch::x86::smp::current_cpu_id() as usize;
-                let last_sc = crate::task::scheduler::get_last_syscall(crash_cpu);
-                crate::serial_println!(
-                    "  LastSC={} ({})",
-                    last_sc,
-                    crate::syscall::table::syscall_name(last_sc)
-                );
+                let (last_sc, last_abi, last_name) = last_syscall_diag(crash_cpu);
+                crate::serial_println!("  LastSC={}:{} ({})", last_abi, last_sc, last_name);
             }
             // Stack location diagnostics
             {
@@ -1502,12 +1502,8 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 }
                 {
                     let crash_cpu = crate::arch::x86::smp::current_cpu_id() as usize;
-                    let last_sc = crate::task::scheduler::get_last_syscall(crash_cpu);
-                    crate::serial_println!(
-                        "  LastSC: {} ({})",
-                        last_sc,
-                        crate::syscall::table::syscall_name(last_sc)
-                    );
+                    let (last_sc, last_abi, last_name) = last_syscall_diag(crash_cpu);
+                    crate::serial_println!("  LastSC: {}:{} ({})", last_abi, last_sc, last_name);
                 }
                 dump_iretq_frame(frame.rip, frame.rsp);
                 crate::serial_println!("  User process fault — terminating thread");
@@ -1551,12 +1547,8 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             }
             {
                 let crash_cpu = crate::arch::x86::smp::current_cpu_id() as usize;
-                let last_sc = crate::task::scheduler::get_last_syscall(crash_cpu);
-                crate::serial_println!(
-                    "  LastSC={} ({})",
-                    last_sc,
-                    crate::syscall::table::syscall_name(last_sc)
-                );
+                let (last_sc, last_abi, last_name) = last_syscall_diag(crash_cpu);
+                crate::serial_println!("  LastSC={}:{} ({})", last_abi, last_sc, last_name);
             }
             // Stack location diagnostics
             {

@@ -496,7 +496,14 @@ fn run_boot_menu(
     fb_format: FramebufferFormat,
 ) -> usize {
     draw_boot_background(fb_addr, fb_width, fb_height, fb_pitch, fb_format);
-    draw_splash_text(fb_addr, fb_width, fb_height, fb_pitch, fb_format, BOOT_TIMEOUT_SECONDS);
+    draw_splash_text(
+        fb_addr,
+        fb_width,
+        fb_height,
+        fb_pitch,
+        fb_format,
+        BOOT_TIMEOUT_SECONDS,
+    );
     flush_keyboard();
 
     match wait_for_splash_choice(fb_addr, fb_width, fb_height, fb_pitch, fb_format) {

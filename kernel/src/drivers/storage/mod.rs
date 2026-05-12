@@ -198,6 +198,48 @@ pub fn disk_sector_count(disk_id: u8) -> u64 {
     DISK_SECTORS[disk_id as usize].load(Ordering::Relaxed)
 }
 
+fn has_io_override(disk_id: u8) -> bool {
+    IO_OVERRIDES.lock().iter().any(|h| h.disk_id == disk_id)
+}
+
+fn disk_limit_for_backend_io(disk_id: u8) -> u64 {
+    let direct = disk_sector_count(disk_id);
+    if direct > 0 {
+        return direct;
+    }
+
+    // Several legacy paths pass a VFS/blockdev identifier as the cache key
+    // while still targeting the primary physical disk. If there is no explicit
+    // per-device override, the request falls through to the global backend.
+    if disk_id != 0 && !has_io_override(disk_id) {
+        return disk_sector_count(0);
+    }
+
+    0
+}
+
+fn check_backend_io_bounds(disk_id: u8, lba: u32, count: u32, op: &str) -> bool {
+    let limit = disk_limit_for_backend_io(disk_id);
+    if limit == 0 {
+        return true;
+    }
+
+    let end = (lba as u64).saturating_add(count as u64);
+    if end <= limit {
+        return true;
+    }
+
+    crate::serial_println!(
+        "[storage] refusing {} beyond disk: disk={} lba={} count={} sectors={}",
+        op,
+        disk_id,
+        lba,
+        count,
+        limit
+    );
+    false
+}
+
 #[inline]
 fn io_lock_acquire() {
     // Fast path: try once without yielding
@@ -278,6 +320,9 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
 pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bool {
     if count == 0 {
         return true;
+    }
+    if !check_backend_io_bounds(disk_id, lba, count, "read") {
+        return false;
     }
     IO_OPS_TOTAL.fetch_add(1, Ordering::Relaxed);
 
@@ -420,6 +465,9 @@ fn read_sectors_raw(lba: u32, count: u32, buf: &mut [u8]) -> bool {
 }
 
 fn read_sectors_raw_for_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bool {
+    if !check_backend_io_bounds(disk_id, lba, count, "direct read") {
+        return false;
+    }
     if disk_id != 0 {
         let overrides = IO_OVERRIDES.lock();
         if let Some(handler) = overrides.iter().find(|h| h.disk_id == disk_id) {
@@ -470,6 +518,9 @@ pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> b
     if count == 0 {
         return true;
     }
+    if !check_backend_io_bounds(disk_id, lba, count, "write") {
+        return false;
+    }
     IO_OPS_TOTAL.fetch_add(1, Ordering::Relaxed);
 
     let cache_active = crate::fs::blockcache::is_ready();
@@ -505,6 +556,9 @@ fn write_sectors_raw(lba: u32, count: u32, buf: &[u8]) -> bool {
 }
 
 fn write_sectors_raw_for_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
+    if !check_backend_io_bounds(disk_id, lba, count, "direct write") {
+        return false;
+    }
     if disk_id != 0 {
         let overrides = IO_OVERRIDES.lock();
         if let Some(handler) = overrides.iter().find(|h| h.disk_id == disk_id) {
@@ -545,6 +599,9 @@ pub fn write_sectors_direct(lba: u32, count: u32, buf: &[u8]) -> bool {
 pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
     if count == 0 {
         return true;
+    }
+    if !check_backend_io_bounds(disk_id, lba, count, "writeback") {
+        return false;
     }
     io_lock_acquire();
     let result = write_sectors_raw_for_disk(disk_id, lba, count, buf);

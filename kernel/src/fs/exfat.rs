@@ -539,6 +539,28 @@ impl ExFatFs {
         512u32 << self.sectors_per_cluster_shift
     }
 
+    #[inline]
+    fn is_valid_cluster(&self, cluster: u32) -> bool {
+        cluster >= 2 && cluster < self.cluster_count + 2
+    }
+
+    fn validate_cluster(&self, cluster: u32, context: &str) -> Result<(), FsError> {
+        if self.is_valid_cluster(cluster) {
+            Ok(())
+        } else {
+            crate::serial_println!(
+                "exFAT: invalid cluster {} in {} (valid [2, {}), part_start={} heap_off={} spc={})",
+                cluster,
+                context,
+                self.cluster_count + 2,
+                self.partition_start_lba,
+                self.cluster_heap_offset,
+                self.sectors_per_cluster()
+            );
+            Err(FsError::IoError)
+        }
+    }
+
     /// Convert a cluster number (>=2) to an absolute LBA.
     #[inline]
     fn cluster_to_lba(&self, cluster: u32) -> u32 {
@@ -670,6 +692,7 @@ impl ExFatFs {
     }
 
     fn read_cluster(&self, cluster: u32, buf: &mut [u8]) -> Result<(), FsError> {
+        self.validate_cluster(cluster, "read_cluster")?;
         // SAFETY: ExFatFs is always accessed while the VFS Mutex is held,
         // guaranteeing single-threaded access to the cache.
         let cache = unsafe { &mut *self.cluster_cache.get() };
@@ -722,6 +745,7 @@ impl ExFatFs {
     }
 
     fn write_cluster(&self, cluster: u32, buf: &[u8]) -> Result<(), FsError> {
+        self.validate_cluster(cluster, "write_cluster")?;
         // Invalidate cached copy so next read reflects the new on-disk content.
         // SAFETY: same as read_cluster — VFS mutex ensures single-threaded access.
         let cache = unsafe { &mut *self.cluster_cache.get() };
@@ -744,6 +768,14 @@ impl ExFatFs {
 
     /// Read next cluster from the in-memory FAT cache. Returns `None` at end-of-chain.
     fn next_cluster(&self, cluster: u32) -> Option<u32> {
+        if !self.is_valid_cluster(cluster) {
+            crate::serial_println!(
+                "exFAT: invalid FAT lookup cluster {} (valid [2, {}))",
+                cluster,
+                self.cluster_count + 2
+            );
+            return None;
+        }
         let off = (cluster as usize) * 4;
         if off + 3 >= self.fat_cache.len() {
             return None;
@@ -756,6 +788,14 @@ impl ExFatFs {
         ]);
         if val == EXFAT_FREE || val >= 0xFFFFFFF8 {
             None
+        } else if !self.is_valid_cluster(val) {
+            crate::serial_println!(
+                "exFAT: ignoring bogus FAT link {} -> {} (valid [2, {}))",
+                cluster,
+                val,
+                self.cluster_count + 2
+            );
+            None
         } else {
             Some(val)
         }
@@ -764,6 +804,16 @@ impl ExFatFs {
     /// Write an entry to the in-memory FAT cache and mark the sector dirty.
     /// The actual disk write is deferred until `flush_metadata()` is called.
     fn write_fat_entry(&mut self, cluster: u32, value: u32) -> Result<(), FsError> {
+        self.validate_cluster(cluster, "write_fat_entry")?;
+        if value != EXFAT_FREE && value < 0xFFFFFFF8 && !self.is_valid_cluster(value) {
+            crate::serial_println!(
+                "exFAT: refusing bogus FAT write {} -> {} (valid [2, {}) or EOC/FREE)",
+                cluster,
+                value,
+                self.cluster_count + 2
+            );
+            return Err(FsError::IoError);
+        }
         let off = (cluster as usize) * 4;
         if off + 3 >= self.fat_cache.len() {
             return Err(FsError::IoError);
@@ -1321,6 +1371,23 @@ impl ExFatFs {
         false
     }
 
+    fn validate_found_entry_cluster(&self, found: &FoundEntry, name: &str) -> Result<(), FsError> {
+        if found.first_cluster >= 2 {
+            return self.validate_cluster(found.first_cluster, "directory entry");
+        }
+        if found.data_length == 0 && (found.attributes & ATTR_DIRECTORY) == 0 {
+            return Ok(());
+        }
+        crate::serial_println!(
+            "exFAT: entry '{}' has invalid first_cluster={} len={} attrs={:#x}",
+            name,
+            found.first_cluster,
+            found.data_length,
+            found.attributes
+        );
+        Err(FsError::IoError)
+    }
+
     /// Convert UTF-16LE code units to an ASCII `String`.
     fn utf16_to_string(chars: &[u16]) -> String {
         let mut s = String::new();
@@ -1355,6 +1422,7 @@ impl ExFatFs {
 
             match self.find_entry_in_buf(&dir_data, component) {
                 Some(found) => {
+                    self.validate_found_entry_cluster(&found, component)?;
                     let is_dir = found.attributes & ATTR_DIRECTORY != 0;
                     if is_last {
                         let ft = if is_dir {
@@ -1389,6 +1457,7 @@ impl ExFatFs {
         let raw = self.read_dir_raw(dir_cluster)?;
         match self.find_entry_in_buf(&raw, name) {
             Some(found) => {
+                self.validate_found_entry_cluster(&found, name)?;
                 let is_symlink = found.attributes & ATTR_SYMLINK != 0;
                 let is_dir = found.attributes & ATTR_DIRECTORY != 0;
                 let ft = if is_dir {
@@ -1429,6 +1498,7 @@ impl ExFatFs {
 
             match self.find_entry_in_buf(&dir_data, component) {
                 Some(found) => {
+                    self.validate_found_entry_cluster(&found, component)?;
                     if is_last {
                         return Ok((found.uid, found.gid, found.mode));
                     }
@@ -2188,6 +2258,17 @@ impl ExFatFs {
         new_size: u32,
         new_cluster: u32,
     ) -> Result<(), FsError> {
+        self.validate_cluster(parent_cluster, "update_entry parent")?;
+        if new_cluster >= 2 {
+            self.validate_cluster(new_cluster, "update_entry first_cluster")?;
+        } else if new_size != 0 {
+            crate::serial_println!(
+                "exFAT: refusing update_entry '{}' with empty cluster and size {}",
+                name,
+                new_size
+            );
+            return Err(FsError::IoError);
+        }
         let cs = self.cluster_size() as usize;
         let mut cur = parent_cluster;
 

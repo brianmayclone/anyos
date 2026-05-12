@@ -6,6 +6,14 @@
 
 use core::panic::PanicInfo;
 
+fn last_syscall_diag(cpu: usize) -> (u32, &'static str, &'static str) {
+    let num = crate::task::scheduler::get_last_syscall(cpu);
+    match crate::task::scheduler::get_last_syscall_abi(cpu) {
+        1 => (num, "linux", crate::syscall::linux::syscall_name(num)),
+        _ => (num, "anyos", crate::syscall::table::syscall_name(num)),
+    }
+}
+
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     // Enter panic mode: halt other CPUs, switch to blocking serial,
@@ -19,8 +27,7 @@ fn panic(info: &PanicInfo) -> ! {
     let cpu = crate::arch::hal::cpu_id();
     let tid = crate::task::scheduler::debug_current_tid();
     let is_user = crate::task::scheduler::debug_is_current_user();
-    let last_sc = crate::task::scheduler::get_last_syscall(cpu);
-    let sc_name = crate::syscall::table::syscall_name(last_sc);
+    let (last_sc, sc_abi, sc_name) = last_syscall_diag(cpu);
     let name_buf = crate::task::scheduler::current_thread_name();
     let name_len = name_buf
         .iter()
@@ -31,7 +38,7 @@ fn panic(info: &PanicInfo) -> ! {
     crate::serial_println!("--- CPU & Thread ---");
     crate::serial_println!("  CPU:    {}", cpu);
     crate::serial_println!("  TID:    {} \"{}\" (user={})", tid, name, is_user);
-    crate::serial_println!("  LastSC: {} ({})", last_sc, sc_name);
+    crate::serial_println!("  LastSC: {}:{} ({})", sc_abi, last_sc, sc_name);
 
     // ---- Register snapshot (x86-64) ----
     #[cfg(target_arch = "x86_64")]
