@@ -1070,6 +1070,44 @@ impl ExFatFs {
         Ok(first)
     }
 
+    /// Convert an on-disk NoFatChain extent into explicit FAT links before a
+    /// write mutates it. The UEFI image builder stores regular files
+    /// contiguous for fast reads; the write path needs a real FAT chain once it
+    /// may extend or fragment the file.
+    fn materialize_contiguous_chain(
+        &mut self,
+        start_cluster: u32,
+        data_length: u64,
+    ) -> Result<(), FsError> {
+        if start_cluster < 2 || data_length == 0 {
+            return Ok(());
+        }
+        self.validate_cluster(start_cluster, "materialize_contiguous_chain")?;
+
+        let clusters =
+            ((data_length + self.cluster_size() as u64 - 1) / self.cluster_size() as u64) as u32;
+        if clusters == 0 {
+            return Ok(());
+        }
+
+        let last = start_cluster
+            .checked_add(clusters - 1)
+            .ok_or(FsError::IoError)?;
+        self.validate_cluster(last, "materialize_contiguous_chain end")?;
+
+        for i in 0..clusters {
+            let cluster = start_cluster + i;
+            let next = if i + 1 < clusters {
+                cluster + 1
+            } else {
+                EXFAT_EOC
+            };
+            self.write_fat_entry(cluster, next)?;
+        }
+        self.metadata_dirty = true;
+        Ok(())
+    }
+
     /// Free a cluster chain (FAT-chained or contiguous).
     fn free_chain(
         &mut self,
@@ -1849,10 +1887,14 @@ impl ExFatFs {
         old_size: u32,
         hint: Option<(u32, u32)>,
     ) -> Result<(u32, u32, u32, u32), FsError> {
-        let (start_cluster, _) = decode_inode(inode);
+        let (start_cluster, was_contiguous) = decode_inode(inode);
         if data.is_empty() {
             let hint_cluster = if start_cluster >= 2 { start_cluster } else { 0 };
             return Ok((start_cluster, old_size, 0, hint_cluster));
+        }
+
+        if was_contiguous {
+            self.materialize_contiguous_chain(start_cluster, old_size as u64)?;
         }
 
         let cs = self.cluster_size();

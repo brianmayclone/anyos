@@ -614,6 +614,34 @@ pub fn writeback_flush(disk_id: u8) -> u32 {
             run_len += 1;
         }
 
+        let disk_sectors = crate::drivers::storage::disk_sector_count(disk_id);
+        if disk_sectors > 0 && (run_start_lba as u64).saturating_add(run_len as u64) > disk_sectors
+        {
+            crate::serial_println!(
+                "[blockcache] dropping corrupt dirty run: disk={} lba={} count={} sectors={}",
+                disk_id,
+                run_start_lba,
+                run_len,
+                disk_sectors
+            );
+            {
+                let mut cache = BLOCK_CACHE.lock();
+                for j in 0..run_len {
+                    let snap = &snapshot[i + j];
+                    if snap.slot >= cache.slots.len() {
+                        continue;
+                    }
+                    if cache.slots[snap.slot].key == snap.key {
+                        cache.remove_from_hash(snap.key, snap.slot);
+                        cache.slots[snap.slot].key = 0;
+                        cache.slots[snap.slot].dirty = false;
+                    }
+                }
+            }
+            i += run_len;
+            continue;
+        }
+
         // Assemble the write buffer from the in-band snapshot — no cache lock
         // needed here, so the disk write path cannot contend with concurrent
         // cache readers/writers.
