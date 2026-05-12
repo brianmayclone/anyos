@@ -24,7 +24,7 @@ use uefi::boot::{self, AllocateType, MemoryType};
 use uefi::mem::memory_map::MemoryMap;
 use uefi::prelude::*;
 use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
-use uefi::proto::console::text::{Color, Key, ScanCode};
+use uefi::proto::console::text::{Key, ScanCode};
 use uefi::proto::media::file::{File, FileAttribute, FileInfo, FileMode};
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::system;
@@ -99,8 +99,13 @@ const MAX_KERNEL_SIZE: usize = 64 * 1024 * 1024;
 /// Serial port for debug output.
 const COM1: u16 = 0x3F8;
 
-/// Embedded boot logo: u32 width, u32 height, then RGB888 pixels.
+/// Embedded boot logo: u32 width, u32 height, then RGBA8888 pixels.
 const BOOT_LOGO: &[u8] = include_bytes!("../../../kernel/src/graphics/boot_logo.bin");
+
+/// 8x16 bitmap font for framebuffer-rendered boot menu text.
+const FONT_DATA: &[u8] = include_bytes!("../../../kernel/src/graphics/font_8x16.bin");
+const FONT_WIDTH: u32 = 8;
+const FONT_HEIGHT: u32 = 16;
 
 // -- E820 entry (matches kernel/src/boot_info.rs) -----------------------------
 
@@ -155,6 +160,11 @@ enum FramebufferFormat {
 struct BootEntry {
     title: &'static str,
     params: &'static [u8],
+}
+
+struct TextBuffer {
+    bytes: [u8; 128],
+    len: usize,
 }
 
 const BOOT_ENTRIES: [BootEntry; 4] = [
@@ -463,10 +473,10 @@ fn run_boot_menu(
     fb_format: FramebufferFormat,
 ) -> usize {
     draw_boot_background(fb_addr, fb_width, fb_height, fb_pitch, fb_format);
-    draw_splash_text(BOOT_TIMEOUT_SECONDS);
+    draw_splash_text(fb_addr, fb_width, fb_height, fb_pitch, fb_format, BOOT_TIMEOUT_SECONDS);
     flush_keyboard();
 
-    match wait_for_splash_choice() {
+    match wait_for_splash_choice(fb_addr, fb_width, fb_height, fb_pitch, fb_format) {
         BootDecision::Default => 0,
         BootDecision::Entry(index) => index,
         BootDecision::Menu => {
@@ -475,9 +485,15 @@ fn run_boot_menu(
     }
 }
 
-fn wait_for_splash_choice() -> BootDecision {
+fn wait_for_splash_choice(
+    fb_addr: u32,
+    fb_width: u32,
+    fb_height: u32,
+    fb_pitch: u32,
+    fb_format: FramebufferFormat,
+) -> BootDecision {
     for remaining in (1..=BOOT_TIMEOUT_SECONDS).rev() {
-        draw_splash_text(remaining);
+        draw_splash_text(fb_addr, fb_width, fb_height, fb_pitch, fb_format, remaining);
         for _ in 0..10 {
             if let Some(decision) = poll_splash_key() {
                 return decision;
@@ -516,7 +532,7 @@ fn show_interactive_menu(
     let mut selected = 0usize;
     loop {
         draw_boot_background(fb_addr, fb_width, fb_height, fb_pitch, fb_format);
-        draw_menu_text(selected);
+        draw_menu_text(fb_addr, fb_width, fb_height, fb_pitch, fb_format, selected);
 
         match wait_for_menu_key() {
             MenuKey::Up => {
@@ -610,7 +626,7 @@ fn draw_logo(
 
     let logo_w = u32::from_le_bytes([BOOT_LOGO[0], BOOT_LOGO[1], BOOT_LOGO[2], BOOT_LOGO[3]]);
     let logo_h = u32::from_le_bytes([BOOT_LOGO[4], BOOT_LOGO[5], BOOT_LOGO[6], BOOT_LOGO[7]]);
-    let pixel_bytes = logo_w as usize * logo_h as usize * 3;
+    let pixel_bytes = logo_w as usize * logo_h as usize * 4;
     if logo_w == 0 || logo_h == 0 || BOOT_LOGO.len() < 8 + pixel_bytes {
         return;
     }
@@ -624,19 +640,33 @@ fn draw_logo(
     for y in 0..draw_h as usize {
         let dst_row = (fb_addr as usize + (dst_y as usize + y) * fb_pitch as usize) as *mut u32;
         for x in 0..draw_w as usize {
-            let si = (y * logo_w as usize + x) * 3;
+            let si = (y * logo_w as usize + x) * 4;
             let r = src[si];
             let g = src[si + 1];
             let b = src[si + 2];
-            if r == 0 && g == 0 && b == 0 {
+            let a = src[si + 3];
+            if a == 0 {
                 continue;
             }
-            let pixel = pack_pixel(fb_format, r, g, b);
+            let pixel = if a == 255 {
+                pack_pixel(fb_format, r, g, b)
+            } else {
+                pack_pixel(
+                    fb_format,
+                    blend_over_black(r, a),
+                    blend_over_black(g, a),
+                    blend_over_black(b, a),
+                )
+            };
             unsafe {
                 dst_row.add(dst_x as usize + x).write_volatile(pixel);
             }
         }
     }
+}
+
+fn blend_over_black(channel: u8, alpha: u8) -> u8 {
+    ((channel as u16 * alpha as u16) / 255) as u8
 }
 
 fn pack_pixel(format: FramebufferFormat, r: u8, g: u8, b: u8) -> u32 {

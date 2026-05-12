@@ -440,40 +440,7 @@ fn write_linux_initial_stack_vectors(
 fn map_linux_sigreturn_trampoline(
     pd_phys: crate::memory::address::PhysAddr,
 ) -> Result<u32, &'static str> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let mapped = virtual_mem::map_pages_range_in_pd(
-            pd_phys,
-            VirtAddr::new(SIGRETURN_TRAMPOLINE_ADDR),
-            1,
-            PAGE_USER,
-            true,
-        )?;
-        unsafe {
-            let saved_flags: u64;
-            core::arch::asm!("pushfq; pop {}", out(reg) saved_flags, options(nomem));
-            core::arch::asm!("cli", options(nomem, nostack));
-            let old_pt = virtual_mem::current_cr3();
-            core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
-            let tramp = SIGRETURN_TRAMPOLINE_ADDR as *mut u8;
-            tramp.offset(0).write_volatile(0xB8);
-            tramp.offset(1).write_volatile(246);
-            tramp.offset(2).write_volatile(0x00);
-            tramp.offset(3).write_volatile(0x00);
-            tramp.offset(4).write_volatile(0x00);
-            tramp.offset(5).write_volatile(0x0F);
-            tramp.offset(6).write_volatile(0x05);
-            tramp.offset(7).write_volatile(0x90);
-            core::arch::asm!("mov cr3, {}", in(reg) old_pt);
-            core::arch::asm!("push {}; popfq", in(reg) saved_flags, options(nomem));
-        }
-        Ok(mapped)
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let _ = pd_phys;
-        Ok(0)
-    }
+    install_sigreturn_trampoline(pd_phys)
 }
 
 fn load_linux_image_into_pd(

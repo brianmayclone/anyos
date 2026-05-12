@@ -48,6 +48,60 @@ const ASLR_STACK_MAX_PAGES: u32 = VMAP_ASLR_STACK_MAX_PAGES;
 /// Maximum random page offset applied to the mmap base (ASLR).
 pub const ASLR_MMAP_MAX_PAGES: u32 = VMAP_ASLR_MMAP_MAX_PAGES;
 
+#[cfg(target_arch = "x86_64")]
+fn install_sigreturn_trampoline(
+    pd_phys: crate::memory::address::PhysAddr,
+) -> Result<u32, &'static str> {
+    let mapped = virtual_mem::map_pages_range_in_pd(
+        pd_phys,
+        VirtAddr::new(SIGRETURN_TRAMPOLINE_ADDR),
+        1,
+        PAGE_USER | PAGE_WRITABLE,
+        true,
+    )?;
+
+    unsafe {
+        let saved_flags: u64;
+        core::arch::asm!("pushfq; pop {}", out(reg) saved_flags, options(nomem));
+        core::arch::asm!("cli", options(nomem, nostack));
+        let old_pt = virtual_mem::current_cr3();
+        core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
+
+        let tramp = SIGRETURN_TRAMPOLINE_ADDR as *mut u8;
+        // mov eax, 246 (SYS_SIGRETURN)
+        tramp.offset(0).write_volatile(0xB8);
+        tramp.offset(1).write_volatile(246);
+        tramp.offset(2).write_volatile(0x00);
+        tramp.offset(3).write_volatile(0x00);
+        tramp.offset(4).write_volatile(0x00);
+        // syscall
+        tramp.offset(5).write_volatile(0x0F);
+        tramp.offset(6).write_volatile(0x05);
+        // nop (padding)
+        tramp.offset(7).write_volatile(0x90);
+
+        core::arch::asm!("mov cr3, {}", in(reg) old_pt);
+        core::arch::asm!("push {}; popfq", in(reg) saved_flags, options(nomem));
+    }
+
+    if !virtual_mem::set_page_flags_in_pd(
+        pd_phys,
+        VirtAddr::new(SIGRETURN_TRAMPOLINE_ADDR),
+        PAGE_USER,
+    ) {
+        return Err("Failed to protect signal trampoline page");
+    }
+
+    Ok(mapped)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn install_sigreturn_trampoline(
+    _pd_phys: crate::memory::address::PhysAddr,
+) -> Result<u32, &'static str> {
+    Ok(0)
+}
+
 #[cfg(target_arch = "aarch64")]
 unsafe fn sync_user_text_range_for_exec(start: u64, len: usize) {
     if len == 0 {
@@ -836,7 +890,8 @@ fn load_elf64(
             if !virtual_mem::is_mapped_in_pd(pd_phys, page_virt) {
                 let phys = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)
                     .ok_or("Failed to allocate frame for ELF64 segment")?;
-                if !virtual_mem::map_page_in_pd(pd_phys, page_virt, phys, pte_flags) {
+                let load_flags = pte_flags | PAGE_WRITABLE;
+                if !virtual_mem::map_page_in_pd(pd_phys, page_virt, phys, load_flags) {
                     physical::free_frame(phys);
                     return Err("Failed to map frame for ELF64 segment");
                 }
@@ -920,6 +975,44 @@ fn load_elf64(
             #[cfg(target_arch = "aarch64")]
             if (phdr.p_flags & PF_X) != 0 {
                 sync_user_text_range_for_exec(page_start as u64, page_end - page_start);
+            }
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        for i in 0..ph_num {
+            let ph_offset = ph_off + i * ph_size;
+            let phdr = &*(data.as_ptr().add(ph_offset) as *const Elf64Phdr);
+
+            if phdr.p_type != PT_LOAD || phdr.p_memsz == 0 {
+                continue;
+            }
+
+            let effective_vaddr = match phdr.p_vaddr.checked_add(load_bias) {
+                Some(v) => v,
+                None => continue,
+            };
+            let page_start = effective_vaddr & !0xFFF;
+            let page_end = match effective_vaddr
+                .checked_add(phdr.p_memsz)
+                .and_then(|v| v.checked_add(PAGE_SIZE - 1))
+            {
+                Some(v) => v & !0xFFF,
+                None => continue,
+            };
+            let is_writable = (phdr.p_flags & PF_W) != 0;
+            let is_exec = (phdr.p_flags & PF_X) != 0;
+            let final_flags: u64 = PAGE_USER
+                | if is_writable { PAGE_WRITABLE } else { 0 }
+                | if !is_exec {
+                    virtual_mem::page_nx_flag()
+                } else {
+                    0
+                };
+
+            for page in (page_start..page_end).step_by(PAGE_SIZE as usize) {
+                if !virtual_mem::set_page_flags_in_pd(pd_phys, VirtAddr::new(page), final_flags) {
+                    return Err("Failed to protect ELF64 segment page");
+                }
             }
         }
 
@@ -1138,34 +1231,7 @@ fn load_and_run_with_args_abi(
     #[cfg(target_arch = "x86_64")]
     {
         // Map signal-return trampoline page (same as load_binary_into_pd).
-        let tramp_mapped = virtual_mem::map_pages_range_in_pd(
-            pd_phys,
-            VirtAddr::new(SIGRETURN_TRAMPOLINE_ADDR),
-            1,
-            PAGE_USER,
-            true,
-        )?;
-        unsafe {
-            let saved_flags_t: u64;
-            core::arch::asm!("pushfq; pop {}", out(reg) saved_flags_t, options(nomem));
-            core::arch::asm!("cli", options(nomem, nostack));
-            let old_pt_t = virtual_mem::current_cr3();
-            core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
-            let tramp = SIGRETURN_TRAMPOLINE_ADDR as *mut u8;
-            // mov eax, 246 (SYS_SIGRETURN)
-            tramp.offset(0).write_volatile(0xB8);
-            tramp.offset(1).write_volatile(246);
-            tramp.offset(2).write_volatile(0x00);
-            tramp.offset(3).write_volatile(0x00);
-            tramp.offset(4).write_volatile(0x00);
-            // syscall
-            tramp.offset(5).write_volatile(0x0F);
-            tramp.offset(6).write_volatile(0x05);
-            // nop (padding)
-            tramp.offset(7).write_volatile(0x90);
-            core::arch::asm!("mov cr3, {}", in(reg) old_pt_t);
-            core::arch::asm!("push {}; popfq", in(reg) saved_flags_t, options(nomem));
-        }
+        let tramp_mapped = install_sigreturn_trampoline(pd_phys)?;
         total_user_pages += tramp_mapped;
     }
 

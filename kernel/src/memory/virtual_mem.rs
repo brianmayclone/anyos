@@ -1459,6 +1459,52 @@ pub fn is_mapped_in_pd(pd_phys: PhysAddr, virt: VirtAddr) -> bool {
     }
 }
 
+/// Update the leaf PTE flags for a page in a foreign page directory.
+///
+/// The physical frame is preserved. This is used by loaders that need to fill a
+/// freshly mapped user page with kernel writes and then drop write permission
+/// before the process can execute it.
+pub fn set_page_flags_in_pd(pd_phys: PhysAddr, virt: VirtAddr, flags: u64) -> bool {
+    unsafe {
+        let rflags: u64;
+        asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
+        asm!("cli", options(nomem, nostack));
+        let old_cr3 = current_cr3();
+        asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
+
+        let pml4_ptr = RECURSIVE_PML4_BASE as *const u64;
+        let ok = if pml4_ptr.add(virt.pml4_index()).read_volatile() & PAGE_PRESENT != 0 {
+            let pdpt_ptr = recursive_pdpt_base(virt) as *const u64;
+            if pdpt_ptr.add(virt.pdpt_index()).read_volatile() & PAGE_PRESENT != 0 {
+                let pd_ptr = recursive_pd_base(virt) as *const u64;
+                if pd_ptr.add(virt.pd_index()).read_volatile() & PAGE_PRESENT != 0 {
+                    let pt_ptr = recursive_pt_base(virt) as *mut u64;
+                    let pte = pt_ptr.add(virt.pt_index()).read_volatile();
+                    if pte & PAGE_PRESENT != 0 {
+                        pt_ptr
+                            .add(virt.pt_index())
+                            .write_volatile((pte & ADDR_MASK) | flags | PAGE_PRESENT);
+                        asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        asm!("mov cr3, {}", in(reg) old_cr3);
+        asm!("push {}; popfq", in(reg) rflags, options(nomem));
+        ok
+    }
+}
+
 /// Destroy a user PML4: free all user-space pages, page tables, and the PML4.
 /// Must NOT be the currently active page directory.
 pub fn destroy_user_page_directory(pml4_phys: PhysAddr) {
