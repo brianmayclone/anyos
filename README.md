@@ -330,11 +330,11 @@ ninja
 ninja run
 ```
 
-The default disk image size is **512 MiB**. When using the helper script,
-choose a larger image with `--image-size`:
+The default disk image size is **4096 MiB**. When using the helper script,
+choose a different image size with `--image-size`:
 
 ```bash
-./scripts/build.sh --image-size 1024M
+./scripts/build.sh --image-size 2048M
 ./scripts/build.sh --image-size 5G
 ./scripts/build.sh --image-size 10G --reset
 ```
@@ -428,7 +428,7 @@ Or run QEMU directly inside WSL2 (requires an X server like WSLg or VcXsrv).
 | `ninja uefi-image` | Build UEFI GPT disk image (exFAT) |
 | `ninja iso` | Build ISO 9660 CD-ROM image (El Torito bootable) |
 
-Disk images default to 512 MiB. To change the size when invoking CMake
+Disk images default to 4096 MiB. To change the size when invoking CMake
 directly, configure `ANYOS_IMAGE_SIZE_MIB`:
 
 ```bash

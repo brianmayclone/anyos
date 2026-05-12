@@ -26,7 +26,7 @@ DEBUG_SURF=0
 NO_CROSS=0
 VER_MODE="patch"
 ANYOS_ARCH="x86_64"
-IMAGE_SIZE_MIB="512"
+IMAGE_SIZE_MIB="4096"
 # Empty unless --system-fs / --system-fs-size is explicitly given.
 # Forwarded to CMake as -DANYOS_SYSTEM_FS / -DANYOS_SYSTEM_FS_SIZE_MIB.
 SYSTEM_FS=""
@@ -189,7 +189,7 @@ while [ $i -lt ${#argv[@]} ]; do
             echo "  --imajor      Increment major version (reset minor and patch to 0)"
             echo "  --nover       Skip version increment"
             echo "  --arm64       Build for AArch64 (ARM64) instead of x86_64"
-            echo "  --image-size  Disk image size: bare/M/MiB = MiB, G/GiB = GiB (default 512M)"
+            echo "  --image-size  Disk image size: bare/M/MiB = MiB, G/GiB = GiB (default 4096M)"
             echo "  --system-fs   System filesystem: exfat (default) or corefs"
             echo "                (adds CoreFS partition at the end of the disk image)"
             echo "  --system-fs-size  Size of the CoreFS partition in MiB (default 128)"

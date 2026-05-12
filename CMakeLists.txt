@@ -28,7 +28,7 @@ option(ANYOS_DEBUG_VERBOSE "Enable verbose debug output" OFF)
 option(ANYOS_DEBUG_SURF "Enable Surf browser debug logging" OFF)
 option(ANYOS_RESET "Force fresh disk image rebuild (destroy runtime data)" OFF)
 set(ANYOS_ARCH "x86_64" CACHE STRING "Target architecture (x86_64 or arm64)")
-set(ANYOS_IMAGE_SIZE_MIB "2048" CACHE STRING "Disk image size in MiB")
+set(ANYOS_IMAGE_SIZE_MIB "4096" CACHE STRING "Disk image size in MiB")
 if(NOT ANYOS_IMAGE_SIZE_MIB MATCHES "^[1-9][0-9]*$")
   message(FATAL_ERROR
     "ANYOS_IMAGE_SIZE_MIB must be a positive integer MiB value, got '${ANYOS_IMAGE_SIZE_MIB}'")
