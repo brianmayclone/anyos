@@ -13,16 +13,16 @@ fn downloads_debian_bootstrap_closure_into_tmp() {
 
 fn run_once() {
     let tmp = temp_root();
-    fs::create_dir_all(&tmp).expect("create licof hosttest tmp dir");
-    println!("licof hosttest: tmp={}", tmp.display());
+    fs::create_dir_all(&tmp).expect("create lxe hosttest tmp dir");
+    println!("lxe hosttest: tmp={}", tmp.display());
 
-    let result = licof::hosttest::run_full_download_test(&tmp);
+    let result = liblxecore::hosttest::run_full_download_test(&tmp);
     let cleanup = fs::remove_dir_all(&tmp);
 
     match result {
         Ok(report) => {
             println!(
-                "licof hosttest: index={} gz={} packages={} deb_bytes={} cache={}",
+                "lxe hosttest: index={} gz={} packages={} deb_bytes={} cache={}",
                 report.index_bytes,
                 report.index_gz_bytes,
                 report.packages,
@@ -30,12 +30,12 @@ fn run_once() {
                 report.cache_dir.display()
             );
             if let Err(err) = cleanup {
-                eprintln!("licof hosttest: cleanup failed: {err}");
+                eprintln!("lxe hosttest: cleanup failed: {err}");
             }
         }
         Err(err) => {
             if let Err(cleanup_err) = cleanup {
-                eprintln!("licof hosttest: cleanup failed after error: {cleanup_err}");
+                eprintln!("lxe hosttest: cleanup failed after error: {cleanup_err}");
             }
             panic!("{err}");
         }
@@ -47,7 +47,7 @@ fn temp_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system time before unix epoch");
     std::env::temp_dir().join(format!(
-        "licof-hosttest-{}-{}",
+        "lxe-hosttest-{}-{}",
         std::process::id(),
         now.as_nanos()
     ))

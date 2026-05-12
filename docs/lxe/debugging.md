@@ -1,27 +1,27 @@
-# licof Debugging Guide
+# lxe Debugging Guide
 
 This guide documents the diagnostics that are useful while bringing up Linux
-ELF64 binaries under `licof`.
+ELF64 binaries under `lxe`.
 
 ## First Checks
 
 Start with:
 
 ```sh
-licof status
-licof repair
+lxe status
+lxe repair
 ```
 
 Then verify the binary path resolves inside the active Linux base:
 
 ```sh
-licof run /usr/bin/<tool> [args...]
+lxe run /usr/bin/<tool> [args...]
 ```
 
 The CLI prints `PT_INTERP` diagnostics before spawning:
 
 ```text
-licof run: PT_INTERP /lib64/ld-linux-x86-64.so.2 -> /System/var/licof/rootfs/lib64/ld-linux-x86-64.so.2
+lxe run: PT_INTERP /lib64/ld-linux-x86-64.so.2 -> /System/var/lxe/rootfs/lib64/ld-linux-x86-64.so.2
 ```
 
 If the target is missing, repair or reinstall the packages that provide the
@@ -34,7 +34,7 @@ Kernel Linux-ABI diagnostics are printed on the serial console.
 ### Unsupported Syscall
 
 ```text
-licof linux: unsupported syscall nr=<nr> rip=<rip> args=<a1>,<a2>,<a3>,<a4>,<a5>,<a6>
+lxe linux: unsupported syscall nr=<nr> rip=<rip> args=<a1>,<a2>,<a3>,<a4>,<a5>,<a6>
 ```
 
 This means the Linux syscall table returned `-ENOSYS` for an unknown syscall.
@@ -46,13 +46,13 @@ semantics.
 ### `brk` / `sbrk`
 
 ```text
-licof linux brk: query -> 0x60d000
-licof linux brk: current=0x60d000 requested=0x62e000 delta=135168 -> 0x62e000
-licof linux brk: failed current=... requested=... delta=...
-licof linux sbrk: reject low-limit ...
-licof linux sbrk: reject high-limit ...
-licof linux sbrk: reject map-page ...
-licof linux sbrk: reject phys-oom ...
+lxe linux brk: query -> 0x60d000
+lxe linux brk: current=0x60d000 requested=0x62e000 delta=135168 -> 0x62e000
+lxe linux brk: failed current=... requested=... delta=...
+lxe linux sbrk: reject low-limit ...
+lxe linux sbrk: reject high-limit ...
+lxe linux sbrk: reject map-page ...
+lxe linux sbrk: reject phys-oom ...
 ```
 
 Use these lines when glibc reports allocation failures during dynamic loader
@@ -62,10 +62,10 @@ level than the real kernel failure.
 ### `mmap`
 
 ```text
-licof linux mmap: ok addr=0x0 len=0x2000 prot=0x3 flags=0x22 fd=0xffffffff off=0x0 -> 0x100000000
-licof linux mmap: alloc failed ...
-licof linux mmap: fill failed ... errno=...
-licof linux mmap: reject anon fd ...
+lxe linux mmap: ok addr=0x0 len=0x2000 prot=0x3 flags=0x22 fd=0xffffffff off=0x0 -> 0x100000000
+lxe linux mmap: alloc failed ...
+lxe linux mmap: fill failed ... errno=...
+lxe linux mmap: reject anon fd ...
 ```
 
 Important flag examples:
@@ -84,11 +84,11 @@ Linux `open()` and `openat()` failures print the Linux-visible path, the
 translated anyOS path and the final resolved path:
 
 ```text
-licof linux open: failed errno=5 linux='/lib/x86_64-linux-gnu/libpam.so.0' translated='/System/var/licof/rootfs/lib/x86_64-linux-gnu/libpam.so.0' resolved='/System/var/licof/rootfs/lib/x86_64-linux-gnu/libpam.so.0'
+lxe linux open: failed errno=5 linux='/lib/x86_64-linux-gnu/libpam.so.0' translated='/System/var/lxe/rootfs/lib/x86_64-linux-gnu/libpam.so.0' resolved='/System/var/lxe/rootfs/lib/x86_64-linux-gnu/libpam.so.0'
 ```
 
 Absolute symlink targets inside the Linux base are resolved relative to
-`/System/var/licof/rootfs`, not relative to the anyOS root. This keeps Debian
+`/System/var/lxe/rootfs`, not relative to the anyOS root. This keeps Debian
 links such as `/lib/...` inside the Linux base.
 
 ## Common Loader Errors
@@ -97,11 +97,11 @@ links such as `/lib/...` inside the Linux base.
 
 Cause: `uname()` reported a kernel release older than glibc accepts.
 
-Expected licof behavior:
+Expected lxe behavior:
 
 ```text
 sysname = Linux
-release = 3.2.0-licof
+release = 3.2.0-lxe
 machine = x86_64
 ```
 
@@ -112,19 +112,19 @@ If this regresses, check `linux_uname()`.
 The CLI prints:
 
 ```text
-licof passwd: missing PT_INTERP /lib64/ld-linux-x86-64.so.2
+lxe passwd: missing PT_INTERP /lib64/ld-linux-x86-64.so.2
 ```
 
 Check:
 
 ```sh
-ls /System/var/licof/rootfs/lib64/
-ls /System/var/licof/rootfs/lib/x86_64-linux-gnu/
+ls /System/var/lxe/rootfs/lib64/
+ls /System/var/lxe/rootfs/lib/x86_64-linux-gnu/
 ```
 
-`licof init` does not run runtime repair after bootstrap. If the loader is
+`lxe init` does not run runtime repair after bootstrap. If the loader is
 present only as a symlink, the kernel loader must resolve that symlink inside
-`/System/var/licof/rootfs`. `licof repair` can recreate missing loader and
+`/System/var/lxe/rootfs`. `lxe repair` can recreate missing loader and
 SONAME symlinks, but it should not copy shared libraries over package
 metadata.
 
@@ -162,20 +162,20 @@ Segmentation fault. Check:
 
 ## Package Download Debugging
 
-`licof apt` downloads with `libhttp_client` when available and falls back to
+`lxe apt` downloads with `libhttp_client` when available and falls back to
 `wget`.
 
 Useful messages:
 
 ```text
-licof download: failed after 4 attempts: ...
-licof apt: downloaded package index is not gzip (... first bytes ...)
-licof apt: response looks like HTML; archive server returned an error page
-licof apt: failed to decompress package index: ...
-licof apt: checksum mismatch ...
-licof apt: invalid package size ...
-licof apt: installed marker for '<package>' failed validation; reinstalling
-licof apt: installed marker for '<package>' references missing payload '...'
+lxe download: failed after 4 attempts: ...
+lxe apt: downloaded package index is not gzip (... first bytes ...)
+lxe apt: response looks like HTML; archive server returned an error page
+lxe apt: failed to decompress package index: ...
+lxe apt: checksum mismatch ...
+lxe apt: invalid package size ...
+lxe apt: installed marker for '<package>' failed validation; reinstalling
+lxe apt: installed marker for '<package>' references missing payload '...'
 ```
 
 If the first bytes are `00 00 00 00`, suspect a write/flush/filesystem issue or
@@ -205,10 +205,10 @@ If dynamic libraries are missing after extraction:
 1. Check the package installed count.
 2. Check whether the source ELF exists under `lib/x86_64-linux-gnu`.
 3. Check whether the SONAME symlink exists and points to the versioned library.
-4. Re-run `licof repair` only to recreate missing symlinks, or reinstall the
+4. Re-run `lxe repair` only to recreate missing symlinks, or reinstall the
    package if the versioned library itself is absent.
 
-licof must not materialize shared-library symlinks as regular files. If a
+lxe must not materialize shared-library symlinks as regular files. If a
 package symlink cannot be created or verified, fix the filesystem/VFS symlink
 path and reinstall the package. Copying over SONAME links can make the dynamic
 loader read the wrong ELF metadata and produces misleading version errors.
@@ -217,13 +217,13 @@ Installed package markers contain `Path:` entries for extracted payload files
 and links. Validation checks that each archived payload entry still exists in
 the Linux base without following a final symlink. This matters for Debian
 links such as `usr/bin/touch -> /bin/touch`, where following the link from the
-anyOS root would leave the Linux base. When `licof apt` sees a marker without
+anyOS root would leave the Linux base. When `lxe apt` sees a marker without
 payload paths, or a payload path no longer exists, it deletes the marker and
 reinstalls the package. This guards against crashes, interrupted flushes,
 filesystem regressions and older marker formats that claimed a package was
 installed without proving its files are still present.
 
-`licof init` also writes `<paths/db>/bootstrap-state` after every bootstrap
+`lxe init` also writes `<paths/db>/bootstrap-state` after every bootstrap
 seed package. The file contains `Status`, `Installed`, `Missing` and `Failed`
 lines. If a rerun unexpectedly skips work, inspect this file together with the
 per-package marker under `<paths/installed_db>`.
@@ -233,26 +233,26 @@ per-package marker under `<paths/installed_db>`.
 Default paths:
 
 ```text
-/System/var/licof/rootfs
-/System/var/licof/cache
-/System/var/licof/db
+/System/var/lxe/rootfs
+/System/var/lxe/cache
+/System/var/lxe/db
 ```
 
 Check dynamic loader:
 
 ```sh
-ls /System/var/licof/rootfs/lib64/
-ls /System/var/licof/rootfs/lib/x86_64-linux-gnu/
+ls /System/var/lxe/rootfs/lib64/
+ls /System/var/lxe/rootfs/lib/x86_64-linux-gnu/
 ```
 
 Check minimal account files when debugging `passwd`:
 
 ```sh
-ls /System/var/licof/rootfs/etc/
+ls /System/var/lxe/rootfs/etc/
 ```
 
 At minimum, `/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/gshadow`, and
-`/etc/nsswitch.conf` should exist. `licof init` creates conservative seed
+`/etc/nsswitch.conf` should exist. `lxe init` creates conservative seed
 versions only when they are missing, because Debian maintainer scripts are not
 executed during package extraction. PAM tools also need `/etc/pam.d/common-auth`,
 `common-account`, `common-password`, `common-session`, and `other`; these are

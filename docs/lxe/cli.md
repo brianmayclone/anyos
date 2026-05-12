@@ -1,45 +1,45 @@
-# licof CLI and Linux Base
+# lxe CLI and Linux Base
 
-`/System/bin/licof` is the user-facing control tool for the Linux Compatibility
-Framework. licof intentionally manages one active Linux base, not a collection
+`/System/bin/lxe` is the user-facing control tool for the Linux Experience
+Extension. lxe intentionally manages one active Linux base, not a collection
 of named root filesystems.
 
 ## Commands
 
 ```sh
-licof status
-licof init
-licof repair
-licof run <linux-elf64> [args...]
-licof pkg install <file.deb>
-licof apt install <package> [package...]
+lxe status
+lxe init
+lxe repair
+lxe run <linux-elf64> [args...]
+lxe pkg install <file.deb>
+lxe apt install <package> [package...]
 ```
 
-## `licof status`
+## `lxe status`
 
 Prints the current configuration:
 
 - ABI tier.
-- licof root directory.
+- lxe root directory.
 - active Linux base path.
 - configured Debian package index URL.
 - config source.
 - supported package archive payloads.
 
-## `licof init`
+## `lxe init`
 
 Creates the configured Linux base, writes minimal apt configuration,
 bootstraps the configured seed packages and then tries to start `passwd root`
 when the caller has an interactive terminal.
 
 ```sh
-licof init
+lxe init
 ```
 
 Default Linux base:
 
 ```text
-/System/var/licof/rootfs
+/System/var/lxe/rootfs
 ```
 
 Created directories include:
@@ -59,25 +59,25 @@ Generated apt files:
 
 ```text
 etc/apt/sources.list
-etc/apt/apt.conf.d/99licof
+etc/apt/apt.conf.d/99lxe
 ```
 
-`99licof` disables valid-until checks for compatibility with archived or
+`99lxe` disables valid-until checks for compatibility with archived or
 mirrored Debian package indexes.
 
-After package installation, `licof init` verifies that the Linux base contains
+After package installation, `lxe init` verifies that the Linux base contains
 an executable shell candidate (`/bin/bash`, `/bin/dash` or `/bin/sh`) and a
 `passwd` binary before it reports bootstrap success. Missing paths are printed
 with path probes so stale package markers cannot silently turn into a false
 `bootstrap complete`.
 
-## `licof repair`
+## `lxe repair`
 
 Recreates the base directory layout, repairs runtime links and syncs the
 filesystem.
 
 ```sh
-licof repair
+lxe repair
 ```
 
 Repair currently:
@@ -92,16 +92,16 @@ Repair currently:
 Package symlinks are installed as symlinks when the filesystem supports them.
 If symlink creation or verification fails during package extraction, the
 package install fails. Runtime libraries must keep their package metadata and
-SONAME symlinks intact; licof no longer copies a library over a broken symlink
+SONAME symlinks intact; lxe no longer copies a library over a broken symlink
 to "repair" it.
 
-## `licof run`
+## `lxe run`
 
-Starts a Linux ELF64 binary through `SYS_LICOF_SPAWN`.
+Starts a Linux ELF64 binary through `SYS_LXE_SPAWN`.
 
 ```sh
-licof run /usr/bin/passwd root
-licof run /System/var/licof/rootfs/usr/bin/passwd root
+lxe run /usr/bin/passwd root
+lxe run /System/var/lxe/rootfs/usr/bin/passwd root
 ```
 
 Linux-style absolute paths such as `/usr/bin/passwd` are resolved inside the
@@ -115,7 +115,7 @@ Before spawning, the CLI diagnoses the ELF header:
 - prints `PT_INTERP` and resolved interpreter path.
 - reports missing interpreter paths.
 
-The spawned Linux process inherits Terminal stdin/stdout pipes. `licof` waits
+The spawned Linux process inherits Terminal stdin/stdout pipes. `lxe` waits
 for the child and prints a non-zero exit status.
 
 ## Bootstrap Seed
@@ -148,15 +148,15 @@ make
 The seed is configurable through:
 
 ```text
-services/licof/bootstrap/packages_csv
+services/lxe/bootstrap/packages_csv
 ```
 
-## `licof pkg install`
+## `lxe pkg install`
 
 Installs a local `.deb` into the active Linux base:
 
 ```sh
-licof pkg install /path/to/package.deb
+lxe pkg install /path/to/package.deb
 ```
 
 Behavior:
@@ -171,7 +171,7 @@ Behavior:
 
 Maintainer scripts are not executed.
 
-Because maintainer scripts are not executed, `licof init` seeds a tiny account
+Because maintainer scripts are not executed, `lxe init` seeds a tiny account
 database when the files are missing. The seed includes `/etc/passwd`,
 `/etc/group`, `/etc/shadow`, `/etc/gshadow`, `/etc/nsswitch.conf`, and `/root`.
 It also creates minimal PAM `common-*` include files in `/etc/pam.d` so tools
@@ -179,13 +179,13 @@ such as `passwd` can reach the local `pam_unix` path, plus `/etc/pam.d/other`
 as the PAM fallback service file. Existing files are preserved so `passwd`,
 later package installs, or manual edits are not overwritten.
 
-## `licof apt install`
+## `lxe apt install`
 
 Downloads and installs packages from the configured Debian archive:
 
 ```sh
-licof apt install mawk
-licof apt install apt passwd
+lxe apt install mawk
+lxe apt install apt passwd
 ```
 
 Behavior:
@@ -213,8 +213,8 @@ http://deb.debian.org/debian/dists/bookworm/main/binary-amd64/Packages.gz
 Cache paths:
 
 ```text
-/System/var/licof/cache/bookworm/debian-bookworm-amd64-Packages.gz
-/System/var/licof/cache/bookworm/debian-bookworm-amd64-Packages
+/System/var/lxe/cache/bookworm/debian-bookworm-amd64-Packages.gz
+/System/var/lxe/cache/bookworm/debian-bookworm-amd64-Packages
 ```
 
 The index is accepted only when:
@@ -234,24 +234,24 @@ Download order:
 Retries are controlled by:
 
 ```text
-services/licof/apt/download_attempts
+services/lxe/apt/download_attempts
 ```
 
 Download errors are only reported after all retries fail.
 
 ## Config Schema
 
-The CLI registers the `services/licof` config manifest with `confd`.
+The CLI registers the `services/lxe` config manifest with `confd`.
 
 Defaults:
 
 | Key | Default |
 | --- | --- |
-| `paths/root` | `/System/var/licof` |
-| `paths/rootfs` | `/System/var/licof/rootfs` |
-| `paths/cache` | `/System/var/licof/cache/bookworm` |
-| `paths/db` | `/System/var/licof/db/bookworm` |
-| `paths/installed_db` | `/System/var/licof/db/bookworm/installed` |
+| `paths/root` | `/System/var/lxe` |
+| `paths/rootfs` | `/System/var/lxe/rootfs` |
+| `paths/cache` | `/System/var/lxe/cache/bookworm` |
+| `paths/db` | `/System/var/lxe/db/bookworm` |
+| `paths/installed_db` | `/System/var/lxe/db/bookworm/installed` |
 | `apt/base_url` | `http://deb.debian.org/debian` |
 | `apt/suite` | `bookworm` |
 | `apt/component` | `main` |
@@ -287,15 +287,15 @@ Bootstrap progress is also written to:
 <paths/db>/bootstrap-state
 ```
 
-The state file is recomputed during `licof init` and records `Status`,
+The state file is recomputed during `lxe init` and records `Status`,
 `Installed`, `Missing` and `Failed` package lines for the configured bootstrap
-seed. Re-running `licof init` uses the package markers above, ignores stale
+seed. Re-running `lxe init` uses the package markers above, ignores stale
 markers, downloads the missing seed packages and updates this state file after
 each package.
 
 ## Current Operational Notes
 
-- `licof init` is expected to be run from Terminal when root password setup is
+- `lxe init` is expected to be run from Terminal when root password setup is
   desired.
 - A successful package install does not imply maintainer scripts have run.
 - Some packages require `/proc`, `/sys`, PAM, NSS, terminal or signal behavior

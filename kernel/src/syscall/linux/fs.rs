@@ -207,7 +207,7 @@ pub(super) fn linux_log_library_open(
         Ok((_file_type, size, _position, _mtime)) => {
             let (dev, ino) = linux_fd_identity(global_id);
             crate::serial_verbose_println!(
-                "licof linux open-resolve: ok linux='{}' resolved='{}' fd={} size={} dev={} ino={}",
+                "lxe linux open-resolve: ok linux='{}' resolved='{}' fd={} size={} dev={} ino={}",
                 linux_path,
                 resolved_path,
                 fd,
@@ -218,7 +218,7 @@ pub(super) fn linux_log_library_open(
         }
         Err(_) => {
             crate::serial_verbose_println!(
-                "licof linux open-resolve: ok linux='{}' resolved='{}' fd={}",
+                "lxe linux open-resolve: ok linux='{}' resolved='{}' fd={}",
                 linux_path,
                 resolved_path,
                 fd
@@ -504,7 +504,7 @@ pub(super) fn linux_unlinkat(dirfd: i32, path_ptr: u64, flags: u64) -> u64 {
 pub(super) fn linux_unlink_translated(path: &str) -> u64 {
     if linux_is_protected_rootfs_path(path) {
         crate::serial_verbose_println!(
-            "licof linux unlink: blocked protected rootfs path '{}'",
+            "lxe linux unlink: blocked protected rootfs path '{}'",
             path
         );
         return linux_err(EBUSY);

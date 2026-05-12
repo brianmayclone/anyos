@@ -1,4 +1,4 @@
-//! licof Linux x86_64 syscall dispatch.
+//! lxe Linux x86_64 syscall dispatch.
 //!
 //! This is intentionally a narrow Tier-0 bridge. Unsupported syscalls return
 //! `-ENOSYS` using Linux's negative-errno convention.
@@ -234,7 +234,7 @@ const LINUX_MAP_PRIVATE: u64 = 0x02;
 const LINUX_MAP_FIXED: u64 = 0x10;
 const LINUX_ARCH_SET_FS: u64 = 0x1002;
 const LINUX_ARCH_GET_FS: u64 = 0x1003;
-const LICOF_ROOTFS: &str = "/System/var/licof/rootfs";
+const LXE_ROOTFS: &str = "/System/var/lxe/rootfs";
 const LINUX_PROC_FILESYSTEMS: u16 = 1;
 const LINUX_PROC_MOUNTS: u16 = 2;
 const LINUX_PROC_LOGINUID: u16 = 3;

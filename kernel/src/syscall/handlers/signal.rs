@@ -204,7 +204,7 @@ pub fn deliver_pending_signal_linux64(regs: &mut super::super::SyscallRegs, resu
     }
     if restorer == 0 {
         crate::serial_verbose_println!(
-            "licof linux signal: cannot deliver sig={} handler={:#x} without restorer",
+            "lxe linux signal: cannot deliver sig={} handler={:#x} without restorer",
             sig,
             handler
         );
@@ -237,7 +237,7 @@ pub fn deliver_pending_signal_linux64(regs: &mut super::super::SyscallRegs, resu
     crate::task::scheduler::current_signal_set_blocked(new_blocked);
 
     crate::serial_verbose_println!(
-        "licof linux signal: deliver abi=v2 tid={} sig={} handler={:#x} restorer={:#x} frame={:#x} result={:#x}",
+        "lxe linux signal: deliver abi=v2 tid={} sig={} handler={:#x} restorer={:#x} frame={:#x} result={:#x}",
         crate::task::scheduler::current_tid(),
         sig,
         handler,
@@ -268,7 +268,7 @@ pub fn linux_rt_sigreturn(regs: &mut super::super::SyscallRegs) -> u64 {
     let magic = unsafe { *(frame_base as *const u64) };
     if magic != LINUX_RT_SIGFRAME_MAGIC {
         crate::serial_verbose_println!(
-            "licof linux rt_sigreturn: bad frame magic={:#x} rsp={:#x}",
+            "lxe linux rt_sigreturn: bad frame magic={:#x} rsp={:#x}",
             magic,
             frame_base
         );
@@ -302,7 +302,7 @@ pub fn linux_rt_sigreturn(regs: &mut super::super::SyscallRegs) -> u64 {
     }
 
     crate::serial_verbose_println!(
-        "licof linux rt_sigreturn: ok tid={} restore rax={:#x} rip={:#x} rsp={:#x} blocked={:#x}",
+        "lxe linux rt_sigreturn: ok tid={} restore rax={:#x} rip={:#x} rsp={:#x} blocked={:#x}",
         crate::task::scheduler::current_tid(),
         regs.rax,
         regs.rip,

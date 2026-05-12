@@ -31,7 +31,7 @@
 #define SYS_MUNMAP          15
 #define SYS_MMAP64         631
 #define SYS_MUNMAP64       632
-#define SYS_LICOF_SPAWN    710
+#define SYS_LXE_SPAWN    710
 
 /* ---- Device management ---- */
 #define SYS_DEVLIST         16

@@ -584,7 +584,7 @@ pub extern "C" fn fork_child_trampoline() {
     }
 
     crate::serial_verbose_println!(
-        "licof fork-child: tid={} returning rax=0 rip={:#x} rsp={:#x} fs_base={:#x} child_tidptr={:#x}",
+        "lxe fork-child: tid={} returning rax=0 rip={:#x} rsp={:#x} fs_base={:#x} child_tidptr={:#x}",
         tid,
         regs.rip,
         regs.rsp,
@@ -995,7 +995,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     load_and_run_with_args_abi(path, name, args, crate::task::abi::AbiPersonality::AnyOs)
 }
 
-/// Load and run a Linux x86_64 ELF through licof.
+/// Load and run a Linux x86_64 ELF through lxe.
 pub fn load_and_run_linux_with_args(
     path: &str,
     name: &str,

@@ -213,8 +213,8 @@ pub fn spawn(path: &str, args: &str) -> u32 {
     spawn_piped(path, args, 0)
 }
 
-/// Spawn a Linux x86_64 ELF through licof.
-pub fn licof_spawn(path: &str, args: &str) -> u32 {
+/// Spawn a Linux x86_64 ELF through lxe.
+pub fn lxe_spawn(path: &str, args: &str) -> u32 {
     let mut path_buf = [0u8; 257];
     let plen = path.len().min(256);
     path_buf[..plen].copy_from_slice(&path.as_bytes()[..plen]);
@@ -226,7 +226,7 @@ pub fn licof_spawn(path: &str, args: &str) -> u32 {
     args_buf[alen] = 0;
 
     syscall2(
-        SYS_LICOF_SPAWN,
+        SYS_LXE_SPAWN,
         path_buf.as_ptr() as u64,
         args_buf.as_ptr() as u64,
     )

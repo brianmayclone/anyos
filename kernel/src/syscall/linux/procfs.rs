@@ -34,7 +34,7 @@ pub(super) fn linux_open_proc_file(abs: &str, file: u16, pid: u32, linux_flags: 
     if (linux_flags & 0o2000000) != 0 {
         crate::task::scheduler::current_fd_set_cloexec(fd, true);
     }
-    crate::serial_verbose_println!("licof linux open-proc: ok linux='{}' fd={}", abs, fd);
+    crate::serial_verbose_println!("lxe linux open-proc: ok linux='{}' fd={}", abs, fd);
     fd as u64
 }
 
@@ -230,7 +230,7 @@ pub(super) fn linux_proc_content(file: u16, pid: u32) -> Vec<u8> {
         LINUX_PROC_CPUINFO => b"processor\t: 0\nvendor_id\t: anyOS\nmodel name\t: anyOS virtual CPU\n"
             .to_vec(),
         LINUX_PROC_LOADAVG => linux_proc_loadavg().into_bytes(),
-        LINUX_PROC_VERSION => b"Linux version 6.1.0-anyos (licof)\n".to_vec(),
+        LINUX_PROC_VERSION => b"Linux version 6.1.0-anyos (lxe)\n".to_vec(),
         LINUX_PROC_PID_STATM => linux_proc_pid_statm(pid).into_bytes(),
         LINUX_PROC_FIPS_ENABLED => b"0\n".to_vec(),
         _ => Vec::new(),

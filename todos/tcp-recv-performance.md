@@ -82,4 +82,4 @@ Akzeptanz:
 - `tcpstress` Receive-Buffer-Matrix: 4K, 16K, 32K, 64K, 128K, 256K.
 - `httpstress` mit Debian `Packages.gz` Default-URL.
 - `httpstress` wget-Runden mit CRC32/MD5/gzip/first-diff Vergleich.
-- `licof init` Bootstrap-Download als realer End-to-End-Smoke-Test.
+- `lxe init` Bootstrap-Download als realer End-to-End-Smoke-Test.

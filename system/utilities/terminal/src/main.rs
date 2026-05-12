@@ -1726,7 +1726,7 @@ fn foreground_local_echo_enabled(fp: &ForegroundProcess, buf: &TerminalBuffer) -
         || cmd.starts_with("bash ")
         || cmd == "sh"
         || cmd.starts_with("sh ")
-        || cmd.starts_with("licof shell")
+        || cmd.starts_with("lxe shell")
         || cmd.contains("/bin/bash")
         || cmd.contains("/bin/sh");
 

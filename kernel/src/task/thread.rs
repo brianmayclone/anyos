@@ -231,7 +231,7 @@ pub struct Thread {
     pub parent_tid: u32,
     /// Userspace ABI personality for syscall dispatch.
     pub abi: AbiPersonality,
-    /// licof rootfs backing Linux ABI path translation.
+    /// lxe rootfs backing Linux ABI path translation.
     pub linux_rootfs: [u8; 512],
     /// Linux x86_64 FS base used for glibc TLS.
     pub linux_fs_base: u64,

@@ -23,7 +23,7 @@ const AT_PLATFORM: u64 = 15;
 const AT_RANDOM: u64 = 25;
 const AT_EXECFN: u64 = 31;
 
-const LICOF_ROOTFS: &str = "/System/var/licof/rootfs";
+const LXE_ROOTFS: &str = "/System/var/lxe/rootfs";
 const LINUX_MAIN_DYN_BASE: u64 = 0x0000_5555_0000_0000;
 const LINUX_INTERP_BASE: u64 = 0x0000_7000_0000_0000;
 
@@ -42,7 +42,7 @@ fn inspect_linux_elf64(data: &[u8]) -> Result<LinuxElf64Info, &'static str> {
         return Err("ELF64 file too small");
     }
     if !is_elf(data) || elf_class(data) != ELFCLASS64 {
-        return Err("licof: expected ELF64 binary");
+        return Err("lxe: expected ELF64 binary");
     }
 
     let hdr = unsafe { &*(data.as_ptr() as *const Elf64Header) };
@@ -53,19 +53,19 @@ fn inspect_linux_elf64(data: &[u8]) -> Result<LinuxElf64Info, &'static str> {
     let ph_num = hdr.e_phnum as usize;
 
     if ph_size < core::mem::size_of::<Elf64Phdr>() {
-        return Err("licof: ELF64 program header entry too small");
+        return Err("lxe: ELF64 program header entry too small");
     }
     if ph_num == 0 {
-        return Err("licof: ELF64 has no program headers");
+        return Err("lxe: ELF64 has no program headers");
     }
     let ph_table_size = ph_size
         .checked_mul(ph_num)
-        .ok_or("licof: ELF64 program header table overflow")?;
+        .ok_or("lxe: ELF64 program header table overflow")?;
     if ph_off
         .checked_add(ph_table_size)
         .map_or(true, |end| end > data.len())
     {
-        return Err("licof: ELF64 program header table out of bounds");
+        return Err("lxe: ELF64 program header table out of bounds");
     }
 
     let mut phdr_addr = 0u64;
@@ -85,12 +85,12 @@ fn inspect_linux_elf64(data: &[u8]) -> Result<LinuxElf64Info, &'static str> {
             let len = p_filesz as usize;
             if len == 0 || len > 512 || start.checked_add(len).map_or(true, |end| end > data.len())
             {
-                return Err("licof: invalid PT_INTERP");
+                return Err("lxe: invalid PT_INTERP");
             }
             let bytes = &data[start..start + len];
             let nul = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
             let path =
-                core::str::from_utf8(&bytes[..nul]).map_err(|_| "licof: PT_INTERP is not UTF-8")?;
+                core::str::from_utf8(&bytes[..nul]).map_err(|_| "lxe: PT_INTERP is not UTF-8")?;
             interp_path = Some(alloc::string::String::from(path));
         } else if p_type == PT_LOAD && phdr_addr == 0 {
             if let Some(end) = p_offset.checked_add(p_filesz) {
@@ -113,17 +113,17 @@ fn inspect_linux_elf64(data: &[u8]) -> Result<LinuxElf64Info, &'static str> {
     })
 }
 
-fn licof_rootfs_for_binary(path: &str) -> alloc::string::String {
-    if path == LICOF_ROOTFS
-        || (path.starts_with(LICOF_ROOTFS)
-            && path.as_bytes().get(LICOF_ROOTFS.len()) == Some(&b'/'))
+fn lxe_rootfs_for_binary(path: &str) -> alloc::string::String {
+    if path == LXE_ROOTFS
+        || (path.starts_with(LXE_ROOTFS)
+            && path.as_bytes().get(LXE_ROOTFS.len()) == Some(&b'/'))
     {
-        return alloc::string::String::from(LICOF_ROOTFS);
+        return alloc::string::String::from(LXE_ROOTFS);
     }
-    alloc::string::String::from(LICOF_ROOTFS)
+    alloc::string::String::from(LXE_ROOTFS)
 }
 
-fn licof_resolve_interp_path(rootfs: &str, path: &str) -> alloc::string::String {
+fn lxe_resolve_interp_path(rootfs: &str, path: &str) -> alloc::string::String {
     if path.starts_with('/') {
         alloc::format!("{}{}", rootfs, path)
     } else {
@@ -131,28 +131,28 @@ fn licof_resolve_interp_path(rootfs: &str, path: &str) -> alloc::string::String 
     }
 }
 
-fn licof_resolve_rootfs_path(
+fn lxe_resolve_rootfs_path(
     rootfs: &str,
     path: &str,
 ) -> Result<alloc::string::String, &'static str> {
     let translated = crate::fs::path::normalize(path);
-    if !licof_path_under_rootfs(rootfs, &translated) {
+    if !lxe_path_under_rootfs(rootfs, &translated) {
         return Ok(translated);
     }
-    licof_resolve_rootfs_path_inner(rootfs, &translated, 0)
+    lxe_resolve_rootfs_path_inner(rootfs, &translated, 0)
 }
 
-fn licof_resolve_rootfs_path_inner(
+fn lxe_resolve_rootfs_path_inner(
     rootfs: &str,
     path: &str,
     depth: u32,
 ) -> Result<alloc::string::String, &'static str> {
     if depth > 16 {
-        return Err("licof: too many rootfs symlinks");
+        return Err("lxe: too many rootfs symlinks");
     }
 
     let normalized = crate::fs::path::normalize(path);
-    let rel = licof_rootfs_relative(rootfs, &normalized);
+    let rel = lxe_rootfs_relative(rootfs, &normalized);
     let components: Vec<&str> = rel
         .split('/')
         .filter(|component| !component.is_empty())
@@ -163,33 +163,33 @@ fn licof_resolve_rootfs_path_inner(
     }
 
     for (idx, component) in components.iter().enumerate() {
-        let candidate = licof_join_path(&current, component);
+        let candidate = lxe_join_path(&current, component);
         match crate::fs::vfs::lstat(&candidate) {
             Ok(st) if st.is_symlink => {
                 let target = crate::fs::vfs::readlink(&candidate)
-                    .map_err(|_| "licof: failed to read rootfs symlink")?;
-                let parent = licof_parent_path(&candidate);
+                    .map_err(|_| "lxe: failed to read rootfs symlink")?;
+                let parent = lxe_parent_path(&candidate);
                 let next =
-                    licof_resolve_link_target(rootfs, &parent, &target, &components[idx + 1..]);
-                return licof_resolve_rootfs_path_inner(rootfs, &next, depth + 1);
+                    lxe_resolve_link_target(rootfs, &parent, &target, &components[idx + 1..]);
+                return lxe_resolve_rootfs_path_inner(rootfs, &next, depth + 1);
             }
             Ok(_) => {
                 current = candidate;
             }
             Err(crate::fs::vfs::FsError::NotFound) => {
-                return Err("licof: rootfs path not found");
+                return Err("lxe: rootfs path not found");
             }
-            Err(_) => return Err("licof: failed to resolve rootfs path"),
+            Err(_) => return Err("lxe: failed to resolve rootfs path"),
         }
     }
     Ok(current)
 }
 
-fn licof_path_under_rootfs(rootfs: &str, path: &str) -> bool {
+fn lxe_path_under_rootfs(rootfs: &str, path: &str) -> bool {
     path == rootfs || (path.starts_with(rootfs) && path.as_bytes().get(rootfs.len()) == Some(&b'/'))
 }
 
-fn licof_rootfs_relative<'a>(rootfs: &str, path: &'a str) -> &'a str {
+fn lxe_rootfs_relative<'a>(rootfs: &str, path: &'a str) -> &'a str {
     if path == rootfs {
         ""
     } else if path.starts_with(rootfs) && path.as_bytes().get(rootfs.len()) == Some(&b'/') {
@@ -199,7 +199,7 @@ fn licof_rootfs_relative<'a>(rootfs: &str, path: &'a str) -> &'a str {
     }
 }
 
-fn licof_join_path(base: &str, component: &str) -> alloc::string::String {
+fn lxe_join_path(base: &str, component: &str) -> alloc::string::String {
     if base == "/" {
         alloc::format!("/{}", component)
     } else if base.ends_with('/') {
@@ -209,7 +209,7 @@ fn licof_join_path(base: &str, component: &str) -> alloc::string::String {
     }
 }
 
-fn licof_parent_path(path: &str) -> alloc::string::String {
+fn lxe_parent_path(path: &str) -> alloc::string::String {
     let normalized = crate::fs::path::normalize(path);
     match normalized.rfind('/') {
         Some(0) | None => alloc::string::String::from("/"),
@@ -217,7 +217,7 @@ fn licof_parent_path(path: &str) -> alloc::string::String {
     }
 }
 
-fn licof_resolve_link_target(
+fn lxe_resolve_link_target(
     rootfs: &str,
     parent: &str,
     target: &str,
@@ -230,10 +230,10 @@ fn licof_resolve_link_target(
             alloc::format!("{}{}", rootfs, target)
         }
     } else {
-        licof_join_path(parent, target)
+        lxe_join_path(parent, target)
     };
     for component in remaining {
-        path = licof_join_path(&path, component);
+        path = lxe_join_path(&path, component);
     }
     crate::fs::path::normalize(&path)
 }
@@ -293,23 +293,23 @@ fn write_linux_initial_stack_vectors(
     elf: &LinuxElf64Info,
 ) -> Result<u64, &'static str> {
     if argv.is_empty() {
-        return Err("licof: empty argv");
+        return Err("lxe: empty argv");
     }
     if argv.len() > 64 {
-        return Err("licof: too many argv entries");
+        return Err("lxe: too many argv entries");
     }
     if envp.len() > 128 {
-        return Err("licof: too many envp entries");
+        return Err("lxe: too many envp entries");
     }
 
     let mut string_bytes = 0usize;
     for s in argv.iter().chain(envp.iter()) {
         string_bytes = string_bytes
             .checked_add(s.len() + 1)
-            .ok_or("licof: initial stack string size overflow")?;
+            .ok_or("lxe: initial stack string size overflow")?;
     }
     if string_bytes > 64 * 1024 {
-        return Err("licof: initial stack strings too large");
+        return Err("lxe: initial stack strings too large");
     }
 
     let mut sp = stack_top;
@@ -321,7 +321,7 @@ fn write_linux_initial_stack_vectors(
         let bytes = s.as_bytes();
         sp = sp
             .checked_sub((bytes.len() + 1) as u64)
-            .ok_or("licof: initial stack underflow")?;
+            .ok_or("lxe: initial stack underflow")?;
         let mut chunk = alloc::vec::Vec::<u8>::new();
         chunk.extend_from_slice(bytes);
         chunk.push(0);
@@ -334,7 +334,7 @@ fn write_linux_initial_stack_vectors(
         let bytes = s.as_bytes();
         sp = sp
             .checked_sub((bytes.len() + 1) as u64)
-            .ok_or("licof: initial stack underflow")?;
+            .ok_or("lxe: initial stack underflow")?;
         let mut chunk = alloc::vec::Vec::<u8>::new();
         chunk.extend_from_slice(bytes);
         chunk.push(0);
@@ -346,7 +346,7 @@ fn write_linux_initial_stack_vectors(
     let platform = b"x86_64\0";
     sp = sp
         .checked_sub(platform.len() as u64)
-        .ok_or("licof: initial stack underflow")?;
+        .ok_or("lxe: initial stack underflow")?;
     let platform_ptr = sp;
     let mut platform_chunk = alloc::vec::Vec::<u8>::new();
     platform_chunk.extend_from_slice(platform);
@@ -362,7 +362,7 @@ fn write_linux_initial_stack_vectors(
     }
     sp = sp
         .checked_sub(random_bytes.len() as u64)
-        .ok_or("licof: initial stack underflow")?;
+        .ok_or("lxe: initial stack underflow")?;
     let random_ptr = sp;
     let mut random_chunk = alloc::vec::Vec::<u8>::new();
     random_chunk.extend_from_slice(&random_bytes);
@@ -392,19 +392,19 @@ fn write_linux_initial_stack_vectors(
     let vector_bytes = 8 + (argv_ptrs.len() + 1) * 8 + (env_ptrs.len() + 1) * 8 + auxv.len() * 16;
     if sp
         .checked_sub(vector_bytes as u64)
-        .ok_or("licof: initial stack underflow")?
+        .ok_or("lxe: initial stack underflow")?
         & 0xF
         != 0
     {
         sp = sp
             .checked_sub(8)
-            .ok_or("licof: initial stack alignment underflow")?;
+            .ok_or("lxe: initial stack alignment underflow")?;
     }
     sp = sp
         .checked_sub(vector_bytes as u64)
-        .ok_or("licof: initial stack underflow")?;
+        .ok_or("lxe: initial stack underflow")?;
     if sp < stack_bottom {
-        return Err("licof: initial stack exceeds mapped stack");
+        return Err("lxe: initial stack exceeds mapped stack");
     }
 
     let mut vectors = alloc::vec::Vec::<u8>::new();
@@ -425,9 +425,9 @@ fn write_linux_initial_stack_vectors(
     for (addr, bytes) in &payload_chunks {
         let end = addr
             .checked_add(bytes.len() as u64)
-            .ok_or("licof: initial stack payload overflow")?;
+            .ok_or("lxe: initial stack payload overflow")?;
         if *addr < stack_bottom || end > stack_top {
-            return Err("licof: initial stack payload outside mapped stack");
+            return Err("lxe: initial stack payload outside mapped stack");
         }
     }
 
@@ -485,7 +485,7 @@ fn load_linux_image_into_pd(
     envp: &[alloc::string::String],
 ) -> Result<LoadResult, &'static str> {
     if data.is_empty() {
-        return Err("licof: program file is empty");
+        return Err("lxe: program file is empty");
     }
 
     let mut total_user_pages = map_linux_sigreturn_trampoline(pd_phys)?;
@@ -498,12 +498,12 @@ fn load_linux_image_into_pd(
     let class = elf_class(data);
     if class != ELFCLASS64 {
         if class == ELFCLASS32 {
-            return Err("licof: ELF32 Linux binaries are not supported");
+            return Err("lxe: ELF32 Linux binaries are not supported");
         }
         if is_elf(data) {
-            return Err("licof: unknown Linux ELF class");
+            return Err("lxe: unknown Linux ELF class");
         }
-        return Err("licof: only ELF64 Linux binaries are supported");
+        return Err("lxe: only ELF64 Linux binaries are supported");
     }
 
     let mut linux_elf = inspect_linux_elf64(data)?;
@@ -531,16 +531,16 @@ fn load_linux_image_into_pd(
         linux_elf.phdr_addr = linux_elf
             .phdr_addr
             .checked_add(main_load_bias)
-            .ok_or("licof: AT_PHDR load bias overflow")?;
+            .ok_or("lxe: AT_PHDR load bias overflow")?;
     }
 
     if let Some(ref interp_path) = linux_elf.interp_path {
-        let translated_interp = licof_resolve_interp_path(linux_rootfs, interp_path);
-        let resolved_interp = match licof_resolve_rootfs_path(linux_rootfs, &translated_interp) {
+        let translated_interp = lxe_resolve_interp_path(linux_rootfs, interp_path);
+        let resolved_interp = match lxe_resolve_rootfs_path(linux_rootfs, &translated_interp) {
             Ok(path) => path,
             Err(err) => {
                 crate::serial_verbose_println!(
-                    "licof loader: failed to resolve PT_INTERP '{}' translated='{}': {}",
+                    "lxe loader: failed to resolve PT_INTERP '{}' translated='{}': {}",
                     interp_path,
                     translated_interp,
                     err
@@ -550,15 +550,15 @@ fn load_linux_image_into_pd(
         };
         let interp_data = crate::fs::vfs::read_file_to_vec(&resolved_interp).map_err(|_| {
             crate::serial_verbose_println!(
-                "licof loader: failed to read PT_INTERP '{}' resolved='{}'",
+                "lxe loader: failed to read PT_INTERP '{}' resolved='{}'",
                 interp_path,
                 resolved_interp
             );
-            "licof: failed to read PT_INTERP from rootfs"
+            "lxe: failed to read PT_INTERP from rootfs"
         })?;
         let interp_info = inspect_linux_elf64(&interp_data)?;
         if interp_info.interp_path.is_some() {
-            return Err("licof: nested PT_INTERP is not supported");
+            return Err("lxe: nested PT_INTERP is not supported");
         }
         let interp_load_bias = if interp_info.is_dyn {
             LINUX_INTERP_BASE
@@ -609,16 +609,16 @@ fn default_envp() -> alloc::vec::Vec<alloc::string::String> {
         alloc::string::String::from("USER=root"),
         alloc::string::String::from("LOGNAME=root"),
         alloc::string::String::from("PS1=# "),
-        alloc::string::String::from("LICOF=1"),
+        alloc::string::String::from("LXE=1"),
     ]
 }
 
-/// Load and run a Linux x86_64 ELF through licof.
+/// Load and run a Linux x86_64 ELF through lxe.
 pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32, &'static str> {
     #[cfg(not(target_arch = "x86_64"))]
     {
         let _ = (path, name, args);
-        return Err("licof: Linux x86_64 ABI requires an x86_64 kernel");
+        return Err("lxe: Linux x86_64 ABI requires an x86_64 kernel");
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -627,12 +627,12 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
 
 #[cfg(target_arch = "x86_64")]
 fn load_and_run_with_args_x86_64(path: &str, name: &str, args: &str) -> Result<u32, &'static str> {
-    let linux_rootfs = licof_rootfs_for_binary(path);
-    let load_path = match licof_resolve_rootfs_path(&linux_rootfs, path) {
+    let linux_rootfs = lxe_rootfs_for_binary(path);
+    let load_path = match lxe_resolve_rootfs_path(&linux_rootfs, path) {
         Ok(path) => path,
         Err(err) => {
             crate::serial_verbose_println!(
-                "licof loader: failed to resolve binary path='{}': {}",
+                "lxe loader: failed to resolve binary path='{}': {}",
                 path,
                 err
             );
@@ -655,7 +655,7 @@ fn load_and_run_with_args_x86_64(path: &str, name: &str, args: &str) -> Result<u
         Ok(data) => data,
         Err(e) => {
             crate::serial_verbose_println!(
-                "  licof load_and_run: read_file_to_vec('{}') failed: {:?}",
+                "  lxe load_and_run: read_file_to_vec('{}') failed: {:?}",
                 load_path,
                 e
             );
@@ -699,7 +699,7 @@ fn load_and_run_with_args_x86_64(path: &str, name: &str, args: &str) -> Result<u
 
     if !try_store_pending_program(tid, result.entry, result.stack_top, 0) {
         crate::serial_verbose_println!(
-            "licof load_and_run: pending-program table full for '{}' (tid={})",
+            "lxe load_and_run: pending-program table full for '{}' (tid={})",
             path,
             tid
         );
@@ -764,19 +764,19 @@ pub fn exec_current_linux_process(
     let tid = crate::task::scheduler::current_tid();
     let old_pd = match crate::task::scheduler::current_thread_page_directory() {
         Some(pd) => pd,
-        None => return "licof execve: no page directory on current thread",
+        None => return "lxe execve: no page directory on current thread",
     };
 
     let data = match crate::fs::vfs::read_file_to_vec(load_path) {
         Ok(data) => data,
-        Err(_) => return "licof execve: failed to read program file",
+        Err(_) => return "lxe execve: failed to read program file",
     };
     let new_pd = match virtual_mem::create_user_page_directory_no_low_identity() {
         Some(pd) => pd,
-        None => return "licof execve: failed to create page directory",
+        None => return "lxe execve: failed to create page directory",
     };
 
-    let linux_rootfs = LICOF_ROOTFS;
+    let linux_rootfs = LXE_ROOTFS;
     let result = match load_linux_image_into_pd(&data, new_pd, linux_rootfs, argv, envp) {
         Ok(result) => result,
         Err(err) => {
@@ -832,6 +832,6 @@ pub fn exec_current_linux_process(
 
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
-        "licof execve: unsupported architecture"
+        "lxe execve: unsupported architecture"
     }
 }

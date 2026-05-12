@@ -66,7 +66,7 @@ pub fn current_thread_abi() -> AbiPersonality {
     AbiPersonality::AnyOs
 }
 
-/// Set the licof rootfs used by Linux ABI path translation.
+/// Set the lxe rootfs used by Linux ABI path translation.
 pub fn set_thread_linux_rootfs(tid: u32, rootfs: &str) {
     let mut guard = SCHEDULER.lock();
     let sched = match guard.as_mut() {
@@ -81,7 +81,7 @@ pub fn set_thread_linux_rootfs(tid: u32, rootfs: &str) {
     }
 }
 
-/// Copy the current thread's licof rootfs into `buf`.
+/// Copy the current thread's lxe rootfs into `buf`.
 pub fn current_thread_linux_rootfs(buf: &mut [u8]) -> usize {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();

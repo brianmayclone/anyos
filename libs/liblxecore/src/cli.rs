@@ -1,26 +1,13 @@
-//! licof - Linux Compatibility Framework command line tool.
-
-#![no_std]
-#![no_main]
-
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::{fs, println, process};
 
-mod config;
-mod elf;
-mod model;
-mod package;
-mod rootfs;
-
-use config::LicoConfig;
-use package::{install_deb, install_package, package_installed, InstallProgress};
-use rootfs::{
+use crate::config::LxeConfig;
+use crate::package::{install_deb, install_package, package_installed, InstallProgress};
+use crate::rootfs::{
     ensure_rootfs_layout, find_linux_shell, linux_path_in_rootfs, path_exists, print_path_probe,
     repair_rootfs_runtime, write_bytes_atomic,
 };
-
-anyos_std::entry!(main);
 
 macro_rules! log_ok {
     ($($arg:tt)*) => {
@@ -46,10 +33,8 @@ macro_rules! log_fatal {
     };
 }
 
-fn main() {
-    let config = LicoConfig::load();
-    let mut args_buf = [0u8; 256];
-    let raw = process::args(&mut args_buf);
+pub fn run_cli(raw: &str) {
+    let config = LxeConfig::load();
     let mut verbose = false;
     let argv: Vec<&str> = raw
         .split_ascii_whitespace()
@@ -73,27 +58,27 @@ fn main() {
         Some("pkg") => pkg(&config, &argv[1..], verbose),
         Some("apt") => apt(&config, &argv[1..], verbose),
         Some(cmd) => {
-            log_error!("licof: unknown command '{}'", cmd);
+            log_error!("lxe: unknown command '{}'", cmd);
             usage();
         }
     }
 }
 
 fn usage() {
-    println!("licof - Linux Compatibility Framework");
+    println!("lxe - Linux Experience Extension");
     println!();
     println!("Usage:");
-    println!("  licof [--verbose] status");
-    println!("  licof [--verbose] init");
-    println!("  licof [--verbose] repair");
-    println!("  licof [--verbose] run <linux-elf64> [args...]");
-    println!("  licof [--verbose] shell [shell-args...]");
-    println!("  licof [--verbose] pkg install <file.deb>");
-    println!("  licof [--verbose] apt install <package> [package...]");
+    println!("  lxe [--verbose] status");
+    println!("  lxe [--verbose] init");
+    println!("  lxe [--verbose] repair");
+    println!("  lxe [--verbose] run <linux-elf64> [args...]");
+    println!("  lxe [--verbose] shell [shell-args...]");
+    println!("  lxe [--verbose] pkg install <file.deb>");
+    println!("  lxe [--verbose] apt install <package> [package...]");
 }
 
-fn status(config: &LicoConfig) {
-    println!("licof status");
+fn status(config: &LxeConfig) {
+    println!("lxe status");
     println!("  abi: linux-x86_64 tier-0");
     println!("  root: {}", config.root);
     println!("  linux-base: {}", config.rootfs);
@@ -101,26 +86,26 @@ fn status(config: &LicoConfig) {
         "  apt-source: {}/dists/{}/{}/binary-{}/Packages.gz",
         config.apt_base, config.apt_dist, config.apt_component, config.apt_arch
     );
-    println!("  config: confd system/services/licof");
+    println!("  config: confd system/services/lxe");
     println!("  supported-package-data: data.tar.gz, data.tar.xz");
 }
 
-fn run(config: &LicoConfig, args: &[&str]) {
+fn run(config: &LxeConfig, args: &[&str]) {
     if args.is_empty() {
-        log_error!("licof run: missing Linux ELF64 path");
+        log_error!("lxe run: missing Linux ELF64 path");
         return;
     }
 
     let path = resolve_run_path(&config.rootfs, args[0]);
     let child_args = join_args(&args[1..]);
-    run_linux_process(config, "licof run", &path, &child_args);
+    run_linux_process(config, "lxe run", &path, &child_args);
 }
 
-fn shell(config: &LicoConfig, args: &[&str]) {
+fn shell(config: &LxeConfig, args: &[&str]) {
     ensure_rootfs_layout(config);
     let Some(path) = find_linux_shell(&config.rootfs) else {
-        log_error!("licof shell: no Linux shell found");
-        log_warn!("licof shell: run 'licof init' or install bash/dash first");
+        log_error!("lxe shell: no Linux shell found");
+        log_warn!("lxe shell: run 'lxe init' or install bash/dash first");
         return;
     };
     let child_args = if args.is_empty() {
@@ -128,10 +113,10 @@ fn shell(config: &LicoConfig, args: &[&str]) {
     } else {
         join_args(args)
     };
-    run_linux_process(config, "licof shell", &path, &child_args);
+    run_linux_process(config, "lxe shell", &path, &child_args);
 }
 
-fn init(config: &LicoConfig, configure_password: bool, verbose: bool) {
+fn init(config: &LxeConfig, configure_password: bool, verbose: bool) {
     ensure_rootfs_layout(config);
 
     log_ok!("linux base ready at {}", config.rootfs);
@@ -141,15 +126,15 @@ fn init(config: &LicoConfig, configure_password: bool, verbose: bool) {
     if bootstrapped && configure_password {
         configure_root_password(config, &config.rootfs);
     } else if configure_password {
-        log_warn!("licof init: bootstrap incomplete; skipping root password setup");
+        log_warn!("lxe init: bootstrap incomplete; skipping root password setup");
     }
 }
 
-fn repair(config: &LicoConfig) {
+fn repair(config: &LxeConfig) {
     ensure_rootfs_layout(config);
     repair_rootfs_runtime(&config.rootfs);
     fs::sync();
-    log_ok!("licof repair: Linux base repaired at {}", config.rootfs);
+    log_ok!("lxe repair: Linux base repaired at {}", config.rootfs);
 }
 
 fn resolve_run_path(rootfs: &str, path: &str) -> String {
@@ -165,7 +150,7 @@ fn resolve_run_path(rootfs: &str, path: &str) -> String {
     }
 }
 
-fn pkg(config: &LicoConfig, args: &[&str], verbose: bool) {
+fn pkg(config: &LxeConfig, args: &[&str], verbose: bool) {
     match args.first().copied() {
         Some("install") => {
             if let Some(path) = args.get(1) {
@@ -175,24 +160,24 @@ fn pkg(config: &LicoConfig, args: &[&str], verbose: bool) {
                 if install_deb(config, path, &config.rootfs, None, &mut progress) {
                     progress.set_overall(1, 1);
                     progress.finish();
-                    log_ok!("licof pkg: installed '{}'", path);
+                    log_ok!("lxe pkg: installed '{}'", path);
                 } else {
                     progress.finish();
                 }
             } else {
-                log_error!("licof pkg install: missing .deb path");
+                log_error!("lxe pkg install: missing .deb path");
             }
         }
-        _ => log_error!("licof pkg: expected install <file.deb>"),
+        _ => log_error!("lxe pkg: expected install <file.deb>"),
     }
 }
 
-fn apt(config: &LicoConfig, args: &[&str], verbose: bool) {
+fn apt(config: &LxeConfig, args: &[&str], verbose: bool) {
     match args.first().copied() {
         Some("install") => {
             let packages = &args[1..];
             if packages.is_empty() {
-                log_error!("licof apt install: missing package name");
+                log_error!("lxe apt install: missing package name");
                 return;
             }
             ensure_rootfs_layout(config);
@@ -209,11 +194,11 @@ fn apt(config: &LicoConfig, args: &[&str], verbose: bool) {
             }
             progress.finish();
         }
-        _ => log_error!("licof apt: expected install <package>"),
+        _ => log_error!("lxe apt: expected install <package>"),
     }
 }
 
-fn bootstrap_rootfs(config: &LicoConfig, rootfs: &str, verbose: bool) -> bool {
+fn bootstrap_rootfs(config: &LxeConfig, rootfs: &str, verbose: bool) -> bool {
     let mut failed = Vec::new();
     let mut progress = InstallProgress::new(verbose, config.bootstrap_seed.len() as u32, "seeds");
     progress.set_overall(0, config.bootstrap_seed.len() as u32);
@@ -227,12 +212,12 @@ fn bootstrap_rootfs(config: &LicoConfig, rootfs: &str, verbose: bool) -> bool {
             write_bootstrap_state(config, rootfs, "running", &failed);
             continue;
         }
-        log_ok!("licof init: bootstrap installing missing seed '{}'", pkg);
+        log_ok!("lxe init: bootstrap installing missing seed '{}'", pkg);
         if install_package(config, pkg, rootfs, 0, &mut progress) {
             done += 1;
         } else {
             progress.finish();
-            log_error!("licof init: bootstrap seed '{}' failed", pkg);
+            log_error!("lxe init: bootstrap seed '{}' failed", pkg);
             failed.push(pkg.clone());
         }
         progress.set_overall(done, config.bootstrap_seed.len() as u32);
@@ -255,15 +240,15 @@ fn bootstrap_rootfs(config: &LicoConfig, rootfs: &str, verbose: bool) -> bool {
             config.bootstrap_seed.len() as u32,
         );
         progress.finish();
-        log_ok!("licof init: bootstrap complete");
+        log_ok!("lxe init: bootstrap complete");
     } else {
         progress.finish();
-        log_error!("licof init: bootstrap incomplete; see diagnostics above");
+        log_error!("lxe init: bootstrap incomplete; see diagnostics above");
     }
     ok
 }
 
-fn bootstrap_packages_complete(config: &LicoConfig, rootfs: &str) -> bool {
+fn bootstrap_packages_complete(config: &LxeConfig, rootfs: &str) -> bool {
     for pkg in &config.bootstrap_seed {
         if !package_installed(config, pkg, rootfs) {
             return false;
@@ -273,7 +258,7 @@ fn bootstrap_packages_complete(config: &LicoConfig, rootfs: &str) -> bool {
 }
 
 fn write_bootstrap_state(
-    config: &LicoConfig,
+    config: &LxeConfig,
     rootfs: &str,
     status: &str,
     failed_this_run: &[String],
@@ -312,41 +297,41 @@ fn write_bootstrap_state(
 fn verify_bootstrap_integrity(rootfs: &str) -> bool {
     let mut ok = true;
     if find_linux_shell(rootfs).is_none() {
-        log_error!("licof init: bootstrap missing Linux shell (/bin/bash, /bin/dash or /bin/sh)");
+        log_error!("lxe init: bootstrap missing Linux shell (/bin/bash, /bin/dash or /bin/sh)");
         for linux_path in ["/bin/bash", "/usr/bin/bash", "/bin/dash", "/bin/sh"] {
             let path = linux_path_in_rootfs(rootfs, linux_path);
-            print_path_probe("licof init", &path);
+            print_path_probe("lxe init", &path);
         }
         ok = false;
     }
     if find_passwd_binary(rootfs).is_none() {
-        log_error!("licof init: bootstrap missing passwd binary");
+        log_error!("lxe init: bootstrap missing passwd binary");
         for linux_path in ["/usr/bin/passwd", "/bin/passwd"] {
             let path = linux_path_in_rootfs(rootfs, linux_path);
-            print_path_probe("licof init", &path);
+            print_path_probe("lxe init", &path);
         }
         ok = false;
     }
     ok
 }
 
-fn configure_root_password(config: &LicoConfig, rootfs: &str) {
+fn configure_root_password(config: &LxeConfig, rootfs: &str) {
     let Some(passwd) = find_passwd_binary(rootfs) else {
-        log_warn!("licof init: passwd binary not found; root password not configured");
-        log_warn!("licof init: try later after 'licof apt install passwd'");
+        log_warn!("lxe init: passwd binary not found; root password not configured");
+        log_warn!("lxe init: try later after 'lxe apt install passwd'");
         return;
     };
 
     if fs::isatty(0) != 1 || fs::isatty(1) != 1 {
-        log_warn!("licof init: root password setup needs an interactive terminal");
-        log_warn!("licof init: run later: licof run {} root", passwd);
+        log_warn!("lxe init: root password setup needs an interactive terminal");
+        log_warn!("lxe init: run later: lxe run {} root", passwd);
         return;
     }
 
-    log_ok!("licof init: starting passwd for root");
-    let code = run_linux_process(config, "licof passwd", &passwd, "root");
+    log_ok!("lxe init: starting passwd for root");
+    let code = run_linux_process(config, "lxe passwd", &passwd, "root");
     if code == Some(0) {
-        log_ok!("licof init: root password configured");
+        log_ok!("lxe init: root password configured");
     }
 }
 
@@ -360,9 +345,9 @@ fn find_passwd_binary(rootfs: &str) -> Option<String> {
     None
 }
 
-fn run_linux_process(config: &LicoConfig, label: &str, path: &str, args: &str) -> Option<u32> {
-    elf::diagnose_linux_binary(config, label, path);
-    let tid = process::licof_spawn(path, args);
+fn run_linux_process(config: &LxeConfig, label: &str, path: &str, args: &str) -> Option<u32> {
+    crate::elf::diagnose_linux_binary(config, label, path);
+    let tid = process::lxe_spawn(path, args);
     if tid == u32::MAX {
         log_fatal!("{}: failed to start '{}'", label, path);
         log_error!(

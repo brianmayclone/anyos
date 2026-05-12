@@ -4,11 +4,11 @@ use libconf_schema::{
     default_int, default_string, manifest, migration_string, RegistryScope, ServiceSchema,
 };
 
-const DEFAULT_ROOT: &str = "/System/var/licof";
-const DEFAULT_ROOTFS: &str = "/System/var/licof/rootfs";
-const DEFAULT_CACHE: &str = "/System/var/licof/cache/bookworm";
-const DEFAULT_DB: &str = "/System/var/licof/db/bookworm";
-const DEFAULT_INSTALLED_DB: &str = "/System/var/licof/db/bookworm/installed";
+const DEFAULT_ROOT: &str = "/System/var/lxe";
+const DEFAULT_ROOTFS: &str = "/System/var/lxe/rootfs";
+const DEFAULT_CACHE: &str = "/System/var/lxe/cache/bookworm";
+const DEFAULT_DB: &str = "/System/var/lxe/db/bookworm";
+const DEFAULT_INSTALLED_DB: &str = "/System/var/lxe/db/bookworm/installed";
 const DEFAULT_APT_BASE: &str = "http://deb.debian.org/debian";
 const DEFAULT_APT_DIST: &str = "bookworm";
 const DEFAULT_APT_COMPONENT: &str = "main";
@@ -20,8 +20,8 @@ const DEFAULT_INDEX_REQUIRED_PACKAGES: &str =
 const DEFAULT_BOOTSTRAP_SEED: &str =
     "base-files,base-passwd,libc6,libgcc-s1,libstdc++6,zlib1g,apt,debian-archive-keyring,dash,bash,coreutils,libpam-runtime,login,passwd,libcom-err2,mc,procps,htop,gcc,make";
 
-const LICOF_DIRS: &[&str] = &["paths", "apt", "bootstrap", "tools"];
-const LICOF_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
+const LXE_DIRS: &[&str] = &["paths", "apt", "bootstrap", "tools"];
+const LXE_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
     default_string("paths/root", DEFAULT_ROOT),
     default_string("paths/rootfs", DEFAULT_ROOTFS),
     default_string("paths/cache", DEFAULT_CACHE),
@@ -39,7 +39,7 @@ const LICOF_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
     default_string("bootstrap/packages_csv", DEFAULT_BOOTSTRAP_SEED),
     default_string("tools/wget", DEFAULT_WGET),
 ];
-const LICOF_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[
+const LXE_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[
     migration_string(2, "paths/cache", DEFAULT_CACHE),
     migration_string(2, "paths/db", DEFAULT_DB),
     migration_string(2, "paths/installed_db", DEFAULT_INSTALLED_DB),
@@ -60,18 +60,18 @@ const LICOF_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[
     migration_string(4, "bootstrap/packages_csv", DEFAULT_BOOTSTRAP_SEED),
     migration_string(5, "bootstrap/packages_csv", DEFAULT_BOOTSTRAP_SEED),
 ];
-const LICOF_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
-    "services/licof",
+const LXE_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "services/lxe",
     RegistryScope::System,
     5,
-    LICOF_DIRS,
-    LICOF_DEFAULTS,
-    LICOF_MIGRATIONS,
+    LXE_DIRS,
+    LXE_DEFAULTS,
+    LXE_MIGRATIONS,
 );
-const LICOF_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("licof", &LICOF_MANIFEST);
+const LXE_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("lxe", &LXE_MANIFEST);
 
 #[derive(Clone)]
-pub struct LicoConfig {
+pub struct LxeConfig {
     pub root: String,
     pub rootfs: String,
     pub cache: String,
@@ -87,7 +87,7 @@ pub struct LicoConfig {
     pub bootstrap_seed: Vec<String>,
 }
 
-impl LicoConfig {
+impl LxeConfig {
     pub fn defaults() -> Self {
         Self {
             root: String::from(DEFAULT_ROOT),
@@ -108,7 +108,7 @@ impl LicoConfig {
 
     pub fn load() -> Self {
         let mut cfg = Self::defaults();
-        let _ = LICOF_SCHEMA.register();
+        let _ = LXE_SCHEMA.register();
         cfg.read_confd_strings();
         cfg.read_confd_numbers();
         cfg.normalize();
@@ -154,13 +154,13 @@ impl LicoConfig {
         read_confd_string("apt/component", &mut self.apt_component);
         read_confd_string("apt/arch", &mut self.apt_arch);
         read_confd_string("tools/wget", &mut self.wget);
-        if let Some(v) = LICOF_SCHEMA.read_string("apt/index_required_packages_csv") {
+        if let Some(v) = LXE_SCHEMA.read_string("apt/index_required_packages_csv") {
             let parsed = parse_csv(&v);
             if !parsed.is_empty() {
                 self.index_required_packages = parsed;
             }
         }
-        if let Some(v) = LICOF_SCHEMA.read_string("bootstrap/packages_csv") {
+        if let Some(v) = LXE_SCHEMA.read_string("bootstrap/packages_csv") {
             let parsed = parse_csv(&v);
             if !parsed.is_empty() {
                 self.bootstrap_seed = parsed;
@@ -169,7 +169,7 @@ impl LicoConfig {
     }
 
     fn read_confd_numbers(&mut self) {
-        if let Some(v) = LICOF_SCHEMA.read_i64("apt/download_attempts") {
+        if let Some(v) = LXE_SCHEMA.read_i64("apt/download_attempts") {
             if v > 0 && v <= u8::MAX as i64 {
                 self.download_attempts = v as u8;
             }
@@ -190,7 +190,7 @@ impl LicoConfig {
 }
 
 fn read_confd_string(path: &str, target: &mut String) {
-    if let Some(value) = LICOF_SCHEMA.read_string(path) {
+    if let Some(value) = LXE_SCHEMA.read_string(path) {
         if !value.trim().is_empty() {
             *target = value;
         }

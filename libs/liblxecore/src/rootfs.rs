@@ -1,4 +1,4 @@
-use crate::config::LicoConfig;
+use crate::config::LxeConfig;
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::{
@@ -9,7 +9,7 @@ use anyos_std::{
 const FS_TYPE_REGULAR: u32 = 0;
 const FS_TYPE_DIRECTORY: u32 = 1;
 
-pub(crate) fn ensure_rootfs_layout(config: &LicoConfig) {
+pub(crate) fn ensure_rootfs_layout(config: &LxeConfig) {
     ensure_dir_recursive(&config.root);
     ensure_dir_recursive(&config.cache);
     ensure_dir_recursive(&config.db);
@@ -38,7 +38,7 @@ pub(crate) fn ensure_rootfs_layout(config: &LicoConfig) {
         .as_bytes(),
     );
     let _ = write_bytes_atomic(
-        &alloc::format!("{}/etc/apt/apt.conf.d/99licof", rootfs),
+        &alloc::format!("{}/etc/apt/apt.conf.d/99lxe", rootfs),
         b"Acquire::Check-Valid-Until \"false\";\n",
     );
     ensure_linux_account_files(rootfs);
@@ -178,7 +178,7 @@ fn ensure_rootfs_file(rootfs: &str, linux_path: &str, data: &[u8], mode: u16) {
 }
 
 fn temp_file_path(path: &str) -> String {
-    alloc::format!("{}.licof-tmp", path)
+    alloc::format!("{}.lxe-tmp", path)
 }
 
 pub(crate) fn replace_with_temp_file(temp: &str, dest: &str) -> bool {
@@ -222,7 +222,7 @@ pub(crate) fn linux_path_in_rootfs(rootfs: &str, linux_path: &str) -> String {
     alloc::format!("{}/{}", rootfs, rel)
 }
 
-pub(crate) fn rootfs_for_path(config: &LicoConfig, path: &str) -> String {
+pub(crate) fn rootfs_for_path(config: &LxeConfig, path: &str) -> String {
     let rootfs = config.rootfs.trim_end_matches('/');
     if path == rootfs
         || (path.starts_with(rootfs) && path.as_bytes().get(rootfs.len()) == Some(&b'/'))
@@ -451,7 +451,7 @@ fn repair_symlink(dest: &str, target: &str, label: &str) {
     let _ = fs::unlink(dest);
     if fs::symlink(target, dest) == 0 {
         println!(
-            "[OK]\tlicof repair: repaired {} {} -> {}",
+            "[OK]\tlxe repair: repaired {} {} -> {}",
             label, dest, target
         );
     }

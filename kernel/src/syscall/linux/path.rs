@@ -200,7 +200,7 @@ pub(super) fn linux_log_path_error(
     errno: i32,
 ) {
     crate::serial_verbose_println!(
-        "licof linux {}: failed errno={} linux='{}' translated='{}' resolved='{}'",
+        "lxe linux {}: failed errno={} linux='{}' translated='{}' resolved='{}'",
         op,
         errno,
         linux_path,
@@ -213,11 +213,11 @@ pub(super) fn current_linux_rootfs() -> String {
     let mut buf = [0u8; 512];
     let len = crate::task::scheduler::current_thread_linux_rootfs(&mut buf);
     if len == 0 {
-        return String::from(LICOF_ROOTFS);
+        return String::from(LXE_ROOTFS);
     }
     core::str::from_utf8(&buf[..len])
         .map(String::from)
-        .unwrap_or_else(|_| String::from(LICOF_ROOTFS))
+        .unwrap_or_else(|_| String::from(LXE_ROOTFS))
 }
 
 pub(super) fn linux_fs_err(e: crate::fs::vfs::FsError) -> u64 {
@@ -250,7 +250,7 @@ pub(super) fn linux_fd_identity(global_id: u32) -> (u64, u64) {
 }
 
 pub(super) fn linux_stat_identity(path: &str) -> (u64, u64) {
-    let dev = if path.starts_with(LICOF_ROOTFS) {
+    let dev = if path.starts_with(LXE_ROOTFS) {
         0x1cf
     } else {
         1

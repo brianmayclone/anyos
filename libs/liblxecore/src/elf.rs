@@ -1,4 +1,4 @@
-use crate::config::LicoConfig;
+use crate::config::LxeConfig;
 use crate::model::Elf64Diag;
 use crate::rootfs::{
     linux_path_in_rootfs, path_exists, path_exists_no_follow, print_path_probe,
@@ -23,7 +23,7 @@ const ELF64_PH_OFFSET: usize = 8;
 const ELF64_PH_FILESZ: usize = 32;
 const ELF64_PH_SIZE: usize = 56;
 
-pub(crate) fn diagnose_linux_binary(config: &LicoConfig, label: &str, path: &str) {
+pub(crate) fn diagnose_linux_binary(config: &LxeConfig, label: &str, path: &str) {
     let read_path =
         resolve_rootfs_symlink_path(&config.rootfs, path).unwrap_or_else(|| String::from(path));
     let data = match fs::read_to_vec(&read_path) {

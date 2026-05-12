@@ -928,7 +928,7 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
 
 /// Create a user PML4 without the low identity-map compatibility window.
 ///
-/// This is used by licof/Linux processes so classic Linux ET_EXEC mappings
+/// This is used by lxe/Linux processes so classic Linux ET_EXEC mappings
 /// around 0x400000 can be installed as normal user pages.
 pub fn create_user_page_directory_no_low_identity() -> Option<PhysAddr> {
     create_user_page_directory_inner(false)
@@ -992,7 +992,7 @@ fn create_user_page_directory_inner(map_low_identity: bool) -> Option<PhysAddr> 
             }
 
             // Copy identity-map PD entries [0..31] from the current address space
-            // when it has them. Linux/LICOF tasks intentionally use a no-low-identity
+            // when it has them. Linux/LXE tasks intentionally use a no-low-identity
             // address space; touching recursive_pd_base(0) there would fault.
             let low_identity_pd = {
                 let pml4e0 = cur_pml4.read_volatile();

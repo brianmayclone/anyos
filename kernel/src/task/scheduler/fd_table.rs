@@ -132,7 +132,7 @@ pub fn current_fd_set_nonblock(fd: u32, nonblock: bool) {
     }
 }
 
-/// Update the cursor for a licof Linux proc pseudo-file in the current FD table.
+/// Update the cursor for a lxe Linux proc pseudo-file in the current FD table.
 pub fn current_fd_set_linux_proc_position(fd: u32, position: u32) -> bool {
     let mut guard = SCHEDULER.lock();
     let sched = match guard.as_mut() {

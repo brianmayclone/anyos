@@ -1,9 +1,9 @@
-# licof - Linux Compatibility Framework Roadmap
+# lxe - Linux Experience Extension Roadmap
 
 ## Ziel
 
-`licof` ist ein separater Linux-Kompatibilitaetspfad neben ASL. ASL bleibt die
-VM-first Linux-Umgebung; `licof` ist der direkte Linux-ELF64/Kernel-ABI-Pfad fuer
+`lxe` ist ein separater Linux-Kompatibilitaetspfad neben ASL. ASL bleibt die
+VM-first Linux-Umgebung; `lxe` ist der direkte Linux-ELF64/Kernel-ABI-Pfad fuer
 kleine bis mittelgrosse Linux-Programme.
 
 Der erste Erfolg ist nicht "Debian komplett", sondern ein stabiler vertikaler
@@ -11,14 +11,14 @@ Slice:
 
 1. Linux-ELF64 starten.
 2. Linux-Syscalls nach anyOS-Semantik uebersetzen.
-3. Dynamische glibc-Binaries ueber die licof-Linux-Base ausfuehren.
+3. Dynamische glibc-Binaries ueber die lxe-Linux-Base ausfuehren.
 4. Debian-Pakete in diese Linux-Base installieren.
 
 ## Produktgrenzen
 
-- `licof` ist keine VM und benutzt keinen Linux-Kernel.
-- `licof` implementiert die Linux x86_64 Syscall-ABI auf dem anyOS-Kernel.
-- `licof` ist bewusst opt-in: Prozesse laufen entweder als `AnyOs` oder als
+- `lxe` ist keine VM und benutzt keinen Linux-Kernel.
+- `lxe` implementiert die Linux x86_64 Syscall-ABI auf dem anyOS-Kernel.
+- `lxe` ist bewusst opt-in: Prozesse laufen entweder als `AnyOs` oder als
   `LinuxX86_64` ABI-Personality.
 - ASL bleibt der Pfad fuer echte Distributionen, Kernelmodule, systemd-nahe
   Workloads und maximale Linux-Kompatibilitaet.
@@ -26,13 +26,13 @@ Slice:
 ## Aktueller Implementierungsstand
 
 - Kernel-Threads besitzen eine ABI-Personality; Fork/Spawn vererben sie.
-- `SYS_LICOF_SPAWN` startet ELF64-Prozesse gezielt als `LinuxX86_64`.
+- `SYS_LXE_SPAWN` startet ELF64-Prozesse gezielt als `LinuxX86_64`.
 - Linux-x86_64 Syscalls werden im gemeinsamen x86_64 Entry anhand der
   Personality in eine separate Linux-Tabelle dispatcht.
 - Der Linux-ELF64-Pfad baut einen Linux-konformen Initialstack mit
   `argc`/`argv`/`envp`/`auxv` inklusive `AT_PHDR`, `AT_ENTRY`, `AT_RANDOM`,
   `AT_PLATFORM` und `AT_EXECFN`.
-- Der Linux-Loader kann `PT_INTERP` aus der licof-Linux-Base laden, ET_DYN-Objekte
+- Der Linux-Loader kann `PT_INTERP` aus der lxe-Linux-Base laden, ET_DYN-Objekte
   mit festem Load-Bias mappen und `AT_BASE` auf den dynamischen Loader setzen.
 - Linux-ABI-Prozesse bekommen auf x86_64 eine User-PML4 ohne Low-Identity-
   Mapping, damit klassische Linux-ET_EXECs bei `0x400000` nicht mehr mit
@@ -42,23 +42,23 @@ Slice:
   `munmap`, `getpid`, `getcwd`, `chdir`, `readlink`, `uname`, `getuid`,
   `getgid`, `arch_prctl`, `set_tid_address`, `set_robust_list`, `getrandom`,
   `exit` und `exit_group`.
-- `/System/bin/licof` existiert mit `status`, `init`, `repair`, `run`, `pkg`
+- `/System/bin/lxe` existiert mit `status`, `init`, `repair`, `run`, `pkg`
   und `apt install`.
-- `licof init` legt die Linux-Base, Apt-Konfiguration, Cache und Paketdatenbank
+- `lxe init` legt die Linux-Base, Apt-Konfiguration, Cache und Paketdatenbank
   an, bootstrapped eine minimale Apt-Basis inklusive `passwd` und versucht
   danach interaktiv `passwd root` zu starten.
-- `licof` prueft vor `run`/`passwd` den Linux-ELF64-Header, zeigt `PT_INTERP`
+- `lxe` prueft vor `run`/`passwd` den Linux-ELF64-Header, zeigt `PT_INTERP`
   und fehlende Interpreter-Pfade sichtbar an und warnt bei fehlendem TTY fuer
   interaktive Linux-Tools.
-- `licof apt install <pkg>` laedt Paketindex und `.deb`-Pakete aus
+- `lxe apt install <pkg>` laedt Paketindex und `.deb`-Pakete aus
   `deb.debian.org`, loest einfache `Pre-Depends`/`Depends` rekursiv auf und
   extrahiert `data.tar.gz` in die Linux-Base.
 - Der Paketcache verwendet interne, dateisystemfreundliche Namen; Debian-
   Dateinamen mit `+`, `:` oder anderen Sonderzeichen bleiben nur in der URL.
 - `libzip` reicht Tar-Metadaten wie Typeflag, Mode, UID/GID und Link-Ziel an
-  Clients durch. `licof` erzeugt Symlinks und wendet chmod/chown best-effort
+  Clients durch. `lxe` erzeugt Symlinks und wendet chmod/chown best-effort
   an.
-- `data.tar.xz` ist im `licof`/`libzip_client`-Pfad verdrahtet. `libzip`
+- `data.tar.xz` ist im `lxe`/`libzip_client`-Pfad verdrahtet. `libzip`
   entpackt XZ-Container mit einfachem LZMA2-Filter inklusive normaler
   komprimierter Chunks und unkomprimierter LZMA2-Chunks.
 
@@ -67,7 +67,7 @@ Startpfad, brauchen aber weitere Linux-Syscalls (`futex`, `mprotect`, `access`,
 `pread64`, TLS-/Thread-Pfade), bevor glibc stabil laeuft. Moderne Debian-
 Pakete verwenden haeufig `data.tar.xz`; der Debian-Standardpfad mit einfachem
 LZMA2-Filter ist implementiert. XZ-Filterketten mit Delta/BCJ und SHA256-
-Check-Verifikation sind noch nicht Ziel des ersten Licof-Slices.
+Check-Verifikation sind noch nicht Ziel des ersten Lxe-Slices.
 
 ## Architektur
 
@@ -97,13 +97,13 @@ Check-Verifikation sind noch nicht Ziel des ersten Licof-Slices.
 
 ### Userland
 
-- `/System/bin/licof` ist die erste CLI.
-- Spaeter optional: `licofd` als Broker fuer Linux-Base, Paketdatenbank,
+- `/System/bin/lxe` ist die erste CLI.
+- Spaeter optional: `lxed` als Broker fuer Linux-Base, Paketdatenbank,
   `/proc`-Emulation und Downloads.
 - Standard-Linux-Base:
-  - `/System/var/licof/rootfs`
-  - Cache: `/System/var/licof/cache`
-  - Datenbank: `/System/var/licof/db`
+  - `/System/var/lxe/rootfs`
+  - Cache: `/System/var/lxe/cache`
+  - Datenbank: `/System/var/lxe/db`
 
 ## Kompatibilitaetsstufen
 
@@ -125,12 +125,12 @@ Kernel-Syscalls:
 
 CLI:
 
-- `licof run <path> [args...]`
-- `licof status`
+- `lxe run <path> [args...]`
+- `lxe status`
 
 ### Tier 1: Kleine dynamische glibc-Tools
 
-Ziel: `/bin/echo`, `/usr/bin/env`, einfache Coreutils aus der licof-Linux-Base.
+Ziel: `/bin/echo`, `/usr/bin/env`, einfache Coreutils aus der lxe-Linux-Base.
 
 Zusatz:
 
@@ -162,10 +162,10 @@ Ziel: `.deb` lokal installieren und einfache Pakete nutzbar machen.
 
 CLI:
 
-- `licof init`
-- `licof repair`
-- `licof pkg install <file.deb>`
-- `licof apt install <pkg>`
+- `lxe init`
+- `lxe repair`
+- `lxe pkg install <file.deb>`
+- `lxe apt install <pkg>`
 
 Implementierung:
 
@@ -189,7 +189,7 @@ Implementierung:
 
 1. Kernel-`AbiPersonality` einfuehren.
 2. Linux-x86_64 Dispatch-Skeleton mit Tier-0 Syscalls.
-3. Kernel-Syscall `SYS_LICOF_SPAWN` fuer kontrolliertes Starten als
+3. Kernel-Syscall `SYS_LXE_SPAWN` fuer kontrolliertes Starten als
    `LinuxX86_64`.
-4. `/System/bin/licof` mit `run`, `status`, `init`, `repair`, `pkg` Skeleton.
+4. `/System/bin/lxe` mit `run`, `status`, `init`, `repair`, `pkg` Skeleton.
 5. Tests: Buildbarkeit und Smoke-Pfad fuer statische Linux-ELF64-Binaries.

@@ -328,7 +328,7 @@ pub fn exit_current(code: u32) {
         sched.threads[idx].exit_code = Some(code);
         sched.threads[idx].terminated_at_tick = Some(tick);
         crate::serial_verbose_println!(
-            "licof exit: tid={} parent={} code={} waiter={} children_killed={}",
+            "lxe exit: tid={} parent={} code={} waiter={} children_killed={}",
             current_tid,
             parent_tid,
             code,

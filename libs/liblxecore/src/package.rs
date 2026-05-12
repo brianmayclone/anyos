@@ -1,4 +1,4 @@
-use crate::config::LicoConfig;
+use crate::config::LxeConfig;
 use crate::model::PackageInfo;
 use crate::rootfs::{
     copy_file, ensure_dir, ensure_dir_recursive, ensure_parent_dirs, file_size, is_elf_file,
@@ -21,7 +21,7 @@ static mut DOWNLOAD_LAST_PRINT: u32 = 0;
 static mut APT_INDEX_READY: bool = false;
 
 fn package_temp_path(path: &str) -> String {
-    alloc::format!("{}.licof-tmp", path)
+    alloc::format!("{}.lxe-tmp", path)
 }
 
 fn extract_tar_entry_atomic(reader: &libzip_client::TarReader, index: u32, dest: &str) -> bool {
@@ -63,16 +63,16 @@ fn log_bootstrap_line(message: &str) {
 }
 
 fn strip_log_prefix(message: &str) -> String {
-    if let Some(rest) = message.strip_prefix("licof apt: ") {
+    if let Some(rest) = message.strip_prefix("lxe apt: ") {
         return alloc::format!("apt: {}", rest);
     }
-    if let Some(rest) = message.strip_prefix("licof pkg: ") {
+    if let Some(rest) = message.strip_prefix("lxe pkg: ") {
         return alloc::format!("pkg: {}", rest);
     }
-    if let Some(rest) = message.strip_prefix("licof download: ") {
+    if let Some(rest) = message.strip_prefix("lxe download: ") {
         return alloc::format!("download: {}", rest);
     }
-    if let Some(rest) = message.strip_prefix("licof: ") {
+    if let Some(rest) = message.strip_prefix("lxe: ") {
         return String::from(rest);
     }
     String::from(message)
@@ -148,7 +148,7 @@ impl InstallProgress {
         self.overall_done = done;
         self.overall_total = total;
         println!(
-            "licof: overall {}/{} {}",
+            "lxe: overall {}/{} {}",
             self.overall_done, self.overall_total, self.overall_unit
         );
     }
@@ -162,9 +162,9 @@ impl InstallProgress {
         self.package_total = 0;
         self.files_written = 0;
         if detail.is_empty() {
-            println!("licof: {}", name);
+            println!("lxe: {}", name);
         } else {
-            println!("licof: {}: {}", name, detail);
+            println!("lxe: {}: {}", name, detail);
         }
     }
 
@@ -177,9 +177,9 @@ impl InstallProgress {
         self.package_total = total;
         self.files_written = 0;
         if version.is_empty() {
-            println!("licof: unpacking {} ({} entries)", name, total);
+            println!("lxe: unpacking {} ({} entries)", name, total);
         } else {
-            println!("licof: unpacking {} {} ({} entries)", name, version, total);
+            println!("lxe: unpacking {} {} ({} entries)", name, version, total);
         }
     }
 
@@ -188,7 +188,7 @@ impl InstallProgress {
         self.files_written = files_written;
         if self.verbose {
             println!(
-                "licof: package progress {}/{} entries, {} files",
+                "lxe: package progress {}/{} entries, {} files",
                 self.package_done, self.package_total, self.files_written
             );
         }
@@ -198,7 +198,7 @@ impl InstallProgress {
         self.package_done = self.package_total;
         self.files_written = files_written;
         println!(
-            "licof: unpacked {} {} ({} files)",
+            "lxe: unpacked {} {} ({} files)",
             self.package_name, self.package_version, self.files_written
         );
     }
@@ -207,7 +207,7 @@ impl InstallProgress {
 }
 
 pub(crate) fn install_package(
-    config: &LicoConfig,
+    config: &LxeConfig,
     pkg: &str,
     rootfs: &str,
     depth: u8,
@@ -217,12 +217,12 @@ pub(crate) fn install_package(
     install_package_inner(config, pkg, rootfs, depth, &mut pending, progress)
 }
 
-pub(crate) fn package_installed(config: &LicoConfig, pkg: &str, rootfs: &str) -> bool {
+pub(crate) fn package_installed(config: &LxeConfig, pkg: &str, rootfs: &str) -> bool {
     is_installed(config, pkg, rootfs)
 }
 
 fn install_package_inner(
-    config: &LicoConfig,
+    config: &LxeConfig,
     pkg: &str,
     rootfs: &str,
     depth: u8,
@@ -231,7 +231,7 @@ fn install_package_inner(
 ) -> bool {
     if depth > 32 {
         progress.finish();
-        println!("licof apt: dependency recursion too deep at '{}'", pkg);
+        println!("lxe apt: dependency recursion too deep at '{}'", pkg);
         return false;
     }
     if is_installed(config, pkg, rootfs) {
@@ -246,15 +246,15 @@ fn install_package_inner(
     progress.phase("apt parse", pkg);
     let Some(info) = find_package_in_index(config, pkg) else {
         progress.finish();
-        println!("licof apt: package '{}' not found", pkg);
+        println!("lxe apt: package '{}' not found", pkg);
         if package_name_present(&package_index_txt, pkg) {
             println!(
-                "licof apt: package '{}' exists in raw index but could not be parsed",
+                "lxe apt: package '{}' exists in raw index but could not be parsed",
                 pkg
             );
         } else {
             println!(
-                "licof apt: package '{}' is absent from cached index ({} bytes)",
+                "lxe apt: package '{}' is absent from cached index ({} bytes)",
                 pkg,
                 file_size(&package_index_txt)
             );
@@ -267,7 +267,7 @@ fn install_package_inner(
     if dependency_pending(pkg, pending) || dependency_pending(&info.package, pending) {
         if progress.verbose() {
             println!(
-                "licof apt: dependency '{}' is already scheduled; continuing",
+                "lxe apt: dependency '{}' is already scheduled; continuing",
                 pkg
             );
         }
@@ -280,7 +280,7 @@ fn install_package_inner(
     for dep_group in parse_depends(&info.pre_depends) {
         if !install_dependency_group(config, &dep_group, rootfs, depth + 1, pending, progress) {
             progress.finish();
-            println!("licof apt: dependency for '{}' not satisfied", info.package);
+            println!("lxe apt: dependency for '{}' not satisfied", info.package);
             pending.pop();
             return false;
         }
@@ -288,7 +288,7 @@ fn install_package_inner(
     for dep_group in parse_depends(&info.depends) {
         if !install_dependency_group(config, &dep_group, rootfs, depth + 1, pending, progress) {
             progress.finish();
-            println!("licof apt: dependency for '{}' not satisfied", info.package);
+            println!("lxe apt: dependency for '{}' not satisfied", info.package);
             pending.pop();
             return false;
         }
@@ -320,7 +320,7 @@ fn install_package_inner(
 }
 
 fn install_dependency_group(
-    config: &LicoConfig,
+    config: &LxeConfig,
     alternatives: &[String],
     rootfs: &str,
     depth: u8,
@@ -335,7 +335,7 @@ fn install_dependency_group(
     if !alternatives.is_empty() {
         progress.finish();
         println!(
-            "licof apt: no dependency alternative worked: {}",
+            "lxe apt: no dependency alternative worked: {}",
             alternatives[0]
         );
     }
@@ -343,7 +343,7 @@ fn install_dependency_group(
 }
 
 fn download_verified_package(
-    config: &LicoConfig,
+    config: &LxeConfig,
     info: &PackageInfo,
     url: &str,
     dest: &str,
@@ -363,14 +363,14 @@ fn download_verified_package(
         );
         if progress.verbose() {
             println!(
-                "licof apt: downloading {} {} (attempt {}/{})",
+                "lxe apt: downloading {} {} (attempt {}/{})",
                 info.package, info.version, attempt, config.download_attempts
             );
         }
         progress.finish();
         if !download_url(config, url, dest) {
             progress.finish();
-            println!("licof apt: download failed: {}", url);
+            println!("lxe apt: download failed: {}", url);
             return false;
         }
         progress.phase("deb verify", &info.package);
@@ -381,14 +381,14 @@ fn download_verified_package(
         if attempt < config.download_attempts {
             progress.finish();
             println!(
-                "licof apt: package verification failed for {}; retrying download",
+                "lxe apt: package verification failed for {}; retrying download",
                 info.package
             );
         }
     }
     progress.finish();
     println!(
-        "licof apt: package verification failed for {} after {} attempts",
+        "lxe apt: package verification failed for {} after {} attempts",
         info.package, config.download_attempts
     );
     false
@@ -408,7 +408,7 @@ fn set_apt_index_ready() {
     }
 }
 
-fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool {
+fn ensure_apt_index(config: &LxeConfig, progress: &mut InstallProgress) -> bool {
     if apt_index_ready() {
         progress.phase("apt index", "using verified cache");
         return true;
@@ -417,7 +417,7 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
     progress.phase("apt index", "initializing libzip");
     if !libzip_client::init() {
         progress.finish();
-        println!("licof apt: libzip unavailable");
+        println!("lxe apt: libzip unavailable");
         return false;
     }
     ensure_dir_recursive(&config.cache);
@@ -426,14 +426,14 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
     progress.phase("apt index", "checking cache");
     if file_size(&packages_txt) > 0 {
         println!(
-            "licof apt: cached package index: {} ({} bytes)",
+            "lxe apt: cached package index: {} ({} bytes)",
             packages_txt,
             file_size(&packages_txt)
         );
-        println!("licof apt: cached package index: checking header");
+        println!("lxe apt: cached package index: checking header");
         if looks_like_plain_packages_index(&packages_txt) {
             println!(
-                "licof apt: cached package index: checking {} required packages",
+                "lxe apt: cached package index: checking {} required packages",
                 config.index_required_packages.len()
             );
         }
@@ -441,10 +441,10 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
             && packages_index_has_required_entries(config)
         {
             set_apt_index_ready();
-            println!("licof apt: cached package index: ok");
+            println!("lxe apt: cached package index: ok");
             return true;
         }
-        println!("licof apt: cached package index is invalid; refreshing");
+        println!("lxe apt: cached package index is invalid; refreshing");
         let _ = fs::unlink(&packages_txt);
     }
     let url = config.package_index_url();
@@ -458,14 +458,14 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
         );
         if progress.verbose() {
             println!(
-                "licof apt: fetching package index (attempt {}/{})",
+                "lxe apt: fetching package index (attempt {}/{})",
                 attempt, config.download_attempts
             );
         }
         progress.finish();
         if !download_url(config, &url, &packages_gz) {
             progress.finish();
-            println!("licof apt: failed to download {}", url);
+            println!("lxe apt: failed to download {}", url);
             continue;
         }
         let downloaded = file_size(&packages_gz);
@@ -475,18 +475,18 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
         );
         if downloaded == 0 {
             progress.finish();
-            println!("licof apt: downloaded package index is empty");
+            println!("lxe apt: downloaded package index is empty");
             continue;
         }
         if looks_like_plain_packages_index(&packages_gz) {
             progress.finish();
             println!(
-                "licof apt: package index arrived uncompressed ({} bytes)",
+                "lxe apt: package index arrived uncompressed ({} bytes)",
                 downloaded
             );
             if !copy_file(&packages_gz, &packages_txt) {
                 progress.finish();
-                println!("licof apt: cannot store uncompressed package index");
+                println!("lxe apt: cannot store uncompressed package index");
                 continue;
             }
         } else {
@@ -504,7 +504,7 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
             if gzip_status != libzip_client::GZIP_STATUS_OK {
                 progress.finish();
                 println!(
-                    "licof apt: failed to decompress package index: {} (downloaded {} bytes)",
+                    "lxe apt: failed to decompress package index: {} (downloaded {} bytes)",
                     gzip_status_text(gzip_status),
                     downloaded
                 );
@@ -520,21 +520,21 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
         );
         if unpacked == 0 {
             progress.finish();
-            println!("licof apt: decompressed package index is empty");
+            println!("lxe apt: decompressed package index is empty");
             continue;
         }
         if !looks_like_plain_packages_index(&packages_txt) {
             progress.finish();
-            println!("licof apt: decompressed package index is not a Packages file");
+            println!("lxe apt: decompressed package index is not a Packages file");
             continue;
         }
         if !packages_index_has_required_entries(config) {
             progress.finish();
-            println!("licof apt: decompressed package index is missing bootstrap entries");
+            println!("lxe apt: decompressed package index is missing bootstrap entries");
             continue;
         }
         set_apt_index_ready();
-        println!("licof apt: package index ready ({} bytes)", unpacked);
+        println!("lxe apt: package index ready ({} bytes)", unpacked);
         return true;
     }
 
@@ -542,13 +542,13 @@ fn ensure_apt_index(config: &LicoConfig, progress: &mut InstallProgress) -> bool
     false
 }
 
-fn find_package_in_index(config: &LicoConfig, wanted: &str) -> Option<PackageInfo> {
+fn find_package_in_index(config: &LxeConfig, wanted: &str) -> Option<PackageInfo> {
     let wanted = preferred_package(wanted).unwrap_or(wanted);
     let packages_txt = config.package_index_txt();
     let mut file = match fs::File::open(&packages_txt) {
         Ok(file) => file,
         Err(_) => {
-            println!("licof apt: cannot open package index '{}'", packages_txt);
+            println!("lxe apt: cannot open package index '{}'", packages_txt);
             return find_package_in_compressed_index(config, wanted);
         }
     };
@@ -560,7 +560,7 @@ fn find_package_in_index(config: &LicoConfig, wanted: &str) -> Option<PackageInf
         let n = match file.read(&mut chunk) {
             Ok(n) => n,
             Err(_) => {
-                println!("licof apt: cannot read package index '{}'", packages_txt);
+                println!("lxe apt: cannot read package index '{}'", packages_txt);
                 return find_package_in_compressed_index(config, wanted);
             }
         };
@@ -596,21 +596,21 @@ fn find_package_in_index(config: &LicoConfig, wanted: &str) -> Option<PackageInf
     }
 }
 
-fn find_package_in_compressed_index(config: &LicoConfig, wanted: &str) -> Option<PackageInfo> {
+fn find_package_in_compressed_index(config: &LxeConfig, wanted: &str) -> Option<PackageInfo> {
     let Some(index) = read_compressed_package_index(config) else {
         return None;
     };
     let found = find_package_in_bytes(config, &index, wanted);
     if found.is_some() {
         println!(
-            "licof apt: resolved '{}' from compressed package index",
+            "lxe apt: resolved '{}' from compressed package index",
             wanted
         );
     }
     found
 }
 
-fn find_package_in_bytes(config: &LicoConfig, index: &[u8], wanted: &str) -> Option<PackageInfo> {
+fn find_package_in_bytes(config: &LxeConfig, index: &[u8], wanted: &str) -> Option<PackageInfo> {
     let mut start = 0usize;
     let mut pos = 0usize;
     let mut newline_run = 0usize;
@@ -639,7 +639,7 @@ fn find_package_in_bytes(config: &LicoConfig, index: &[u8], wanted: &str) -> Opt
     }
 }
 
-fn package_info_from_para(config: &LicoConfig, para: &[u8], wanted: &str) -> Option<PackageInfo> {
+fn package_info_from_para(config: &LxeConfig, para: &[u8], wanted: &str) -> Option<PackageInfo> {
     let package = field_value(para, b"Package")?;
     let exact = package == wanted;
     if !exact && !provides_package_bytes(para, wanted) {
@@ -755,7 +755,7 @@ fn dependency_name(raw: &str) -> Option<String> {
 }
 
 pub(crate) fn install_deb(
-    config: &LicoConfig,
+    config: &LxeConfig,
     path: &str,
     rootfs: &str,
     info: Option<&PackageInfo>,
@@ -763,25 +763,25 @@ pub(crate) fn install_deb(
 ) -> bool {
     if !libzip_client::init() {
         progress.finish();
-        println!("licof pkg: libzip unavailable");
+        println!("lxe pkg: libzip unavailable");
         return false;
     }
     let data = match fs::read_to_vec(path) {
         Ok(d) => d,
         Err(_) => {
             progress.finish();
-            println!("licof pkg: cannot read '{}'", path);
+            println!("lxe pkg: cannot read '{}'", path);
             return false;
         }
     };
     let Some(reader) = data_tar_reader(&data, path) else {
         progress.finish();
-        println!("licof pkg: cannot open package data archive: {}", path);
+        println!("lxe pkg: cannot open package data archive: {}", path);
         return false;
     };
     if reader.entry_count() == 0 {
         progress.finish();
-        println!("licof pkg: staged data archive has no entries: {}", path);
+        println!("lxe pkg: staged data archive has no entries: {}", path);
         return false;
     }
     let package_name = info
@@ -826,7 +826,7 @@ pub(crate) fn install_deb(
         } else {
             ensure_parent_dirs(&dest);
             if progress.verbose() {
-                println!("licof pkg: extracting {}", rel);
+                println!("lxe pkg: extracting {}", rel);
             }
             if extract_tar_entry_atomic(&reader, i, &dest) {
                 apply_tar_metadata(&reader, i, &dest);
@@ -835,7 +835,7 @@ pub(crate) fn install_deb(
                 progress.package_file(i + 1, files);
             } else {
                 progress.finish();
-                println!("licof pkg: failed to extract {}", rel);
+                println!("lxe pkg: failed to extract {}", rel);
                 complete = false;
             }
         }
@@ -848,14 +848,14 @@ pub(crate) fn install_deb(
         } else if link.symlink {
             progress.finish();
             println!(
-                "licof pkg: failed to create symlink {} -> {}",
+                "lxe pkg: failed to create symlink {} -> {}",
                 link.rel, link.target
             );
             complete = false;
         } else {
             progress.finish();
             println!(
-                "licof pkg: failed to materialize hardlink {} -> {}",
+                "lxe pkg: failed to materialize hardlink {} -> {}",
                 link.rel, link.target
             );
             complete = false;
@@ -863,12 +863,12 @@ pub(crate) fn install_deb(
     }
     if files == 0 {
         progress.finish();
-        println!("licof pkg: extracted no files from '{}'", path);
+        println!("lxe pkg: extracted no files from '{}'", path);
         return false;
     }
     if !complete {
         progress.finish();
-        println!("licof pkg: package '{}' extracted incompletely", path);
+        println!("lxe pkg: package '{}' extracted incompletely", path);
         return false;
     }
 
@@ -881,13 +881,13 @@ pub(crate) fn install_deb(
         progress.package_done(files);
         if progress.verbose() {
             println!(
-                "licof apt: installed {} {} ({} files)",
+                "lxe apt: installed {} {} ({} files)",
                 info.package, info.version, files
             );
         }
     } else {
         progress.package_done(files);
-        println!("licof pkg: extracted {} files", files);
+        println!("lxe pkg: extracted {} files", files);
     }
     true
 }
@@ -916,7 +916,7 @@ fn install_package_link(
     ensure_parent_dirs(&link.dest);
     if link.symlink {
         if verbose {
-            println!("licof pkg: linking {} -> {}", link.rel, link.target);
+            println!("lxe pkg: linking {} -> {}", link.rel, link.target);
         }
         let _ = fs::unlink(&link.dest);
         if fs::symlink(&link.target, &link.dest) == 0 {
@@ -924,7 +924,7 @@ fn install_package_link(
                 return true;
             }
             println!(
-                "licof pkg: symlink verification failed {} -> {}",
+                "lxe pkg: symlink verification failed {} -> {}",
                 link.rel, link.target
             );
             let _ = fs::unlink(&link.dest);
@@ -932,7 +932,7 @@ fn install_package_link(
         return false;
     } else {
         if verbose {
-            println!("licof pkg: hardlink {} -> {}", link.rel, link.target);
+            println!("lxe pkg: hardlink {} -> {}", link.rel, link.target);
         }
     }
     if materialize_hardlink_target(rootfs, reader, &link.dest, &link.target) {
@@ -1006,7 +1006,7 @@ fn materialize_hardlink_from_archive(
         return true;
     }
     println!(
-        "licof pkg: failed to extract hardlink target {} for {}",
+        "lxe pkg: failed to extract hardlink target {} for {}",
         rel, target
     );
     false
@@ -1084,11 +1084,11 @@ fn validate_debian_archive_keyring_runtime(rootfs: &str) -> bool {
         let path = linux_path_in_rootfs(rootfs, linux_path);
         if !validate_keyring_payload(&path) {
             println!(
-                "licof pkg: debian archive keyring check failed: {} size={}",
+                "lxe pkg: debian archive keyring check failed: {} size={}",
                 path,
                 file_size(&path)
             );
-            print_path_probe("licof pkg", &path);
+            print_path_probe("lxe pkg", &path);
             ok = false;
         }
     }
@@ -1119,7 +1119,7 @@ fn ensure_runtime_alias(rootfs: &str, dest_linux: &str, target: &str, label: &st
         .unwrap_or_else(|| linux_path_in_rootfs(rootfs, target));
     if !is_elf_file(&src) {
         println!(
-            "licof pkg: cannot repair {} {}; source {} is not an ELF",
+            "lxe pkg: cannot repair {} {}; source {} is not an ELF",
             label, dest, src
         );
         return false;
@@ -1135,24 +1135,24 @@ fn ensure_runtime_alias(rootfs: &str, dest_linux: &str, target: &str, label: &st
             return true;
         }
         println!(
-            "licof pkg: replacing stale {} {} (size {}, expected {})",
+            "lxe pkg: replacing stale {} {} (size {}, expected {})",
             label, dest, dest_size, src_size
         );
     } else if path_exists_no_follow(&dest) && path_is_symlink(&dest) {
-        println!("licof pkg: replacing stale {} symlink {}", label, dest);
+        println!("lxe pkg: replacing stale {} symlink {}", label, dest);
     } else if path_exists_no_follow(&dest) {
-        println!("licof pkg: replacing stale {} {}", label, dest);
+        println!("lxe pkg: replacing stale {} {}", label, dest);
     }
 
     ensure_parent_dirs(&dest);
     let _ = fs::unlink(&dest);
     if fs::symlink(target, &dest) == 0 && rootfs_resolved_is_elf(rootfs, &dest) {
-        println!("licof pkg: restored {} {} -> {}", label, dest, target);
+        println!("lxe pkg: restored {} {} -> {}", label, dest, target);
         return true;
     }
 
     println!(
-        "licof pkg: failed to restore {} {} -> {}",
+        "lxe pkg: failed to restore {} {} -> {}",
         label, dest, target
     );
     false
@@ -1174,12 +1174,12 @@ fn validate_runtime_elf(rootfs: &str, linux_path: &str, label: &str) -> bool {
         return true;
     }
     println!(
-        "licof pkg: {} runtime check failed: {} -> {} is not an ELF",
+        "lxe pkg: {} runtime check failed: {} -> {} is not an ELF",
         label, path, resolved
     );
-    print_path_probe("licof pkg", &path);
+    print_path_probe("lxe pkg", &path);
     if resolved != path {
-        print_path_probe("licof pkg", &resolved);
+        print_path_probe("lxe pkg", &resolved);
     }
     false
 }
@@ -1207,12 +1207,12 @@ fn data_tar_reader(data: &[u8], path: &str) -> Option<libzip_client::TarReader> 
     }
     if let Some(xz_data) = ar_entry(data, "data.tar.xz") {
         let Some(tar_data) = libzip_client::unxz(&xz_data) else {
-            println!("licof pkg: cannot decompress data.tar.xz from '{}'", path);
+            println!("lxe pkg: cannot decompress data.tar.xz from '{}'", path);
             return None;
         };
         return libzip_client::TarReader::from_bytes(&tar_data);
     }
-    println!("licof pkg: '{}' has no supported data.tar.* member", path);
+    println!("lxe pkg: '{}' has no supported data.tar.* member", path);
     None
 }
 
@@ -1269,7 +1269,7 @@ fn append_manifest_path(manifest: &mut String, rel: &str) {
 }
 
 fn mark_installed(
-    config: &LicoConfig,
+    config: &LxeConfig,
     info: &PackageInfo,
     rootfs: &str,
     files: u32,
@@ -1290,7 +1290,7 @@ fn mark_installed(
     let _ = write_bytes_atomic(&path, body.as_bytes());
 }
 
-fn is_installed(config: &LicoConfig, pkg: &str, rootfs: &str) -> bool {
+fn is_installed(config: &LxeConfig, pkg: &str, rootfs: &str) -> bool {
     let path = installed_package_path(config, pkg, rootfs);
     let Ok(data) = fs::read_to_vec(&path) else {
         return false;
@@ -1299,7 +1299,7 @@ fn is_installed(config: &LicoConfig, pkg: &str, rootfs: &str) -> bool {
         return true;
     }
     println!(
-        "licof apt: installed marker for '{}' failed validation; reinstalling",
+        "lxe apt: installed marker for '{}' failed validation; reinstalling",
         pkg
     );
     let _ = fs::unlink(&path);
@@ -1317,7 +1317,7 @@ fn installed_payload_sane(rootfs: &str, pkg: &str) -> bool {
 fn installed_manifest_valid(rootfs: &str, pkg: &str, data: &[u8]) -> bool {
     let Ok(text) = core::str::from_utf8(data) else {
         println!(
-            "licof apt: installed marker for '{}' is not valid UTF-8",
+            "lxe apt: installed marker for '{}' is not valid UTF-8",
             pkg
         );
         return false;
@@ -1329,7 +1329,7 @@ fn installed_manifest_valid(rootfs: &str, pkg: &str, data: &[u8]) -> bool {
         };
         if !valid_manifest_relative_path(rel) {
             println!(
-                "licof apt: installed marker for '{}' has invalid payload path '{}'",
+                "lxe apt: installed marker for '{}' has invalid payload path '{}'",
                 pkg, rel
             );
             return false;
@@ -1337,7 +1337,7 @@ fn installed_manifest_valid(rootfs: &str, pkg: &str, data: &[u8]) -> bool {
         paths += 1;
         if !installed_payload_path_exists(rootfs, rel) {
             println!(
-                "licof apt: installed marker for '{}' references missing payload '{}'",
+                "lxe apt: installed marker for '{}' references missing payload '{}'",
                 pkg, rel
             );
             return false;
@@ -1345,7 +1345,7 @@ fn installed_manifest_valid(rootfs: &str, pkg: &str, data: &[u8]) -> bool {
     }
     if paths == 0 {
         println!(
-            "licof apt: installed marker for '{}' has no payload paths",
+            "lxe apt: installed marker for '{}' has no payload paths",
             pkg
         );
         return false;
@@ -1366,13 +1366,13 @@ fn valid_manifest_relative_path(rel: &str) -> bool {
             .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
-fn installed_package_path(config: &LicoConfig, pkg: &str, rootfs: &str) -> String {
+fn installed_package_path(config: &LxeConfig, pkg: &str, rootfs: &str) -> String {
     let mut package_key = String::new();
     push_cache_safe(&mut package_key, pkg);
     alloc::format!("{}/{}", installed_db_dir(config, rootfs), package_key)
 }
 
-fn installed_db_dir(config: &LicoConfig, rootfs: &str) -> String {
+fn installed_db_dir(config: &LxeConfig, rootfs: &str) -> String {
     let mut key = String::new();
     push_cache_safe(&mut key, rootfs);
     alloc::format!("{}/{}", config.installed_db, key)
@@ -1403,7 +1403,7 @@ fn verify_package_file(info: &PackageInfo, path: &str) -> bool {
     let actual_size = file_size(path) as usize;
     if info.size > 0 && actual_size != info.size {
         println!(
-            "licof apt: invalid package size for {}: got {}, expected {}",
+            "lxe apt: invalid package size for {}: got {}, expected {}",
             info.package, actual_size, info.size
         );
         return false;
@@ -1412,13 +1412,13 @@ fn verify_package_file(info: &PackageInfo, path: &str) -> bool {
     let data = match fs::read_to_vec(path) {
         Ok(data) => data,
         Err(_) => {
-            println!("licof apt: cannot read downloaded package '{}'", path);
+            println!("lxe apt: cannot read downloaded package '{}'", path);
             return false;
         }
     };
     if !looks_like_deb_bytes(&data) {
         println!(
-            "licof apt: downloaded file is not a Debian archive: {}",
+            "lxe apt: downloaded file is not a Debian archive: {}",
             path
         );
         return false;
@@ -1429,7 +1429,7 @@ fn verify_package_file(info: &PackageInfo, path: &str) -> bool {
         let actual = core::str::from_utf8(&actual).unwrap_or("");
         if actual != info.md5 {
             println!(
-                "licof apt: checksum mismatch for {}: got {}, expected {}",
+                "lxe apt: checksum mismatch for {}: got {}, expected {}",
                 info.package, actual, info.md5
             );
             return false;
@@ -1463,30 +1463,30 @@ fn read_prefix(path: &str) -> [u8; 16] {
 fn print_index_download_diagnostic(path: &str, size: u32) {
     let prefix = read_prefix(path);
     println!(
-        "licof apt: downloaded package index is not gzip ({} bytes, first bytes {:02x} {:02x} {:02x} {:02x})",
+        "lxe apt: downloaded package index is not gzip ({} bytes, first bytes {:02x} {:02x} {:02x} {:02x})",
         size, prefix[0], prefix[1], prefix[2], prefix[3]
     );
     if prefix[0] == b'<' {
-        println!("licof apt: response looks like HTML; archive server returned an error page");
+        println!("lxe apt: response looks like HTML; archive server returned an error page");
     }
 }
 
 fn print_gzip_diagnostic(path: &str, size: u32) {
     let prefix = read_prefix(path);
     println!(
-        "licof apt: gzip header: {:02x} {:02x} method={:02x} flags={:02x}",
+        "lxe apt: gzip header: {:02x} {:02x} method={:02x} flags={:02x}",
         prefix[0], prefix[1], prefix[2], prefix[3]
     );
     match compressed_file_crc32(path) {
-        Some(crc) => println!("licof apt: gzip file crc32=0x{:08x}", crc),
-        None => println!("licof apt: cannot compute gzip file crc32"),
+        Some(crc) => println!("lxe apt: gzip file crc32=0x{:08x}", crc),
+        None => println!("lxe apt: cannot compute gzip file crc32"),
     }
     match read_gzip_trailer(path, size) {
         Some((crc, isize)) => println!(
-            "licof apt: gzip trailer: crc32=0x{:08x} isize={} bytes",
+            "lxe apt: gzip trailer: crc32=0x{:08x} isize={} bytes",
             crc, isize
         ),
-        None => println!("licof apt: cannot read gzip trailer"),
+        None => println!("lxe apt: cannot read gzip trailer"),
     }
 }
 
@@ -1545,26 +1545,26 @@ fn gzip_status_text(status: u32) -> &'static str {
     }
 }
 
-fn download_url(config: &LicoConfig, url: &str, dest: &str) -> bool {
+fn download_url(config: &LxeConfig, url: &str, dest: &str) -> bool {
     if download_url_with_libhttp(config, url, dest) {
         return true;
     }
 
     if !path_exists(&config.wget) {
         println!(
-            "licof download: wget not found at {}; no fallback available",
+            "lxe download: wget not found at {}; no fallback available",
             config.wget
         );
         return false;
     }
 
-    println!("licof download: falling back to wget");
+    println!("lxe download: falling back to wget");
     download_url_with_wget(config, url, dest)
 }
 
-fn download_url_with_libhttp(config: &LicoConfig, url: &str, dest: &str) -> bool {
+fn download_url_with_libhttp(config: &LxeConfig, url: &str, dest: &str) -> bool {
     if !libhttp_client::init() {
-        println!("licof download: libhttp unavailable");
+        println!("lxe download: libhttp unavailable");
         return false;
     }
 
@@ -1574,10 +1574,10 @@ fn download_url_with_libhttp(config: &LicoConfig, url: &str, dest: &str) -> bool
         reset_download_progress();
         let started = sys::uptime_ms();
         println!(
-            "licof download: libhttp GET attempt {}/{} -> {}",
+            "lxe download: libhttp GET attempt {}/{} -> {}",
             attempt, config.download_attempts, dest
         );
-        println!("licof download: url {}", url);
+        println!("lxe download: url {}", url);
         if !libhttp_client::download_progress(url, dest, download_progress, 0) {
             let status = libhttp_client::last_status();
             last_error = alloc::format!(
@@ -1596,7 +1596,7 @@ fn download_url_with_libhttp(config: &LicoConfig, url: &str, dest: &str) -> bool
         }
         let ms = sys::uptime_ms().wrapping_sub(started);
         println!(
-            "licof download: received {} bytes in {} ms",
+            "lxe download: received {} bytes in {} ms",
             file_size(dest),
             ms
         );
@@ -1606,13 +1606,13 @@ fn download_url_with_libhttp(config: &LicoConfig, url: &str, dest: &str) -> bool
         last_error.push_str("libhttp download failed");
     }
     println!(
-        "licof download: failed after {} attempts: {}",
+        "lxe download: failed after {} attempts: {}",
         config.download_attempts, last_error
     );
     false
 }
 
-fn download_url_with_wget(config: &LicoConfig, url: &str, dest: &str) -> bool {
+fn download_url_with_wget(config: &LxeConfig, url: &str, dest: &str) -> bool {
     let mut last_error = String::new();
     let mut permanent_http_error = false;
     for attempt in 1..=config.download_attempts {
@@ -1620,10 +1620,10 @@ fn download_url_with_wget(config: &LicoConfig, url: &str, dest: &str) -> bool {
         let args = alloc::format!("wget -q -O {} {}", dest, url);
         let started = sys::uptime_ms();
         println!(
-            "licof download: wget attempt {}/{} -> {}",
+            "lxe download: wget attempt {}/{} -> {}",
             attempt, config.download_attempts, dest
         );
-        println!("licof download: url {}", url);
+        println!("lxe download: url {}", url);
         let tid = process::spawn(&config.wget, &args);
         if tid == u32::MAX {
             last_error = String::from("failed to start wget");
@@ -1657,7 +1657,7 @@ fn download_url_with_wget(config: &LicoConfig, url: &str, dest: &str) -> bool {
         }
         let ms = sys::uptime_ms().wrapping_sub(started);
         println!(
-            "licof download: received {} bytes in {} ms",
+            "lxe download: received {} bytes in {} ms",
             file_size(dest),
             ms
         );
@@ -1667,13 +1667,13 @@ fn download_url_with_wget(config: &LicoConfig, url: &str, dest: &str) -> bool {
         last_error.push_str("wget download failed");
     }
     println!(
-        "licof download: failed after {} attempts: {}",
+        "lxe download: failed after {} attempts: {}",
         config.download_attempts, last_error
     );
     if permanent_http_error {
         return false;
     }
-    println!("licof download: falling back to libhttp");
+    println!("lxe download: falling back to libhttp");
     download_url_with_libhttp(config, url, dest)
 }
 
@@ -1695,9 +1695,9 @@ extern "C" fn download_progress(received: u32, total: u32, _userdata: u64) {
     };
     if should_print {
         if total > 0 {
-            println!("licof download: {} / {} bytes", received, total);
+            println!("lxe download: {} / {} bytes", received, total);
         } else {
-            println!("licof download: {} bytes", received);
+            println!("lxe download: {} bytes", received);
         }
     }
 }
@@ -1708,10 +1708,9 @@ fn reset_download_progress() {
     }
 }
 
-fn packages_index_has_required_entries(config: &LicoConfig) -> bool {
+fn packages_index_has_required_entries(config: &LxeConfig) -> bool {
     let packages_txt = config.package_index_txt();
-    let mut missing =
-        missing_required_package_names(&packages_txt, &config.index_required_packages);
+    let missing = missing_required_package_names(&packages_txt, &config.index_required_packages);
     if missing.is_empty() {
         return true;
     }
@@ -1727,7 +1726,7 @@ fn packages_index_has_required_entries(config: &LicoConfig) -> bool {
         {
             continue;
         }
-        println!("licof apt: package index missing '{}'", pkg);
+        println!("lxe apt: package index missing '{}'", pkg);
         return false;
     }
     true
@@ -1804,7 +1803,7 @@ fn mark_required_package(para: &[u8], required: &[String], found: &mut [bool]) {
     }
 }
 
-fn read_compressed_package_index(config: &LicoConfig) -> Option<Vec<u8>> {
+fn read_compressed_package_index(config: &LxeConfig) -> Option<Vec<u8>> {
     let packages_gz = config.package_index_gz();
     let gz = match fs::read_to_vec(&packages_gz) {
         Ok(data) => data,

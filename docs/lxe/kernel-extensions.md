@@ -1,7 +1,7 @@
-# licof Kernel Extensions
+# lxe Kernel Extensions
 
 This document describes the kernel-side Linux compatibility layer used by
-`licof`.
+`lxe`.
 
 ## ABI Personality
 
@@ -12,7 +12,7 @@ anyOS threads carry an ABI personality. The relevant values are:
 | `AnyOs` | Native anyOS syscall ABI and loader behavior. |
 | `LinuxX86_64` | Linux x86_64 syscall ABI, Linux path translation and Linux ELF64 startup. |
 
-`SYS_LICOF_SPAWN` creates a process with `LinuxX86_64` personality. Forked
+`SYS_LXE_SPAWN` creates a process with `LinuxX86_64` personality. Forked
 Linux children inherit the active Linux base path, FS base, mmap state and pipe
 state through the scheduler fork snapshot.
 
@@ -45,7 +45,7 @@ Unsupported syscall numbers are logged on the serial console and return
 `-ENOSYS`:
 
 ```text
-licof linux: unsupported syscall nr=<nr> rip=<rip> args=<a1>,<a2>,<a3>,<a4>,<a5>,<a6>
+lxe linux: unsupported syscall nr=<nr> rip=<rip> args=<a1>,<a2>,<a3>,<a4>,<a5>,<a6>
 ```
 
 `rseq` is intentionally quiet and returns `-ENOSYS`, because glibc commonly
@@ -121,18 +121,18 @@ Examples:
 
 ## Linux Path Translation
 
-Each Linux thread stores the active licof Linux base path. Absolute Linux paths
+Each Linux thread stores the active lxe Linux base path. Absolute Linux paths
 are translated by prefixing that base:
 
 ```text
 /usr/bin/passwd
-  -> /System/var/licof/rootfs/usr/bin/passwd
+  -> /System/var/lxe/rootfs/usr/bin/passwd
 ```
 
 The kernel currently uses one Linux base:
 
 ```text
-/System/var/licof/rootfs
+/System/var/lxe/rootfs
 ```
 
 Relative paths are resolved against the Linux thread CWD, then translated. At
@@ -143,7 +143,7 @@ Symlinks inside the Linux base are resolved with Linux-rooted semantics:
 - relative symlink targets are resolved relative to the symlink's parent
   directory.
 - absolute symlink targets such as `/lib/...` stay inside
-  `/System/var/licof/rootfs`, not the anyOS root.
+  `/System/var/lxe/rootfs`, not the anyOS root.
 
 The ELF loader applies the same rule while resolving `PT_INTERP`, so
 `/lib64/ld-linux-x86-64.so.2` may be a real Debian symlink.
@@ -203,7 +203,7 @@ Current default environment:
 PATH=/usr/bin:/bin
 HOME=/
 TERM=ansi
-LICOF=1
+LXE=1
 ```
 
 Auxiliary vector entries include:
@@ -258,7 +258,7 @@ The second form matters because some call sites pass an `int` `-1` through a
 
 ## Terminal and Pipes
 
-`SYS_LICOF_SPAWN` inherits stdin/stdout pipe state from the caller. This lets
+`SYS_LXE_SPAWN` inherits stdin/stdout pipe state from the caller. This lets
 Linux children started from Terminal participate in interactive flows such as
 `passwd`.
 

@@ -823,7 +823,7 @@ fn writeback_stream_case(cfg: &Config, chunk_size: usize) -> Result<String, &'st
         offset += len as u32;
     }
 
-    // Intentionally no fsync here: this matches wget/licof, where close()
+    // Intentionally no fsync here: this matches wget/lxe, where close()
     // must commit dirty block-cache data before the next process reads it.
     fs::close(fd);
 

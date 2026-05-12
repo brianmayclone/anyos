@@ -76,7 +76,7 @@ fn gzip_decodes_real_file_from_env() {
 
 #[test]
 fn byte_abi_roundtrips_gzip_zlib_and_raw_deflate() {
-    let input = b"licof bootstrap archive payload\n".repeat(2048);
+    let input = b"lxe bootstrap archive payload\n".repeat(2048);
 
     let gz = call_byte_api(&input, libzip::libzip_gzip_compress);
     assert_eq!(call_byte_api(&gz, libzip::libzip_gzip_decompress), input);

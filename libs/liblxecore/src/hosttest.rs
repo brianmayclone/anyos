@@ -1,4 +1,4 @@
-use crate::config::LicoConfig;
+use crate::config::LxeConfig;
 use crate::model::PackageInfo;
 use alloc::collections::BTreeSet;
 use alloc::format;
@@ -26,7 +26,7 @@ pub fn run_full_download_test(tmp_root: &Path) -> Result<DownloadReport, String>
     fs::create_dir_all(&db_dir).map_err(|err| format!("create db dir: {err}"))?;
     fs::create_dir_all(&rootfs).map_err(|err| format!("create rootfs dir: {err}"))?;
 
-    let mut config = LicoConfig::defaults();
+    let mut config = LxeConfig::defaults();
     config.root = tmp_root.to_string_lossy().into_owned();
     config.cache = cache_dir.to_string_lossy().into_owned();
     config.db = db_dir.to_string_lossy().into_owned();
@@ -86,7 +86,7 @@ pub fn run_full_download_test(tmp_root: &Path) -> Result<DownloadReport, String>
 }
 
 fn resolve_package(
-    config: &LicoConfig,
+    config: &LxeConfig,
     index: &[u8],
     wanted: &str,
     resolved: &mut BTreeSet<String>,
@@ -119,7 +119,7 @@ fn resolve_package(
 }
 
 fn resolve_dependency_group(
-    config: &LicoConfig,
+    config: &LxeConfig,
     index: &[u8],
     alternatives: &[String],
     resolved: &mut BTreeSet<String>,
@@ -143,7 +143,7 @@ fn resolve_dependency_group(
     }
 }
 
-fn find_package_in_bytes(config: &LicoConfig, index: &[u8], wanted: &str) -> Option<PackageInfo> {
+fn find_package_in_bytes(config: &LxeConfig, index: &[u8], wanted: &str) -> Option<PackageInfo> {
     let mut start = 0usize;
     let mut pos = 0usize;
     let mut newline_run = 0usize;
@@ -172,7 +172,7 @@ fn find_package_in_bytes(config: &LicoConfig, index: &[u8], wanted: &str) -> Opt
     }
 }
 
-fn package_info_from_para(config: &LicoConfig, para: &[u8], wanted: &str) -> Option<PackageInfo> {
+fn package_info_from_para(config: &LxeConfig, para: &[u8], wanted: &str) -> Option<PackageInfo> {
     let package = field_value(para, b"Package")?;
     let exact = package == wanted;
     if !exact && !provides_package_bytes(para, wanted) {
@@ -393,7 +393,7 @@ fn http_get(url: &str, redirects: u8) -> Result<Vec<u8>, String> {
     let mut stream = TcpStream::connect((parts.host.as_str(), parts.port))
         .map_err(|err| format!("connect {}:{}: {err}", parts.host, parts.port))?;
     let request = format!(
-        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: licof-hosttest/1\r\nAccept: */*\r\nConnection: close\r\n\r\n",
+        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: lxe-hosttest/1\r\nAccept: */*\r\nConnection: close\r\n\r\n",
         parts.path, parts.host
     );
     stream

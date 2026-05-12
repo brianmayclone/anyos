@@ -70,7 +70,7 @@ pub fn debug_wait4_snapshot(tag: &str, pid: i64, options: u64) {
             Some(s) => s,
             None => {
                 crate::serial_verbose_println!(
-                    "licof linux wait4-debug {}: scheduler unavailable pid={} options={:#x}",
+                    "lxe linux wait4-debug {}: scheduler unavailable pid={} options={:#x}",
                     tag,
                     pid,
                     options
@@ -125,7 +125,7 @@ pub fn debug_wait4_snapshot(tag: &str, pid: i64, options: u64) {
     }
 
     crate::serial_verbose_println!(
-        "licof linux wait4-debug {}: cpu={} current_tid={} name='{}' args='{}' fs_base={:#x} pid={} options={:#x} children={} waitable={}",
+        "lxe linux wait4-debug {}: cpu={} current_tid={} name='{}' args='{}' fs_base={:#x} pid={} options={:#x} children={} waitable={}",
         tag,
         cpu_id,
         current_tid,
@@ -140,7 +140,7 @@ pub fn debug_wait4_snapshot(tag: &str, pid: i64, options: u64) {
 
     for child in children.iter().take(printed) {
         crate::serial_verbose_println!(
-            "licof linux wait4-debug {}: child tid={} name='{}' args='{}' fs_base={:#x} state={:?} exit={} waiter={} retain={} last_cpu={}",
+            "lxe linux wait4-debug {}: child tid={} name='{}' args='{}' fs_base={:#x} state={:?} exit={} waiter={} retain={} last_cpu={}",
             tag,
             child.tid,
             cstr_debug(&child.name),
@@ -155,7 +155,7 @@ pub fn debug_wait4_snapshot(tag: &str, pid: i64, options: u64) {
     }
     if child_count as usize > children.len() {
         crate::serial_verbose_println!(
-            "licof linux wait4-debug {}: ... more children omitted",
+            "lxe linux wait4-debug {}: ... more children omitted",
             tag
         );
     }

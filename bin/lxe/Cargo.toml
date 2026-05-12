@@ -1,0 +1,25 @@
+[package]
+name = "lxe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../../libs/stdlib" }
+liblxecore = { path = "../../libs/liblxecore" }
+
+[features]
+default = ["anyos-bin"]
+anyos-bin = []
+host = ["anyos_std/host", "liblxecore/host"]
+
+[[bin]]
+name = "lxe"
+path = "src/main.rs"
+required-features = ["anyos-bin"]
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"

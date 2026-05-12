@@ -23,9 +23,9 @@ pub enum FdKind {
     Tty,
     /// Pseudo-terminal slave endpoint backed by a terminal master pipe pair.
     PtySlave { pty_id: u32 },
-    /// Read-only procfs node exposed by the licof Linux ABI.
+    /// Read-only procfs node exposed by the lxe Linux ABI.
     LinuxProc { file: u16, pid: u32, position: u32 },
-    /// Socket exposed by the licof Linux ABI.
+    /// Socket exposed by the lxe Linux ABI.
     LinuxSocket { socket_id: u32 },
 }
 
@@ -177,7 +177,7 @@ impl FdTable {
         }
     }
 
-    /// Update the read cursor for a licof Linux proc pseudo-file.
+    /// Update the read cursor for a lxe Linux proc pseudo-file.
     pub fn set_linux_proc_position(&mut self, fd: u32, position: u32) -> bool {
         if (fd as usize) >= MAX_FDS {
             return false;

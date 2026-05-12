@@ -180,7 +180,7 @@ pub(crate) fn dispatch_inner(
         SYS_WAITPID => handlers::sys_waitpid(arg1 as u32, arg2, arg3 as u32),
         SYS_KILL => handlers::sys_kill(arg1 as u32, arg2 as u32),
         SYS_SPAWN => handlers::sys_spawn(arg1, arg2 as u32, arg3, arg4 as u32),
-        SYS_LICOF_SPAWN => handlers::sys_licof_spawn(arg1, arg2),
+        SYS_LXE_SPAWN => handlers::sys_lxe_spawn(arg1, arg2),
         SYS_DETACH => handlers::sys_detach(arg1 as u32),
         SYS_EXEC => handlers::sys_exec(arg1, arg2),
         SYS_GETARGS => handlers::sys_getargs(arg1, arg2 as u32),
