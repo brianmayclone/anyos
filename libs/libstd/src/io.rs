@@ -28,6 +28,7 @@ pub enum ErrorKind {
     OutOfMemory,
     NotADirectory,
     IsADirectory,
+    StorageFull,
     Other,
 }
 
@@ -73,7 +74,7 @@ impl Error {
             anyos_std::error::Error::OutOfMemory => ErrorKind::OutOfMemory,
             anyos_std::error::Error::NotADirectory => ErrorKind::NotADirectory,
             anyos_std::error::Error::IsADirectory => ErrorKind::IsADirectory,
-            anyos_std::error::Error::NoSpace => ErrorKind::Other,
+            anyos_std::error::Error::NoSpace => ErrorKind::StorageFull,
             anyos_std::error::Error::Other(_) => ErrorKind::Other,
         };
         Error {
@@ -96,6 +97,7 @@ impl Error {
             ErrorKind::OutOfMemory => anyos_std::error::Error::OutOfMemory,
             ErrorKind::NotADirectory => anyos_std::error::Error::NotADirectory,
             ErrorKind::IsADirectory => anyos_std::error::Error::IsADirectory,
+            ErrorKind::StorageFull => anyos_std::error::Error::NoSpace,
             _ => anyos_std::error::Error::Other(0),
         }
     }
@@ -133,6 +135,7 @@ impl fmt::Display for Error {
                 ErrorKind::OutOfMemory => write!(f, "out of memory"),
                 ErrorKind::NotADirectory => write!(f, "not a directory"),
                 ErrorKind::IsADirectory => write!(f, "is a directory"),
+                ErrorKind::StorageFull => write!(f, "no space left on device"),
                 ErrorKind::Other => write!(f, "other error"),
             }
         }

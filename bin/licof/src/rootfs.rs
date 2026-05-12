@@ -27,7 +27,7 @@ pub(crate) fn ensure_rootfs_layout(config: &LicoConfig) {
     ensure_dir(&alloc::format!("{}/etc/apt/apt.conf.d", rootfs));
     ensure_dir(&alloc::format!("{}/etc/pam.d", rootfs));
     ensure_dir(&alloc::format!("{}/root", rootfs));
-    let _ = fs::write_bytes(
+    let _ = write_bytes_atomic(
         &alloc::format!("{}/etc/apt/sources.list", rootfs),
         alloc::format!(
             "deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] {} {} {}\n",
@@ -37,7 +37,7 @@ pub(crate) fn ensure_rootfs_layout(config: &LicoConfig) {
         )
         .as_bytes(),
     );
-    let _ = fs::write_bytes(
+    let _ = write_bytes_atomic(
         &alloc::format!("{}/etc/apt/apt.conf.d/99licof", rootfs),
         b"Acquire::Check-Valid-Until \"false\";\n",
     );
@@ -172,9 +172,49 @@ fn ensure_rootfs_file(rootfs: &str, linux_path: &str, data: &[u8], mode: u16) {
         return;
     }
     ensure_parent_dirs(&path);
-    if fs::write_bytes(&path, data).is_ok() {
+    if write_bytes_atomic(&path, data) {
         let _ = fs::chmod(&path, mode);
     }
+}
+
+fn temp_file_path(path: &str) -> String {
+    alloc::format!("{}.licof-tmp", path)
+}
+
+pub(crate) fn replace_with_temp_file(temp: &str, dest: &str) -> bool {
+    if path_exists_no_follow(dest) || path_exists(dest) {
+        if fs::unlink(dest) != 0 {
+            return false;
+        }
+    }
+    fs::rename(temp, dest) == 0
+}
+
+pub(crate) fn write_bytes_atomic(dest: &str, data: &[u8]) -> bool {
+    ensure_parent_dirs(dest);
+    let temp = temp_file_path(dest);
+    let _ = fs::unlink(&temp);
+    let wrote = {
+        let mut file = match fs::File::create(&temp) {
+            Ok(file) => file,
+            Err(_) => return false,
+        };
+        if file.write_all(data).is_err() {
+            false
+        } else {
+            let _ = fs::fsync(file.fd() as i32);
+            true
+        }
+    };
+    if !wrote {
+        let _ = fs::unlink(&temp);
+        return false;
+    }
+    if file_size(&temp) != data.len().min(u32::MAX as usize) as u32 {
+        let _ = fs::unlink(&temp);
+        return false;
+    }
+    replace_with_temp_file(&temp, dest)
 }
 
 pub(crate) fn linux_path_in_rootfs(rootfs: &str, linux_path: &str) -> String {
@@ -467,24 +507,40 @@ pub(crate) fn copy_file(src: &str, dst: &str) -> bool {
         Ok(file) => file,
         Err(_) => return false,
     };
-    let mut output = match fs::File::create(dst) {
-        Ok(file) => file,
-        Err(_) => return false,
-    };
+    ensure_parent_dirs(dst);
+    let temp = temp_file_path(dst);
+    let _ = fs::unlink(&temp);
     let mut buf = [0u8; 4096];
-    loop {
-        let n = match input.read(&mut buf) {
-            Ok(n) => n,
+    let mut copied = 0u32;
+    let copied_all = {
+        let mut output = match fs::File::create(&temp) {
+            Ok(file) => file,
             Err(_) => return false,
         };
-        if n == 0 {
-            let _ = fs::fsync(output.fd() as i32);
-            return true;
+        loop {
+            let n = match input.read(&mut buf) {
+                Ok(n) => n,
+                Err(_) => break false,
+            };
+            if n == 0 {
+                let _ = fs::fsync(output.fd() as i32);
+                break true;
+            }
+            if output.write_all(&buf[..n]).is_err() {
+                break false;
+            }
+            copied = copied.saturating_add(n as u32);
         }
-        if output.write_all(&buf[..n]).is_err() {
-            return false;
-        }
+    };
+    if !copied_all {
+        let _ = fs::unlink(&temp);
+        return false;
     }
+    if file_size(&temp) != copied {
+        let _ = fs::unlink(&temp);
+        return false;
+    }
+    replace_with_temp_file(&temp, dst)
 }
 
 pub(crate) fn ensure_dir(path: &str) {

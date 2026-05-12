@@ -534,11 +534,13 @@ impl Read for File {
 
 impl Write for File {
     fn write(&mut self, buf: &[u8]) -> error::Result<usize> {
-        let ret = write(self.fd, buf);
-        if ret == u32::MAX {
-            return Err(error::Error::BrokenPipe);
-        }
-        Ok(ret as usize)
+        let raw = syscall3(
+            SYS_WRITE,
+            self.fd as u64,
+            buf.as_ptr() as u64,
+            buf.len() as u64,
+        ) as u32;
+        error::Error::from_syscall(raw).map(|n| n as usize)
     }
 }
 

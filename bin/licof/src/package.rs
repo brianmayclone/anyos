@@ -3,7 +3,8 @@ use crate::model::PackageInfo;
 use crate::rootfs::{
     copy_file, ensure_dir, ensure_dir_recursive, ensure_parent_dirs, file_size, is_elf_file,
     linux_path_in_rootfs, normalize_abs_path, path_exists, path_exists_no_follow, path_is_symlink,
-    path_under_rootfs, print_path_probe, resolve_rootfs_symlink_path, symlink_points_to,
+    path_under_rootfs, print_path_probe, replace_with_temp_file, resolve_rootfs_symlink_path,
+    symlink_points_to, write_bytes_atomic,
 };
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -18,6 +19,25 @@ const DOWNLOAD_PROGRESS_STEP: u32 = 512 * 1024;
 
 static mut DOWNLOAD_LAST_PRINT: u32 = 0;
 static mut APT_INDEX_READY: bool = false;
+
+fn package_temp_path(path: &str) -> String {
+    alloc::format!("{}.licof-tmp", path)
+}
+
+fn extract_tar_entry_atomic(reader: &libzip_client::TarReader, index: u32, dest: &str) -> bool {
+    ensure_parent_dirs(dest);
+    let temp = package_temp_path(dest);
+    let _ = fs::unlink(&temp);
+    if !reader.extract_to_file(index, &temp) {
+        let _ = fs::unlink(&temp);
+        return false;
+    }
+    if file_size(&temp) != reader.entry_size(index) {
+        let _ = fs::unlink(&temp);
+        return false;
+    }
+    replace_with_temp_file(&temp, dest)
+}
 
 struct PackageLink {
     index: u32,
@@ -808,7 +828,7 @@ pub(crate) fn install_deb(
             if progress.verbose() {
                 println!("licof pkg: extracting {}", rel);
             }
-            if reader.extract_to_file(i, &dest) {
+            if extract_tar_entry_atomic(&reader, i, &dest) {
                 apply_tar_metadata(&reader, i, &dest);
                 files += 1;
                 append_manifest_path(&mut manifest, &rel);
@@ -981,8 +1001,7 @@ fn materialize_hardlink_from_archive(
     }
 
     ensure_parent_dirs(dest);
-    let _ = fs::unlink(dest);
-    if reader.extract_to_file(index, dest) {
+    if extract_tar_entry_atomic(reader, index, dest) {
         apply_tar_metadata(reader, index, dest);
         return true;
     }
@@ -1250,7 +1269,7 @@ fn mark_installed(
         files,
         manifest
     );
-    let _ = fs::write_bytes(&path, body.as_bytes());
+    let _ = write_bytes_atomic(&path, body.as_bytes());
 }
 
 fn is_installed(config: &LicoConfig, pkg: &str, rootfs: &str) -> bool {

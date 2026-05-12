@@ -17,7 +17,7 @@ use config::LicoConfig;
 use package::{install_deb, install_package, package_installed, InstallProgress};
 use rootfs::{
     ensure_rootfs_layout, find_linux_shell, linux_path_in_rootfs, path_exists, print_path_probe,
-    repair_rootfs_runtime,
+    repair_rootfs_runtime, write_bytes_atomic,
 };
 
 anyos_std::entry!(main);
@@ -305,7 +305,7 @@ fn write_bootstrap_state(
     }
 
     let state_path = alloc::format!("{}/bootstrap-state", config.db);
-    let _ = fs::write_bytes(&state_path, body.as_bytes());
+    let _ = write_bytes_atomic(&state_path, body.as_bytes());
     fs::sync();
 }
 
