@@ -1083,8 +1083,26 @@ static CLONE_TEMP_LOCKS: [core::sync::atomic::AtomicBool; MAX_CLONE_CPUS] = {
 ///
 /// Returns the physical address of the child's new PML4, or None on OOM.
 pub fn clone_user_page_directory(parent_pd: PhysAddr) -> Option<PhysAddr> {
-    // Step 1: Create a fresh PML4 with kernel mappings + identity-map
-    let child_pd = create_user_page_directory()?;
+    clone_user_page_directory_inner(parent_pd, true)
+}
+
+/// Clone a Linux process's address space for fork().
+///
+/// Linux tasks are created without the low identity-map compatibility window so
+/// classic low ET_EXEC mappings remain normal user mappings. Fork must preserve
+/// that address-space shape; adding the compatibility window only in the child
+/// creates aliases the parent never had.
+pub fn clone_user_page_directory_no_low_identity(parent_pd: PhysAddr) -> Option<PhysAddr> {
+    clone_user_page_directory_inner(parent_pd, false)
+}
+
+fn clone_user_page_directory_inner(
+    parent_pd: PhysAddr,
+    map_low_identity: bool,
+) -> Option<PhysAddr> {
+    // Step 1: Create a fresh PML4 with kernel mappings, optionally including
+    // the low identity-map compatibility window for native anyOS tasks.
+    let child_pd = create_user_page_directory_inner(map_low_identity)?;
 
     // Per-CPU temp addresses for page content copy (no cross-CPU contention)
     let cpu = crate::arch::hal::cpu_id().min(MAX_CLONE_CPUS - 1);

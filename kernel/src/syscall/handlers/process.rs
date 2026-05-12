@@ -1010,7 +1010,11 @@ pub fn sys_fork_with_child_tidptr(
     let parent_tid = scheduler::current_tid();
 
     // 2. Clone user address space
-    let child_pd = match virtual_mem::clone_user_page_directory(snap.pd) {
+    let child_pd = match if snap.abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
+        virtual_mem::clone_user_page_directory_no_low_identity(snap.pd)
+    } else {
+        virtual_mem::clone_user_page_directory(snap.pd)
+    } {
         Some(pd) => pd,
         None => {
             crate::serial_verbose_println!("sys_fork: clone_user_page_directory failed (OOM)");
@@ -1117,8 +1121,11 @@ pub fn sys_fork_with_child_tidptr(
 
     // Child's parent_tid = the forking thread's TID (not grandparent)
     scheduler::set_thread_parent_tid(child_tid, scheduler::current_tid());
-    // Inherit signal handlers and blocked mask from parent (pending cleared)
-    scheduler::set_thread_signals(child_tid, snap.signals.clone());
+    // Inherit dispositions and blocked mask, but not pending signals. POSIX
+    // fork starts the child with an empty pending-signal set.
+    let mut child_signals = snap.signals.clone();
+    child_signals.pending = 0;
+    scheduler::set_thread_signals(child_tid, child_signals);
 
     // 6. Clone environment
     env::clone_env(snap.pd.0, child_pd.0);
