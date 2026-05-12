@@ -144,10 +144,11 @@ pub(super) fn linux_open_linux_path(path: &str, linux_flags: u64) -> u64 {
 
 pub(super) fn linux_open_translated(path: &str, linux_flags: u64, linux_path: &str) -> u64 {
     let flags = map_open_flags(linux_flags);
+    let accmode = linux_flags & 0x3;
     let cloexec = (flags & 0x10) != 0;
     let file_flags = crate::fs::file::FileFlags {
-        read: true,
-        write: (flags & 1) != 0,
+        read: accmode != 1,
+        write: accmode == 1 || accmode == 2,
         append: (flags & 2) != 0,
         create: (flags & 4) != 0,
         truncate: (flags & 8) != 0,

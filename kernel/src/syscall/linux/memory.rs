@@ -42,11 +42,25 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
         return linux_err(EINVAL);
     }
     let anonymous = (flags & LINUX_MAP_ANONYMOUS) != 0;
-    let private = (flags & LINUX_MAP_PRIVATE) != 0;
+    let map_type = flags & 0x3;
+    let private = map_type == LINUX_MAP_PRIVATE;
+    let shared = map_type == LINUX_MAP_SHARED;
     let fixed = (flags & LINUX_MAP_FIXED) != 0;
-    if !private {
+    if !private && !shared {
         crate::serial_verbose_println!(
-            "lxe linux mmap: reject !private addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
+            "lxe linux mmap: reject map-type addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
+            addr,
+            len,
+            prot,
+            flags,
+            fd,
+            offset
+        );
+        return linux_err(ENOSYS);
+    }
+    if shared && (prot & LINUX_PROT_WRITE) != 0 {
+        crate::serial_verbose_println!(
+            "lxe linux mmap: reject shared-write addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
             addr,
             len,
             prot,

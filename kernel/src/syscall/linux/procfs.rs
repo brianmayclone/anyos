@@ -207,7 +207,31 @@ pub(super) fn linux_proc_readlink(path: &str) -> Option<Result<String, i32>> {
 pub(super) fn linux_proc_content(file: u16, pid: u32) -> Vec<u8> {
     match file {
         LINUX_PROC_FILESYSTEMS => {
-            b"nodev\tsysfs\nnodev\trootfs\nnodev\tproc\nnodev\tdevtmpfs\nnodev\tdevpts\nnodev\ttmpfs\nexfat\n"
+            b"nodev\tsysfs\n\
+nodev\trootfs\n\
+nodev\tbdev\n\
+nodev\tproc\n\
+nodev\tcgroup\n\
+nodev\tcgroup2\n\
+nodev\tdevtmpfs\n\
+nodev\tdevpts\n\
+nodev\ttmpfs\n\
+nodev\tramfs\n\
+nodev\tmqueue\n\
+nodev\tfuse\n\
+nodev\tfusectl\n\
+nodev\toverlay\n\
+ext2\n\
+ext3\n\
+ext4\n\
+fat\n\
+vfat\n\
+msdos\n\
+exfat\n\
+iso9660\n\
+udf\n\
+squashfs\n\
+fuseblk\n"
                 .to_vec()
         }
         LINUX_PROC_MOUNTS => {

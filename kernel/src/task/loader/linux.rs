@@ -115,8 +115,7 @@ fn inspect_linux_elf64(data: &[u8]) -> Result<LinuxElf64Info, &'static str> {
 
 fn lxe_rootfs_for_binary(path: &str) -> alloc::string::String {
     if path == LXE_ROOTFS
-        || (path.starts_with(LXE_ROOTFS)
-            && path.as_bytes().get(LXE_ROOTFS.len()) == Some(&b'/'))
+        || (path.starts_with(LXE_ROOTFS) && path.as_bytes().get(LXE_ROOTFS.len()) == Some(&b'/'))
     {
         return alloc::string::String::from(LXE_ROOTFS);
     }

@@ -154,10 +154,7 @@ pub fn debug_wait4_snapshot(tag: &str, pid: i64, options: u64) {
         );
     }
     if child_count as usize > children.len() {
-        crate::serial_verbose_println!(
-            "lxe linux wait4-debug {}: ... more children omitted",
-            tag
-        );
+        crate::serial_verbose_println!("lxe linux wait4-debug {}: ... more children omitted", tag);
     }
 }
 

@@ -1316,10 +1316,7 @@ fn installed_payload_sane(rootfs: &str, pkg: &str) -> bool {
 
 fn installed_manifest_valid(rootfs: &str, pkg: &str, data: &[u8]) -> bool {
     let Ok(text) = core::str::from_utf8(data) else {
-        println!(
-            "lxe apt: installed marker for '{}' is not valid UTF-8",
-            pkg
-        );
+        println!("lxe apt: installed marker for '{}' is not valid UTF-8", pkg);
         return false;
     };
     let mut paths = 0u32;
@@ -1417,10 +1414,7 @@ fn verify_package_file(info: &PackageInfo, path: &str) -> bool {
         }
     };
     if !looks_like_deb_bytes(&data) {
-        println!(
-            "lxe apt: downloaded file is not a Debian archive: {}",
-            path
-        );
+        println!("lxe apt: downloaded file is not a Debian archive: {}", path);
         return false;
     }
 
