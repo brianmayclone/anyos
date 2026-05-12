@@ -19,6 +19,7 @@ members = [
   "system/daemons/ftpd",
   "system/daemons/httpd",
   "system/daemons/logd",
+  "system/daemons/lxed",
   "system/daemons/networkd",
   "system/daemons/notifyd",
   "system/daemons/ntpd",

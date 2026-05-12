@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use anyos_std::{fs, println, process};
 
 use crate::config::LxeConfig;
+use crate::daemon;
 use crate::package::{install_deb, install_package, package_installed, InstallProgress};
 use crate::rootfs::{
     ensure_rootfs_layout, find_linux_shell, linux_path_in_rootfs, path_exists, print_path_probe,
@@ -34,7 +35,7 @@ macro_rules! log_fatal {
 }
 
 pub fn run_cli(raw: &str) {
-    let config = LxeConfig::load();
+    let mut config = LxeConfig::load();
     let mut verbose = false;
     let argv: Vec<&str> = raw
         .split_ascii_whitespace()
@@ -51,12 +52,12 @@ pub fn run_cli(raw: &str) {
     match argv.first().copied() {
         None | Some("help") | Some("--help") | Some("-h") => usage(),
         Some("status") => status(&config),
-        Some("init") => init(&config, true, verbose),
-        Some("repair") => repair(&config),
-        Some("run") => run(&config, &argv[1..]),
-        Some("shell") => shell(&config, &argv[1..]),
-        Some("pkg") => pkg(&config, &argv[1..], verbose),
-        Some("apt") => apt(&config, &argv[1..], verbose),
+        Some("init") => init(&mut config, true, verbose),
+        Some("repair") => repair(&mut config),
+        Some("run") => run(&mut config, &argv[1..]),
+        Some("shell") => shell(&mut config, &argv[1..]),
+        Some("pkg") => pkg(&mut config, &argv[1..], verbose),
+        Some("apt") => apt(&mut config, &argv[1..], verbose),
         Some(cmd) => {
             log_error!("lxe: unknown command '{}'", cmd);
             usage();
@@ -88,24 +89,51 @@ fn status(config: &LxeConfig) {
     );
     println!("  config: confd system/services/lxe");
     println!("  supported-package-data: data.tar.gz, data.tar.xz");
+    match daemon::status() {
+        Ok(status) => {
+            println!("  lxed: ready");
+            println!("  lxed-root: {}", status.root);
+            println!("  lxed-rootfs: {}", status.rootfs);
+            println!("  lxed-active-runs: {}", status.active_runs);
+            println!("  lxed-active-processes: {}", status.active_processes);
+            println!("  lxed-writer: {}", status.writer);
+            println!("  lxed-syncs: {}", status.syncs);
+        }
+        Err(err) => println!("  lxed: unavailable ({})", err),
+    }
 }
 
-fn run(config: &LxeConfig, args: &[&str]) {
+fn run(config: &mut LxeConfig, args: &[&str]) {
     if args.is_empty() {
         log_error!("lxe run: missing Linux ELF64 path");
         return;
     }
 
+    let lease = match daemon::acquire_run(config, "run") {
+        Ok(lease) => lease,
+        Err(err) => {
+            log_fatal!("lxe run: lxed unavailable: {}", err);
+            return;
+        }
+    };
     let path = resolve_run_path(&config.rootfs, args[0]);
     let child_args = join_args(&args[1..]);
     run_linux_process(config, "lxe run", &path, &child_args);
+    lease.release();
 }
 
-fn shell(config: &LxeConfig, args: &[&str]) {
-    ensure_rootfs_layout(config);
+fn shell(config: &mut LxeConfig, args: &[&str]) {
+    let lease = match daemon::acquire_run(config, "shell") {
+        Ok(lease) => lease,
+        Err(err) => {
+            log_fatal!("lxe shell: lxed unavailable: {}", err);
+            return;
+        }
+    };
     let Some(path) = find_linux_shell(&config.rootfs) else {
         log_error!("lxe shell: no Linux shell found");
         log_warn!("lxe shell: run 'lxe init' or install bash/dash first");
+        lease.release();
         return;
     };
     let child_args = if args.is_empty() {
@@ -114,9 +142,17 @@ fn shell(config: &LxeConfig, args: &[&str]) {
         join_args(args)
     };
     run_linux_process(config, "lxe shell", &path, &child_args);
+    lease.release();
 }
 
-fn init(config: &LxeConfig, configure_password: bool, verbose: bool) {
+fn init(config: &mut LxeConfig, configure_password: bool, verbose: bool) {
+    let lease = match daemon::acquire_write(config, "init") {
+        Ok(lease) => lease,
+        Err(err) => {
+            log_fatal!("lxe init: lxed unavailable: {}", err);
+            return;
+        }
+    };
     ensure_rootfs_layout(config);
 
     log_ok!("linux base ready at {}", config.rootfs);
@@ -128,13 +164,22 @@ fn init(config: &LxeConfig, configure_password: bool, verbose: bool) {
     } else if configure_password {
         log_warn!("lxe init: bootstrap incomplete; skipping root password setup");
     }
+    lease.release();
 }
 
-fn repair(config: &LxeConfig) {
+fn repair(config: &mut LxeConfig) {
+    let lease = match daemon::acquire_write(config, "repair") {
+        Ok(lease) => lease,
+        Err(err) => {
+            log_fatal!("lxe repair: lxed unavailable: {}", err);
+            return;
+        }
+    };
     ensure_rootfs_layout(config);
     repair_rootfs_runtime(&config.rootfs);
     fs::sync();
     log_ok!("lxe repair: Linux base repaired at {}", config.rootfs);
+    lease.release();
 }
 
 fn resolve_run_path(rootfs: &str, path: &str) -> String {
@@ -150,10 +195,17 @@ fn resolve_run_path(rootfs: &str, path: &str) -> String {
     }
 }
 
-fn pkg(config: &LxeConfig, args: &[&str], verbose: bool) {
+fn pkg(config: &mut LxeConfig, args: &[&str], verbose: bool) {
     match args.first().copied() {
         Some("install") => {
             if let Some(path) = args.get(1) {
+                let lease = match daemon::acquire_write(config, "pkg") {
+                    Ok(lease) => lease,
+                    Err(err) => {
+                        log_fatal!("lxe pkg: lxed unavailable: {}", err);
+                        return;
+                    }
+                };
                 ensure_rootfs_layout(config);
                 let mut progress = InstallProgress::new(verbose, 1, "package");
                 progress.set_overall(0, 1);
@@ -164,6 +216,7 @@ fn pkg(config: &LxeConfig, args: &[&str], verbose: bool) {
                 } else {
                     progress.finish();
                 }
+                lease.release();
             } else {
                 log_error!("lxe pkg install: missing .deb path");
             }
@@ -172,7 +225,7 @@ fn pkg(config: &LxeConfig, args: &[&str], verbose: bool) {
     }
 }
 
-fn apt(config: &LxeConfig, args: &[&str], verbose: bool) {
+fn apt(config: &mut LxeConfig, args: &[&str], verbose: bool) {
     match args.first().copied() {
         Some("install") => {
             let packages = &args[1..];
@@ -180,6 +233,13 @@ fn apt(config: &LxeConfig, args: &[&str], verbose: bool) {
                 log_error!("lxe apt install: missing package name");
                 return;
             }
+            let lease = match daemon::acquire_write(config, "apt") {
+                Ok(lease) => lease,
+                Err(err) => {
+                    log_fatal!("lxe apt: lxed unavailable: {}", err);
+                    return;
+                }
+            };
             ensure_rootfs_layout(config);
             let mut progress = InstallProgress::new(verbose, packages.len() as u32, "packages");
             progress.set_overall(0, packages.len() as u32);
@@ -193,6 +253,7 @@ fn apt(config: &LxeConfig, args: &[&str], verbose: bool) {
                 progress.set_overall(done, packages.len() as u32);
             }
             progress.finish();
+            lease.release();
         }
         _ => log_error!("lxe apt: expected install <package>"),
     }
@@ -357,7 +418,16 @@ fn run_linux_process(config: &LxeConfig, label: &str, path: &str, args: &str) ->
         return None;
     }
 
+    if let Err(err) = daemon::track_process(tid) {
+        log_warn!(
+            "{}: lxed process tracking failed for {}: {}",
+            label,
+            tid,
+            err
+        );
+    }
     let code = process::waitpid(tid);
+    daemon::untrack_process(tid);
     if code == process::STILL_RUNNING {
         log_warn!("{}: process {} is still running after waitpid", label, tid);
         None

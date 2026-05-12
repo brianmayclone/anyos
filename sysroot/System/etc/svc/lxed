@@ -1,0 +1,5 @@
+exec=/System/bin/lxed
+args=
+wants=logd
+after=logd
+startup_timeout_ms=5000

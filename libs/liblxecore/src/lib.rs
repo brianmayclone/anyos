@@ -7,6 +7,10 @@ pub mod model;
 
 #[cfg(not(feature = "host"))]
 pub mod cli;
+#[cfg(not(feature = "host"))]
+pub mod daemon;
+#[cfg(not(feature = "host"))]
+pub mod runtime;
 
 #[cfg(not(feature = "host"))]
 mod elf;
