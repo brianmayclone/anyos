@@ -193,7 +193,7 @@ fn main() {
         summary.ok("work-dir", &format!("{} writable", cfg.dir));
     } else {
         summary.fail("work-dir", &format!("{} nicht beschreibbar", cfg.dir));
-        print_summary(&summary, started);
+        print_summary(&cfg, &summary, started);
         return;
     }
 
@@ -239,7 +239,7 @@ fn main() {
         println!();
         println!("Artefakte bleiben erhalten in {}", cfg.dir);
     }
-    print_summary(&summary, started);
+    print_summary(&cfg, &summary, started);
     if cfg.json {
         print_json_summary(&cfg, &summary, elapsed_ms(started));
     }
@@ -2928,7 +2928,7 @@ fn feature_gate_case(cfg: &Config) -> TestOutcome {
         "scratch=configured"
     };
     TestOutcome::Skip(format!(
-        "{}, {}, {}, {}, file-mmap=unsupported, direct-io=unsupported, xattr=unsupported",
+        "{}, {}, {}, {}, hardlink=unsupported, special-files=unsupported, file-mmap=unsupported, direct-io=unsupported, xattr=unsupported, overlay=unsupported, whiteout=unsupported, namespace=unsupported",
         symlink, chmod, chown, scratch
     ))
 }
@@ -4107,7 +4107,7 @@ fn mkdir_parents(path: &str) {
     }
 }
 
-fn print_summary(summary: &Summary, started: u32) {
+fn print_summary(cfg: &Config, summary: &Summary, started: u32) {
     println!();
     println!("=== Zusammenfassung ===");
     println!("  Tests:    {}", summary.tests);
@@ -4119,6 +4119,12 @@ fn print_summary(summary: &Summary, started: u32) {
         println!("  Ergebnis: PASS");
     } else {
         println!("  Ergebnis: FAIL");
+        println!(
+            "  Repro:    vfsstress --profile {} --seed {} --dir {} --keep",
+            cfg.profile_name(),
+            cfg.seed,
+            cfg.dir
+        );
     }
 }
 

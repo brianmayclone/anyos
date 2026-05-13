@@ -629,6 +629,7 @@ Status:
 
 - Explizit als unsupported in `vfsstress`:
   - `feature_gate_case` berichtet `xattr=unsupported`
+  - `feature_gate_case` berichtet `special-files=unsupported`
 
 Fehlt:
 
@@ -658,6 +659,8 @@ Status:
 - Explizit als P4/blocked Feature-Gate dokumentiert:
   - Overlay/Whiteout/Namespace werden nicht in die CoreFS/exFAT-Basis-Suite
     gemischt.
+  - `feature_gate_case` berichtet `overlay=unsupported`,
+    `whiteout=unsupported`, `namespace=unsupported`
 
 Fehlt:
 
@@ -730,10 +733,10 @@ Akzeptanz:
 
 TODO:
 
-- Globalen Seed im Header ausgeben.
+- Globalen Seed im Header ausgeben. [umgesetzt]
 - Pro Testfall abgeleitete Seeds ausgeben.
 - Bei Failure Operation-Index, Worker-ID und Pfad ausgeben.
-- Optional `--keep` automatisch empfehlen, wenn Artefakte vorhanden bleiben.
+- Optional `--keep` automatisch empfehlen, wenn Artefakte vorhanden bleiben. [umgesetzt als Repro-Zeile bei FAIL]
 
 Akzeptanz:
 
