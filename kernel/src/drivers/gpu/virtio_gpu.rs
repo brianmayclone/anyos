@@ -46,7 +46,8 @@ const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32 = 0x0300;
 const VIRTIO_GPU_CMD_MOVE_CURSOR: u32 = 0x0301;
 
 // Feature bits
-const VIRTIO_GPU_F_VIRGL: u64 = 1 << 1;
+const VIRTIO_GPU_F_VIRGL: u64 = 1 << 0;
+const VIRTIO_GPU_F_EDID: u64 = 1 << 1;
 
 // ──────────────────────────────────────────────
 // VirtIO GPU Response Types
@@ -463,6 +464,9 @@ pub struct VirtioGpu {
     // Supported display modes (native first, then filtered COMMON_MODES)
     supported: Vec<(u32, u32)>,
 
+    // Optional EDID support (negotiated via VIRTIO_GPU_F_EDID)
+    edid_capable: bool,
+
     // Monitor detection: per-scanout display info cached from GET_DISPLAY_INFO
     display_infos: Vec<(u32, u32, bool)>, // (width, height, enabled) per scanout
     enabled_scanout_count: u32,
@@ -712,6 +716,9 @@ impl VirtioGpu {
 
     /// Read EDID for a scanout via VIRTIO_GPU_CMD_GET_EDID (QEMU 3.1+, edid=on).
     fn cmd_get_edid(&mut self, scanout: u32) -> Option<[u8; 128]> {
+        if !self.edid_capable {
+            return None;
+        }
         let cmd = GetEdid {
             hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_GET_EDID),
             scanout,
@@ -2599,7 +2606,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     let device = VirtioDevice::new(pci_dev, &caps);
 
     // 3-6. Initialize device (reset, negotiate features)
-    let desired = VIRTIO_F_VERSION_1 | VIRTIO_GPU_F_VIRGL;
+    let desired = VIRTIO_F_VERSION_1 | VIRTIO_GPU_F_VIRGL | VIRTIO_GPU_F_EDID;
     let negotiated = match device.init_device(desired) {
         Ok(n) => {
             crate::serial_verbose_println!("  VirtIO GPU: features negotiated OK");
@@ -2611,8 +2618,12 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         }
     };
     let virgl_capable = (negotiated & VIRTIO_GPU_F_VIRGL) != 0;
+    let edid_capable = (negotiated & VIRTIO_GPU_F_EDID) != 0;
     if virgl_capable {
         crate::serial_verbose_println!("  VirtIO GPU: VIRGL 3D acceleration available");
+    }
+    if edid_capable {
+        crate::serial_verbose_println!("  VirtIO GPU: EDID support available");
     }
 
     // 7. Set up virtqueues
@@ -2746,6 +2757,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         resp_buf,
         cursor_buf_phys,
         supported: Vec::new(),
+        edid_capable,
         virgl_capable,
         virgl_ctx_id: 0,
         cmd_3d_buf,

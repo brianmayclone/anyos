@@ -961,8 +961,6 @@ pub fn map_all_dlls_into(pd_phys: PhysAddr) {
     struct DllMapPlan {
         base_vaddr: u64,
         ro_pages: Vec<PhysAddr>,
-        data_template_pages: Vec<PhysAddr>,
-        bss_page_count: u32,
     }
 
     // Snapshot DLL metadata under lock, then perform all mapping/allocation work
@@ -974,15 +972,10 @@ pub fn map_all_dlls_into(pd_phys: PhysAddr) {
             v.push(DllMapPlan {
                 base_vaddr: dll.base_vaddr,
                 ro_pages: dll.ro_pages.clone(),
-                data_template_pages: dll.data_template_pages.clone(),
-                bss_page_count: dll.bss_page_count,
             });
         }
         v
     }; // Lock dropped — interrupts re-enabled
-
-    let src = VirtAddr::new(TEMP_COPY_SRC);
-    let dst = VirtAddr::new(TEMP_COPY_DST);
 
     for plan in plans {
         for (i, &phys) in plan.ro_pages.iter().enumerate() {
@@ -992,49 +985,6 @@ pub fn map_all_dlls_into(pd_phys: PhysAddr) {
                     "map_all_dlls_into: failed to map RO page virt={:#x} phys={:#x} pd={:#x}",
                     virt.as_u64(),
                     phys.as_u64(),
-                    pd_phys.as_u64()
-                );
-                return;
-            }
-        }
-
-        let writable_base = plan.base_vaddr + (plan.ro_pages.len() as u64) * PAGE_SIZE;
-
-        for (i, &template_phys) in plan.data_template_pages.iter().enumerate() {
-            let new_frame = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)
-                .expect("OOM mapping DLL .data page");
-            with_frame_read(template_phys, src, |src_ptr| {
-                with_frame_mut(new_frame, dst, |dst_ptr| unsafe {
-                    core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, PAGE_SIZE as usize);
-                });
-            });
-
-            let virt = VirtAddr::new(writable_base + (i as u64) * PAGE_SIZE);
-            if !virtual_mem::map_page_in_pd(pd_phys, virt, new_frame, PAGE_USER | PAGE_WRITABLE) {
-                crate::serial_println!(
-                    "map_all_dlls_into: failed to map .data page virt={:#x} phys={:#x} pd={:#x}",
-                    virt.as_u64(),
-                    new_frame.as_u64(),
-                    pd_phys.as_u64()
-                );
-                return;
-            }
-        }
-
-        let bss_base = writable_base + (plan.data_template_pages.len() as u64) * PAGE_SIZE;
-        for i in 0..plan.bss_page_count as usize {
-            let new_frame = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)
-                .expect("OOM mapping DLL .bss page");
-            with_frame_mut(new_frame, dst, |ptr| unsafe {
-                core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
-            });
-
-            let virt = VirtAddr::new(bss_base + (i as u64) * PAGE_SIZE);
-            if !virtual_mem::map_page_in_pd(pd_phys, virt, new_frame, PAGE_USER | PAGE_WRITABLE) {
-                crate::serial_println!(
-                    "map_all_dlls_into: failed to map .bss page virt={:#x} phys={:#x} pd={:#x}",
-                    virt.as_u64(),
-                    new_frame.as_u64(),
                     pd_phys.as_u64()
                 );
                 return;
@@ -1073,13 +1023,28 @@ pub fn handle_dll_demand_page(vaddr: u64) -> bool {
             if page_idx < ro_count {
                 // Shared RO page — map existing shared frame
                 let phys = dll.ro_pages[page_idx];
-                virtual_mem::map_page(VirtAddr::new(page_base), phys, PAGE_USER);
+                if !virtual_mem::map_page(VirtAddr::new(page_base), phys, PAGE_USER) {
+                    crate::serial_println!(
+                        "[dll] OOM mapping shared RO demand page virt={:#x} phys={:#x}",
+                        page_base,
+                        phys.as_u64()
+                    );
+                    return false;
+                }
             } else if page_idx < ro_count + data_count {
                 // Per-process .data page — copy from template
                 let template_idx = page_idx - ro_count;
                 let template_phys = dll.data_template_pages[template_idx];
-                let new_frame = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)
-                    .expect("OOM in DLIB .data demand page");
+                let new_frame = match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
+                    Some(frame) => frame,
+                    None => {
+                        crate::serial_println!(
+                            "[dll] OOM allocating .data demand page virt={:#x}",
+                            page_base
+                        );
+                        return false;
+                    }
+                };
 
                 let src = VirtAddr::new(TEMP_COPY_SRC);
                 let dst = VirtAddr::new(TEMP_COPY_DST);
@@ -1089,26 +1054,50 @@ pub fn handle_dll_demand_page(vaddr: u64) -> bool {
                     });
                 });
 
-                virtual_mem::map_page(
+                if !virtual_mem::map_page(
                     VirtAddr::new(page_base),
                     new_frame,
                     PAGE_USER | PAGE_WRITABLE,
-                );
+                ) {
+                    crate::serial_println!(
+                        "[dll] OOM mapping .data demand page virt={:#x} phys={:#x}",
+                        page_base,
+                        new_frame.as_u64()
+                    );
+                    physical::free_frame(new_frame);
+                    return false;
+                }
             } else {
                 // Per-process .bss page — zero-fill
-                let new_frame = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)
-                    .expect("OOM in DLIB .bss demand page");
+                let new_frame = match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
+                    Some(frame) => frame,
+                    None => {
+                        crate::serial_println!(
+                            "[dll] OOM allocating .bss demand page virt={:#x}",
+                            page_base
+                        );
+                        return false;
+                    }
+                };
 
                 let tmp = VirtAddr::new(TEMP_COPY_SRC);
                 with_frame_mut(new_frame, tmp, |ptr| unsafe {
                     core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
                 });
 
-                virtual_mem::map_page(
+                if !virtual_mem::map_page(
                     VirtAddr::new(page_base),
                     new_frame,
                     PAGE_USER | PAGE_WRITABLE,
-                );
+                ) {
+                    crate::serial_println!(
+                        "[dll] OOM mapping .bss demand page virt={:#x} phys={:#x}",
+                        page_base,
+                        new_frame.as_u64()
+                    );
+                    physical::free_frame(new_frame);
+                    return false;
+                }
             }
             return true;
         }
@@ -1253,14 +1242,13 @@ pub fn get_dll_base(path: &str) -> Option<u64> {
 /// Ensure an already-loaded DLL is mapped into the current process.
 ///
 /// This is needed for shared objects loaded after a process was created:
-/// they are present in the global DLL registry, but their pages are not yet
-/// mapped into that older process address space.
+/// they are present in the global DLL registry, but their shared RO pages are
+/// not yet mapped into that older process address space. Writable .data/.bss
+/// pages are still mapped on demand.
 pub fn ensure_dll_mapped_current(path: &str) -> Option<u64> {
     struct MapPlan {
         base_vaddr: u64,
         ro_pages: Vec<PhysAddr>,
-        data_template_pages: Vec<PhysAddr>,
-        bss_page_count: u32,
     }
 
     let name = path.rsplit('/').next().unwrap_or(path);
@@ -1277,13 +1265,10 @@ pub fn ensure_dll_mapped_current(path: &str) -> Option<u64> {
         MapPlan {
             base_vaddr: dll.base_vaddr,
             ro_pages: dll.ro_pages.clone(),
-            data_template_pages: dll.data_template_pages.clone(),
-            bss_page_count: dll.bss_page_count,
         }
     };
 
     let src = VirtAddr::new(TEMP_COPY_SRC);
-    let dst = VirtAddr::new(TEMP_COPY_DST);
 
     for (i, &phys) in plan.ro_pages.iter().enumerate() {
         let virt = VirtAddr::new(plan.base_vaddr + (i as u64) * PAGE_SIZE);
@@ -1313,43 +1298,6 @@ pub fn ensure_dll_mapped_current(path: &str) -> Option<u64> {
                 bytes[2],
                 bytes[3]
             );
-        }
-    }
-
-    let writable_base = plan.base_vaddr + (plan.ro_pages.len() as u64) * PAGE_SIZE;
-
-    for (i, &template_phys) in plan.data_template_pages.iter().enumerate() {
-        let virt = VirtAddr::new(writable_base + (i as u64) * PAGE_SIZE);
-        if virtual_mem::is_page_mapped(virt) {
-            continue;
-        }
-
-        let new_frame = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)?;
-        with_frame_read(template_phys, src, |src_ptr| {
-            with_frame_mut(new_frame, dst, |dst_ptr| unsafe {
-                core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, PAGE_SIZE as usize);
-            });
-        });
-
-        if !virtual_mem::map_page(virt, new_frame, PAGE_USER | PAGE_WRITABLE) {
-            return None;
-        }
-    }
-
-    let bss_base = writable_base + (plan.data_template_pages.len() as u64) * PAGE_SIZE;
-    for i in 0..plan.bss_page_count as usize {
-        let virt = VirtAddr::new(bss_base + (i as u64) * PAGE_SIZE);
-        if virtual_mem::is_page_mapped(virt) {
-            continue;
-        }
-
-        let new_frame = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)?;
-        with_frame_mut(new_frame, dst, |ptr| unsafe {
-            core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
-        });
-
-        if !virtual_mem::map_page(virt, new_frame, PAGE_USER | PAGE_WRITABLE) {
-            return None;
         }
     }
 
