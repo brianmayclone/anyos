@@ -765,7 +765,7 @@ TODO:
   - Version. [umgesetzt]
   - FS/Pfad. [teilweise: Pfad umgesetzt]
   - Profil. [umgesetzt]
-  - Tests mit Status, Dauer, Details.
+  - Tests mit Status, Dauer, Details. [umgesetzt als JSONL-Testevents]
   - Performance-Metriken. [teilweise: JSONL fuer Perf-Testfamilien]
   - Seeds. [umgesetzt]
 

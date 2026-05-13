@@ -206,20 +206,22 @@ fn main() {
         for &block in &blocks {
             let seed = round.wrapping_mul(131).wrapping_add(block as u32);
             let path = format!("{}/r{}-b{}.bin", cfg.dir, round, block);
+            let case_started = sys::uptime_ms();
             let result = run_case(&cfg, &path, block, seed);
             print_case(round, &result);
             if result.ok {
-                summary.ok("case", &format!("round={} block={} ok", round, block));
+                let detail = format!("round={} block={} ok", round, block);
+                summary.ok("case", &detail);
+                print_json_test(&cfg, "case", "OK", elapsed_ms(case_started), &detail);
             } else {
-                summary.fail(
-                    "case",
-                    &format!(
-                        "round={} block={} first_bad={}",
-                        round,
-                        block,
-                        result.first_bad.unwrap_or(u32::MAX)
-                    ),
+                let detail = format!(
+                    "round={} block={} first_bad={}",
+                    round,
+                    block,
+                    result.first_bad.unwrap_or(u32::MAX)
                 );
+                summary.fail("case", &detail);
+                print_json_test(&cfg, "case", "FAIL", elapsed_ms(case_started), &detail);
             }
             results.push(result);
         }
@@ -623,78 +625,147 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
     println!();
     println!("--- Volltest-Suite ---");
 
-    run_named(summary, "small io", small_io_case(cfg));
-    run_named(summary, "overwrite in-block", overwrite_in_block_case(cfg));
+    run_named(cfg, summary, "small io", small_io_case(cfg));
     run_named(
+        cfg,
+        summary,
+        "overwrite in-block",
+        overwrite_in_block_case(cfg),
+    );
+    run_named(
+        cfg,
         summary,
         "overwrite block-edge",
         overwrite_block_edge_case(cfg),
     );
     run_named(
+        cfg,
         summary,
         "overwrite full-block",
         overwrite_full_block_case(cfg),
     );
     run_named(
+        cfg,
         summary,
         "overwrite multi-block",
         overwrite_multi_block_case(cfg),
     );
-    run_named(summary, "seek overwrite", seek_overwrite_case(cfg));
-    run_named(summary, "append truncate", append_truncate_case(cfg));
-    run_named(summary, "parallel fsstress", parallel_fsstress_case(cfg));
-    run_named_with_warning(summary, "enospc accounting", enospc_accounting_case(cfg));
+    run_named(cfg, summary, "seek overwrite", seek_overwrite_case(cfg));
+    run_named(cfg, summary, "append truncate", append_truncate_case(cfg));
+    run_named(
+        cfg,
+        summary,
+        "parallel fsstress",
+        parallel_fsstress_case(cfg),
+    );
     run_named_with_warning(
+        cfg,
+        summary,
+        "enospc accounting",
+        enospc_accounting_case(cfg),
+    );
+    run_named_with_warning(
+        cfg,
         summary,
         "enospc dir growth",
         enospc_directory_growth_case(cfg),
     );
     if !cfg.scratch_device.is_empty() {
-        run_named_with_warning(summary, "scratch lifecycle", scratch_lifecycle_case(cfg));
+        run_named_with_warning(
+            cfg,
+            summary,
+            "scratch lifecycle",
+            scratch_lifecycle_case(cfg),
+        );
     }
-    run_named_with_warning(summary, "symlink eloop", symlink_eloop_case(cfg));
-    run_named(summary, "fsx random model", fsx_random_model_case(cfg));
-    run_named(summary, "sparse eof gaps", sparse_eof_gap_case(cfg));
-    run_named(summary, "sparse hole matrix", sparse_hole_matrix_case(cfg));
-    run_named(summary, "fsstress metadata", fsstress_metadata_case(cfg));
-    run_named(summary, "close reopen sync", close_reopen_sync_case(cfg));
-    run_named(summary, "open unlink rename", open_unlink_rename_case(cfg));
-    run_named(summary, "metadata rename", metadata_rename_case(cfg));
-    run_named(summary, "directory churn", directory_churn_case(cfg));
-    run_named(summary, "metadata perf", metadata_perf_case(cfg));
-    run_named(summary, "sequential perf", sequential_io_perf_case(cfg));
-    run_named(summary, "overwrite perf", random_overwrite_perf_case(cfg));
-    run_named(summary, "sync latency", sync_latency_perf_case(cfg));
+    run_named_with_warning(cfg, summary, "symlink eloop", symlink_eloop_case(cfg));
+    run_named(cfg, summary, "fsx random model", fsx_random_model_case(cfg));
+    run_named(cfg, summary, "sparse eof gaps", sparse_eof_gap_case(cfg));
     run_named(
+        cfg,
+        summary,
+        "sparse hole matrix",
+        sparse_hole_matrix_case(cfg),
+    );
+    run_named(
+        cfg,
+        summary,
+        "fsstress metadata",
+        fsstress_metadata_case(cfg),
+    );
+    run_named(
+        cfg,
+        summary,
+        "close reopen sync",
+        close_reopen_sync_case(cfg),
+    );
+    run_named(
+        cfg,
+        summary,
+        "open unlink rename",
+        open_unlink_rename_case(cfg),
+    );
+    run_named(cfg, summary, "metadata rename", metadata_rename_case(cfg));
+    run_named(cfg, summary, "directory churn", directory_churn_case(cfg));
+    run_named(cfg, summary, "metadata perf", metadata_perf_case(cfg));
+    run_named(
+        cfg,
+        summary,
+        "sequential perf",
+        sequential_io_perf_case(cfg),
+    );
+    run_named(
+        cfg,
+        summary,
+        "overwrite perf",
+        random_overwrite_perf_case(cfg),
+    );
+    run_named(cfg, summary, "sync latency", sync_latency_perf_case(cfg));
+    run_named(
+        cfg,
         summary,
         "readdir mutation",
         readdir_while_mutating_case(cfg),
     );
     run_named(
+        cfg,
         summary,
         "readdir parallel",
         readdir_parallel_mutation_case(cfg),
     );
-    run_named(summary, "large directory", large_directory_case(cfg));
-    run_named(summary, "long names", long_name_case(cfg));
+    run_named(cfg, summary, "large directory", large_directory_case(cfg));
+    run_named(cfg, summary, "long names", long_name_case(cfg));
     run_named_with_warning(
+        cfg,
         summary,
         "permission metadata",
         permission_metadata_case(cfg),
     );
-    run_named_with_warning(summary, "fsync ordering", fsync_ordering_case(cfg));
-    run_named_with_warning(summary, "statfs accounting", statfs_accounting_case(cfg));
-    run_named_with_warning(summary, "path resolution", path_resolution_case(cfg));
-    run_named_with_warning(summary, "feature gates", feature_gate_case(cfg));
-    run_named(summary, "fd offsets", fd_offsets_case(cfg));
-    run_named(summary, "user copy boundary", user_copy_boundary_case(cfg));
-    run_named(summary, "stack write 64k", stack_write_64k_case(cfg));
+    run_named_with_warning(cfg, summary, "fsync ordering", fsync_ordering_case(cfg));
+    run_named_with_warning(
+        cfg,
+        summary,
+        "statfs accounting",
+        statfs_accounting_case(cfg),
+    );
+    run_named_with_warning(cfg, summary, "path resolution", path_resolution_case(cfg));
+    run_named_with_warning(cfg, summary, "feature gates", feature_gate_case(cfg));
+    run_named(cfg, summary, "fd offsets", fd_offsets_case(cfg));
     run_named(
+        cfg,
+        summary,
+        "user copy boundary",
+        user_copy_boundary_case(cfg),
+    );
+    run_named(cfg, summary, "stack write 64k", stack_write_64k_case(cfg));
+    run_named(
+        cfg,
         summary,
         "stream write 16k",
         writeback_stream_case(cfg, WRITEBACK_STREAM_CHUNK_16K),
     );
     run_named(
+        cfg,
         summary,
         "stream write 32k",
         writeback_stream_case(cfg, WRITEBACK_STREAM_CHUNK_32K),
@@ -717,20 +788,26 @@ fn run_soak_suite(cfg: &Config, summary: &mut Summary) {
             elapsed_ms(started),
             cfg.seed ^ round
         );
-        run_named(summary, "soak fsx", fsx_random_model_case(cfg));
-        run_named(summary, "soak metadata", fsstress_metadata_case(cfg));
-        run_named(summary, "soak parallel", parallel_fsstress_case(cfg));
-        run_named_with_warning(summary, "soak enospc", enospc_accounting_case(cfg));
+        run_named(cfg, summary, "soak fsx", fsx_random_model_case(cfg));
+        run_named(cfg, summary, "soak metadata", fsstress_metadata_case(cfg));
+        run_named(cfg, summary, "soak parallel", parallel_fsstress_case(cfg));
+        run_named_with_warning(cfg, summary, "soak enospc", enospc_accounting_case(cfg));
         run_named_with_warning(
+            cfg,
             summary,
             "soak enospc dir",
             enospc_directory_growth_case(cfg),
         );
         if !cfg.scratch_device.is_empty() {
-            run_named_with_warning(summary, "soak scratch", scratch_lifecycle_case(cfg));
+            run_named_with_warning(cfg, summary, "soak scratch", scratch_lifecycle_case(cfg));
         }
-        run_named(summary, "soak sequential", sequential_io_perf_case(cfg));
-        run_named(summary, "soak sync", sync_latency_perf_case(cfg));
+        run_named(
+            cfg,
+            summary,
+            "soak sequential",
+            sequential_io_perf_case(cfg),
+        );
+        run_named(cfg, summary, "soak sync", sync_latency_perf_case(cfg));
         fs::sync();
         if summary.failures != 0 {
             println!("  soak: Abbruch nach Fehler in Runde {}", round);
@@ -739,10 +816,22 @@ fn run_soak_suite(cfg: &Config, summary: &mut Summary) {
     }
 }
 
-fn run_named(summary: &mut Summary, name: &str, result: Result<String, &'static str>) {
+fn run_named(
+    cfg: &Config,
+    summary: &mut Summary,
+    name: &str,
+    result: Result<String, &'static str>,
+) {
+    let started = sys::uptime_ms();
     match result {
-        Ok(detail) => summary.ok(name, &detail),
-        Err(err) => summary.fail(name, err),
+        Ok(detail) => {
+            summary.ok(name, &detail);
+            print_json_test(cfg, name, "OK", elapsed_ms(started), &detail);
+        }
+        Err(err) => {
+            summary.fail(name, err);
+            print_json_test(cfg, name, "FAIL", elapsed_ms(started), err);
+        }
     }
 }
 
@@ -753,12 +842,25 @@ enum TestOutcome {
     Fail(&'static str),
 }
 
-fn run_named_with_warning(summary: &mut Summary, name: &str, result: TestOutcome) {
+fn run_named_with_warning(cfg: &Config, summary: &mut Summary, name: &str, result: TestOutcome) {
+    let started = sys::uptime_ms();
     match result {
-        TestOutcome::Ok(detail) => summary.ok(name, &detail),
-        TestOutcome::Warn(detail) => summary.warn(name, &detail),
-        TestOutcome::Skip(detail) => summary.skip(name, &detail),
-        TestOutcome::Fail(err) => summary.fail(name, err),
+        TestOutcome::Ok(detail) => {
+            summary.ok(name, &detail);
+            print_json_test(cfg, name, "OK", elapsed_ms(started), &detail);
+        }
+        TestOutcome::Warn(detail) => {
+            summary.warn(name, &detail);
+            print_json_test(cfg, name, "WARN", elapsed_ms(started), &detail);
+        }
+        TestOutcome::Skip(detail) => {
+            summary.skip(name, &detail);
+            print_json_test(cfg, name, "SKIP", elapsed_ms(started), &detail);
+        }
+        TestOutcome::Fail(err) => {
+            summary.fail(name, err);
+            print_json_test(cfg, name, "FAIL", elapsed_ms(started), err);
+        }
     }
 }
 
@@ -4544,6 +4646,36 @@ fn print_json_summary(cfg: &Config, summary: &Summary, elapsed: u32) {
         summary.skips,
         if summary.failures == 0 { "PASS" } else { "FAIL" }
     );
+}
+
+fn print_json_test(cfg: &Config, name: &str, status: &str, elapsed: u32, detail: &str) {
+    if !cfg.json {
+        return;
+    }
+    println!(
+        "{{\"type\":\"test\",\"name\":\"{}\",\"status\":\"{}\",\"elapsed_ms\":{},\"seed\":{},\"detail\":\"{}\"}}",
+        json_escape(name),
+        status,
+        elapsed,
+        cfg.seed,
+        json_escape(detail)
+    );
+}
+
+fn json_escape(input: &str) -> String {
+    let mut out = String::new();
+    for byte in input.as_bytes() {
+        match *byte {
+            b'"' => out.push_str("\\\""),
+            b'\\' => out.push_str("\\\\"),
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b'\t' => out.push_str("\\t"),
+            0..=31 => out.push(' '),
+            b => out.push(b as char),
+        }
+    }
+    out
 }
 
 fn kb_per_s(bytes: u32, ms: u32) -> u32 {
