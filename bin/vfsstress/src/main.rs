@@ -607,6 +607,7 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
         permission_metadata_case(cfg),
     );
     run_named_with_warning(summary, "fsync ordering", fsync_ordering_case(cfg));
+    run_named_with_warning(summary, "statfs accounting", statfs_accounting_case(cfg));
     run_named(summary, "fd offsets", fd_offsets_case(cfg));
     run_named(summary, "user copy boundary", user_copy_boundary_case(cfg));
     run_named(summary, "stack write 64k", stack_write_64k_case(cfg));
@@ -2369,6 +2370,89 @@ fn fsync_ordering_case(cfg: &Config) -> TestOutcome {
         "close/file-fsync/global-sync/rename Reihenfolgen ok, {}",
         dir_fsync
     ))
+}
+
+fn statfs_accounting_case(cfg: &Config) -> TestOutcome {
+    let probe = statfs_probe_path(cfg);
+    let Some(before) = fs::statfs(&probe) else {
+        return TestOutcome::Warn("skip: statfs nicht verfuegbar".into());
+    };
+
+    let dir = format!("{}/full-statfs-accounting", cfg.dir);
+    let _ = fs::mkdir(&dir);
+    let path = format!("{}/statfs.bin", dir);
+    let _ = fs::unlink(&path);
+
+    let total = match cfg.profile {
+        Profile::Quick => 128 * 1024u32,
+        Profile::Normal => 512 * 1024u32,
+        Profile::Heavy => 2 * 1024 * 1024u32,
+    };
+    if write_pattern_file(&path, total, 32 * 1024, cfg.seed ^ 0x57A7_F500).is_err() {
+        return TestOutcome::Fail("write");
+    }
+    fs::sync();
+    let Some(after_write) = fs::statfs(&probe) else {
+        let _ = fs::unlink(&path);
+        return TestOutcome::Warn("statfs-after-write-unavailable".into());
+    };
+
+    if after_write.total_bytes != before.total_bytes {
+        let _ = fs::unlink(&path);
+        return TestOutcome::Fail("total-changed");
+    }
+    if after_write.free_bytes > before.free_bytes {
+        let _ = fs::unlink(&path);
+        return TestOutcome::Fail("free-increased-after-write");
+    }
+    if after_write.used_bytes < before.used_bytes {
+        let _ = fs::unlink(&path);
+        return TestOutcome::Fail("used-decreased-after-write");
+    }
+
+    if fs::truncate(&path) != 0 {
+        let _ = fs::unlink(&path);
+        return TestOutcome::Fail("truncate");
+    }
+    fs::sync();
+    let after_truncate = fs::statfs(&probe);
+
+    let _ = fs::unlink(&path);
+    fs::sync();
+    let after_unlink = fs::statfs(&probe);
+
+    if let Some(t) = after_truncate {
+        if t.free_bytes < after_write.free_bytes {
+            return TestOutcome::Fail("free-decreased-after-truncate");
+        }
+    }
+    if let (Some(t), Some(u)) = (after_truncate, after_unlink) {
+        if u.free_bytes < t.free_bytes {
+            return TestOutcome::Fail("free-decreased-after-unlink");
+        }
+    }
+
+    let write_delta = before.free_bytes.saturating_sub(after_write.free_bytes);
+    let trunc_free = after_truncate
+        .map(|s| s.free_bytes / 1024)
+        .unwrap_or(u64::MAX);
+    let unlink_free = after_unlink
+        .map(|s| s.free_bytes / 1024)
+        .unwrap_or(u64::MAX);
+    let detail = format!(
+        "probe={} write={} KB, free {} -> {} -> {} -> {} KB",
+        probe,
+        total / 1024,
+        before.free_bytes / 1024,
+        after_write.free_bytes / 1024,
+        trunc_free,
+        unlink_free
+    );
+    if write_delta == 0 && after_write.used_bytes == before.used_bytes {
+        TestOutcome::Warn(format!("{}; kein sichtbarer statfs-Delta", detail))
+    } else {
+        TestOutcome::Ok(detail)
+    }
 }
 
 fn fd_offsets_case(cfg: &Config) -> Result<String, &'static str> {

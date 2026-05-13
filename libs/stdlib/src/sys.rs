@@ -245,7 +245,7 @@ pub fn disk_partitions(disk_id: u32, buf: &mut [u8]) -> u32 {
 }
 
 /// Read raw sectors from a block device.
-/// Returns 0 on success, u32::MAX on error.
+/// Returns number of sectors read, or u32::MAX on error.
 pub fn disk_read(device_id: u32, lba: u64, count: u32, buf: &mut [u8]) -> u32 {
     syscall5(
         SYS_DISK_READ,
@@ -258,7 +258,7 @@ pub fn disk_read(device_id: u32, lba: u64, count: u32, buf: &mut [u8]) -> u32 {
 }
 
 /// Write raw sectors to a block device.
-/// Returns 0 on success, u32::MAX on error.
+/// Returns number of sectors written, or u32::MAX on error.
 pub fn disk_write(device_id: u32, lba: u64, count: u32, buf: &[u8]) -> u32 {
     syscall5(
         SYS_DISK_WRITE,

@@ -192,7 +192,7 @@ fn partition_device_id(disk_id: u32, partition_index: u8) -> Option<u32> {
 /// Probe the filesystem signature at the start of a partition device.
 fn probe_fs(device_id: u32) -> &'static str {
     let mut sector = [0u8; 512];
-    if anyos_std::sys::disk_read(device_id, 0, 1, &mut sector) != 0 {
+    if anyos_std::sys::disk_read(device_id, 0, 1, &mut sector) == u32::MAX {
         return "?";
     }
 
@@ -213,6 +213,13 @@ fn probe_fs(device_id: u32) -> &'static str {
     }
     if sector[1..6] == *b"CD001" {
         return "ISO9660";
+    }
+
+    let mut corefs_sb = [0u8; 4096];
+    if anyos_std::sys::disk_read(device_id, 8, 8, &mut corefs_sb) == 8
+        && &corefs_sb[..8] == b"COREFSDF"
+    {
+        return "CoreFS";
     }
 
     "Unknown"
