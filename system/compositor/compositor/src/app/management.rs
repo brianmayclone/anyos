@@ -5,6 +5,7 @@ use anyos_std::println;
 use anyos_std::process;
 use anyos_std::sys;
 use anyos_std::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::config;
 use crate::render::{acquire_lock, desktop_ref, release_lock, signal_render};
@@ -14,6 +15,88 @@ use super::ipc::{emit_to_registered_apps, emit_to_target, handle_ipc_commands};
 use super::session::perform_logout;
 use super::shutdown::perform_shutdown;
 use super::system_events::handle_system_events;
+
+const SERVICE_STATE_IDLE: u32 = 0;
+const SERVICE_STATE_STARTING: u32 = 1;
+const SERVICE_STATE_DONE: u32 = 2;
+const SERVICE_STATE_FAILED: u32 = 3;
+
+static SESSIONHOST_STATE: AtomicU32 = AtomicU32::new(SERVICE_STATE_IDLE);
+static SESSIONHOST_TID: AtomicU32 = AtomicU32::new(u32::MAX);
+
+fn sessionhost_spawner_entry() {
+    println!("compositor: starting required service '/System/Sessionhost'...");
+    let tid = process::spawn("/System/Sessionhost", "");
+    if tid != 0 && tid != u32::MAX {
+        let _ = process::detach(tid);
+        SESSIONHOST_TID.store(tid, Ordering::Release);
+        SESSIONHOST_STATE.store(SERVICE_STATE_DONE, Ordering::Release);
+        println!(
+            "compositor: required service launched '/System/Sessionhost' (TID={})",
+            tid
+        );
+    } else {
+        SESSIONHOST_TID.store(u32::MAX, Ordering::Release);
+        SESSIONHOST_STATE.store(SERVICE_STATE_FAILED, Ordering::Release);
+        println!("compositor: WARNING — required service failed '/System/Sessionhost'");
+    }
+}
+
+fn launch_sessionhost_async() {
+    if SESSIONHOST_STATE
+        .compare_exchange(
+            SERVICE_STATE_IDLE,
+            SERVICE_STATE_STARTING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return;
+    }
+
+    let stack_size: usize = 32 * 1024;
+    let stack_vec = alloc::vec![0u8; stack_size];
+    let stack_base = stack_vec.as_ptr() as usize;
+    core::mem::forget(stack_vec);
+    #[cfg(target_arch = "x86_64")]
+    let stack_top = ((stack_base + stack_size) & !0xF) - 8;
+    #[cfg(target_arch = "aarch64")]
+    let stack_top = (stack_base + stack_size) & !0xF;
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        *(stack_top as *mut usize) = process::thread_exit_stub_addr();
+    }
+
+    let tid = process::thread_create_with_priority(
+        sessionhost_spawner_entry,
+        stack_top,
+        "compositor/sessionhost-spawn",
+        80,
+    );
+    if tid == 0 {
+        SESSIONHOST_STATE.store(SERVICE_STATE_FAILED, Ordering::Release);
+        println!("compositor: WARNING — could not create Sessionhost spawner thread");
+    }
+}
+
+fn collect_sessionhost_tid(service_tids: &mut Vec<u32>) {
+    if SESSIONHOST_STATE.load(Ordering::Acquire) != SERVICE_STATE_DONE {
+        return;
+    }
+    let tid = SESSIONHOST_TID.swap(u32::MAX, Ordering::AcqRel);
+    if tid != u32::MAX && !service_tids.contains(&tid) {
+        service_tids.push(tid);
+    }
+}
+
+fn reset_sessionhost_tracking_after_logout() {
+    if SESSIONHOST_STATE.load(Ordering::Acquire) == SERVICE_STATE_STARTING {
+        return;
+    }
+    SESSIONHOST_TID.store(u32::MAX, Ordering::Release);
+    SESSIONHOST_STATE.store(SERVICE_STATE_IDLE, Ordering::Release);
+}
 
 pub(crate) fn management_loop(
     compositor_channel: u32,
@@ -52,6 +135,7 @@ pub(crate) fn management_loop(
 
     loop {
         let now_ms = sys::uptime_ms();
+        collect_sessionhost_tid(service_tids);
         if now_ms.wrapping_sub(mgmt_last_report) >= 30000 {
             println!(
                 "MGMT-STATS: loops={} input={} ipc={} sys={} idle={}",
@@ -200,13 +284,16 @@ pub(crate) fn management_loop(
         };
         ipc::evt_chan_wait(compositor_channel, compositor_sub, timeout);
 
-        // Check if init waiter thread signaled completion
-        if *init_pending && super::bootstrap::is_init_done() {
+        // Check whether init has exited.  The management thread performs the
+        // reap itself so the subsequent login spawn happens from the same
+        // thread that owns the boot state transition.
+        if *init_pending && super::bootstrap::poll_init_done() {
             let code = super::bootstrap::init_exit_code();
             println!("compositor: init completed (exit={})", code);
             *init_pending = false;
 
             // Now spawn the login screen
+            println!("compositor: spawning login...");
             let new_login = process::spawn("/System/login", "");
             if new_login != u32::MAX {
                 *login_tid = new_login;
@@ -292,13 +379,9 @@ pub(crate) fn management_loop(
             release_lock();
             signal_render();
 
-            let (required_tids, required_ok) = config::launch_required_services();
-            service_tids.extend(required_tids);
-            if !required_ok {
-                println!("compositor: desktop session startup aborted because a required service is missing");
-                continue;
-            }
+            launch_sessionhost_async();
 
+            println!("compositor: spawning dock...");
             let dock_tid = process::spawn("/System/compositor/dock", "");
             if dock_tid != u32::MAX {
                 service_tids.push(dock_tid);
@@ -403,6 +486,7 @@ pub(crate) fn management_loop(
 
             if logout {
                 perform_logout(login_tid, login_pending, dock_spawned, service_tids);
+                reset_sessionhost_tracking_after_logout();
             }
         }
 

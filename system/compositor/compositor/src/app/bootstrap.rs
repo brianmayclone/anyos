@@ -18,9 +18,10 @@ use crate::render::{self, acquire_lock, desktop_ref, release_lock, signal_render
 
 use super::management::management_loop;
 
-// ── Init waiter thread ──────────────────────────────────────────────────────
-// A small thread that blocks on waitpid(init) and sets an atomic flag when
-// init has exited.  The management loop checks the flag — no polling needed.
+// ── Init completion tracking ────────────────────────────────────────────────
+// The management loop polls init with try_waitpid().  Keeping the wait/reap and
+// follow-up login spawn on the same compositor thread avoids a boot-time handoff
+// race between the init waiter thread and the management thread.
 
 static INIT_WAIT_TID: AtomicU32 = AtomicU32::new(u32::MAX);
 static INIT_DONE: AtomicBool = AtomicBool::new(false);
@@ -38,31 +39,9 @@ fn ensure_bootstrap_env() {
     env::set("LANG", "en");
 }
 
-fn init_waiter_entry() {
-    let tid = INIT_WAIT_TID.load(Ordering::Acquire);
-    let code = process::waitpid(tid);
-    INIT_EXIT_CODE.store(code, Ordering::Release);
-    INIT_DONE.store(true, Ordering::Release);
-}
-
-fn spawn_init_waiter(init_tid: u32) {
+fn track_init_process(init_tid: u32) {
     INIT_WAIT_TID.store(init_tid, Ordering::Release);
     INIT_DONE.store(false, Ordering::Release);
-
-    let stack_size: usize = 16 * 1024;
-    let stack_vec = alloc::vec![0u8; stack_size];
-    let stack_base = stack_vec.as_ptr() as usize;
-    core::mem::forget(stack_vec);
-    #[cfg(target_arch = "x86_64")]
-    let stack_top = ((stack_base + stack_size) & !0xF) - 8;
-    #[cfg(target_arch = "aarch64")]
-    let stack_top = (stack_base + stack_size) & !0xF;
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        // x86 threads return directly to the synthetic return slot at stack_top.
-        *(stack_top as *mut usize) = process::thread_exit_stub_addr();
-    }
-    process::thread_create_with_priority(init_waiter_entry, stack_top, "compositor/init-wait", 50);
 }
 
 fn register_with_ami(width: u32, height: u32, setup_mode: bool) {
@@ -113,8 +92,24 @@ fn clear_primary_framebuffer(fb_info: &ipc::FbMapInfo) {
     let _ = anyos_std::display::flush(0, 0, 0, fb_info.width, fb_info.height);
 }
 
-pub fn is_init_done() -> bool {
-    INIT_DONE.load(Ordering::Acquire)
+pub fn poll_init_done() -> bool {
+    if INIT_DONE.load(Ordering::Acquire) {
+        return true;
+    }
+
+    let tid = INIT_WAIT_TID.load(Ordering::Acquire);
+    if tid == u32::MAX {
+        return false;
+    }
+
+    let code = process::try_waitpid(tid);
+    if code == process::STILL_RUNNING {
+        return false;
+    }
+
+    INIT_EXIT_CODE.store(code, Ordering::Release);
+    INIT_DONE.store(true, Ordering::Release);
+    true
 }
 
 pub fn init_exit_code() -> u32 {
@@ -364,7 +359,7 @@ pub fn run() {
     if !setup_mode {
         let init_tid = process::spawn("/System/init", "");
         if init_tid != u32::MAX {
-            spawn_init_waiter(init_tid);
+            track_init_process(init_tid);
             init_pending = true;
             println!(
                 "compositor: init spawned (TID={}), login deferred until init completes",

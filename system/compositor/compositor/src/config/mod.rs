@@ -16,7 +16,7 @@ pub use input::{
     refresh_input_settings_check_cursor, refresh_natural_scroll, save_cursor_size,
     save_double_click_ms, save_left_handed, save_natural_scroll, save_pointer_speed,
 };
-pub use launch::{launch_autostart, launch_login_services, launch_required_services};
+pub use launch::{launch_autostart, launch_login_services};
 pub use resolution::{read_resolution, save_resolution, SavedResolution};
 pub use shortcuts::{read_shortcuts, KeyboardShortcut, ShortcutAction};
 pub use theme::{read_theme, save_theme, SavedTheme};

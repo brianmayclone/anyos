@@ -363,11 +363,12 @@ pub fn spawn_piped(path: &str, args: &str, pipe_id: u32) -> u32 {
     } else {
         args_buf.as_ptr() as u64
     };
-    syscall3(
+    syscall4(
         SYS_SPAWN,
         path_buf.as_ptr() as u64,
         pipe_id as u64,
         args_ptr,
+        0,
     )
 }
 
