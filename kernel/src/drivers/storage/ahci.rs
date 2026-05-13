@@ -983,33 +983,6 @@ pub fn init_and_register(pci: &PciDevice) {
     // BAR5 = ABAR (AHCI Base Address Register)
     let abar_raw = pci.bars[5];
 
-    // Debug: write BAR5 hex to VGA text buffer (row 24, visible even over boot splash)
-    unsafe {
-        let vga = 0xFFFF_FFFF_8000_0000u64 + 0xB8000; // kernel-mapped VGA text buffer
-        let row = 24;
-        let base = vga + (row * 160) as u64;
-        let msg = b"BAR5=";
-        for (i, &c) in msg.iter().enumerate() {
-            *((base + i as u64 * 2) as *mut u8) = c;
-            *((base + i as u64 * 2 + 1) as *mut u8) = 0x4F; // white on red
-        }
-        let hex = [
-            b"0123456789ABCDEF"[((abar_raw >> 28) & 0xF) as usize],
-            b"0123456789ABCDEF"[((abar_raw >> 24) & 0xF) as usize],
-            b"0123456789ABCDEF"[((abar_raw >> 20) & 0xF) as usize],
-            b"0123456789ABCDEF"[((abar_raw >> 16) & 0xF) as usize],
-            b"0123456789ABCDEF"[((abar_raw >> 12) & 0xF) as usize],
-            b"0123456789ABCDEF"[((abar_raw >> 8) & 0xF) as usize],
-            b"0123456789ABCDEF"[((abar_raw >> 4) & 0xF) as usize],
-            b"0123456789ABCDEF"[(abar_raw & 0xF) as usize],
-        ];
-        for (i, &c) in hex.iter().enumerate() {
-            let off = (5 + i) as u64;
-            *((base + off * 2) as *mut u8) = c;
-            *((base + off * 2 + 1) as *mut u8) = 0x4F;
-        }
-    }
-
     if abar_raw == 0 {
         crate::serial_verbose_println!("  AHCI: BAR5 is zero, cannot initialize");
         return;

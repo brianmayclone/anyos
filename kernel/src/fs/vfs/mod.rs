@@ -531,6 +531,9 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
                 .and_then(crate::drivers::storage::blockdev::get_device)
                 .map(|d| d.size_sectors)
                 .unwrap_or(0);
+            if sectors > 0 {
+                crate::fs::blockcache::set_write_range(device_id as u8, lba as u64, sectors);
+            }
 
             let mut chosen: FsType = fs_type;
             let mut mounted = false;

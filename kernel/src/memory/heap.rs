@@ -1,7 +1,7 @@
 //! Kernel heap allocator using a linked-list free list with demand paging.
 //!
-//! The heap reserves a bounded virtual address range but only maps a small initial
-//! region at boot. Growth adds committed heap pages on demand as long as the
+//! The heap reserves a bounded virtual address range and maps its initial
+//! committed region at boot. Growth adds committed heap pages as long as the
 //! reserved VA window and the physical frame allocator have enough space.
 //!
 //! The lock is IRQ-safe: interrupts are disabled while the heap lock is held.
@@ -19,18 +19,16 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// Virtual address where the kernel heap begins.
 ///
-/// Placed 32 MiB above the architecture's kernel virtual base to leave room for
-/// kernel code, data, BSS, and stack.
+/// Placed above the static higher-half kernel mapping to leave room for kernel
+/// code, data, BSS, and boot-time page tables without overlapping heap pages.
 ///
 /// x86_64: PML4[511]/PDPT[510] window at 0xFFFF_FFFF_8000_0000.
 /// ARM64:  1 GiB block mapping at 0xFFFF_0000_8000_0000 (boot.S TTBR1).
 #[cfg(target_arch = "x86_64")]
-const HEAP_START: u64 = 0xFFFF_FFFF_8200_0000;
+pub const HEAP_START: u64 = 0xFFFF_FFFF_8500_0000;
 #[cfg(target_arch = "aarch64")]
-const HEAP_START: u64 = 0xFFFF_0000_8200_0000;
-/// Size of the region pre-mapped at boot (4 MiB — enough for early init).
-const HEAP_INITIAL_MAPPED: usize = 4 * 1024 * 1024;
-/// Initial committed size (32 MiB — rest is demand-paged on first access).
+pub const HEAP_START: u64 = 0xFFFF_0000_8200_0000;
+/// Initial committed size (32 MiB).
 const HEAP_INITIAL_SIZE: usize = 32 * 1024 * 1024;
 /// Maximum heap size.
 ///
@@ -38,19 +36,18 @@ const HEAP_INITIAL_SIZE: usize = 32 * 1024 * 1024;
 /// 0xFFFF_FFFF_B000_0000, with a 32 MiB guard gap for fixed temporary
 /// mappings and future kernel-reserved VA.
 #[cfg(target_arch = "x86_64")]
-const HEAP_MAX_SIZE: usize = 704 * 1024 * 1024;
+pub const HEAP_MAX_SIZE: usize = 656 * 1024 * 1024;
 /// ARM64: the early TTBR1 block gives this region a fixed 1 GiB physical
 /// backing relationship; keep the historical cap until the ARM64 heap is moved
 /// onto explicit page-table mappings like x86_64.
 #[cfg(target_arch = "aarch64")]
-const HEAP_MAX_SIZE: usize = 512 * 1024 * 1024;
+pub const HEAP_MAX_SIZE: usize = 512 * 1024 * 1024;
 /// Minimum growth increment when expanding the heap (4 MiB).
 const GROW_CHUNK: usize = 4 * 1024 * 1024;
 
 /// Committed heap size in bytes. Readable by the page fault handler without
 /// acquiring the heap lock. Pages in [HEAP_START, HEAP_START + HEAP_COMMITTED)
-/// are valid heap addresses — if not yet mapped, the page fault handler
-/// allocates a frame on demand.
+/// are valid heap addresses.
 pub static HEAP_COMMITTED: AtomicUsize = AtomicUsize::new(0);
 
 #[global_allocator]
@@ -966,9 +963,9 @@ pub fn validate_heap() {
 
 /// Initialize the kernel heap.
 ///
-/// **x86_64**: Maps a small initial region (4 MiB) and commits a larger virtual range
-/// (32 MiB).  Pages beyond the initial mapped region are demand-faulted by the page
-/// fault handler.
+/// **x86_64**: Maps the full initial committed virtual range (32 MiB). Keeping
+/// committed heap pages backed from the start prevents them from aliasing broad
+/// boot-time kernel mappings or later buddy allocations.
 ///
 /// **ARM64**: The heap VA range is already mapped by the 1 GiB block in TTBR1.
 /// We just reserve the backing physical frames so the allocator won't reuse them.
@@ -977,8 +974,7 @@ pub fn validate_heap() {
 pub fn init() {
     #[cfg(target_arch = "x86_64")]
     {
-        // Map only the initial region (4 MiB = 1024 pages)
-        let mapped_pages = HEAP_INITIAL_MAPPED / FRAME_SIZE;
+        let mapped_pages = HEAP_INITIAL_SIZE / FRAME_SIZE;
         for i in 0..mapped_pages {
             let virt = VirtAddr::new(HEAP_START + (i * FRAME_SIZE) as u64);
             let phys = physical::alloc_frame_with(physical::FrameAllocPolicy::Any)
@@ -1000,7 +996,7 @@ pub fn init() {
         }
     }
 
-    // Commit the full initial size (x86: rest demand-paged; ARM64: already mapped)
+    // Commit the full initial size.
     HEAP_COMMITTED.store(HEAP_INITIAL_SIZE, Ordering::Release);
 
     // Initialize free list with one big block spanning HEAP_INITIAL_SIZE.

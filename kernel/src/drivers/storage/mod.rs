@@ -521,6 +521,17 @@ pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> b
     if !check_backend_io_bounds(disk_id, lba, count, "write") {
         return false;
     }
+    if crate::fs::blockcache::is_ready()
+        && !crate::fs::blockcache::write_range_allows(disk_id, lba, count)
+    {
+        crate::serial_println!(
+            "[storage] refusing write outside system partition: disk={} lba={} count={}",
+            disk_id,
+            lba,
+            count
+        );
+        return false;
+    }
     IO_OPS_TOTAL.fetch_add(1, Ordering::Relaxed);
 
     let cache_active = crate::fs::blockcache::is_ready();
@@ -601,6 +612,17 @@ pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8
         return true;
     }
     if !check_backend_io_bounds(disk_id, lba, count, "writeback") {
+        return false;
+    }
+    if crate::fs::blockcache::is_ready()
+        && !crate::fs::blockcache::write_range_allows(disk_id, lba, count)
+    {
+        crate::serial_println!(
+            "[storage] refusing direct write outside system partition: disk={} lba={} count={}",
+            disk_id,
+            lba,
+            count
+        );
         return false;
     }
     io_lock_acquire();

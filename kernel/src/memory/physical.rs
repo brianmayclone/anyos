@@ -268,10 +268,37 @@ mod backend {
             }
         }
 
+        // Reserve the boot framebuffer even when firmware reports its pages as
+        // reclaimable/usable after ExitBootServices. OVMF can expose GOP memory
+        // in a way that is not protected by the E820 conversion above; if the
+        // buddy later puts these frames on a free list, normal framebuffer
+        // drawing overwrites the buddy link words with pixel colors.
+        let fb_addr =
+            unsafe { core::ptr::addr_of!((*boot_info).framebuffer_addr).read_unaligned() } as u64;
+        let fb_pitch =
+            unsafe { core::ptr::addr_of!((*boot_info).framebuffer_pitch).read_unaligned() } as u64;
+        let fb_height =
+            unsafe { core::ptr::addr_of!((*boot_info).framebuffer_height).read_unaligned() } as u64;
+        let fb_size = fb_pitch.saturating_mul(fb_height);
+        if fb_addr != 0 && fb_size != 0 {
+            let fs = PhysAddr::new(fb_addr).frame_align_down().frame_index();
+            let fe = PhysAddr::new(fb_addr.saturating_add(fb_size))
+                .frame_align_up()
+                .frame_index();
+            for frame in fs..fe {
+                if frame < STAGE1_MAX_FRAMES && !bm.is_used(frame) {
+                    bm.set_used(frame);
+                    bm.free_frames -= 1;
+                }
+            }
+        }
+
         let total_mib = bm.total_frames * FRAME_SIZE / (1024 * 1024);
         let free_mib = bm.free_frames * FRAME_SIZE / (1024 * 1024);
         let kern_start_val = kernel_start_phys;
         let kern_end_val = kernel_end_phys;
+        let fb_start_val = fb_addr;
+        let fb_end_val = fb_addr.saturating_add(fb_size);
         drop(bm);
 
         crate::serial_verbose_println!(
@@ -279,6 +306,13 @@ mod backend {
             kern_start_val,
             kern_end_val
         );
+        if fb_start_val != 0 && fb_end_val > fb_start_val {
+            crate::serial_verbose_println!(
+                "Reserving framebuffer region: {:#010x} - {:#010x} [buddy bootmem]",
+                fb_start_val,
+                fb_end_val
+            );
+        }
         crate::serial_verbose_println!(
             "Physical memory: {} MiB total, {} MiB free [buddy bootmem]",
             total_mib,

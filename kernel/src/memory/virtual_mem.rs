@@ -971,7 +971,7 @@ fn create_user_page_directory_inner(map_low_identity: bool) -> Option<PhysAddr> 
     };
 
     // Temp virtual addresses to write into the new page tables.
-    // MUST be outside the heap range (HEAP_START + 704 MiB max) to avoid
+    // MUST be outside the heap range to avoid
     // clobbering heap page mappings when unmapping these temp pages.
     let temp_pml4 = VirtAddr::new(0xFFFF_FFFF_BFF0_0000);
     let temp_pdpt = VirtAddr::new(0xFFFF_FFFF_BFF0_1000);
@@ -1650,7 +1650,7 @@ pub fn destroy_user_page_directory(pml4_phys: PhysAddr) {
 ///
 /// Returns `false` if the address is not in the committed heap range (real fault).
 pub fn handle_heap_demand_page(vaddr: u64) -> bool {
-    let heap_start = 0xFFFF_FFFF_8200_0000u64;
+    let heap_start = crate::memory::heap::HEAP_START;
     let committed = crate::memory::heap::HEAP_COMMITTED.load(core::sync::atomic::Ordering::Acquire);
     let heap_end = heap_start + committed as u64;
 

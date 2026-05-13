@@ -445,8 +445,8 @@ pub fn sys_map_framebuffer(out_info_ptr: u64) -> u32 {
         let virt_addr = crate::memory::address::VirtAddr::new(
             fb_user_base + (i * crate::memory::FRAME_SIZE) as u64,
         );
-        // Present + Writable + User + Write-Through (0x0F)
-        crate::memory::virtual_mem::map_page(virt_addr, phys_addr, 0x0F);
+        let flags = 0x0F | crate::memory::virtual_mem::PTE_VRAM;
+        crate::memory::virtual_mem::map_page(virt_addr, phys_addr, flags);
     }
 
     // Write FbMapInfo struct to user memory
@@ -494,7 +494,8 @@ pub fn sys_map_framebuffer(out_info_ptr: u64) -> u32 {
         let virt_addr = crate::memory::address::VirtAddr::new(
             fb_user_base + (i * crate::memory::FRAME_SIZE) as u64,
         );
-        let _ = crate::memory::virtual_mem::map_page(virt_addr, phys_addr, 0x0F);
+        let flags = 0x0F | crate::memory::virtual_mem::PTE_VRAM;
+        let _ = crate::memory::virtual_mem::map_page(virt_addr, phys_addr, flags);
     }
 
     if out_info_ptr != 0 {
@@ -1311,12 +1312,13 @@ pub fn sys_grant_framebuffer(target_tid: u32, out_info_ptr: u64) -> u32 {
         return u32::MAX;
     }
 
-    // Map framebuffer pages into the target's address space
-    // Flags: Present + Writable + User + Write-Through (0x0F)
+    // Map framebuffer pages into the target's address space.
+    // PTE_VRAM keeps process cleanup from freeing GPU-owned frames.
+    let flags = 0x0F | crate::memory::virtual_mem::PTE_VRAM;
     for i in 0..pages {
         let phys = crate::memory::address::PhysAddr::new(pages_vec[i]);
         let virt = crate::memory::address::VirtAddr::new(fb_user_base + (i * 4096) as u64);
-        crate::memory::virtual_mem::map_page_in_pd(pd_phys, virt, phys, 0x0F);
+        crate::memory::virtual_mem::map_page_in_pd(pd_phys, virt, phys, flags);
     }
 
     // Write info struct to compositor's user memory
@@ -1996,7 +1998,8 @@ pub fn sys_display_map_fb(output_id: u32, out_info_ptr: u64) -> u32 {
         let virt_addr = crate::memory::address::VirtAddr::new(
             fb_user_base + (i * crate::memory::FRAME_SIZE) as u64,
         );
-        crate::memory::virtual_mem::map_page(virt_addr, phys_addr, 0x0F);
+        let flags = 0x0F | crate::memory::virtual_mem::PTE_VRAM;
+        crate::memory::virtual_mem::map_page(virt_addr, phys_addr, flags);
     }
     if out_info_ptr != 0 {
         if !super::helpers::is_valid_user_ptr(out_info_ptr, 16) {

@@ -9,7 +9,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Number of cached sectors. 16384 × 512 = 8 MiB cache.
 const CACHE_SECTORS: usize = 16384;
@@ -26,10 +26,26 @@ const EMPTY: u16 = 0xFFFF;
 /// Maximum linear probes before falling back.
 const MAX_PROBES: usize = 8;
 
+const MAX_DISKS: usize = 16;
+const KEY_SEAL: u64 = 0xB10C_CACE_D15C_5AFE;
+
+static WRITE_RANGE_START: [AtomicU64; MAX_DISKS] = {
+    const INIT: AtomicU64 = AtomicU64::new(0);
+    [INIT; MAX_DISKS]
+};
+static WRITE_RANGE_END: [AtomicU64; MAX_DISKS] = {
+    const INIT: AtomicU64 = AtomicU64::new(0);
+    [INIT; MAX_DISKS]
+};
+static CORRUPT_CACHE_LOGS: AtomicU32 = AtomicU32::new(0);
+
 /// A cached sector entry.
 struct CacheEntry {
     /// Composite key: (disk_id << 32) | lba.  0 = empty slot.
     key: u64,
+    /// Integrity seal for `key`. If random RAM scribbles turn a cache entry
+    /// into a different LBA, writeback must drop it instead of persisting it.
+    key_check: u64,
     /// LRU tick (higher = more recently used).
     tick: u32,
     /// Dirty flag — if true, must be flushed before eviction.
@@ -68,6 +84,7 @@ impl BlockCache {
         for _ in 0..CACHE_SECTORS {
             self.slots.push(CacheEntry {
                 key: 0,
+                key_check: 0,
                 tick: 0,
                 dirty: false,
                 data: [0u8; 512],
@@ -79,6 +96,64 @@ impl BlockCache {
     #[inline(always)]
     fn make_key(disk_id: u8, lba: u32) -> u64 {
         ((disk_id as u64) << 32) | (lba as u64)
+    }
+
+    #[inline(always)]
+    fn make_key_check(key: u64, slot: usize) -> u64 {
+        key ^ KEY_SEAL ^ (slot as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    }
+
+    #[inline(always)]
+    fn slot_key_valid(&self, slot: usize) -> bool {
+        slot < self.slots.len()
+            && self.slots[slot].key != 0
+            && self.slots[slot].key_check == Self::make_key_check(self.slots[slot].key, slot)
+    }
+
+    #[inline(always)]
+    fn set_slot_key(&mut self, slot: usize, key: u64) {
+        self.slots[slot].key = key;
+        self.slots[slot].key_check = if key == 0 {
+            0
+        } else {
+            Self::make_key_check(key, slot)
+        };
+    }
+
+    fn report_corrupt_slot(&self, slot: usize, context: &str) {
+        if CORRUPT_CACHE_LOGS.fetch_add(1, Ordering::Relaxed) < 16 {
+            let entry = &self.slots[slot];
+            let slot_virt = entry as *const CacheEntry as u64;
+            let slot_phys = crate::memory::virtual_mem::virt_to_phys(
+                crate::memory::address::VirtAddr::new(slot_virt),
+            )
+            .unwrap_or(0);
+            crate::serial_println!(
+                "[blockcache] corrupt cache slot during {}: slot={} virt={:#018x} phys={:#018x} key={:#018x} check={:#018x} expected={:#018x} dirty={}",
+                context,
+                slot,
+                slot_virt,
+                slot_phys,
+                entry.key,
+                entry.key_check,
+                Self::make_key_check(entry.key, slot),
+                entry.dirty
+            );
+        }
+    }
+
+    fn quarantine_slot(&mut self, slot: usize, context: &str) {
+        if slot >= self.slots.len() {
+            return;
+        }
+        if self.slots[slot].key != 0 && !self.slot_key_valid(slot) {
+            self.report_corrupt_slot(slot, context);
+            let old_key = self.slots[slot].key;
+            self.remove_from_hash(old_key, slot);
+            self.set_slot_key(slot, 0);
+            self.slots[slot].dirty = false;
+            self.slots[slot].tick = 0;
+        }
     }
 
     #[inline(always)]
@@ -103,7 +178,7 @@ impl BlockCache {
                 continue;
             }
             let si = slot_idx as usize;
-            if si < self.slots.len() && self.slots[si].key == key {
+            if si < self.slots.len() && self.slots[si].key == key && self.slot_key_valid(si) {
                 // Hit — copy data and update LRU tick
                 let n = buf.len().min(512);
                 buf[..n].copy_from_slice(&self.slots[si].data[..n]);
@@ -116,7 +191,8 @@ impl BlockCache {
 
         // Fallback: linear scan for hash collisions beyond MAX_PROBES
         for i in 0..self.slots.len() {
-            if self.slots[i].key == key {
+            self.quarantine_slot(i, "lookup");
+            if self.slots[i].key == key && self.slot_key_valid(i) {
                 let n = buf.len().min(512);
                 buf[..n].copy_from_slice(&self.slots[i].data[..n]);
                 self.tick = self.tick.wrapping_add(1);
@@ -185,7 +261,7 @@ impl BlockCache {
                 continue;
             }
             let si = slot_idx as usize;
-            if si < self.slots.len() && self.slots[si].key == key {
+            if si < self.slots.len() && self.slots[si].key == key && self.slot_key_valid(si) {
                 let n = data.len().min(512);
                 self.slots[si].data[..n].copy_from_slice(&data[..n]);
                 self.tick = self.tick.wrapping_add(1);
@@ -197,7 +273,8 @@ impl BlockCache {
         // Do a full slot scan before allocating a victim so an existing
         // collided entry is updated in place instead of duplicated.
         for i in 0..self.slots.len() {
-            if self.slots[i].key == key {
+            self.quarantine_slot(i, "insert-scan");
+            if self.slots[i].key == key && self.slot_key_valid(i) {
                 let n = data.len().min(512);
                 self.slots[i].data[..n].copy_from_slice(&data[..n]);
                 self.tick = self.tick.wrapping_add(1);
@@ -211,6 +288,7 @@ impl BlockCache {
         let mut min_tick = u32::MAX;
         // First pass: find oldest clean entry
         for i in 0..self.slots.len() {
+            self.quarantine_slot(i, "victim-scan");
             if self.slots[i].key == 0 {
                 victim = i;
                 min_tick = 0;
@@ -246,7 +324,7 @@ impl BlockCache {
                 *b = 0;
             }
         }
-        self.slots[victim].key = key;
+        self.set_slot_key(victim, key);
         self.slots[victim].dirty = false;
         self.tick = self.tick.wrapping_add(1);
         self.slots[victim].tick = self.tick;
@@ -285,14 +363,15 @@ impl BlockCache {
                 continue;
             }
             let si = slot_idx as usize;
-            if si < self.slots.len() && self.slots[si].key == key {
+            if si < self.slots.len() && self.slots[si].key == key && self.slot_key_valid(si) {
                 self.slots[si].dirty = true;
                 return;
             }
         }
         // Fallback linear scan
         for i in 0..self.slots.len() {
-            if self.slots[i].key == key {
+            self.quarantine_slot(i, "insert-dirty-scan");
+            if self.slots[i].key == key && self.slot_key_valid(i) {
                 self.slots[i].dirty = true;
                 return;
             }
@@ -313,8 +392,8 @@ impl BlockCache {
                 continue;
             }
             let si = slot_idx as usize;
-            if si < self.slots.len() && self.slots[si].key == key {
-                self.slots[si].key = 0;
+            if si < self.slots.len() && self.slots[si].key == key && self.slot_key_valid(si) {
+                self.set_slot_key(si, 0);
                 self.slots[si].dirty = false;
                 self.hash_table[idx] = EMPTY;
                 return;
@@ -322,9 +401,10 @@ impl BlockCache {
         }
         // Fallback linear scan
         for i in 0..self.slots.len() {
-            if self.slots[i].key == key {
+            self.quarantine_slot(i, "invalidate-scan");
+            if self.slots[i].key == key && self.slot_key_valid(i) {
                 self.remove_from_hash(key, i);
-                self.slots[i].key = 0;
+                self.set_slot_key(i, 0);
                 self.slots[i].dirty = false;
                 return;
             }
@@ -349,7 +429,11 @@ impl BlockCache {
         let mut i = 0;
         let mut all_ok = true;
         while i < self.slots.len() {
-            if self.slots[i].dirty && (self.slots[i].key >> 32) == disk_id as u64 {
+            self.quarantine_slot(i, "flush-dirty");
+            if self.slots[i].dirty
+                && self.slot_key_valid(i)
+                && (self.slots[i].key >> 32) == disk_id as u64
+            {
                 let start_lba = (self.slots[i].key & 0xFFFFFFFF) as u32;
                 // Try to coalesce consecutive dirty sectors
                 let mut run_len = 1u32;
@@ -390,15 +474,16 @@ impl BlockCache {
                 continue;
             }
             let si = slot_idx as usize;
-            if si < self.slots.len() && self.slots[si].key == key {
+            if si < self.slots.len() && self.slots[si].key == key && self.slot_key_valid(si) {
                 self.slots[si].dirty = true;
                 return;
             }
         }
         // Fallback linear
-        for slot in &mut self.slots {
-            if slot.key == key {
-                slot.dirty = true;
+        for i in 0..self.slots.len() {
+            self.quarantine_slot(i, "mark-dirty-scan");
+            if self.slots[i].key == key && self.slot_key_valid(i) {
+                self.slots[i].dirty = true;
                 return;
             }
         }
@@ -460,6 +545,43 @@ pub fn init() {
     CACHE_READY.store(true, Ordering::Release);
 }
 
+/// Limit lazy write-back for a physical disk to the mounted system partition.
+///
+/// Reads may still cover the whole disk (partition scanning, ESP access), but
+/// write-back should never be able to persist a corrupted cache key into GPT,
+/// the ESP, or LBA0.
+pub fn set_write_range(disk_id: u8, start_lba: u64, sector_count: u64) {
+    let idx = disk_id as usize;
+    if idx >= MAX_DISKS || sector_count == 0 {
+        return;
+    }
+    let end = start_lba.saturating_add(sector_count);
+    WRITE_RANGE_START[idx].store(start_lba, Ordering::Release);
+    WRITE_RANGE_END[idx].store(end, Ordering::Release);
+    crate::serial_verbose_println!(
+        "[blockcache] disk {} write-back range set to [{}..{})",
+        disk_id,
+        start_lba,
+        end
+    );
+}
+
+#[inline]
+pub fn write_range_allows(disk_id: u8, lba: u32, count: u32) -> bool {
+    let idx = disk_id as usize;
+    if idx >= MAX_DISKS {
+        return true;
+    }
+    let end = WRITE_RANGE_END[idx].load(Ordering::Acquire);
+    if end == 0 {
+        return true;
+    }
+    let start = WRITE_RANGE_START[idx].load(Ordering::Acquire);
+    let req_start = lba as u64;
+    let req_end = req_start.saturating_add(count as u64);
+    req_start >= start && req_end <= end
+}
+
 /// Try to read `count` sectors from cache. Returns number of sectors served
 /// from cache (starting from lba, stops at first miss).
 pub fn cached_read(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> u32 {
@@ -504,10 +626,11 @@ pub fn invalidate_disk(disk_id: u8) {
     }
     let mut cache = BLOCK_CACHE.lock();
     for i in 0..cache.slots.len() {
-        if (cache.slots[i].key >> 32) == disk_id as u64 {
+        cache.quarantine_slot(i, "invalidate-disk");
+        if cache.slot_key_valid(i) && (cache.slots[i].key >> 32) == disk_id as u64 {
             let key = cache.slots[i].key;
             cache.remove_from_hash(key, i);
-            cache.slots[i].key = 0;
+            cache.set_slot_key(i, 0);
             cache.slots[i].dirty = false;
         }
     }
@@ -517,6 +640,15 @@ pub fn invalidate_disk(disk_id: u8) {
 /// and will be written to disk later during writeback.
 pub fn write_back(disk_id: u8, lba: u32, count: u32, data: &[u8]) {
     if !CACHE_READY.load(Ordering::Acquire) {
+        return;
+    }
+    if !write_range_allows(disk_id, lba, count) {
+        crate::serial_println!(
+            "[blockcache] refusing write-back outside system partition: disk={} lba={} count={}",
+            disk_id,
+            lba,
+            count
+        );
         return;
     }
     let mut cache = BLOCK_CACHE.lock();
@@ -537,10 +669,12 @@ pub fn should_flush_before_write_back(disk_id: u8, incoming_count: u32) -> bool 
     if !CACHE_READY.load(Ordering::Acquire) {
         return false;
     }
-    let cache = BLOCK_CACHE.lock();
+    let mut cache = BLOCK_CACHE.lock();
     let mut dirty = 0u32;
-    for slot in &cache.slots {
-        if slot.dirty && (slot.key >> 32) == disk_id as u64 {
+    for i in 0..cache.slots.len() {
+        cache.quarantine_slot(i, "dirty-pressure");
+        let slot = &cache.slots[i];
+        if slot.dirty && cache.slot_key_valid(i) && (slot.key >> 32) == disk_id as u64 {
             dirty += 1;
         }
     }
@@ -580,10 +714,11 @@ pub fn writeback_flush(disk_id: u8) -> u32 {
 
     let mut snapshot: alloc::vec::Vec<DirtyCopy> = alloc::vec::Vec::new();
     {
-        let cache = BLOCK_CACHE.lock();
+        let mut cache = BLOCK_CACHE.lock();
         for i in 0..cache.slots.len() {
+            cache.quarantine_slot(i, "writeback-snapshot");
             let entry = &cache.slots[i];
-            if entry.dirty && (entry.key >> 32) == disk_id as u64 {
+            if entry.dirty && cache.slot_key_valid(i) && (entry.key >> 32) == disk_id as u64 {
                 let lba = (entry.key & 0xFFFFFFFF) as u32;
                 snapshot.push(DirtyCopy {
                     key: entry.key,
@@ -615,6 +750,31 @@ pub fn writeback_flush(disk_id: u8) -> u32 {
         }
 
         let disk_sectors = crate::drivers::storage::disk_sector_count(disk_id);
+        if !write_range_allows(disk_id, run_start_lba, run_len as u32) {
+            crate::serial_println!(
+                "[blockcache] dropping dirty run outside system partition: disk={} lba={} count={}",
+                disk_id,
+                run_start_lba,
+                run_len
+            );
+            {
+                let mut cache = BLOCK_CACHE.lock();
+                for j in 0..run_len {
+                    let snap = &snapshot[i + j];
+                    if snap.slot >= cache.slots.len() {
+                        continue;
+                    }
+                    if cache.slots[snap.slot].key == snap.key && cache.slot_key_valid(snap.slot) {
+                        cache.remove_from_hash(snap.key, snap.slot);
+                        cache.set_slot_key(snap.slot, 0);
+                        cache.slots[snap.slot].dirty = false;
+                    }
+                }
+            }
+            i += run_len;
+            continue;
+        }
+
         if disk_sectors > 0 && (run_start_lba as u64).saturating_add(run_len as u64) > disk_sectors
         {
             crate::serial_println!(
@@ -631,9 +791,9 @@ pub fn writeback_flush(disk_id: u8) -> u32 {
                     if snap.slot >= cache.slots.len() {
                         continue;
                     }
-                    if cache.slots[snap.slot].key == snap.key {
+                    if cache.slots[snap.slot].key == snap.key && cache.slot_key_valid(snap.slot) {
                         cache.remove_from_hash(snap.key, snap.slot);
-                        cache.slots[snap.slot].key = 0;
+                        cache.set_slot_key(snap.slot, 0);
                         cache.slots[snap.slot].dirty = false;
                     }
                 }
@@ -674,7 +834,9 @@ pub fn writeback_flush(disk_id: u8) -> u32 {
                     continue;
                 }
                 let slot = &mut cache.slots[snap.slot];
-                if slot.key != snap.key {
+                if slot.key != snap.key
+                    || slot.key_check != BlockCache::make_key_check(snap.key, snap.slot)
+                {
                     continue;
                 }
                 if ok {
@@ -694,10 +856,12 @@ pub fn dirty_count(disk_id: u8) -> u32 {
     if !CACHE_READY.load(Ordering::Acquire) {
         return 0;
     }
-    let cache = BLOCK_CACHE.lock();
+    let mut cache = BLOCK_CACHE.lock();
     let mut count = 0u32;
-    for slot in &cache.slots {
-        if slot.dirty && (slot.key >> 32) == disk_id as u64 {
+    for i in 0..cache.slots.len() {
+        cache.quarantine_slot(i, "dirty-count");
+        let slot = &cache.slots[i];
+        if slot.dirty && cache.slot_key_valid(i) && (slot.key >> 32) == disk_id as u64 {
             count += 1;
         }
     }
