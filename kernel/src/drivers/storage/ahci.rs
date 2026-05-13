@@ -245,7 +245,11 @@ unsafe fn dma_zero(phys: u64, len: usize) {
     core::ptr::write_bytes(dma_ptr::<u8>(phys), 0, len);
 }
 
-fn build_prdt_from_virt(ptr: *const u8, len: usize, out: &mut [PrdtSpec; MAX_PRDT]) -> Option<usize> {
+fn build_prdt_from_virt(
+    ptr: *const u8,
+    len: usize,
+    out: &mut [PrdtSpec; MAX_PRDT],
+) -> Option<usize> {
     if len == 0 {
         return Some(0);
     }
@@ -654,11 +658,7 @@ unsafe fn issue_command_once(
     poll_completion(ahci)
 }
 
-unsafe fn wait_for_interrupt_completion(
-    ahci: &AhciController,
-    command: u8,
-    lba: u64,
-) -> bool {
+unsafe fn wait_for_interrupt_completion(ahci: &AhciController, command: u8, lba: u64) -> bool {
     let hz = crate::arch::hal::timer_frequency_hz() as u32;
     if hz == 0 {
         AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
@@ -764,7 +764,11 @@ unsafe fn issue_command(
         phys: dma_phys,
         len: dma_size,
     }];
-    let prdt = if dma_size > 0 { &specs[..] } else { &specs[..0] };
+    let prdt = if dma_size > 0 {
+        &specs[..]
+    } else {
+        &specs[..0]
+    };
     issue_command_prdt(ahci, command, lba, count, prdt, write)
 }
 
@@ -967,7 +971,9 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
         let dst = unsafe { buf.as_mut_ptr().add(offset) };
         let mut prdt = [EMPTY_PRDT_SPEC; MAX_PRDT];
 
-        let ok = if let Some(prdt_len) = build_prdt_from_virt(dst as *const u8, byte_count, &mut prdt) {
+        let ok = if let Some(prdt_len) =
+            build_prdt_from_virt(dst as *const u8, byte_count, &mut prdt)
+        {
             unsafe {
                 issue_command_prdt(
                     ahci,

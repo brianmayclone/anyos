@@ -92,6 +92,95 @@ fn uart_put_hex(n: u64) {
         uart_putc(buf[i]);
     }
 }
+
+fn uart_put_labeled_hex(label: &[u8], value: u64) {
+    uart_puts(label);
+    uart_put_hex(value);
+}
+
+fn dump_reentrant_fault_context(frame: &InterruptFrame, cr2: Option<u64>) {
+    uart_puts(b"  ctx: RIP=");
+    uart_put_hex(frame.rip);
+    uart_puts(b" RSP=");
+    uart_put_hex(frame.rsp);
+    uart_puts(b" RBP=");
+    uart_put_hex(frame.rbp);
+    uart_puts(b" ERR=");
+    uart_put_hex(frame.err_code);
+    uart_putc(b'\n');
+
+    uart_put_labeled_hex(b"  CR2=", cr2.unwrap_or(0));
+    uart_puts(b" RAX=");
+    uart_put_hex(frame.rax);
+    uart_puts(b" RBX=");
+    uart_put_hex(frame.rbx);
+    uart_puts(b" RCX=");
+    uart_put_hex(frame.rcx);
+    uart_puts(b" RDX=");
+    uart_put_hex(frame.rdx);
+    uart_putc(b'\n');
+
+    uart_puts(b"  RSI=");
+    uart_put_hex(frame.rsi);
+    uart_puts(b" RDI=");
+    uart_put_hex(frame.rdi);
+    uart_puts(b" R8=");
+    uart_put_hex(frame.r8);
+    uart_puts(b" R9=");
+    uart_put_hex(frame.r9);
+    uart_putc(b'\n');
+
+    let cpu = crate::arch::x86::smp::current_cpu_id() as usize;
+    let (stack_bottom, stack_top) = crate::task::scheduler::get_stack_bounds(cpu);
+    uart_puts(b"  kstack=[");
+    uart_put_hex(stack_bottom);
+    uart_puts(b"..");
+    uart_put_hex(stack_top);
+    uart_puts(b"]\n");
+
+    if stack_bottom != 0
+        && frame.rsp >= stack_bottom
+        && frame.rsp.saturating_add(8 * 8) <= stack_top
+        && frame.rsp & 7 == 0
+    {
+        uart_puts(b"  stack qwords:");
+        let words = frame.rsp as *const u64;
+        unsafe {
+            for i in 0..8usize {
+                uart_puts(b" ");
+                uart_put_hex(core::ptr::read_unaligned(words.add(i)));
+            }
+        }
+        uart_putc(b'\n');
+    } else {
+        uart_puts(b"  stack qwords: unavailable\n");
+    }
+
+    let mut bp = frame.rbp;
+    let mut depth = 0usize;
+    uart_puts(b"  rbp-chain:");
+    while stack_bottom != 0
+        && bp >= stack_bottom
+        && bp.saturating_add(16) <= stack_top
+        && bp & 7 == 0
+        && depth < 8
+    {
+        let ptr = bp as *const u64;
+        let next = unsafe { core::ptr::read_unaligned(ptr) };
+        let ret = unsafe { core::ptr::read_unaligned(ptr.add(1)) };
+        uart_puts(b" ");
+        uart_put_hex(ret);
+        if next <= bp || next > stack_top {
+            break;
+        }
+        bp = next;
+        depth += 1;
+    }
+    if depth == 0 {
+        uart_puts(b" none");
+    }
+    uart_putc(b'\n');
+}
 /// Check if the instruction at `rip` is IRETQ (0x48 0xCF) and dump the 5-value
 /// return frame from the stack. When IRETQ faults, the CPU restores RSP to the
 /// pre-IRETQ value, so `saved_rsp` points to: [RIP, CS, RFLAGS, RSP, SS].
@@ -647,21 +736,30 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
     if cpu_id < crate::arch::x86::smp::MAX_CPUS {
         if FAULT_HANDLER_ACTIVE[cpu_id].swap(true, Ordering::Relaxed) {
             // Already active — re-entrant fault detected!
-            crate::serial_println!(
-                "!!! RE-ENTRANT FAULT on CPU{} TID={} signal={} RIP={:#018x} — skipping to manual recovery",
-                cpu_id, tid, signal, frame.rip
-            );
+            uart_puts(b"\n!!! RE-ENTRANT FAULT on CPU");
+            uart_put_dec(cpu_id as u32);
+            uart_puts(b" TID=");
+            uart_put_dec(tid);
+            uart_puts(b" signal=");
+            uart_put_dec(signal);
+            uart_puts(b" RIP=");
+            uart_put_hex(frame.rip);
+            uart_puts(b" -- manual recovery\n");
             // Log CR2 for page faults to help diagnose the corruption
+            let mut cr2_opt = None;
             if frame.int_no == 14 {
                 let cr2: u64;
                 unsafe {
                     core::arch::asm!("mov {}, cr2", out(reg) cr2);
                 }
-                crate::serial_println!("  CR2={:#018x} (faulting address)", cr2);
+                cr2_opt = Some(cr2);
+                uart_puts(b"  CR2=");
+                uart_put_hex(cr2);
+                uart_puts(b" (faulting address)\n");
             }
+            dump_reentrant_fault_context(frame, cr2_opt);
             FAULT_HANDLER_ACTIVE[cpu_id].store(false, Ordering::Relaxed);
             crate::task::scheduler::fault_kill_tid_and_idle(tid, signal);
-            return true; // never reached, but satisfies return type
         }
     }
     if crate::task::scheduler::debug_is_current_user() {

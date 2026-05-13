@@ -953,8 +953,7 @@ pub fn writeback_flush(disk_id: u8) -> u32 {
 
     if (disk_id as usize) < MAX_DISKS && flushed > 0 {
         let estimate = DIRTY_ESTIMATE[disk_id as usize].load(Ordering::Relaxed);
-        DIRTY_ESTIMATE[disk_id as usize]
-            .store(estimate.saturating_sub(flushed), Ordering::Relaxed);
+        DIRTY_ESTIMATE[disk_id as usize].store(estimate.saturating_sub(flushed), Ordering::Relaxed);
     }
 
     flushed
