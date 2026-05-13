@@ -382,7 +382,7 @@ add_custom_target(run-uefi
   COMMAND ${QEMU_EXECUTABLE}
     ${QEMU_CPU_FLAGS}
     -drive if=pflash,format=raw,readonly=on,file=${OVMF_FW}
-    -device ahci,id=ahci0
+    -device ich9-ahci,id=ahci0
     -drive id=disk0,file=${UEFI_DISK_IMAGE},format=raw,if=none
     -device ide-hd,drive=disk0,bus=ahci0.0
     -m 1024M
@@ -400,7 +400,7 @@ add_custom_target(run-uefi-std
   COMMAND ${QEMU_EXECUTABLE}
     ${QEMU_CPU_FLAGS}
     -drive if=pflash,format=raw,readonly=on,file=${OVMF_FW}
-    -device ahci,id=ahci0
+    -device ich9-ahci,id=ahci0
     -drive id=disk0,file=${UEFI_DISK_IMAGE},format=raw,if=none
     -device ide-hd,drive=disk0,bus=ahci0.0
     -m 1024M

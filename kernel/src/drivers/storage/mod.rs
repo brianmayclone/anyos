@@ -551,12 +551,12 @@ pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> b
     let result = write_sectors_raw_for_disk(disk_id, lba, count, buf);
     io_lock_release();
     if result && cache_active {
-        // Update cache so reads see the new data
-        if buf.len() >= data_len {
-            crate::fs::blockcache::populate(disk_id, lba, count, &buf[..data_len]);
-        } else {
-            crate::fs::blockcache::invalidate(disk_id, lba, count);
-        }
+        // Direct/bulk writes already reached the backend. Keeping a clean copy
+        // of every streamed sector in the read cache turns large writes into
+        // thousands of cache insertions and LRU scans. Drop any stale entries
+        // instead; the next read can fetch the data from disk or from the
+        // filesystem's own higher-level cache.
+        crate::fs::blockcache::invalidate(disk_id, lba, count);
     }
     result
 }

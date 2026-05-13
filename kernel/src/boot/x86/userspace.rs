@@ -81,6 +81,14 @@ fn apply_requested_resolution() {
 fn auto_apply_native_resolution() {
     drivers::monitor::detect_and_register();
 
+    let auto_native_resolution = false;
+    if !auto_native_resolution {
+        crate::serial_verbose_println!(
+            "  GPU: automatic native monitor resolution switch disabled"
+        );
+        return;
+    }
+
     let is_3d = drivers::gpu::with_gpu(|gpu| gpu.has_3d()).unwrap_or(false);
     if is_3d || drivers::gpu::preferred_resolution().is_some() {
         return;

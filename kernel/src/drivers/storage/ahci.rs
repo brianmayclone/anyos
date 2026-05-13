@@ -139,6 +139,7 @@ struct AhciController {
     bounce_virt: u64,
     total_sectors: u64,
     irq: u8,
+    interrupt_driven: bool,
     /// ATA IDENTIFY model string (byte-swapped, trimmed).
     model: [u8; 40],
     // Additional ATA disks (ports beyond the primary)
@@ -578,6 +579,13 @@ unsafe fn issue_command_once(
         core::hint::spin_loop();
     }
 
+    // Slow path: block on IRQ with timeout when a completion interrupt is known
+    // to be wired. UEFI/OVMF often leaves the legacy PCI interrupt line at 255;
+    // treating that as usable makes every command wait for the 50 ms sleep tick.
+    if !ahci.interrupt_driven {
+        return poll_completion(ahci);
+    }
+
     // Slow path: block on IRQ with timeout.
     let tid = crate::task::scheduler::current_tid();
     if tid > 0 {
@@ -589,9 +597,7 @@ unsafe fn issue_command_once(
         // The IRQ handler will wake us early via try_wake_thread/deferred_wake.
         let sleep_interval = (hz / 20).max(1); // 50ms
 
-        if ahci.irq > 0 {
-            AHCI_WAITER.store(tid, core::sync::atomic::Ordering::Release);
-        }
+        AHCI_WAITER.store(tid, core::sync::atomic::Ordering::Release);
 
         loop {
             let now = crate::arch::hal::timer_current_ticks();
@@ -1236,6 +1242,7 @@ pub fn init_and_register(pci: &PciDevice) {
             bounce_virt: dma_ptr::<u8>(bounce_phys) as u64,
             total_sectors: 0,
             irq,
+            interrupt_driven: false,
             model: [0u8; 40],
             extra_disks: [None, None, None, None, None, None, None],
             extra_disk_count: 0,
@@ -1299,7 +1306,11 @@ pub fn init_and_register(pci: &PciDevice) {
             crate::serial_verbose_println!("  AHCI: IDENTIFY DEVICE failed");
         }
 
-        // Enable interrupt-driven I/O — prefer MSI over legacy IRQ
+        // Enable interrupt-driven I/O — prefer MSI over legacy IRQ.
+        // Keep a separate boolean for "completion interrupt really registered";
+        // the raw PCI interrupt line may be 0xff under UEFI and is not a usable
+        // wake source.
+        let mut interrupt_driven = false;
         {
             // Enable command-completion, error, and hot-plug interrupts on port
             let port_ie = (1u32 << 0)  // D2H Register FIS Interrupt (command complete)
@@ -1324,6 +1335,7 @@ pub fn init_and_register(pci: &PciDevice) {
             if let Some(vec) = msi_vector {
                 crate::drivers::pci_msi::register_msi_handler(vec, ahci_msi_handler);
                 irq = vec; // Store for diagnostics
+                interrupt_driven = true;
                 crate::serial_println!(
                     "  AHCI: MSI vector {} registered (dedicated interrupt)",
                     vec
@@ -1336,10 +1348,17 @@ pub fn init_and_register(pci: &PciDevice) {
                 } else {
                     crate::arch::x86::pic::unmask(irq);
                 }
+                interrupt_driven = true;
                 crate::serial_println!("  AHCI: legacy IRQ {} registered (shared interrupt)", irq);
             } else {
                 crate::serial_verbose_println!("  AHCI: No valid IRQ ({}), using polled I/O", irq);
+                irq = 0;
             }
+        }
+
+        if let Some(ahci) = AHCI.as_mut() {
+            ahci.irq = irq;
+            ahci.interrupt_driven = interrupt_driven;
         }
 
         // Switch storage backend to AHCI

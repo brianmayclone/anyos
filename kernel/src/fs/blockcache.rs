@@ -59,6 +59,7 @@ pub struct BlockCache {
     slots: Vec<CacheEntry>,
     hash_table: Vec<u16>,
     tick: u32,
+    next_free_hint: usize,
     /// Statistics
     hits: u64,
     misses: u64,
@@ -70,6 +71,7 @@ impl BlockCache {
             slots: Vec::new(),
             hash_table: Vec::new(),
             tick: 0,
+            next_free_hint: 0,
             hits: 0,
             misses: 0,
         }
@@ -91,6 +93,7 @@ impl BlockCache {
             });
         }
         self.hash_table = vec![EMPTY; HASH_SIZE];
+        self.next_free_hint = 0;
     }
 
     #[inline(always)]
@@ -269,34 +272,45 @@ impl BlockCache {
                 return;
             }
         }
-        // A previous invalidation can leave holes inside the probe window.
-        // Do a full slot scan before allocating a victim so an existing
-        // collided entry is updated in place instead of duplicated.
-        for i in 0..self.slots.len() {
-            self.quarantine_slot(i, "insert-scan");
-            if self.slots[i].key == key && self.slot_key_valid(i) {
-                let n = data.len().min(512);
-                self.slots[i].data[..n].copy_from_slice(&data[..n]);
-                self.tick = self.tick.wrapping_add(1);
-                self.slots[i].tick = self.tick;
-                return;
+        // Only fall back to a full duplicate scan when the normal probe window
+        // was packed. On the common miss path this avoids scanning all 16K cache
+        // slots for every sector of a streaming write.
+        if first_empty == EMPTY {
+            for i in 0..self.slots.len() {
+                self.quarantine_slot(i, "insert-scan");
+                if self.slots[i].key == key && self.slot_key_valid(i) {
+                    let n = data.len().min(512);
+                    self.slots[i].data[..n].copy_from_slice(&data[..n]);
+                    self.tick = self.tick.wrapping_add(1);
+                    self.slots[i].tick = self.tick;
+                    return;
+                }
             }
         }
 
         // Find LRU victim (lowest tick, prefer clean over dirty)
         let mut victim = 0usize;
         let mut min_tick = u32::MAX;
-        // First pass: find oldest clean entry
-        for i in 0..self.slots.len() {
+        // First pass: find an empty slot, starting from a rolling hint so filling
+        // the cache is O(n) instead of O(n^2).
+        for step in 0..self.slots.len() {
+            let i = (self.next_free_hint + step) % self.slots.len();
             self.quarantine_slot(i, "victim-scan");
             if self.slots[i].key == 0 {
                 victim = i;
                 min_tick = 0;
+                self.next_free_hint = (i + 1) % self.slots.len();
                 break;
             }
-            if !self.slots[i].dirty && self.slots[i].tick < min_tick {
-                min_tick = self.slots[i].tick;
-                victim = i;
+        }
+        // Second pass: find oldest clean entry
+        if min_tick != 0 {
+            for i in 0..self.slots.len() {
+                self.quarantine_slot(i, "victim-scan");
+                if !self.slots[i].dirty && self.slots[i].tick < min_tick {
+                    min_tick = self.slots[i].tick;
+                    victim = i;
+                }
             }
         }
         // If all entries are dirty, evict oldest dirty entry
@@ -529,6 +543,7 @@ static BLOCK_CACHE: Spinlock<BlockCache> = Spinlock::new(BlockCache {
     slots: Vec::new(),
     hash_table: Vec::new(),
     tick: 0,
+    next_free_hint: 0,
     hits: 0,
     misses: 0,
 });
@@ -833,14 +848,18 @@ pub fn writeback_flush(disk_id: u8) -> u32 {
                 if snap.slot >= cache.slots.len() {
                     continue;
                 }
-                let slot = &mut cache.slots[snap.slot];
-                if slot.key != snap.key
-                    || slot.key_check != BlockCache::make_key_check(snap.key, snap.slot)
+                if cache.slots[snap.slot].key != snap.key
+                    || cache.slots[snap.slot].key_check
+                        != BlockCache::make_key_check(snap.key, snap.slot)
                 {
                     continue;
                 }
                 if ok {
-                    slot.dirty = false;
+                    cache.remove_from_hash(snap.key, snap.slot);
+                    cache.set_slot_key(snap.slot, 0);
+                    cache.slots[snap.slot].dirty = false;
+                    cache.slots[snap.slot].tick = 0;
+                    cache.next_free_hint = snap.slot;
                 }
             }
         }

@@ -414,10 +414,11 @@ pub struct VirtioGpu {
     // Display state for output 0 (primary scanout). See ScanoutState
     // comment above for why these inline fields stay in place.
     //
-    // `fb_phys` is the FIRST physical frame's address — kept around for
-    // legacy callers (e.g. boot-splash) that still treat the framebuffer
-    // as one contiguous block. The authoritative per-page list lives in
-    // `fb_page_list`. Both are kept in sync; fb_pages == fb_page_list.len().
+    // `fb_phys` is the first physical frame's address. For the primary
+    // scanout we keep the allocation physically contiguous because several
+    // legacy kernel paths still use this as a linear framebuffer pointer.
+    // `fb_page_list` is reserved for any future scatter-gather primary path;
+    // when it is empty, framebuffer_pages() synthesizes a contiguous list.
     width: u32,
     height: u32,
     pitch: u32,
@@ -1615,45 +1616,32 @@ impl GpuDriver for VirtioGpu {
         // the old scanout stays fully functional and we just report
         // failure to the caller.
         //
-        // Allocation strategy: scatter-gather. Allocate pages one at a
-        // time so we never fail because of physmem fragmentation. The
-        // virtio-gpu device-side resource accepts any list of guest-
-        // physical pages (via cmd_attach_backing_pages), and the
-        // user-space mapping in sys_map_framebuffer walks the same
-        // page list to install per-page PTEs. The kernel itself never
-        // touches the framebuffer through fb_phys directly anymore;
-        // every consumer either goes via the user-mapping (compositor)
-        // or fetches the page list (capture, etc.).
+        // Keep the primary framebuffer physically contiguous. Several
+        // legacy boot/runtime paths still treat get_mode().fb_phys and
+        // framebuffer::info().addr as a linear framebuffer (boot splash,
+        // text/error consoles, screen capture, and the current VirtIO
+        // fill/copy helpers). A scatter-gather primary resource is valid
+        // for virtio-gpu itself, but exposing only its first page through
+        // those APIs lets CPU writes run into unrelated physical pages.
         let fb_size = (width as usize) * (height as usize) * 4;
         let num_pages = (fb_size + 4095) / 4096;
-        let mut new_pages: alloc::vec::Vec<u64> = alloc::vec::Vec::with_capacity(num_pages);
-        for _ in 0..num_pages {
-            match physical::alloc_frame() {
-                Some(p) => new_pages.push(p.as_u64()),
-                None => {
-                    // Out of memory. Roll back: free what we got so far
-                    // and bail. The old scanout is still live.
-                    crate::serial_verbose_println!(
-                        "  VirtIO GPU: out of physmem allocating {} pages (got {}, current {}x{} stays active)",
-                        num_pages,
-                        new_pages.len(),
-                        self.width,
-                        self.height
-                    );
-                    for &p in &new_pages {
-                        physical::free_frame(crate::memory::address::PhysAddr::new(p));
-                    }
-                    return None;
-                }
+        let new_fb_phys = match physical::alloc_contiguous(num_pages) {
+            Some(p) => p.as_u64(),
+            None => {
+                crate::serial_verbose_println!(
+                    "  VirtIO GPU: contiguous fb alloc failed ({} pages, current {}x{} stays active)",
+                    num_pages,
+                    self.width,
+                    self.height
+                );
+                return None;
             }
-        }
+        };
 
-        // Zero each new page so the freshly-attached framebuffer doesn't
-        // show whatever the previous owner left there.
-        for &p in &new_pages {
-            unsafe {
-                core::ptr::write_bytes(p as *mut u8, 0, 4096);
-            }
+        // Zero the new framebuffer so the freshly-attached resource does
+        // not show whatever the previous owner left there.
+        unsafe {
+            core::ptr::write_bytes(new_fb_phys as *mut u8, 0, num_pages * 4096);
         }
 
         // Allocation succeeded — now safely tear down the old scanout.
@@ -1681,15 +1669,12 @@ impl GpuDriver for VirtioGpu {
             self.fb_pages = 0;
         }
 
-        // Commit new framebuffer state. fb_phys is set to the FIRST
-        // page so legacy callers (boot-splash, etc.) that haven't been
-        // updated still see *a* valid pointer; correctness for those
-        // paths is best-effort because they implicitly assume
-        // contiguity that no longer holds. New code must use
-        // framebuffer_pages() instead.
-        self.fb_phys = new_pages[0];
+        // Commit new framebuffer state. fb_page_list stays empty for a
+        // contiguous allocation; framebuffer_pages() will synthesize the
+        // page list from fb_phys + i*4096 for callers that need it.
+        self.fb_phys = new_fb_phys;
         self.fb_pages = num_pages;
-        self.fb_page_list = new_pages;
+        self.fb_page_list.clear();
         self.width = width;
         self.height = height;
         self.pitch = width * 4;
@@ -1703,18 +1688,31 @@ impl GpuDriver for VirtioGpu {
             ok = false;
         }
         if ok {
-            // Snapshot the page list to a local Vec so cmd_attach_backing_pages
-            // gets a `&[u64]` reborrow without holding `&self.fb_page_list`
-            // across the &mut self call.
-            let pages_snapshot = self.fb_page_list.clone();
-            if !self.cmd_attach_backing_pages(res_id, &pages_snapshot) {
+            if !self.cmd_attach_backing(res_id, self.fb_phys, self.fb_pages) {
                 crate::serial_verbose_println!("  VirtIO GPU: RESOURCE_ATTACH_BACKING failed");
                 self.cmd_resource_unref(res_id);
                 ok = false;
             }
         }
+
+        // Upload the freshly-cleared backing store before switching the
+        // visible scanout. This keeps the old mode on screen if the large
+        // transfer fails or the host stalls during a resize.
+        if ok && !self.cmd_transfer_to_host_2d(res_id, 0, 0, width, height) {
+            crate::serial_println!(
+                "[gpu] VirtIO initial mode-transfer failed before SET_SCANOUT ({}x{}, res={})",
+                width,
+                height,
+                res_id
+            );
+            self.cmd_detach_backing(res_id);
+            self.cmd_resource_unref(res_id);
+            ok = false;
+        }
+
         if ok && !self.cmd_set_scanout(0, res_id, width, height) {
             crate::serial_verbose_println!("  VirtIO GPU: SET_SCANOUT failed");
+            self.cmd_detach_backing(res_id);
             self.cmd_resource_unref(res_id);
             ok = false;
         }
@@ -1724,8 +1722,12 @@ impl GpuDriver for VirtioGpu {
             // we just allocated; we have no working scanout, but at
             // least we don't leak. Caller sees None and can decide what
             // to do.
-            for &p in &self.fb_page_list {
-                physical::free_frame(crate::memory::address::PhysAddr::new(p));
+            if self.fb_phys != 0 {
+                for i in 0..self.fb_pages {
+                    physical::free_frame(crate::memory::address::PhysAddr::new(
+                        self.fb_phys + (i as u64) * 4096,
+                    ));
+                }
             }
             self.fb_page_list.clear();
             self.fb_phys = 0;
@@ -1736,7 +1738,7 @@ impl GpuDriver for VirtioGpu {
         self.scanout_resource_id = res_id;
 
         crate::serial_verbose_println!(
-            "  VirtIO GPU: display {}x{} resource={} fb_first={:#x} ({} pages, scatter-gather)",
+            "  VirtIO GPU: display {}x{} resource={} fb={:#x} ({} pages, contiguous)",
             width,
             height,
             res_id,
@@ -1744,19 +1746,24 @@ impl GpuDriver for VirtioGpu {
             num_pages
         );
 
-        // Initial full transfer + flush so the host sees the cleared
-        // buffer instead of whatever the previous scanout left there.
-        self.cmd_transfer_to_host_2d(self.scanout_resource_id, 0, 0, width, height);
-        self.cmd_resource_flush(self.scanout_resource_id, 0, 0, width, height);
+        // The transfer already happened before SET_SCANOUT; now expose the
+        // uploaded resource on the display.
+        if !self.cmd_resource_flush(self.scanout_resource_id, 0, 0, width, height) {
+            crate::serial_println!(
+                "[gpu] VirtIO initial mode-flush failed after SET_SCANOUT ({}x{}, res={})",
+                width,
+                height,
+                self.scanout_resource_id
+            );
+        }
 
         Some((self.width, self.height, self.pitch, self.fb_phys as u32))
     }
 
     fn framebuffer_pages(&self) -> alloc::vec::Vec<u64> {
-        // If we allocated as scatter-gather (set_mode path), return the
-        // exact list. Otherwise (boot-time setup_display path) the
-        // pages are physically contiguous starting at fb_phys, so
-        // synthesise a Vec from fb_phys + i*4096.
+        // If a future mode path allocates scatter-gather pages, return the
+        // exact list. The current primary path keeps pages physically
+        // contiguous, so synthesize a Vec from fb_phys + i*4096.
         if !self.fb_page_list.is_empty() {
             return self.fb_page_list.clone();
         }
