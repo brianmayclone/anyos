@@ -66,6 +66,86 @@ fn flush_blockcache_for_disks(disks: &[u8]) {
     }
 }
 
+struct DetachedExFatCommit {
+    driver: Arc<ExFatFsDriver>,
+    filename: String,
+    parent_cluster: u32,
+    inode: u32,
+    size: u32,
+    entry_dirty: bool,
+    durable: bool,
+}
+
+fn snapshot_open_exfat_commit(
+    state: &VfsState,
+    slot_id: usize,
+    durable: bool,
+) -> Result<Option<DetachedExFatCommit>, FsError> {
+    let file = state
+        .open_files
+        .get(slot_id)
+        .and_then(|e| e.as_ref())
+        .ok_or(FsError::BadFd)?;
+
+    let driver = match file.fs_id {
+        3 => state.exfat_fs.as_ref().map(Arc::clone),
+        6 => state.mounted_exfat_handle_for_path(&file.path),
+        _ => return Ok(None),
+    }
+    .ok_or(FsError::IoError)?;
+
+    let filename = file.path.rsplit('/').next().unwrap_or("");
+    if filename.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(DetachedExFatCommit {
+        driver,
+        filename: String::from(filename),
+        parent_cluster: file.parent_cluster,
+        inode: file.inode,
+        size: file.size,
+        entry_dirty: file.entry_dirty,
+        durable,
+    }))
+}
+
+fn finish_detached_exfat_commit(commit: &DetachedExFatCommit) -> Result<u8, FsError> {
+    let mut exfat = commit.driver.lock_inner();
+    if commit.entry_dirty {
+        exfat.update_entry(
+            commit.parent_cluster,
+            &commit.filename,
+            commit.size,
+            commit.inode,
+        )?;
+    }
+    if commit.durable && exfat.metadata_dirty {
+        exfat.flush_metadata()?;
+    }
+    Ok(exfat.device_id as u8)
+}
+
+fn mark_detached_exfat_commit_clean(
+    state: &mut VfsState,
+    slot_id: usize,
+    commit: &DetachedExFatCommit,
+) {
+    if !commit.entry_dirty {
+        return;
+    }
+    if let Some(Some(file)) = state.open_files.get_mut(slot_id) {
+        let filename = file.path.rsplit('/').next().unwrap_or("");
+        if filename == commit.filename
+            && file.parent_cluster == commit.parent_cluster
+            && file.inode == commit.inode
+            && file.size == commit.size
+        {
+            file.entry_dirty = false;
+        }
+    }
+}
+
 fn commit_open_exfat_entry(
     state: &mut VfsState,
     slot_id: usize,
@@ -2258,7 +2338,9 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
 pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
     let mut do_writeback = false;
     let mut disks_to_flush: Vec<u8> = Vec::new();
+    let mut exfat_commit: Option<DetachedExFatCommit> = None;
     let mut corefs_to_flush: Option<Arc<crate::fs::corefs::CoreFsDriver>> = None;
+    let mut fuse_release: Option<(Arc<crate::fs::fuse::FuseSession>, fuse_proto::Request)> = None;
     {
         let mut vfs = vfs_lock();
         let state = vfs.as_mut().ok_or(FsError::IoError)?;
@@ -2281,9 +2363,7 @@ pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
             file.refcount -= 1;
         } else {
             if was_writable && (fs_id == 3 || fs_id == 6) {
-                if let Some(disk_id) = commit_open_exfat_entry(state, slot_id as usize, true)? {
-                    queue_disk_flush(&mut disks_to_flush, disk_id);
-                }
+                exfat_commit = snapshot_open_exfat_commit(state, slot_id as usize, true)?;
                 do_writeback = true;
             }
             if was_writable && fs_id == 8 {
@@ -2306,8 +2386,8 @@ pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
                     if let Ok((sid, session)) = fuse_session_of(file) {
                         if let Some(ino_u64) = crate::fs::fuse::inode_map::to_u64(sid, file.inode) {
                             let fh = fuse_fh_of(file);
-                            let req = fuse_proto::Request::Release { ino: ino_u64, fh };
-                            let _ = crate::fs::fuse::fuse_call(&session, &req);
+                            fuse_release =
+                                Some((session, fuse_proto::Request::Release { ino: ino_u64, fh }));
                         }
                     }
                 }
@@ -2316,6 +2396,13 @@ pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
         }
     } // VFS lock released
 
+    if let Some(commit) = exfat_commit {
+        let disk_id = finish_detached_exfat_commit(&commit)?;
+        queue_disk_flush(&mut disks_to_flush, disk_id);
+    }
+    if let Some((session, req)) = fuse_release {
+        let _ = crate::fs::fuse::fuse_call(&session, &req);
+    }
     // Flush write-back cache outside VFS lock (may block on disk I/O)
     if do_writeback {
         flush_blockcache_for_disks(&disks_to_flush);
@@ -2363,7 +2450,9 @@ pub fn preferred_write_chunk(slot_id: FileDescriptor) -> usize {
 pub fn decref(slot_id: u32) {
     let mut do_writeback = false;
     let mut disks_to_flush: Vec<u8> = Vec::new();
+    let mut exfat_commit: Option<DetachedExFatCommit> = None;
     let mut corefs_to_flush: Option<Arc<crate::fs::corefs::CoreFsDriver>> = None;
+    let mut fuse_release: Option<(Arc<crate::fs::fuse::FuseSession>, fuse_proto::Request)> = None;
     let mut vfs = vfs_lock();
     if let Some(state) = vfs.as_mut() {
         let snapshot = state
@@ -2378,11 +2467,9 @@ pub fn decref(slot_id: u32) {
                 }
             } else {
                 if was_writable && (fs_id == 3 || fs_id == 6) {
-                    if let Ok(Some(disk_id)) =
-                        commit_open_exfat_entry(state, slot_id as usize, true)
-                    {
-                        queue_disk_flush(&mut disks_to_flush, disk_id);
-                    }
+                    exfat_commit = snapshot_open_exfat_commit(state, slot_id as usize, true)
+                        .ok()
+                        .flatten();
                     do_writeback = true;
                 }
                 if was_writable && fs_id == 8 {
@@ -2404,8 +2491,10 @@ pub fn decref(slot_id: u32) {
                                 crate::fs::fuse::inode_map::to_u64(sid, file.inode)
                             {
                                 let fh = fuse_fh_of(file);
-                                let req = fuse_proto::Request::Release { ino: ino_u64, fh };
-                                let _ = crate::fs::fuse::fuse_call(&session, &req);
+                                fuse_release = Some((
+                                    session,
+                                    fuse_proto::Request::Release { ino: ino_u64, fh },
+                                ));
                             }
                         }
                     }
@@ -2415,6 +2504,14 @@ pub fn decref(slot_id: u32) {
         }
     }
     drop(vfs);
+    if let Some(commit) = exfat_commit {
+        if let Ok(disk_id) = finish_detached_exfat_commit(&commit) {
+            queue_disk_flush(&mut disks_to_flush, disk_id);
+        }
+    }
+    if let Some((session, req)) = fuse_release {
+        let _ = crate::fs::fuse::fuse_call(&session, &req);
+    }
     if do_writeback {
         flush_blockcache_for_disks(&disks_to_flush);
     }
@@ -4644,46 +4741,46 @@ pub fn fdatasync(slot_id: FileDescriptor) -> Result<(), FsError> {
 }
 
 fn sync_file(slot_id: FileDescriptor, flush_hardware: bool) -> Result<(), FsError> {
-    let mut vfs = vfs_lock();
-    let state = vfs.as_mut().ok_or(FsError::IoError)?;
-
-    let file = state
-        .open_files
-        .get(slot_id as usize)
-        .and_then(|e| e.as_ref())
-        .ok_or(FsError::BadFd)?;
-
-    let fs_id = file.fs_id;
-
     let mut disks_to_flush: Vec<u8> = Vec::new();
+    let mut exfat_commit: Option<DetachedExFatCommit> = None;
     let mut corefs_to_flush: Option<Arc<crate::fs::corefs::CoreFsDriver>> = None;
-    match fs_id {
-        3 => {
-            if let Some(disk_id) = commit_open_exfat_entry(state, slot_id as usize, true)? {
-                queue_disk_flush(&mut disks_to_flush, disk_id);
+    {
+        let mut vfs = vfs_lock();
+        let state = vfs.as_mut().ok_or(FsError::IoError)?;
+
+        let file = state
+            .open_files
+            .get(slot_id as usize)
+            .and_then(|e| e.as_ref())
+            .ok_or(FsError::BadFd)?;
+
+        match file.fs_id {
+            3 | 6 => {
+                exfat_commit = snapshot_open_exfat_commit(state, slot_id as usize, true)?;
             }
-        }
-        6 => {
-            if let Some(disk_id) = commit_open_exfat_entry(state, slot_id as usize, true)? {
-                queue_disk_flush(&mut disks_to_flush, disk_id);
+            8 => {
+                corefs_to_flush = Some(
+                    state
+                        .corefs_handle_for_path(&file.path)
+                        .ok_or(FsError::IoError)?,
+                );
             }
+            _ => {} // Other filesystems flush synchronously already
         }
-        8 => {
-            let file_path = file.path.clone();
-            corefs_to_flush = Some(
-                state
-                    .corefs_handle_for_path(&file_path)
-                    .ok_or(FsError::IoError)?,
-            );
-        }
-        _ => {} // Other filesystems flush synchronously already
     }
 
-    // Flush write-back block cache, then storage hardware cache
-    drop(vfs);
+    if let Some(commit) = exfat_commit.as_ref() {
+        let disk_id = finish_detached_exfat_commit(commit)?;
+        queue_disk_flush(&mut disks_to_flush, disk_id);
+        let mut vfs = vfs_lock();
+        if let Some(state) = vfs.as_mut() {
+            mark_detached_exfat_commit_clean(state, slot_id as usize, commit);
+        }
+    }
     if let Some(driver) = corefs_to_flush {
         driver.flush()?;
     }
+    // Flush write-back block cache, then storage hardware cache
     flush_blockcache_for_disks(&disks_to_flush);
     if flush_hardware {
         crate::drivers::storage::flush();
@@ -4694,8 +4791,14 @@ fn sync_file(slot_id: FileDescriptor, flush_hardware: bool) -> Result<(), FsErro
 /// Flush all dirty filesystem metadata and storage write caches.
 pub fn sync_all() {
     let mut disks_to_flush: Vec<u8> = Vec::new();
-    let mut vfs = vfs_lock();
-    if let Some(state) = vfs.as_mut() {
+    let mut exfat_commits: Vec<(usize, DetachedExFatCommit)> = Vec::new();
+    let mut exfat_drivers: Vec<Arc<ExFatFsDriver>> = Vec::new();
+    let mut corefs_drivers: Vec<Arc<crate::fs::corefs::CoreFsDriver>> = Vec::new();
+    {
+        let mut vfs = vfs_lock();
+        let Some(state) = vfs.as_mut() else {
+            return;
+        };
         for idx in 0..state.open_files.len() {
             let needs_commit = state
                 .open_files
@@ -4704,32 +4807,42 @@ pub fn sync_all() {
                 .map(|file| (file.fs_id == 3 || file.fs_id == 6) && file.entry_dirty)
                 .unwrap_or(false);
             if needs_commit {
-                if let Ok(Some(disk_id)) = commit_open_exfat_entry(state, idx, false) {
-                    queue_disk_flush(&mut disks_to_flush, disk_id);
+                if let Ok(Some(commit)) = snapshot_open_exfat_commit(state, idx, false) {
+                    exfat_commits.push((idx, commit));
                 }
             }
         }
-        // Flush root exFAT metadata
         if let Some(exfat_drv) = state.exfat_fs.as_ref() {
-            let mut exfat_guard = exfat_drv.lock_inner();
-            let exfat = &mut *exfat_guard;
-            let _ = exfat.flush_metadata();
-            queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
+            exfat_drivers.push(Arc::clone(exfat_drv));
         }
-        // Flush all mounted exFAT filesystems
-        for (_path, exfat) in &mut state.mounted_exfat {
-            let mut exfat = exfat.lock_inner();
-            let _ = exfat.flush_metadata();
-            queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
+        for (_path, exfat) in &state.mounted_exfat {
+            exfat_drivers.push(Arc::clone(exfat));
         }
         if let Some(driver) = state.corefs_driver.as_ref() {
-            let _ = driver.flush();
+            corefs_drivers.push(Arc::clone(driver));
         }
         for (_, driver) in &state.mounted_corefs {
-            let _ = driver.flush();
+            corefs_drivers.push(Arc::clone(driver));
         }
     }
-    drop(vfs);
+
+    for (idx, commit) in &exfat_commits {
+        if let Ok(disk_id) = finish_detached_exfat_commit(commit) {
+            queue_disk_flush(&mut disks_to_flush, disk_id);
+            let mut vfs = vfs_lock();
+            if let Some(state) = vfs.as_mut() {
+                mark_detached_exfat_commit_clean(state, *idx, commit);
+            }
+        }
+    }
+    for driver in exfat_drivers {
+        let mut exfat = driver.lock_inner();
+        let _ = exfat.flush_metadata();
+        queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
+    }
+    for driver in corefs_drivers {
+        let _ = driver.flush();
+    }
     // Flush write-back block cache to disk (coalesced writes)
     flush_blockcache_for_disks(&disks_to_flush);
     // Then flush the drive's hardware write cache to persistent media

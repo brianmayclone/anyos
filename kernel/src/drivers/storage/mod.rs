@@ -75,11 +75,51 @@ static mut BACKEND: StorageBackend = StorageBackend::Ata;
 static IO_LOCK: AtomicBool = AtomicBool::new(false);
 static IO_LOCK_OWNER_TID: AtomicU32 = AtomicU32::new(0);
 static IO_LOCK_ACQUIRED_TICK: AtomicU32 = AtomicU32::new(0);
+static IO_LOCK_OP_KIND: AtomicU32 = AtomicU32::new(IO_OP_UNKNOWN);
+static IO_LOCK_OP_DISK: AtomicU32 = AtomicU32::new(0);
+static IO_LOCK_OP_LBA: AtomicU32 = AtomicU32::new(0);
+static IO_LOCK_OP_COUNT: AtomicU32 = AtomicU32::new(0);
 static IO_LOCK_WAIT_LOGS: AtomicU32 = AtomicU32::new(0);
 static IO_LOCK_HOLD_LOGS: AtomicU32 = AtomicU32::new(0);
 const IO_LOCK_WAIT_WARN_MS: u32 = 50;
 const IO_LOCK_HOLD_WARN_MS: u32 = 250;
 const IO_LOCK_LOG_LIMIT: u32 = 64;
+const IO_OP_UNKNOWN: u32 = 0;
+const IO_OP_READ: u32 = 1;
+const IO_OP_READAHEAD: u32 = 2;
+const IO_OP_WRITE: u32 = 3;
+const IO_OP_WRITEBACK: u32 = 4;
+const IO_OP_FLUSH: u32 = 5;
+
+#[derive(Copy, Clone)]
+struct IoLockOp {
+    kind: u32,
+    disk_id: u8,
+    lba: u32,
+    count: u32,
+}
+
+impl IoLockOp {
+    const fn new(kind: u32, disk_id: u8, lba: u32, count: u32) -> Self {
+        Self {
+            kind,
+            disk_id,
+            lba,
+            count,
+        }
+    }
+}
+
+fn io_op_name(kind: u32) -> &'static str {
+    match kind {
+        IO_OP_READ => "read",
+        IO_OP_READAHEAD => "readahead",
+        IO_OP_WRITE => "write",
+        IO_OP_WRITEBACK => "writeback",
+        IO_OP_FLUSH => "flush",
+        _ => "unknown",
+    }
+}
 
 /// Counter for I/O operations in progress (for statistics).
 static IO_OPS_TOTAL: AtomicU32 = AtomicU32::new(0);
@@ -249,23 +289,51 @@ fn check_backend_io_bounds(disk_id: u8, lba: u32, count: u32, op: &str) -> bool 
 }
 
 #[inline]
-fn io_lock_acquire() {
+fn io_lock_acquire(op: IoLockOp) {
     let start = crate::arch::hal::timer_current_ticks();
     let owner_at_start = IO_LOCK_OWNER_TID.load(Ordering::Relaxed);
+    let owner_op_at_start = IO_LOCK_OP_KIND.load(Ordering::Relaxed);
+    let owner_disk_at_start = IO_LOCK_OP_DISK.load(Ordering::Relaxed);
+    let owner_lba_at_start = IO_LOCK_OP_LBA.load(Ordering::Relaxed);
+    let owner_count_at_start = IO_LOCK_OP_COUNT.load(Ordering::Relaxed);
     // Fast path: try once without yielding
     if IO_LOCK
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_ok()
     {
-        io_lock_record_acquired(start, owner_at_start);
+        io_lock_record_acquired(
+            start,
+            owner_at_start,
+            owner_op_at_start,
+            owner_disk_at_start,
+            owner_lba_at_start,
+            owner_count_at_start,
+            op,
+        );
         return;
     }
     // Slow path: yield between attempts (avoids burning CPU cycles)
-    io_lock_acquire_slow(start, owner_at_start);
+    io_lock_acquire_slow(
+        start,
+        owner_at_start,
+        owner_op_at_start,
+        owner_disk_at_start,
+        owner_lba_at_start,
+        owner_count_at_start,
+        op,
+    );
 }
 
 #[cold]
-fn io_lock_acquire_slow(start: u32, owner_at_start: u32) {
+fn io_lock_acquire_slow(
+    start: u32,
+    owner_at_start: u32,
+    owner_op_at_start: u32,
+    owner_disk_at_start: u32,
+    owner_lba_at_start: u32,
+    owner_count_at_start: u32,
+    op: IoLockOp,
+) {
     let can_yield = crate::task::scheduler::current_tid() > 0;
     loop {
         // Brief spin (8 iterations) before yielding — handles very short holds
@@ -274,7 +342,15 @@ fn io_lock_acquire_slow(start: u32, owner_at_start: u32) {
                 .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
             {
-                io_lock_record_acquired(start, owner_at_start);
+                io_lock_record_acquired(
+                    start,
+                    owner_at_start,
+                    owner_op_at_start,
+                    owner_disk_at_start,
+                    owner_lba_at_start,
+                    owner_count_at_start,
+                    op,
+                );
                 return;
             }
             core::hint::spin_loop();
@@ -295,20 +371,40 @@ fn ticks_to_ms(ticks: u32) -> u32 {
     }
 }
 
-fn io_lock_record_acquired(start: u32, owner_at_start: u32) {
+fn io_lock_record_acquired(
+    start: u32,
+    owner_at_start: u32,
+    owner_op_at_start: u32,
+    owner_disk_at_start: u32,
+    owner_lba_at_start: u32,
+    owner_count_at_start: u32,
+    op: IoLockOp,
+) {
     let now = crate::arch::hal::timer_current_ticks();
     let waited_ms = ticks_to_ms(now.wrapping_sub(start));
     let tid = crate::task::scheduler::current_tid();
+    IO_LOCK_OP_KIND.store(op.kind, Ordering::Relaxed);
+    IO_LOCK_OP_DISK.store(op.disk_id as u32, Ordering::Relaxed);
+    IO_LOCK_OP_LBA.store(op.lba, Ordering::Relaxed);
+    IO_LOCK_OP_COUNT.store(op.count, Ordering::Relaxed);
     IO_LOCK_OWNER_TID.store(tid, Ordering::Relaxed);
     IO_LOCK_ACQUIRED_TICK.store(now, Ordering::Relaxed);
     if waited_ms >= IO_LOCK_WAIT_WARN_MS
         && IO_LOCK_WAIT_LOGS.fetch_add(1, Ordering::Relaxed) < IO_LOCK_LOG_LIMIT
     {
         crate::serial_println!(
-            "[storage] IO_LOCK wait {} ms tid={} owner_at_start={}",
+            "[storage] IO_LOCK wait {} ms tid={} want={} disk={} lba={} count={} owner_at_start={} owner_op={} owner_disk={} owner_lba={} owner_count={}",
             waited_ms,
             tid,
-            owner_at_start
+            io_op_name(op.kind),
+            op.disk_id,
+            op.lba,
+            op.count,
+            owner_at_start,
+            io_op_name(owner_op_at_start),
+            owner_disk_at_start,
+            owner_lba_at_start,
+            owner_count_at_start
         );
     }
 }
@@ -319,11 +415,23 @@ fn io_lock_release() {
     let acquired = IO_LOCK_ACQUIRED_TICK.load(Ordering::Relaxed);
     let held_ms = ticks_to_ms(now.wrapping_sub(acquired));
     let owner = IO_LOCK_OWNER_TID.swap(0, Ordering::Relaxed);
+    let op_kind = IO_LOCK_OP_KIND.swap(IO_OP_UNKNOWN, Ordering::Relaxed);
+    let op_disk = IO_LOCK_OP_DISK.swap(0, Ordering::Relaxed);
+    let op_lba = IO_LOCK_OP_LBA.swap(0, Ordering::Relaxed);
+    let op_count = IO_LOCK_OP_COUNT.swap(0, Ordering::Relaxed);
     IO_LOCK.store(false, Ordering::Release);
     if held_ms >= IO_LOCK_HOLD_WARN_MS
         && IO_LOCK_HOLD_LOGS.fetch_add(1, Ordering::Relaxed) < IO_LOCK_LOG_LIMIT
     {
-        crate::serial_println!("[storage] IO_LOCK held {} ms owner_tid={}", held_ms, owner);
+        crate::serial_println!(
+            "[storage] IO_LOCK held {} ms owner_tid={} op={} disk={} lba={} count={}",
+            held_ms,
+            owner,
+            io_op_name(op_kind),
+            op_disk,
+            op_lba,
+            op_count
+        );
     }
 }
 
@@ -443,7 +551,12 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
     let result = if readahead > 0 {
         if let Some(lease) = acquire_readahead_slot() {
             let big_buf = readahead_slot_bytes(&lease, fetch_bytes);
-            io_lock_acquire();
+            io_lock_acquire(IoLockOp::new(
+                IO_OP_READAHEAD,
+                disk_id,
+                miss_lba,
+                total_fetch,
+            ));
             let ok = read_sectors_raw_for_disk(disk_id, miss_lba, total_fetch, big_buf);
             io_lock_release();
             if ok {
@@ -465,7 +578,12 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
             }
         } else {
             let mut big_buf = alloc::vec![0u8; fetch_bytes];
-            io_lock_acquire();
+            io_lock_acquire(IoLockOp::new(
+                IO_OP_READAHEAD,
+                disk_id,
+                miss_lba,
+                total_fetch,
+            ));
             let ok = read_sectors_raw_for_disk(disk_id, miss_lba, total_fetch, &mut big_buf);
             io_lock_release();
             if ok {
@@ -483,7 +601,7 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
         }
     } else {
         // No readahead: read directly into caller buffer
-        io_lock_acquire();
+        io_lock_acquire(IoLockOp::new(IO_OP_READ, disk_id, miss_lba, miss_count));
         let ok = read_sectors_raw_for_disk(disk_id, miss_lba, miss_count, &mut buf[miss_offset..]);
         io_lock_release();
         if ok && cache_active {
@@ -601,7 +719,7 @@ pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> b
     }
 
     // Large write or no cache: go directly to disk
-    io_lock_acquire();
+    io_lock_acquire(IoLockOp::new(IO_OP_WRITE, disk_id, lba, count));
     let result = write_sectors_raw_for_disk(disk_id, lba, count, buf);
     io_lock_release();
     if result && cache_active {
@@ -679,7 +797,7 @@ pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8
         );
         return false;
     }
-    io_lock_acquire();
+    io_lock_acquire(IoLockOp::new(IO_OP_WRITEBACK, disk_id, lba, count));
     let result = write_sectors_raw_for_disk(disk_id, lba, count, buf);
     io_lock_release();
     result
@@ -687,7 +805,7 @@ pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8
 
 /// Flush storage write cache to persistent media.
 pub fn flush() {
-    io_lock_acquire();
+    io_lock_acquire(IoLockOp::new(IO_OP_FLUSH, 0, 0, 0));
     match unsafe { BACKEND } {
         StorageBackend::Ahci => {
             ahci::flush();
