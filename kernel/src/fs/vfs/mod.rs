@@ -427,6 +427,7 @@ enum DetachedDeleteBackend {
 
 enum DetachedOpenBackend {
     CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
+    ExFat(Arc<ExFatFsDriver>),
 }
 
 struct DetachedOpen {
@@ -531,27 +532,44 @@ fn prepare_detached_open(path: &str, flags: FileFlags) -> Result<Option<Detached
 
     if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points)
     {
-        if mnt_fs_type != FsType::CoreFs {
-            return Ok(None);
-        }
-        let driver = state
-            .mounted_corefs
-            .iter()
-            .find(|(p, _)| p == mount_path)
-            .map(|(_, d)| Arc::clone(d))
-            .ok_or(FsError::NotFound)?;
         let q = if relative_path.is_empty() {
             "/"
         } else {
             relative_path
         };
-        return Ok(Some(DetachedOpen {
-            backend: DetachedOpenBackend::CoreFs(driver),
-            path: String::from(path),
-            lookup_path: String::from(q),
-            flags,
-            fs_id: 8,
-        }));
+        return match mnt_fs_type {
+            FsType::CoreFs => {
+                let driver = state
+                    .mounted_corefs
+                    .iter()
+                    .find(|(p, _)| p == mount_path)
+                    .map(|(_, d)| Arc::clone(d))
+                    .ok_or(FsError::NotFound)?;
+                Ok(Some(DetachedOpen {
+                    backend: DetachedOpenBackend::CoreFs(driver),
+                    path: String::from(path),
+                    lookup_path: String::from(q),
+                    flags,
+                    fs_id: 8,
+                }))
+            }
+            FsType::ExFat => {
+                let driver = state
+                    .mounted_exfat
+                    .iter()
+                    .find(|(p, _)| p == mount_path)
+                    .map(|(_, d)| Arc::clone(d))
+                    .ok_or(FsError::IoError)?;
+                Ok(Some(DetachedOpen {
+                    backend: DetachedOpenBackend::ExFat(driver),
+                    path: String::from(path),
+                    lookup_path: String::from(q),
+                    flags,
+                    fs_id: 6,
+                }))
+            }
+            _ => Ok(None),
+        };
     }
 
     if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
@@ -565,6 +583,15 @@ fn prepare_detached_open(path: &str, flags: FileFlags) -> Result<Option<Detached
             lookup_path: String::from(if path.is_empty() { "/" } else { path }),
             flags,
             fs_id: 8,
+        }));
+    }
+    if state.root_fs_type == Some(FsType::ExFat) {
+        return Ok(state.exfat_fs.as_ref().map(|driver| DetachedOpen {
+            backend: DetachedOpenBackend::ExFat(Arc::clone(driver)),
+            path: String::from(path),
+            lookup_path: String::from(if path.is_empty() { "/" } else { path }),
+            flags,
+            fs_id: 3,
         }));
     }
 
@@ -614,6 +641,78 @@ fn execute_detached_open(plan: DetachedOpen) -> Result<DetachedOpenResult, FsErr
                 fs_id: plan.fs_id,
                 inode,
                 parent_cluster: 0,
+            })
+        }
+        DetachedOpenBackend::ExFat(driver) => {
+            let mut exfat = driver.lock_inner();
+            let q = if plan.lookup_path.is_empty() {
+                "/"
+            } else {
+                plan.lookup_path.as_str()
+            };
+            let lookup_result = if plan.flags.write || plan.flags.create || plan.flags.truncate {
+                exfat.lookup(q)
+            } else {
+                resolve_exfat_path(&exfat, q, true).map(|r| (r.inode, r.file_type, r.size))
+            };
+            let (inode, file_type, size, parent_cluster) = match lookup_result {
+                Ok((inode, file_type, size)) => {
+                    if plan.flags.truncate && plan.flags.write {
+                        let (parent_path, filename) = split_parent_name(q)?;
+                        let (pr_inode, _, _) = if plan.fs_id == 3 {
+                            let pr = resolve_exfat_path(&exfat, parent_path, true)?;
+                            (pr.inode, pr.file_type, pr.size)
+                        } else {
+                            exfat.lookup(parent_path)?
+                        };
+                        let (pc, _) = crate::fs::exfat::decode_inode(pr_inode);
+                        exfat.truncate_file(pc, filename)?;
+                        (0u32, file_type, 0u32, pc)
+                    } else {
+                        let parent_cluster = if plan.flags.write {
+                            let (parent_path, _) = split_parent_name(q)?;
+                            if plan.fs_id == 3 {
+                                resolve_exfat_path(&exfat, parent_path, true)
+                                    .map(|pr| crate::fs::exfat::decode_inode(pr.inode).0)
+                                    .unwrap_or(0)
+                            } else {
+                                exfat
+                                    .lookup(parent_path)
+                                    .map(|(i, _, _)| crate::fs::exfat::decode_inode(i).0)
+                                    .unwrap_or(0)
+                            }
+                        } else {
+                            0
+                        };
+                        (inode, file_type, size, parent_cluster)
+                    }
+                }
+                Err(FsError::NotFound) if plan.flags.create => {
+                    let (parent_path, filename) = split_parent_name(q)?;
+                    let (pr_inode, pr_type, _) = if plan.fs_id == 3 {
+                        let pr = resolve_exfat_path(&exfat, parent_path, true)?;
+                        (pr.inode, pr.file_type, pr.size)
+                    } else {
+                        exfat.lookup(parent_path)?
+                    };
+                    if pr_type != FileType::Directory {
+                        return Err(FsError::NotADirectory);
+                    }
+                    let pc = crate::fs::exfat::decode_inode(pr_inode).0;
+                    exfat.create_file(pc, filename)?;
+                    (0u32, FileType::Regular, 0u32, pc)
+                }
+                Err(e) => return Err(e),
+            };
+
+            Ok(DetachedOpenResult {
+                path: plan.path,
+                file_type,
+                flags: plan.flags,
+                size,
+                fs_id: plan.fs_id,
+                inode,
+                parent_cluster,
             })
         }
     }
