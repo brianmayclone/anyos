@@ -691,10 +691,12 @@ Status:
   - zyklischer Mix aus fsx, Metadata, Parallel-Fsstress, ENOSPC, Sequential-IO
     und Sync-Latenz
   - Fortschrittsausgabe pro Runde mit Seed
+  - Scratch-Lifecycle/Remount/fsck wird im Soak-Mix ausgefuehrt, wenn
+    `--scratch-device` konfiguriert ist
 
 Fehlt:
 
-- Scratch-Remount im Soak-Mix, falls Scratch-Modus aktiv ist.
+- Kein automatischer Scratch-Device-Pool fuer mehrere FS-Typen.
 
 TODO:
 
@@ -705,7 +707,7 @@ TODO:
   - fsx random.
   - enospc light.
   - metadata churn.
-  - sync/remount, falls Scratch-Modus aktiv.
+  - sync/remount, falls Scratch-Modus aktiv. [umgesetzt]
 
 Akzeptanz:
 

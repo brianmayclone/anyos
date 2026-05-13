@@ -721,6 +721,9 @@ fn run_soak_suite(cfg: &Config, summary: &mut Summary) {
             "soak enospc dir",
             enospc_directory_growth_case(cfg),
         );
+        if !cfg.scratch_device.is_empty() {
+            run_named_with_warning(summary, "soak scratch", scratch_lifecycle_case(cfg));
+        }
         run_named(summary, "soak sequential", sequential_io_perf_case(cfg));
         run_named(summary, "soak sync", sync_latency_perf_case(cfg));
         fs::sync();
