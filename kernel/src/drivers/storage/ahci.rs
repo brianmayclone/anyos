@@ -59,6 +59,8 @@ const ATA_CMD_PACKET: u8 = 0xA0;
 const BOUNCE_BUF_SECTORS: u32 = 1024;
 const BOUNCE_BUF_SIZE: usize = BOUNCE_BUF_SECTORS as usize * 512;
 const BOUNCE_BUF_FRAMES: usize = BOUNCE_BUF_SIZE / 4096; // 128
+const AHCI_FAST_SPIN_ITERS: usize = 512;
+const AHCI_POLL_YIELD_EVERY: usize = 256;
 
 const MAX_PRDT: usize = 128;
 const PRDT_MAX_BYTES: u32 = 4 * 1024 * 1024;
@@ -630,8 +632,10 @@ unsafe fn issue_command_once(
     // Issue command (slot 0)
     port_write(ahci.mmio_base, ahci.active_port, PORT_CI, 1);
 
-    // Fast path: spin-wait for command completion.
-    for _ in 0..50_000 {
+    // Fast path: catch commands that complete immediately. Keep this short:
+    // sustained readback issues many DMA commands and a long busy-spin here
+    // starves render/input threads even though the I/O can sleep on IRQs.
+    for _ in 0..AHCI_FAST_SPIN_ITERS {
         let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
         if ci & 1 == 0 {
             let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
@@ -898,6 +902,7 @@ unsafe fn poll_completion(ahci: &AhciController) -> bool {
         // Tick-based timeout (~5 seconds)
         let timeout_ticks = (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1);
         let start = crate::arch::hal::timer_current_ticks();
+        let mut spins = 0usize;
         loop {
             let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
             if ci & 1 == 0 {
@@ -922,7 +927,12 @@ unsafe fn poll_completion(ahci: &AhciController) -> bool {
                 return false;
             }
 
-            core::hint::spin_loop();
+            spins = spins.wrapping_add(1);
+            if spins % AHCI_POLL_YIELD_EVERY == 0 && crate::task::scheduler::current_tid() > 0 {
+                crate::task::scheduler::schedule();
+            } else {
+                core::hint::spin_loop();
+            }
         }
     } else {
         // Early boot fallback — iteration count (no timer yet)

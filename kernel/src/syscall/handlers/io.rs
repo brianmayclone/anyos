@@ -13,7 +13,7 @@ use crate::fs::permissions::{check_permission, PERM_CREATE};
 // metadata is flushed; 16 KiB matches the stable download/write path.
 const WRITE_COPY_CHUNK: usize = 16 * 1024;
 const MAX_FILE_WRITE_COPY_CHUNK: usize = 128 * 1024;
-const READ_COPY_CHUNK: usize = 16 * 1024;
+const FILE_READ_COPY_CHUNK: usize = 128 * 1024;
 
 /// sys_write - Write to a file descriptor
 /// fd=1 -> stdout (pipe if configured, else serial), fd=2 -> stderr (same), fd>=3 -> VFS file
@@ -161,7 +161,7 @@ pub fn sys_read(fd: u32, buf_ptr: u64, len: u32) -> u32 {
                 FdKind::File { global_id } => {
                     let mut total = 0usize;
                     while total < len as usize {
-                        let chunk_len = ((len as usize) - total).min(READ_COPY_CHUNK);
+                        let chunk_len = ((len as usize) - total).min(FILE_READ_COPY_CHUNK);
                         let end = (total + chunk_len).min(buf.len());
                         let chunk = &mut buf[total..end];
                         match crate::fs::vfs::read(global_id, chunk) {
