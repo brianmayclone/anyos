@@ -425,6 +425,28 @@ enum DetachedDeleteBackend {
     ExFat(Arc<ExFatFsDriver>),
 }
 
+enum DetachedOpenBackend {
+    CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
+}
+
+struct DetachedOpen {
+    backend: DetachedOpenBackend,
+    path: String,
+    lookup_path: String,
+    flags: FileFlags,
+    fs_id: u32,
+}
+
+struct DetachedOpenResult {
+    path: String,
+    file_type: FileType,
+    flags: FileFlags,
+    size: u32,
+    fs_id: u32,
+    inode: u32,
+    parent_cluster: u32,
+}
+
 enum DetachedReadDirBackend {
     CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
     ExFat(Arc<ExFatFsDriver>),
@@ -492,6 +514,139 @@ fn split_delete_parent_name(path: &str) -> Result<(String, String), FsError> {
         return Err(FsError::InvalidPath);
     }
     Ok((String::from(parent), String::from(name)))
+}
+
+fn prepare_detached_open(path: &str, flags: FileFlags) -> Result<Option<DetachedOpen>, FsError> {
+    if is_dev_path(path) {
+        return Ok(None);
+    }
+
+    let vfs = vfs_lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+
+    let active_count = state.open_files.iter().filter(|e| e.is_some()).count();
+    if active_count >= MAX_OPEN_FILES {
+        return Err(FsError::TooManyOpenFiles);
+    }
+
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points)
+    {
+        if mnt_fs_type != FsType::CoreFs {
+            return Ok(None);
+        }
+        let driver = state
+            .mounted_corefs
+            .iter()
+            .find(|(p, _)| p == mount_path)
+            .map(|(_, d)| Arc::clone(d))
+            .ok_or(FsError::NotFound)?;
+        let q = if relative_path.is_empty() {
+            "/"
+        } else {
+            relative_path
+        };
+        return Ok(Some(DetachedOpen {
+            backend: DetachedOpenBackend::CoreFs(driver),
+            path: String::from(path),
+            lookup_path: String::from(q),
+            flags,
+            fs_id: 8,
+        }));
+    }
+
+    if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
+        return Ok(None);
+    }
+
+    if state.root_fs_type == Some(FsType::CoreFs) {
+        return Ok(state.corefs_driver.as_ref().map(|driver| DetachedOpen {
+            backend: DetachedOpenBackend::CoreFs(Arc::clone(driver)),
+            path: String::from(path),
+            lookup_path: String::from(if path.is_empty() { "/" } else { path }),
+            flags,
+            fs_id: 8,
+        }));
+    }
+
+    Ok(None)
+}
+
+fn execute_detached_open(plan: DetachedOpen) -> Result<DetachedOpenResult, FsError> {
+    match plan.backend {
+        DetachedOpenBackend::CoreFs(driver) => {
+            let q = if plan.lookup_path.is_empty() {
+                "/"
+            } else {
+                plan.lookup_path.as_str()
+            };
+            let (inode, file_type, size) = match Filesystem::lookup(driver.as_ref(), q) {
+                Ok(r) => {
+                    if plan.flags.truncate && plan.flags.write {
+                        driver.truncate_file(r.0, 0)?;
+                        (r.0, r.1, 0)
+                    } else {
+                        r
+                    }
+                }
+                Err(FsError::NotFound) if plan.flags.create => {
+                    let (parent, name) = split_delete_parent_name(q)?;
+                    let (parent_inode, parent_type, _) =
+                        Filesystem::lookup(driver.as_ref(), &parent)?;
+                    if parent_type != FileType::Directory {
+                        return Err(FsError::NotADirectory);
+                    }
+                    let new_inode = Filesystem::create(
+                        driver.as_ref(),
+                        parent_inode,
+                        &name,
+                        FileType::Regular,
+                    )?;
+                    (new_inode, FileType::Regular, 0)
+                }
+                Err(e) => return Err(e),
+            };
+
+            Ok(DetachedOpenResult {
+                path: plan.path,
+                file_type,
+                flags: plan.flags,
+                size,
+                fs_id: plan.fs_id,
+                inode,
+                parent_cluster: 0,
+            })
+        }
+    }
+}
+
+fn insert_detached_open(result: DetachedOpenResult) -> Result<FileDescriptor, FsError> {
+    let mut vfs = vfs_lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+
+    let active_count = state.open_files.iter().filter(|e| e.is_some()).count();
+    if active_count >= MAX_OPEN_FILES {
+        return Err(FsError::TooManyOpenFiles);
+    }
+
+    let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
+    let position = if result.flags.append { result.size } else { 0 };
+    let file = OpenFile {
+        fd: slot_id,
+        path: result.path,
+        file_type: result.file_type,
+        flags: result.flags,
+        position,
+        size: result.size,
+        fs_id: result.fs_id,
+        inode: result.inode,
+        parent_cluster: result.parent_cluster,
+        refcount: 1,
+        seek_cache_offset: 0,
+        seek_cache_cluster: 0,
+        entry_dirty: false,
+    };
+    state.open_files[slot_id as usize] = Some(file);
+    Ok(slot_id)
 }
 
 fn prepare_detached_delete(path: &str) -> Result<Option<DetachedDelete>, FsError> {
@@ -1437,6 +1592,11 @@ pub fn has_overlay() -> bool {
 
 /// Open a file by path with the given flags. Returns a file descriptor on success.
 pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
+    if let Some(plan) = prepare_detached_open(path, flags)? {
+        let result = execute_detached_open(plan)?;
+        return insert_detached_open(result);
+    }
+
     let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
