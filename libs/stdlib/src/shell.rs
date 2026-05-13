@@ -806,24 +806,13 @@ fn expand_glob_token(token: &str, cwd: &str) -> Vec<String> {
         return Vec::new();
     }
 
-    let mut dir_buf = [0u8; 64 * 128];
-    let count = fs::readdir(&dir_to_read, &mut dir_buf);
-    if count == u32::MAX {
-        return Vec::new();
-    }
-
     let mut matches: Vec<String> = Vec::new();
-    for i in 0..count as usize {
-        let off = i * 64;
-        if off + 64 > dir_buf.len() {
-            break;
-        }
-        let name_len = dir_buf[off + 1] as usize;
-        let name_bytes = &dir_buf[off + 8..off + 8 + name_len.min(56)];
-        let name = match core::str::from_utf8(name_bytes) {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
+    let dir = match fs::read_dir(&dir_to_read) {
+        Ok(dir) => dir,
+        Err(_) => return matches,
+    };
+    for entry in dir {
+        let name = entry.name.as_str();
         if name.is_empty() || name == "." || name == ".." {
             continue;
         }

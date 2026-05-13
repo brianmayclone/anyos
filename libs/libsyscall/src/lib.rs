@@ -35,6 +35,7 @@ pub const SYS_MUNMAP: u32 = 15;
 // Filesystem
 pub const SYS_READDIR: u32 = 23;
 pub const SYS_STAT: u32 = 24;
+pub const SYS_READDIR_LONG: u32 = 89;
 pub const SYS_GETCWD: u32 = 25;
 pub const SYS_MKDIR: u32 = 90;
 pub const SYS_LSEEK: u32 = 105;
@@ -522,6 +523,18 @@ pub fn dll_load(path: &[u8]) -> u64 {
 pub fn readdir(path: &[u8], buf: &mut [u8]) -> u32 {
     syscall3(
         SYS_READDIR,
+        path.as_ptr() as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    ) as u32
+}
+
+/// Read directory entries with full names.
+///
+/// Entry format: [type:u8, flags:u8, name_len:u16, size:u32, name:256bytes].
+pub fn readdir_long(path: &[u8], buf: &mut [u8]) -> u32 {
+    syscall3(
+        SYS_READDIR_LONG,
         path.as_ptr() as u64,
         buf.as_mut_ptr() as u64,
         buf.len() as u64,

@@ -4,8 +4,7 @@
 anyos_std::entry!(main);
 
 struct Entry {
-    name: [u8; 56],
-    name_len: usize,
+    name: anyos_std::String,
     size: u32,
     entry_type: u8,
     is_symlink: bool,
@@ -94,6 +93,15 @@ fn cmp_name_ci(a: &[u8], a_len: usize, b: &[u8], b_len: usize) -> core::cmp::Ord
     a_len.cmp(&b_len)
 }
 
+fn cmp_entry_name_ci(a: &Entry, b: &Entry) -> core::cmp::Ordering {
+    cmp_name_ci(
+        a.name.as_bytes(),
+        a.name.len(),
+        b.name.as_bytes(),
+        b.name.len(),
+    )
+}
+
 /// Build a child path from parent + name.
 fn build_path(parent: &str, name: &str) -> anyos_std::String {
     if parent == "/" {
@@ -115,36 +123,22 @@ fn list_directory(
     recursive: bool,
     color: bool,
 ) {
-    let mut buf = [0u8; 64 * 128];
-    let count = anyos_std::fs::readdir(path, &mut buf);
-
-    if count == u32::MAX {
-        anyos_std::println!("ls: cannot access '{}': No such file or directory", path);
-        return;
-    }
-
     let mut entries = anyos_std::Vec::new();
-    let max_entries = buf.len() / 64;
-    let actual = (count as usize).min(max_entries);
-    for i in 0..actual {
-        let raw_entry = &buf[i * 64..(i + 1) * 64];
-        let entry_type = raw_entry[0];
-        let name_len = raw_entry[1] as usize;
-        let flags = raw_entry[2];
-        let is_symlink = flags & 1 != 0;
-        let size = u32::from_le_bytes([raw_entry[4], raw_entry[5], raw_entry[6], raw_entry[7]]);
-        let mut name = [0u8; 56];
-        let nlen = name_len.min(56);
-        name[..nlen].copy_from_slice(&raw_entry[8..8 + nlen]);
-
-        if !all && nlen > 0 && name[0] == b'.' {
+    let dir_entries = match anyos_std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(_) => {
+            anyos_std::println!("ls: cannot access '{}': No such file or directory", path);
+            return;
+        }
+    };
+    for raw_entry in dir_entries {
+        let name = raw_entry.name;
+        if !all && name.as_bytes().first() == Some(&b'.') {
             continue;
         }
 
-        // Get uid/gid/mode via stat if long format
         let (uid, gid, mode) = if long {
-            let name_str = core::str::from_utf8(&name[..nlen]).unwrap_or("");
-            let full_path = build_path(path, name_str);
+            let full_path = build_path(path, &name);
             let mut stat_buf = [0u32; 7];
             if anyos_std::fs::stat(&full_path, &mut stat_buf) == 0 {
                 (stat_buf[3] as u16, stat_buf[4] as u16, stat_buf[5])
@@ -157,10 +151,9 @@ fn list_directory(
 
         entries.push(Entry {
             name,
-            name_len: nlen,
-            size,
-            entry_type,
-            is_symlink,
+            size: raw_entry.size,
+            entry_type: raw_entry.file_type,
+            is_symlink: raw_entry.is_symlink,
             uid,
             gid,
             mode,
@@ -171,7 +164,7 @@ fn list_directory(
     if sort_size {
         entries.sort_unstable_by(|a, b| b.size.cmp(&a.size));
     } else {
-        entries.sort_unstable_by(|a, b| cmp_name_ci(&a.name, a.name_len, &b.name, b.name_len));
+        entries.sort_unstable_by(cmp_entry_name_ci);
     }
     if reverse {
         entries.reverse();
@@ -183,11 +176,10 @@ fn list_directory(
     if recursive {
         for e in &entries {
             if e.entry_type == 1 {
-                let name_str = core::str::from_utf8(&e.name[..e.name_len]).unwrap_or("");
-                if name_str == "." || name_str == ".." {
+                if e.name == "." || e.name == ".." {
                     continue;
                 }
-                let child = build_path(path, name_str);
+                let child = build_path(path, &e.name);
                 anyos_std::println!("\n{}:", child);
                 list_directory(
                     &child,
@@ -310,7 +302,7 @@ fn print_entries(
                     _ => '-',
                 }
             };
-            let name_str = core::str::from_utf8(&e.name[..e.name_len]).unwrap_or("???");
+            let name_str = e.name.as_str();
             let col = entry_color(e, color);
             let rst = if col.is_empty() { "" } else { ANSI_RESET };
 
@@ -345,9 +337,9 @@ fn print_entries(
                         full_len += 1;
                     }
                 }
-                for j in 0..e.name_len {
+                for &b in e.name.as_bytes() {
                     if full_len < 511 {
-                        full[full_len] = e.name[j];
+                        full[full_len] = b;
                         full_len += 1;
                     }
                 }
@@ -422,7 +414,7 @@ fn print_entries(
         }
     } else if one_per_line {
         for e in entries {
-            let name_str = core::str::from_utf8(&e.name[..e.name_len]).unwrap_or("???");
+            let name_str = e.name.as_str();
             let col = entry_color(e, color);
             let rst = if col.is_empty() { "" } else { ANSI_RESET };
             anyos_std::println!("{}{}{}", col, name_str, rst);
@@ -430,7 +422,7 @@ fn print_entries(
     } else {
         // Columnar output: names separated by spaces
         for (i, e) in entries.iter().enumerate() {
-            let name_str = core::str::from_utf8(&e.name[..e.name_len]).unwrap_or("???");
+            let name_str = e.name.as_str();
             let col = entry_color(e, color);
             let rst = if col.is_empty() { "" } else { ANSI_RESET };
             if i > 0 {
@@ -471,13 +463,8 @@ fn list_as_entries(
             anyos_std::println!("ls: cannot access '{}': No such file or directory", p);
             continue;
         };
-        // Use the path as-is for display (e.g. "." or "/etc")
-        let mut name = [0u8; 56];
-        let nlen = p.len().min(56);
-        name[..nlen].copy_from_slice(&p.as_bytes()[..nlen]);
         entries.push(Entry {
-            name,
-            name_len: nlen,
+            name: anyos_std::String::from(p),
             size,
             entry_type: etype,
             is_symlink: is_sym,
@@ -489,7 +476,7 @@ fn list_as_entries(
     if sort_size {
         entries.sort_unstable_by(|a, b| b.size.cmp(&a.size));
     } else {
-        entries.sort_unstable_by(|a, b| cmp_name_ci(&a.name, a.name_len, &b.name, b.name_len));
+        entries.sort_unstable_by(cmp_entry_name_ci);
     }
     if reverse {
         entries.reverse();
@@ -534,10 +521,6 @@ fn list_files(
             name_str
         };
 
-        let mut name = [0u8; 56];
-        let nlen = display_name.len().min(56);
-        name[..nlen].copy_from_slice(&display_name.as_bytes()[..nlen]);
-
         if ret != 0 {
             anyos_std::println!(
                 "ls: cannot access '{}': No such file or directory",
@@ -547,8 +530,7 @@ fn list_files(
         }
 
         entries.push(Entry {
-            name,
-            name_len: nlen,
+            name: anyos_std::String::from(display_name),
             size,
             entry_type: etype,
             is_symlink: is_sym,
@@ -562,7 +544,7 @@ fn list_files(
     if sort_size {
         entries.sort_unstable_by(|a, b| b.size.cmp(&a.size));
     } else {
-        entries.sort_unstable_by(|a, b| cmp_name_ci(&a.name, a.name_len, &b.name, b.name_len));
+        entries.sort_unstable_by(cmp_entry_name_ci);
     }
     if reverse {
         entries.reverse();
@@ -655,9 +637,8 @@ fn main() {
         list_as_entries(&paths, long, one_per_line, human, sort_size, reverse, color);
     } else if args.pos_count == 1 {
         let path = args.positional[0];
-        let mut buf = [0u8; 64 * 4];
-        let count = anyos_std::fs::readdir(path, &mut buf);
-        if count != u32::MAX {
+        let mut stat_buf = [0u32; 7];
+        if anyos_std::fs::stat(path, &mut stat_buf) == 0 && stat_buf[0] == 1 {
             if recursive {
                 anyos_std::println!("{}:", path);
             }
@@ -716,12 +697,8 @@ fn main() {
                 } else {
                     name_str
                 };
-                let mut name = [0u8; 56];
-                let nlen = display.len().min(56);
-                name[..nlen].copy_from_slice(&display.as_bytes()[..nlen]);
                 entries.push(Entry {
-                    name,
-                    name_len: nlen,
+                    name: anyos_std::String::from(display),
                     size,
                     entry_type: etype,
                     is_symlink: is_sym,
@@ -733,8 +710,7 @@ fn main() {
             if sort_size {
                 entries.sort_unstable_by(|a, b| b.size.cmp(&a.size));
             } else {
-                entries
-                    .sort_unstable_by(|a, b| cmp_name_ci(&a.name, a.name_len, &b.name, b.name_len));
+                entries.sort_unstable_by(cmp_entry_name_ci);
             }
             if reverse {
                 entries.reverse();

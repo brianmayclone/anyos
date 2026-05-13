@@ -65,6 +65,60 @@ pub fn sys_readdir(path_ptr: u64, buf_ptr: u64, buf_size: u32) -> u32 {
     }
 }
 
+/// Long-name directory listing.
+///
+/// Entry format is 264 bytes:
+/// [type:u8, flags:u8, name_len:u16, size:u32, name:256bytes]
+pub fn sys_readdir_long(path_ptr: u64, buf_ptr: u64, buf_size: u32) -> u32 {
+    let path = resolve_path(unsafe { read_user_str(path_ptr) });
+
+    if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(&path) {
+        if !crate::fs::permissions::check_permission(
+            uid,
+            gid,
+            mode,
+            crate::fs::permissions::PERM_READ,
+        ) {
+            return 0;
+        }
+    }
+
+    match crate::fs::vfs::read_dir(&path) {
+        Ok(entries) => {
+            let entry_size = 264u32;
+            if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr, buf_size as u64) {
+                let max_entries = (buf_size / entry_size) as usize;
+                let written = entries.len().min(max_entries);
+                let buf = unsafe {
+                    core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize)
+                };
+                for (i, entry) in entries.iter().enumerate().take(written) {
+                    let off = i * entry_size as usize;
+                    buf[off] = match entry.file_type {
+                        crate::fs::file::FileType::Regular => 0,
+                        crate::fs::file::FileType::Directory => 1,
+                        crate::fs::file::FileType::Device => 2,
+                    };
+                    buf[off + 1] = if entry.is_symlink { 1 } else { 0 };
+                    let name_bytes = entry.name.as_bytes();
+                    let name_len = name_bytes.len().min(256);
+                    buf[off + 2..off + 4].copy_from_slice(&(name_len as u16).to_le_bytes());
+                    let size = entry.size as u32;
+                    buf[off + 4..off + 8].copy_from_slice(&size.to_le_bytes());
+                    buf[off + 8..off + 8 + name_len].copy_from_slice(&name_bytes[..name_len]);
+                    if name_len < 256 {
+                        buf[off + 8 + name_len] = 0;
+                    }
+                }
+                written as u32
+            } else {
+                entries.len() as u32
+            }
+        }
+        Err(e) => fs_err(e),
+    }
+}
+
 pub fn sys_stat(path_ptr: u64, buf_ptr: u64) -> u32 {
     let raw_path = unsafe { read_user_str(path_ptr) };
     let path = resolve_path(raw_path);

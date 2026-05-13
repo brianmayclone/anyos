@@ -47,6 +47,7 @@
 #define SYS_STAT            24
 #define SYS_GETCWD          25
 #define SYS_CHDIR           26
+#define SYS_READDIR_LONG    89
 
 /* ---- Process spawning ---- */
 #define SYS_SPAWN           27

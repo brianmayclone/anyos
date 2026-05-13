@@ -159,6 +159,23 @@ pub fn readdir(path: &str, buf: &mut [u8]) -> u32 {
     ))
 }
 
+pub const READDIR_LONG_ENTRY_SIZE: usize = 264;
+
+/// Read directory entries with full 256-byte names.
+///
+/// Each entry is 264 bytes:
+/// [type:u8, flags:u8, name_len:u16, size:u32, name:256bytes].
+pub fn readdir_long(path: &str, buf: &mut [u8]) -> u32 {
+    let mut path_buf = [0u8; 257];
+    prepare_path(path, &mut path_buf);
+    sys_err(syscall3(
+        SYS_READDIR_LONG,
+        path_buf.as_ptr() as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    ))
+}
+
 /// Get file status (follows symlinks). Returns 0 on success.
 /// Writes [type:u32, size:u32, flags:u32, uid:u32, gid:u32, mode:u32, mtime:u32] to buf.
 /// flags: bit 0 = is_symlink
@@ -590,6 +607,8 @@ pub struct DirEntry {
     pub name: String,
     /// Entry type: 0 = file, 1 = directory, 2 = symlink.
     pub file_type: u8,
+    /// Whether this entry is a symbolic link.
+    pub is_symlink: bool,
     /// File size in bytes.
     pub size: u32,
 }
@@ -625,6 +644,7 @@ impl Iterator for ReadDir {
                 DirEntry {
                     name: String::new(),
                     file_type: 0,
+                    is_symlink: false,
                     size: 0,
                 },
             ))
@@ -636,30 +656,36 @@ impl Iterator for ReadDir {
 
 /// Read directory entries and return an iterator.
 pub fn read_dir(path: &str) -> error::Result<ReadDir> {
-    // Allocate buffer for up to 128 entries (128 * 64 = 8192 bytes)
-    let mut buf = vec![0u8; 8192];
-    let count = readdir(path, &mut buf);
+    let mut empty = [];
+    let expected = readdir_long(path, &mut empty);
+    if expected == u32::MAX {
+        return Err(error::Error::NotFound);
+    }
+    let mut buf = vec![0u8; READDIR_LONG_ENTRY_SIZE * expected as usize];
+    let count = readdir_long(path, &mut buf);
     if count == u32::MAX {
         return Err(error::Error::NotFound);
     }
     let count = count as usize;
     let mut entries = Vec::with_capacity(count);
     for i in 0..count {
-        let base = i * 64;
-        if base + 64 > buf.len() {
+        let base = i * READDIR_LONG_ENTRY_SIZE;
+        if base + READDIR_LONG_ENTRY_SIZE > buf.len() {
             break;
         }
         let entry_type = buf[base];
-        let name_len = buf[base + 1] as usize;
+        let flags = buf[base + 1];
+        let name_len = u16::from_le_bytes([buf[base + 2], buf[base + 3]]) as usize;
         let size = u32::from_le_bytes([buf[base + 4], buf[base + 5], buf[base + 6], buf[base + 7]]);
         let name_start = base + 8;
-        let name_end = (name_start + name_len).min(base + 64);
+        let name_end = (name_start + name_len).min(base + READDIR_LONG_ENTRY_SIZE);
         let name = core::str::from_utf8(&buf[name_start..name_end])
             .unwrap_or("")
             .into();
         entries.push(DirEntry {
             name,
             file_type: entry_type,
+            is_symlink: flags & 1 != 0,
             size,
         });
     }

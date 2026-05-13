@@ -18,9 +18,6 @@ pub const DEFAULT_FILE_ICON: &str = "/System/media/icons/default.ico";
 
 /// Folder icon path.
 pub const FOLDER_ICON: &str = "/System/media/icons/folder.ico";
-const DIR_ENTRY_SIZE: usize = 64;
-const DIR_NAME_OFFSET: usize = 8;
-const DIR_NAME_MAX: usize = 56;
 
 const MIMETYPES_DEFAULTS: &str = "\
 # anyOS mimetype associations\n\
@@ -54,28 +51,14 @@ pub fn is_app_bundle(path: &str) -> bool {
 }
 
 fn collect_app_bundles_from_dir(dir: &str, out: &mut Vec<String>) {
-    let mut buf = [0u8; DIR_ENTRY_SIZE * 128];
-    let count = fs::readdir(dir, &mut buf);
-    if count == 0 || count == u32::MAX {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
-    }
-
-    for i in 0..count as usize {
-        let base = i * DIR_ENTRY_SIZE;
-        if base + DIR_ENTRY_SIZE > buf.len() || buf[base] != 1 {
+    };
+    for entry in entries {
+        if entry.file_type != 1 {
             continue;
         }
-
-        let name_len = (buf[base + 1] as usize).min(DIR_NAME_MAX);
-        if name_len == 0 {
-            continue;
-        }
-        let Ok(entry_name) =
-            core::str::from_utf8(&buf[base + DIR_NAME_OFFSET..base + DIR_NAME_OFFSET + name_len])
-        else {
-            continue;
-        };
-
+        let entry_name = entry.name.as_str();
         let mut path = String::from(dir);
         if !dir.ends_with('/') {
             path.push('/');

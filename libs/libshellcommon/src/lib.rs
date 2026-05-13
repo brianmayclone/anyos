@@ -124,20 +124,10 @@ pub fn read_file_to_buf(path: &str, buf: &mut [u8]) -> usize {
 /// List directory entries as `(name, is_directory)` pairs.
 pub fn list_dir_entries(path: &str) -> Vec<(String, bool)> {
     let mut entries = Vec::new();
-    let mut dir_buf = [0u8; 64 * 256]; // 256 entries max
-    let count = fs::readdir(path, &mut dir_buf);
-    if count == u32::MAX {
-        return entries;
-    }
-    let max = (count as usize).min(dir_buf.len() / 64);
-    for i in 0..max {
-        let off = i * 64;
-        let entry_type = dir_buf[off];
-        let name_len = dir_buf[off + 1] as usize;
-        let name_bytes = &dir_buf[off + 8..off + 8 + name_len.min(56)];
-        if let Ok(name) = core::str::from_utf8(name_bytes) {
-            if name != "." && name != ".." {
-                entries.push((String::from(name), entry_type == 1));
+    if let Ok(dir) = fs::read_dir(path) {
+        for entry in dir {
+            if entry.name != "." && entry.name != ".." {
+                entries.push((entry.name, entry.file_type == 1));
             }
         }
     }

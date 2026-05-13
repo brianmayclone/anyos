@@ -35,6 +35,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_DEVIOCTL, "devioctl"),
     (SYS_IRQWAIT, "irqwait"),
     (SYS_READDIR, "readdir"),
+    (SYS_READDIR_LONG, "readdir_long"),
     (SYS_STAT, "stat"),
     (SYS_GETCWD, "getcwd"),
     (SYS_CHDIR, "chdir"),

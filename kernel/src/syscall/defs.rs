@@ -83,6 +83,9 @@ pub const SYS_SCREEN_SIZE: u32 = 72;
 // DLL
 pub const SYS_DLL_LOAD: u32 = 80;
 
+// Filesystem long-name compatible directory listing
+pub const SYS_READDIR_LONG: u32 = 89;
+
 // Filesystem (extended)
 pub const SYS_MKDIR: u32 = 90;
 pub const SYS_UNLINK: u32 = 91;

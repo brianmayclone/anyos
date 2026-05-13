@@ -82,30 +82,15 @@ pub fn is_boot_critical_path(path: &str) -> bool {
 }
 
 pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, String> {
-    let mut buf = [0u8; 256 * 64];
-    let count = fs::readdir(path, &mut buf);
-    if count == u32::MAX {
-        return Err(format!("could not read directory {}", path));
-    }
-
     let mut out = Vec::new();
-    for i in 0..count as usize {
-        let off = i * 64;
-        let entry_type = buf[off];
-        let name_len = buf[off + 1] as usize;
-        if name_len == 0 || name_len > 56 {
-            continue;
+    let dir = fs::read_dir(path).map_err(|_| format!("could not read directory {}", path))?;
+    for entry in dir {
+        if entry.name != "." && entry.name != ".." {
+            out.push(DirEntry {
+                entry_type: entry.file_type,
+                name: entry.name,
+            });
         }
-
-        let name = match core::str::from_utf8(&buf[off + 8..off + 8 + name_len]) {
-            Ok(s) if s != "." && s != ".." => s,
-            _ => continue,
-        };
-
-        out.push(DirEntry {
-            entry_type,
-            name: String::from(name),
-        });
     }
     Ok(out)
 }

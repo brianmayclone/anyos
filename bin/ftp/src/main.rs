@@ -339,37 +339,16 @@ impl FtpClient {
         }
         println!("Directory: {}", remote_path);
 
-        // Read local directory entries
-        let mut dir_buf = [0u8; 64 * 256];
-        let count = fs::readdir(local_path, &mut dir_buf);
-        if count == u32::MAX {
-            println!("Failed to read directory: {}", local_path);
-            return;
-        }
+        let entries = match fs::read_dir(local_path) {
+            Ok(entries) => entries,
+            Err(_) => {
+                println!("Failed to read directory: {}", local_path);
+                return;
+            }
+        };
 
-        for i in 0..count as usize {
-            let entry_offset = i * 64;
-            if entry_offset + 8 > dir_buf.len() {
-                break;
-            }
-            let entry_type = dir_buf[entry_offset];
-            let name_len = dir_buf[entry_offset + 1] as usize;
-            if name_len == 0 || name_len > 56 {
-                break;
-            }
-            if entry_offset + 8 + name_len > dir_buf.len() {
-                break;
-            }
-            let name =
-                match core::str::from_utf8(&dir_buf[entry_offset + 8..entry_offset + 8 + name_len])
-                {
-                    Ok(n) => n,
-                    Err(_) => continue,
-                };
-            if name.is_empty() {
-                break;
-            }
-            // Skip . and ..
+        for entry in entries {
+            let name = entry.name.as_str();
             if name == "." || name == ".." {
                 continue;
             }
@@ -387,7 +366,7 @@ impl FtpClient {
             }
             remote_child.push_str(name);
 
-            if entry_type == 1 {
+            if entry.file_type == 1 {
                 // Subdirectory — recurse
                 self.put_dir(&local_child, &remote_child);
             } else {
@@ -653,40 +632,20 @@ impl FtpClient {
                 }
                 "lls" | "ldir" => {
                     let dir = if args.is_empty() { "." } else { args };
-                    let mut dir_buf = [0u8; 64 * 128];
-                    let count = fs::readdir(dir, &mut dir_buf);
-                    if count == u32::MAX {
-                        println!("lls: cannot read directory");
-                    } else {
-                        for i in 0..count as usize {
-                            let off = i * 64;
-                            if off + 8 > dir_buf.len() {
-                                break;
+                    if let Ok(entries) = fs::read_dir(dir) {
+                        for entry in entries {
+                            let name = entry.name.as_str();
+                            if name == "." || name == ".." {
+                                continue;
                             }
-                            let entry_type = dir_buf[off];
-                            let name_len = dir_buf[off + 1] as usize;
-                            if name_len == 0 || name_len > 56 {
-                                break;
-                            }
-                            if off + 8 + name_len > dir_buf.len() {
-                                break;
-                            }
-                            if let Ok(name) =
-                                core::str::from_utf8(&dir_buf[off + 8..off + 8 + name_len])
-                            {
-                                let size = u32::from_le_bytes([
-                                    dir_buf[off + 4],
-                                    dir_buf[off + 5],
-                                    dir_buf[off + 6],
-                                    dir_buf[off + 7],
-                                ]);
-                                if entry_type == 1 {
-                                    println!("  [{}]", name);
-                                } else {
-                                    println!("  {:>8}  {}", size, name);
-                                }
+                            if entry.file_type == 1 {
+                                println!("  [{}]", name);
+                            } else {
+                                println!("  {:>8}  {}", entry.size, name);
                             }
                         }
+                    } else {
+                        println!("lls: cannot read directory");
                     }
                 }
                 "lmkdir" => {
@@ -889,35 +848,18 @@ fn needs_local_dirs(cmd: &str) -> bool {
 /// If `dirs_only`, only return directories.
 fn local_file_names(dir: &str, dirs_only: bool) -> Vec<String> {
     let d = if dir.is_empty() { "." } else { dir };
-    let mut dir_buf = [0u8; 64 * 128];
-    let count = fs::readdir(d, &mut dir_buf);
-    if count == u32::MAX {
-        return Vec::new();
-    }
     let mut names = Vec::new();
-    for i in 0..count as usize {
-        let off = i * 64;
-        if off + 8 > dir_buf.len() {
-            break;
-        }
-        let name_len = dir_buf[off + 1] as usize;
-        if name_len == 0 || name_len > 56 {
-            break;
-        }
-        if off + 8 + name_len > dir_buf.len() {
-            break;
-        }
-        if let Ok(name) = core::str::from_utf8(&dir_buf[off + 8..off + 8 + name_len]) {
-            if name != "." && name != ".." {
-                let is_dir = dir_buf[off] == 1;
-                if dirs_only && !is_dir {
-                    continue;
+    if let Ok(entries) = fs::read_dir(d) {
+        for entry in entries {
+            if entry.name != "." && entry.name != ".." {
+                let is_dir = entry.file_type == 1;
+                if !dirs_only || is_dir {
+                    let mut name = entry.name;
+                    if is_dir {
+                        name.push('/');
+                    }
+                    names.push(name);
                 }
-                let mut entry = String::from(name);
-                if is_dir {
-                    entry.push('/');
-                }
-                names.push(entry);
             }
         }
     }

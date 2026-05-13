@@ -47,6 +47,7 @@ pub(crate) const SYS_TRY_WAITPID: u32 = 29;
 // Filesystem
 pub(crate) const SYS_READDIR: u32 = 23;
 pub(crate) const SYS_STAT: u32 = 24;
+pub(crate) const SYS_READDIR_LONG: u32 = 89;
 pub(crate) const SYS_MKDIR: u32 = 90;
 pub(crate) const SYS_UNLINK: u32 = 91;
 pub(crate) const SYS_TRUNCATE: u32 = 92;

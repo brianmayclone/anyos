@@ -145,6 +145,7 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_WRITE
         | syscall::SYS_CLOSE
         | syscall::SYS_READDIR
+        | syscall::SYS_READDIR_LONG
         | syscall::SYS_STAT
         | syscall::SYS_LSTAT
         | syscall::SYS_MKDIR

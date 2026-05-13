@@ -123,19 +123,14 @@ fn walk(path: &str, depth: u32, opts: &Opts, out: &mut Vec<Entry>) -> u64 {
     }
 
     // ── Directory ─────────────────────────────────────────────────────────────
-    let mut dir_buf = [0u8; 64 * 512]; // up to 512 entries
-    let count = anyos_std::fs::readdir(path, &mut dir_buf);
-    if count == u32::MAX {
-        return 0;
-    }
-
     let mut total: u64 = 0;
-
-    for i in 0..count as usize {
-        let e = &dir_buf[i * 64..(i + 1) * 64];
-        let etype = e[0]; // 0=file 1=dir
-        let nlen = e[1] as usize;
-        let name = core::str::from_utf8(&e[8..8 + nlen.min(56)]).unwrap_or("");
+    let entries = match anyos_std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(_) => return 0,
+    };
+    for entry in entries {
+        let etype = entry.file_type; // 0=file 1=dir
+        let name = entry.name.as_str();
         if name.is_empty() || name == "." || name == ".." {
             continue;
         }
@@ -148,11 +143,9 @@ fn walk(path: &str, depth: u32, opts: &Opts, out: &mut Vec<Entry>) -> u64 {
             let sub = walk(child, depth + 1, opts, out);
             total += sub;
         } else {
-            // File — size is in the directory entry at offset 4 (u32 LE)
-            let sz = u32::from_le_bytes([e[4], e[5], e[6], e[7]]) as u64;
+            let sz = entry.size as u64;
             total += sz;
             if opts.all && !opts.summarize && depth + 1 <= opts.max_depth {
-                // We need the actual stat for a fresh path string
                 out.push((anyos_std::String::from(child), sz));
             }
         }

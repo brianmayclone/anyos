@@ -197,6 +197,7 @@ pub(crate) fn dispatch_inner(
 
         // Filesystem
         SYS_READDIR => handlers::sys_readdir(arg1, arg2, arg3 as u32),
+        SYS_READDIR_LONG => handlers::sys_readdir_long(arg1, arg2, arg3 as u32),
         SYS_STAT => handlers::sys_stat(arg1, arg2),
         SYS_GETCWD => handlers::sys_getcwd(arg1, arg2 as u32),
         SYS_CHDIR => handlers::sys_chdir(arg1),

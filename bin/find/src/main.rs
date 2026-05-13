@@ -76,19 +76,16 @@ fn build_path(buf: &mut [u8; 512], parent: &str, name: &str) -> usize {
 }
 
 fn find_in(path: &str, pattern: &str, ignore_case: bool, type_filter: u8) {
-    let mut buf = [0u8; 64 * 128]; // max 128 entries
-    let count = anyos_std::fs::readdir(path, &mut buf);
-    if count == u32::MAX {
-        return;
-    }
+    let entries = match anyos_std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(_) => {
+            return;
+        }
+    };
 
-    for i in 0..count as usize {
-        // 64-byte struct: [type:u8, name_len:u8, pad:u16, size:u32, name:56bytes]
-        let entry = &buf[i * 64..(i + 1) * 64];
-        let entry_type = entry[0];
-        let name_len = entry[1] as usize;
-        let name = core::str::from_utf8(&entry[8..8 + name_len.min(56)]).unwrap_or("");
-
+    for entry in entries {
+        let entry_type = entry.file_type;
+        let name = entry.name.as_str();
         if name.is_empty() || name == "." || name == ".." {
             continue;
         }
