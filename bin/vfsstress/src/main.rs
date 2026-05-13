@@ -1571,6 +1571,26 @@ fn scratch_lifecycle_case(cfg: &Config) -> TestOutcome {
         return TestOutcome::Fail("scratch-parallel");
     }
 
+    let meta_path = format!("{}/metadata-persist.txt", cfg.scratch_mount);
+    if write_bytes_file(&meta_path, b"metadata persists").is_err() {
+        let _ = fs::umount(&cfg.scratch_mount);
+        return TestOutcome::Fail("scratch-metadata-write");
+    }
+    let chmod_persist = fs::chmod(&meta_path, 0o640) == 0;
+    let chown_persist = fs::chown(&meta_path, 12, 34) == 0;
+    let rename_tmp = format!("{}/rename-before-remount.tmp", cfg.scratch_mount);
+    let rename_final = format!("{}/rename-after-remount.txt", cfg.scratch_mount);
+    let _ = fs::unlink(&rename_tmp);
+    let _ = fs::unlink(&rename_final);
+    if write_bytes_file(&rename_tmp, b"rename persists").is_err() {
+        let _ = fs::umount(&cfg.scratch_mount);
+        return TestOutcome::Fail("scratch-rename-write");
+    }
+    if fs::rename(&rename_tmp, &rename_final) != 0 {
+        let _ = fs::umount(&cfg.scratch_mount);
+        return TestOutcome::Fail("scratch-rename");
+    }
+
     fs::sync();
     if fs::umount(&cfg.scratch_mount) == u32::MAX {
         return TestOutcome::Fail("umount");
@@ -1585,6 +1605,29 @@ fn scratch_lifecycle_case(cfg: &Config) -> TestOutcome {
         let _ = fs::umount(&cfg.scratch_mount);
         return TestOutcome::Fail("verify-after-remount");
     }
+    if verify_file_bytes(&meta_path, b"metadata persists").is_err() {
+        let _ = fs::umount(&cfg.scratch_mount);
+        return TestOutcome::Fail("scratch-metadata-content-remount");
+    }
+    if chmod_persist && !stat_mode_is(&meta_path, 0o640) {
+        let _ = fs::umount(&cfg.scratch_mount);
+        return TestOutcome::Fail("scratch-chmod-remount");
+    }
+    if chown_persist {
+        let mut stat = [0u32; 7];
+        if fs::stat(&meta_path, &mut stat) != 0 || stat[3] != 12 || stat[4] != 34 {
+            let _ = fs::umount(&cfg.scratch_mount);
+            return TestOutcome::Fail("scratch-chown-remount");
+        }
+    }
+    if stat_exists(&rename_tmp) {
+        let _ = fs::umount(&cfg.scratch_mount);
+        return TestOutcome::Fail("scratch-rename-old-visible");
+    }
+    if verify_file_bytes(&rename_final, b"rename persists").is_err() {
+        let _ = fs::umount(&cfg.scratch_mount);
+        return TestOutcome::Fail("scratch-rename-remount");
+    }
     if fs::umount(&cfg.scratch_mount) == u32::MAX {
         return TestOutcome::Fail("umount-after-remount");
     }
@@ -1593,9 +1636,11 @@ fn scratch_lifecycle_case(cfg: &Config) -> TestOutcome {
     }
 
     TestOutcome::Ok(format!(
-        "device {} als {} formatiert, fsck, mount/remount/readback{} ok",
+        "device {} als {} formatiert, fsck, mount/remount/readback, metadata chmod={}, chown={}, rename{} ok",
         cfg.scratch_device,
         cfg.scratch_fs,
+        if chmod_persist { "persist" } else { "unsupported" },
+        if chown_persist { "persist" } else { "unsupported" },
         if cfg.scratch_fs.as_str() == "corefs" {
             "/scrub"
         } else {

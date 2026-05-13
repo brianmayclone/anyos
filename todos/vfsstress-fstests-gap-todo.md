@@ -148,6 +148,8 @@ Status:
   - `mkfs.corefs`/`mkfs.exfat`
   - mount, Sentinel-Write/Verify, paralleler Mini-Workload, sync, unmount,
     fsck, remount, Readback-Verify
+  - Metadata-Persistenz fuer chmod/chown, falls vom FS unterstuetzt
+  - Rename-Persistenz ueber unmount/fsck/remount mit Old-Path-Check
 - Neu umgesetzt als anyOS-API/Tool:
   - `/System/sbin/mkfs.exfat`
   - no_std exFAT-Formatter fuer leere Scratch-Volumes
@@ -378,6 +380,7 @@ Status:
   - `permission_metadata_case`
   - `chmod` mit `stat`-Verify direkt und nach `sync`
   - `chown` mit uid/gid-Verify direkt und nach `sync`, falls unterstuetzt
+  - im Scratch-Lifecycle chmod/chown-Verify nach Remount, falls Scratch aktiv
   - Content-Verify nach Metadata-Aenderungen
   - Groessen- und mtime-Plausibilitaet nach Append
   - WARN, falls chmod/chown vom getesteten FS nicht unterstuetzt werden
@@ -385,7 +388,6 @@ Status:
 Fehlt:
 
 - Fehlerfaelle fuer unzulaessige Zugriffe, soweit anyOS Permissions enforced.
-- Metadata nach Remount im Scratch-Modus.
 - Detaillierte Timestamps/ctime/mtime bei Truncate und Rename.
 
 TODO:
@@ -396,7 +398,7 @@ TODO:
   - `chown` verschiedene uid/gid.
   - `stat` direkt danach.
   - `sync`, close/reopen, erneut `stat`.
-  - im Scratch-Modus nach Remount erneut `stat`.
+  - im Scratch-Modus nach Remount erneut `stat`. [umgesetzt im Scratch-Lifecycle]
   - truncate muss Metadata-Version/Timestamps aktualisieren, sobald im stat API
     sichtbar.
 
@@ -416,11 +418,12 @@ Status:
   - write + globaler `sync` + close
   - create + Datei-`fsync` + rename + Readback/Old-Path-Verify
   - create + rename + globaler `sync` + Readback/Old-Path-Verify
+  - Scratch-Lifecycle prueft Rename-Persistenz nach unmount/fsck/remount
   - Directory-`fsync` wird als `ok` oder `unsupported` berichtet
 
 Fehlt:
 
-- Remount-Verifikation dieser Matrix im Scratch-Modus.
+- Vollstaendige Remount-Verifikation jeder einzelnen fsync-Matrix-Zelle.
 - Klare Persistenz-Dokumentation pro FS nach Crash/Powerloss.
 
 TODO:
