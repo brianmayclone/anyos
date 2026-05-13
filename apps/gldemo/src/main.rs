@@ -758,6 +758,7 @@ struct RenderState {
     fps_frame_count: u32,
     fps_last_ms: u32,
     fps_display: u32,
+    fps_serial_log: bool,
     // Fullscreen state
     fullscreen: bool,
     shadows_enabled: bool,
@@ -787,6 +788,16 @@ fn render_frame() {
         fps_str[n + 3] = b'S';
         if let Ok(text) = core::str::from_utf8(&fps_str[..n + 4]) {
             s.fps_label.set_text(text);
+        }
+        if s.fps_serial_log {
+            anyos_std::println!(
+                "[gldemo/fps] t={}ms fps={} frame={} shadows={} hw={}",
+                now_ms,
+                s.fps_display,
+                s.frame,
+                if s.shadows_enabled { 1 } else { 0 },
+                if gl::has_hw_backend() { 1 } else { 0 }
+            );
         }
     }
 
@@ -1140,6 +1151,12 @@ fn setup_vertex_attribs(program: u32) {
 fn main() {
     anyos_std::println!("gldemo: starting Phong shading demo");
 
+    let mut args_buf = [0u8; 256];
+    let args = anyos_std::process::args(&mut args_buf);
+    let fps_serial_log_default = args.contains("--fps-serial")
+        || args.contains("--serial-fps")
+        || args.contains("--fps-log");
+
     // Initialize anyui
     libanyui_client::init();
     anyos_std::i18n::init();
@@ -1202,6 +1219,24 @@ fn main() {
         s.shadows_enabled = e.checked;
     });
     window.add(&shadow_toggle);
+
+    let fps_log_label = libanyui_client::Label::new("FPS");
+    fps_log_label.set_position(172, 6);
+    fps_log_label.set_text_color(0xFFCCCCCC);
+    fps_log_label.set_font_size(13);
+    window.add(&fps_log_label);
+
+    let fps_log_toggle = libanyui_client::Toggle::new(fps_serial_log_default);
+    fps_log_toggle.set_position(202, 4);
+    fps_log_toggle.on_checked_changed(|e| {
+        let s = unsafe { STATE.as_mut().unwrap() };
+        s.fps_serial_log = e.checked;
+        anyos_std::println!(
+            "gldemo: FPS serial log {}",
+            if e.checked { "enabled" } else { "disabled" }
+        );
+    });
+    window.add(&fps_log_toggle);
 
     // ── Compile shaders ──────────────────────────────────────────────────
     let main_vs = gl::create_shader(gl::GL_VERTEX_SHADER);
@@ -1453,7 +1488,7 @@ fn main() {
 
     // ── FPS counter label (top-right area) ──────────────────────────────
     let fps_label = libanyui_client::Label::new("-- FPS");
-    fps_label.set_position(172, 6);
+    fps_label.set_position(232, 6);
     fps_label.set_text_color(0xFF00FF88);
     fps_label.set_font_size(13);
     window.add(&fps_label);
@@ -1506,7 +1541,7 @@ fn main() {
 
     // ── Boing Ball button ─────────────────────────────────────────────────
     let boing_btn = libanyui_client::Button::new("Boing!");
-    boing_btn.set_position(232, 2);
+    boing_btn.set_position(292, 2);
     boing_btn.set_size(60, 22);
     boing_btn.on_click(move |_| {
         let s = unsafe { STATE.as_mut().unwrap() };
@@ -1552,7 +1587,7 @@ fn main() {
 
     // ── Zoom buttons ──────────────────────────────────────────────────────
     let zoom_in_btn = libanyui_client::Button::new("+");
-    zoom_in_btn.set_position(302, 2);
+    zoom_in_btn.set_position(356, 2);
     zoom_in_btn.set_size(28, 22);
     zoom_in_btn.on_click(move |_| {
         let s = unsafe { STATE.as_mut().unwrap() };
@@ -1561,7 +1596,7 @@ fn main() {
     window.add(&zoom_in_btn);
 
     let zoom_out_btn = libanyui_client::Button::new("-");
-    zoom_out_btn.set_position(334, 2);
+    zoom_out_btn.set_position(388, 2);
     zoom_out_btn.set_size(28, 22);
     zoom_out_btn.on_click(move |_| {
         let s = unsafe { STATE.as_mut().unwrap() };
@@ -1620,6 +1655,7 @@ fn main() {
             fps_frame_count: 0,
             fps_last_ms: anyos_std::sys::uptime_ms(),
             fps_display: 0,
+            fps_serial_log: fps_serial_log_default,
             fullscreen: false,
             shadows_enabled: true,
         });
