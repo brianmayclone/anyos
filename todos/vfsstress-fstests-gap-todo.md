@@ -604,11 +604,11 @@ Status:
 Fehlt:
 
 - Vergleichbare Ausgabe fuer CoreFS vs exFAT.
-- Maschinenlesbare JSON-Ausgabe und Regressionsschwellen.
+- Regressionsschwellen.
 
 TODO:
 
-- `--perf` oder `--json` Report-Modus ergaenzen.
+- `--perf` oder `--json` Report-Modus ergaenzen. [teilweise: `--json` Summary umgesetzt]
 - Metriken:
   - create/stat/rename/unlink ops/s. [umgesetzt]
   - readdir entries/s. [umgesetzt]
@@ -616,7 +616,7 @@ TODO:
   - random overwrite ops/s. [umgesetzt]
   - sync latency. [umgesetzt als min/avg/max]
   - fsync latency p50/p95/max, soweit ohne Heap-heavy Statistik machbar. [teilweise: min/avg/max]
-- Output stabil maschinenlesbar machen.
+- Output stabil maschinenlesbar machen. [teilweise: Summary-JSON umgesetzt]
 
 Akzeptanz:
 
@@ -653,6 +653,12 @@ Akzeptanz:
 
 ## [P3] Whiteout/Overlay/FUSE/Namespace-Paritaet
 
+Status:
+
+- Explizit als P4/blocked Feature-Gate dokumentiert:
+  - Overlay/Whiteout/Namespace werden nicht in die CoreFS/exFAT-Basis-Suite
+    gemischt.
+
 Fehlt:
 
 - xfstests enthaelt Overlay-/Whiteout-/Namespace-Spezialfaelle.
@@ -670,15 +676,23 @@ Akzeptanz:
 
 ## [P3] Lange Soak-/Dauerlaeufe
 
+Status:
+
+- Umgesetzt in `vfsstress`:
+  - `--seconds N`
+  - `--soak` als Alias fuer Profil `soak` und default 3600 Sekunden
+  - zyklischer Mix aus fsx, Metadata, Parallel-Fsstress, ENOSPC, Sequential-IO
+    und Sync-Latenz
+  - Fortschrittsausgabe pro Runde mit Seed
+
 Fehlt:
 
-- xfstests hat `soak`/`long_rw` Tests mit sehr vielen Operationen.
-- `vfsstress heavy` ist noch kein echter Stundenlauf.
+- Scratch-Remount im Soak-Mix, falls Scratch-Modus aktiv ist.
 
 TODO:
 
-- `--seconds N` wie bei `kstress` ergaenzen.
-- `--soak` Profil ergaenzen.
+- `--seconds N` wie bei `kstress` ergaenzen. [umgesetzt]
+- `--soak` Profil ergaenzen. [umgesetzt]
 - Workloads zyklisch mischen:
   - parallel fsstress.
   - fsx random.
@@ -729,14 +743,14 @@ Akzeptanz:
 
 TODO:
 
-- `--json` ergaenzen.
+- `--json` ergaenzen. [teilweise umgesetzt]
 - Report:
-  - Version.
-  - FS/Pfad.
-  - Profil.
+  - Version. [umgesetzt]
+  - FS/Pfad. [teilweise: Pfad umgesetzt]
+  - Profil. [umgesetzt]
   - Tests mit Status, Dauer, Details.
   - Performance-Metriken.
-  - Seeds.
+  - Seeds. [umgesetzt]
 
 Akzeptanz:
 
@@ -754,6 +768,32 @@ Akzeptanz:
 8. P0 Recovery/Error-Injection Design und erste CoreFS-Variante.
 9. P2 Performance-JSON und Baselines.
 10. P2/P3 mmap/direct-io/xattr/overlay nur nach Feature-Verfuegbarkeit.
+
+## [P4] 1:1-Upstream-Paritaet und Spezial-Mapping
+
+Status:
+
+- Langfristig/blockiert:
+  - Vollstaendige 1:1-Abdeckung aller upstream `xfstests` erfordert ein
+    separates Manifest/Harness und mehrere anyOS-Features, die aktuell bewusst
+    als unsupported/blocked gemeldet werden.
+  - `vfsstress` deckt den CoreFS/exFAT-nativen Kern ab und meldet fehlende
+    Feature-Familien per SKIP/Feature-Gate.
+
+TODO:
+
+- Upstream-Testnummern in ein Manifest mappen.
+- Fuer jeden Test `covered`, `adapted`, `skip-unsupported` oder `blocked-api`
+  pflegen.
+- Feature-Familien erst in P4-Portierung aufnehmen, wenn anyOS sie produktiv
+  anbietet: Overlay/Whiteout, Namespace/idmapped mounts, xattrs, file mmap,
+  direct IO/AIO, Quotas.
+
+Akzeptanz:
+
+- P4 darf die CoreFS/exFAT-Freigabe nicht blockieren.
+- P4-Eintraege muessen begruenden, warum ein Test nativ, adaptiert, skipped
+  oder blockiert ist.
 
 ## Mindestziel fuer CoreFS/exFAT Freigabe
 

@@ -31,6 +31,7 @@ enum Profile {
     Quick,
     Normal,
     Heavy,
+    Soak,
 }
 
 struct Config {
@@ -47,6 +48,8 @@ struct Config {
     scratch_device: String,
     scratch_fs: String,
     scratch_mount: String,
+    seconds: u32,
+    json: bool,
 }
 
 struct WorkerConfig {
@@ -73,6 +76,8 @@ impl Config {
             scratch_device: String::new(),
             scratch_fs: String::from("corefs"),
             scratch_mount: String::from("/tmp/vfsstress-scratch"),
+            seconds: 0,
+            json: false,
         }
     }
 
@@ -81,6 +86,7 @@ impl Config {
             Profile::Quick => "quick",
             Profile::Normal => "normal",
             Profile::Heavy => "heavy",
+            Profile::Soak => "soak",
         }
     }
 }
@@ -170,6 +176,9 @@ fn main() {
     println!("  ops:       {}", cfg.ops);
     println!("  seed:      {}", cfg.seed);
     println!("  enospc:    {} KB cap", cfg.enospc_kb);
+    if cfg.seconds > 0 {
+        println!("  seconds:   {}", cfg.seconds);
+    }
     if !cfg.scratch_device.is_empty() {
         println!(
             "  scratch:   fs={} device={} mount={}",
@@ -217,6 +226,9 @@ fn main() {
     }
 
     run_full_suite(&cfg, &mut summary);
+    if cfg.seconds > 0 {
+        run_soak_suite(&cfg, &mut summary);
+    }
 
     print_protocol(&results);
     if !cfg.keep {
@@ -228,6 +240,9 @@ fn main() {
         println!("Artefakte bleiben erhalten in {}", cfg.dir);
     }
     print_summary(&summary, started);
+    if cfg.json {
+        print_json_summary(&cfg, &summary, elapsed_ms(started));
+    }
 }
 
 fn parse_worker_config() -> Option<WorkerConfig> {
@@ -417,13 +432,14 @@ fn parse_config() -> Option<Config> {
             "--profile" | "-p" => {
                 i += 1;
                 if i >= args.len() {
-                    println!("vfsstress: --profile braucht quick|normal|heavy");
+                    println!("vfsstress: --profile braucht quick|normal|heavy|soak");
                     return None;
                 }
                 cfg.profile = match args[i] {
                     "quick" => Profile::Quick,
                     "normal" => Profile::Normal,
                     "heavy" => Profile::Heavy,
+                    "soak" => Profile::Soak,
                     other => {
                         println!("vfsstress: unbekanntes Profil '{}'", other);
                         return None;
@@ -493,6 +509,21 @@ fn parse_config() -> Option<Config> {
                 }
                 cfg.scratch_mount = String::from(args[i]);
             }
+            "--seconds" => {
+                i += 1;
+                if i >= args.len() {
+                    println!("vfsstress: --seconds braucht eine Zahl");
+                    return None;
+                }
+                cfg.seconds = clamp(parse_u32(args[i]).unwrap_or(cfg.seconds), 1, 24 * 60 * 60);
+            }
+            "--soak" => {
+                cfg.profile = Profile::Soak;
+                if cfg.seconds == 0 {
+                    cfg.seconds = 3600;
+                }
+            }
+            "--json" => cfg.json = true,
             "--keep" => cfg.keep = true,
             other => {
                 println!("vfsstress: unbekannte Option '{}'", other);
@@ -541,6 +572,26 @@ fn apply_profile(cfg: &mut Config) {
                 cfg.enospc_kb = 64 * 1024;
             }
         }
+        Profile::Soak => {
+            if cfg.repeat == Config::default().repeat {
+                cfg.repeat = 4;
+            }
+            if cfg.total_bytes == Config::default().total_bytes {
+                cfg.total_bytes = 16 * 1024 * 1024;
+            }
+            if cfg.workers == Config::default().workers {
+                cfg.workers = 8;
+            }
+            if cfg.ops == Config::default().ops {
+                cfg.ops = 512;
+            }
+            if cfg.enospc_kb == Config::default().enospc_kb {
+                cfg.enospc_kb = 32 * 1024;
+            }
+            if cfg.seconds == 0 {
+                cfg.seconds = 3600;
+            }
+        }
     }
 }
 
@@ -550,6 +601,9 @@ fn print_usage() {
     println!();
     println!("Usage: vfsstress [options]");
     println!("  --profile P       quick | normal | heavy (default: normal)");
+    println!("  --soak            Profil soak und default 3600 Sekunden Laufzeit");
+    println!("  --seconds N       zusaetzliche Soak-Dauer in Sekunden");
+    println!("  --json            Summary zusaetzlich als JSON-Zeile ausgeben");
     println!("  --repeat N        Wiederholungen pro Blockgroesse");
     println!("  --total-kb N      Dateigroesse pro Testfall in KB");
     println!("  --dir PATH        Testverzeichnis (default: /tmp/vfsstress)");
@@ -637,6 +691,34 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
     );
 
     fs::sync();
+}
+
+fn run_soak_suite(cfg: &Config, summary: &mut Summary) {
+    println!();
+    println!("--- Soak-/Dauerlauf ---");
+    let started = sys::uptime_ms();
+    let limit_ms = cfg.seconds.saturating_mul(1000);
+    let mut round = 0u32;
+    while elapsed_ms(started) < limit_ms {
+        round += 1;
+        println!(
+            "  soak round={} elapsed={} ms seed={}",
+            round,
+            elapsed_ms(started),
+            cfg.seed ^ round
+        );
+        run_named(summary, "soak fsx", fsx_random_model_case(cfg));
+        run_named(summary, "soak metadata", fsstress_metadata_case(cfg));
+        run_named(summary, "soak parallel", parallel_fsstress_case(cfg));
+        run_named_with_warning(summary, "soak enospc", enospc_accounting_case(cfg));
+        run_named(summary, "soak sequential", sequential_io_perf_case(cfg));
+        run_named(summary, "soak sync", sync_latency_perf_case(cfg));
+        fs::sync();
+        if summary.failures != 0 {
+            println!("  soak: Abbruch nach Fehler in Runde {}", round);
+            break;
+        }
+    }
 }
 
 fn run_named(summary: &mut Summary, name: &str, result: Result<String, &'static str>) {
@@ -1320,6 +1402,8 @@ fn scratch_lifecycle_case(cfg: &Config) -> TestOutcome {
         scratch_device: String::new(),
         scratch_fs: cfg.scratch_fs.clone(),
         scratch_mount: cfg.scratch_mount.clone(),
+        seconds: 0,
+        json: false,
     };
     if parallel_fsstress_case(&scratch_cfg).is_err() {
         let _ = fs::umount(&cfg.scratch_mount);
@@ -1521,11 +1605,13 @@ fn fsx_random_model_case(cfg: &Config) -> Result<String, &'static str> {
         Profile::Quick => FSX_QUICK_OPS,
         Profile::Normal => FSX_NORMAL_OPS,
         Profile::Heavy => FSX_HEAVY_OPS,
+        Profile::Soak => FSX_HEAVY_OPS,
     };
     let max_len = match cfg.profile {
         Profile::Quick => 128 * 1024usize,
         Profile::Normal => 512 * 1024usize,
         Profile::Heavy => 2 * 1024 * 1024usize,
+        Profile::Soak => 2 * 1024 * 1024usize,
     };
     let mut rng = Lcg::new(0x4653_5831);
     let mut model = Vec::new();
@@ -1725,6 +1811,7 @@ fn fsstress_metadata_case(cfg: &Config) -> Result<String, &'static str> {
         Profile::Quick => 24u32,
         Profile::Normal => 96u32,
         Profile::Heavy => 256u32,
+        Profile::Soak => 256u32,
     };
 
     for i in 0..count {
@@ -1821,6 +1908,7 @@ fn close_reopen_sync_case(cfg: &Config) -> Result<String, &'static str> {
         Profile::Quick => 12u32,
         Profile::Normal => 48u32,
         Profile::Heavy => 192u32,
+        Profile::Soak => 192u32,
     };
     let mut expected = Vec::new();
     let mut buf = [0u8; 1536];
@@ -2045,6 +2133,7 @@ fn metadata_perf_case(cfg: &Config) -> Result<String, &'static str> {
         Profile::Quick => 64u32,
         Profile::Normal => 256u32,
         Profile::Heavy => 1024u32,
+        Profile::Soak => 1024u32,
     };
     for i in 0..count {
         let _ = fs::unlink(&format!("{}/p{:04}.dat", dir, i));
@@ -2111,6 +2200,7 @@ fn sequential_io_perf_case(cfg: &Config) -> Result<String, &'static str> {
         Profile::Quick => 2 * 1024 * 1024u32,
         Profile::Normal => cfg.total_bytes.max(8 * 1024 * 1024),
         Profile::Heavy => cfg.total_bytes.max(32 * 1024 * 1024),
+        Profile::Soak => cfg.total_bytes.max(32 * 1024 * 1024),
     };
     let chunk = 64 * 1024usize;
     let seed = cfg.seed ^ 0x5E90_1001;
@@ -2180,11 +2270,13 @@ fn random_overwrite_perf_case(cfg: &Config) -> Result<String, &'static str> {
         Profile::Quick => 512 * 1024u32,
         Profile::Normal => 2 * 1024 * 1024u32,
         Profile::Heavy => 8 * 1024 * 1024u32,
+        Profile::Soak => 8 * 1024 * 1024u32,
     };
     let ops = match cfg.profile {
         Profile::Quick => 64u32,
         Profile::Normal => 256u32,
         Profile::Heavy => 1024u32,
+        Profile::Soak => 1024u32,
     };
     let patch_len = 4096usize;
     write_pattern_file(&path, total, 64 * 1024, cfg.seed ^ 0xB45E_0001)?;
@@ -2235,6 +2327,7 @@ fn sync_latency_perf_case(cfg: &Config) -> Result<String, &'static str> {
         Profile::Quick => 8u32,
         Profile::Normal => 24u32,
         Profile::Heavy => 64u32,
+        Profile::Soak => 64u32,
     };
     let mut fsync_min = u32::MAX;
     let mut fsync_max = 0u32;
@@ -2298,6 +2391,7 @@ fn readdir_while_mutating_case(cfg: &Config) -> Result<String, &'static str> {
         Profile::Quick => 32u32,
         Profile::Normal => 128u32,
         Profile::Heavy => 512u32,
+        Profile::Soak => 512u32,
     };
 
     for i in 0..4u32 {
@@ -2358,6 +2452,7 @@ fn large_directory_case(cfg: &Config) -> Result<String, &'static str> {
         Profile::Quick => 128u32,
         Profile::Normal => 512u32,
         Profile::Heavy => 1536u32,
+        Profile::Soak => 1536u32,
     };
     let started = sys::uptime_ms();
 
@@ -2656,6 +2751,7 @@ fn statfs_accounting_case(cfg: &Config) -> TestOutcome {
         Profile::Quick => 128 * 1024u32,
         Profile::Normal => 512 * 1024u32,
         Profile::Heavy => 2 * 1024 * 1024u32,
+        Profile::Soak => 2 * 1024 * 1024u32,
     };
     if write_pattern_file(&path, total, 32 * 1024, cfg.seed ^ 0x57A7_F500).is_err() {
         return TestOutcome::Fail("write");
@@ -4024,6 +4120,24 @@ fn print_summary(summary: &Summary, started: u32) {
     } else {
         println!("  Ergebnis: FAIL");
     }
+}
+
+fn print_json_summary(cfg: &Config, summary: &Summary, elapsed: u32) {
+    println!(
+        "{{\"tool\":\"vfsstress\",\"version\":\"{}\",\"anyos\":\"{}\",\"profile\":\"{}\",\"dir\":\"{}\",\"seed\":{},\"seconds\":{},\"elapsed_ms\":{},\"tests\":{},\"failures\":{},\"warnings\":{},\"skips\":{},\"result\":\"{}\"}}",
+        VERSION,
+        anyos_version(),
+        cfg.profile_name(),
+        cfg.dir,
+        cfg.seed,
+        cfg.seconds,
+        elapsed,
+        summary.tests,
+        summary.failures,
+        summary.warnings,
+        summary.skips,
+        if summary.failures == 0 { "PASS" } else { "FAIL" }
+    );
 }
 
 fn kb_per_s(bytes: u32, ms: u32) -> u32 {
