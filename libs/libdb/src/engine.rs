@@ -987,7 +987,7 @@ impl Database {
 
     fn rebuild_indexes_for_table(&mut self, table_idx: usize) -> DbResult<()> {
         let index_defs = self.tables[table_idx].indexes.clone();
-        let rows = self.scan_table(table_idx)?;
+        let rows = self.scan_table_pages(table_idx)?;
         let mut maps: Vec<crate::index::IndexMap> = Vec::with_capacity(index_defs.len());
         for _ in 0..index_defs.len() {
             maps.push(Default::default());
@@ -1349,25 +1349,100 @@ impl Database {
 
     /// Scan all active rows of a table. Returns a Vec of (page_num, offset_in_page, Row).
     pub fn scan_table(&mut self, table_idx: usize) -> DbResult<Vec<(u32, usize, Row)>> {
+        if let Some(rows) = self.scan_table_from_index(table_idx)? {
+            return Ok(rows);
+        }
+        self.scan_table_pages(table_idx)
+    }
+
+    fn scan_table_from_index(
+        &mut self,
+        table_idx: usize,
+    ) -> DbResult<Option<Vec<(u32, usize, Row)>>> {
+        let expected_rows = self.tables[table_idx].row_count as usize;
+        if expected_rows == 0 {
+            return Ok(Some(Vec::new()));
+        }
+
+        let Some(index_state) = self.index_states.get(table_idx) else {
+            return Ok(None);
+        };
+        let Some(index_map) = index_state.maps.first() else {
+            return Ok(None);
+        };
+        if index_map.is_empty() {
+            return Ok(None);
+        }
+
+        let mut locations = Vec::with_capacity(expected_rows);
+        for bucket in index_map.values() {
+            for location in bucket {
+                locations.push(*location);
+            }
+        }
+        if locations.len() < expected_rows {
+            return Ok(None);
+        }
+
+        let col_count = self.tables[table_idx].columns.len();
+        let mut results = Vec::with_capacity(expected_rows);
+        for location in locations {
+            let mut page = [0u8; PAGE_SIZE];
+            self.read_page(location.page_num, &mut page)?;
+            if let Some((row, _consumed)) =
+                self.deserialize_row_at(&page, location.offset, col_count)?
+            {
+                if !row.values.is_empty() {
+                    results.push((location.page_num, location.offset, row));
+                    if results.len() >= expected_rows {
+                        return Ok(Some(results));
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn scan_table_pages(&mut self, table_idx: usize) -> DbResult<Vec<(u32, usize, Row)>> {
         let table = &self.tables[table_idx];
         let col_count = table.columns.len();
-        let mut results = Vec::new();
+        let expected_rows = table.row_count as usize;
+        let mut results = Vec::with_capacity(expected_rows);
         let mut page_num = table.first_data_page;
+
+        if expected_rows == 0 {
+            return Ok(results);
+        }
 
         while page_num != 0 {
             let mut page = [0u8; PAGE_SIZE];
             self.read_page(page_num, &mut page)?;
 
             let next_page = u32::from_le_bytes([page[0], page[1], page[2], page[3]]);
+            let page_rows = u16::from_le_bytes([page[4], page[5]]) as usize;
             let data_end = u16::from_le_bytes([page[6], page[7]]) as usize;
             let data_end = if data_end == 0 { DATA_PAGE_HEADER } else { data_end };
 
+            if page_rows == 0 {
+                page_num = next_page;
+                continue;
+            }
+
             let mut offset = DATA_PAGE_HEADER;
+            let mut found_on_page = 0usize;
             while offset < data_end {
                 match self.deserialize_row_at(&page, offset, col_count)? {
                     Some((row, consumed)) => {
                         if !row.values.is_empty() {
                             results.push((page_num, offset, row));
+                            found_on_page += 1;
+                            if results.len() >= expected_rows {
+                                return Ok(results);
+                            }
+                            if found_on_page >= page_rows {
+                                break;
+                            }
                         }
                         offset += consumed;
                     }

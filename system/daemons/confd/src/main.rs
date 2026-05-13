@@ -329,6 +329,7 @@ impl ConfState {
 }
 
 fn main() {
+    let start_ms = anyos_std::sys::uptime_ms();
     // Non-blocking: only a single attempt. Real retry happens in the main loop.
     let mut lifecycle = ServiceLifecycle::connect("confd").ok();
     if let Some(svc) = lifecycle.as_mut() {
@@ -353,9 +354,13 @@ fn main() {
         }
     };
 
+    let db_open_ms = anyos_std::sys::uptime_ms();
     schema::init_tables(&db);
+    let schema_ms = anyos_std::sys::uptime_ms();
     let entries = schema::load_entries(&db);
+    let entries_ms = anyos_std::sys::uptime_ms();
     let next_audit_seq = schema::load_next_audit_seq(&db);
+    let audit_ms = anyos_std::sys::uptime_ms();
     let mut state = ConfState::new(entries, next_audit_seq);
 
     let old_pipe = anyos_std::ipc::pipe_open(PIPE_NAME);
@@ -369,6 +374,18 @@ fn main() {
         notify_failed(&mut lifecycle, "pipe_create_failed");
         return;
     }
+    let pipe_ms = anyos_std::sys::uptime_ms();
+
+    anyos_std::println!(
+        "[confd] startup: db={}ms schema={}ms entries={}ms audit={}ms pipe={}ms total={}ms entries={}",
+        db_open_ms.saturating_sub(start_ms),
+        schema_ms.saturating_sub(db_open_ms),
+        entries_ms.saturating_sub(schema_ms),
+        audit_ms.saturating_sub(entries_ms),
+        pipe_ms.saturating_sub(audit_ms),
+        pipe_ms.saturating_sub(start_ms),
+        state.entries.len()
+    );
 
     let entries_detail = alloc::format!("{}", state.entries.len());
     let mut ready_notified = false;

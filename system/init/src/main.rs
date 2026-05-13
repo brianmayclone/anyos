@@ -101,11 +101,6 @@ fn wait_for_confd_ready() -> bool {
     PROGRESS.store(8, Ordering::Release);
 
     for attempt in 0..200 {
-        if confd_ping_ready() {
-            println!("init: confd pipe responded");
-            return true;
-        }
-
         match AmiClient::connect("init") {
             Ok(mut ami) => match ami.get("svc.confd.ready") {
                 Ok(item) => {
@@ -117,6 +112,11 @@ fn wait_for_confd_ready() -> bool {
                 Err(_) => {}
             },
             Err(_) => {}
+        }
+
+        if attempt % 5 == 0 && confd_ping_ready() {
+            println!("init: confd pipe responded");
+            return true;
         }
 
         if attempt != 0 && attempt % 50 == 0 {
@@ -155,7 +155,7 @@ fn confd_ping_ready() -> bool {
     }
 
     let mut buf = [0u8; 16];
-    for _ in 0..60 {
+    for _ in 0..5 {
         let n = anyos_std::ipc::pipe_read(reply_pipe, &mut buf);
         if n == u32::MAX {
             anyos_std::ipc::pipe_close(reply_pipe);
@@ -165,7 +165,7 @@ fn confd_ping_ready() -> bool {
             anyos_std::ipc::pipe_close(reply_pipe);
             return &buf[..n as usize] == b"PONG\n";
         }
-        process::sleep(2);
+        process::sleep(1);
     }
 
     anyos_std::ipc::pipe_close(reply_pipe);

@@ -70,10 +70,12 @@ pub fn init_tables(db: &Database) {
 
 pub fn load_entries(db: &Database) -> Vec<RegistryEntry> {
     let mut entries = Vec::new();
+    let start_ms = anyos_std::sys::uptime_ms();
     let sql = "SELECT canonical_path, logical_path, scope, owner_uid, kind, value_type, value_text, value_int, value_bool, version, updated_at, writer_uid, writer_name FROM registry ORDER BY canonical_path";
     let Ok(result) = db.query(sql) else {
         return entries;
     };
+    let query_ms = anyos_std::sys::uptime_ms();
 
     for row in 0..result.row_count() {
         let canonical_path = result.get_text(row, 0).unwrap_or_default();
@@ -117,6 +119,17 @@ pub fn load_entries(db: &Database) -> Vec<RegistryEntry> {
             writer_uid,
             writer_name,
         });
+    }
+
+    let done_ms = anyos_std::sys::uptime_ms();
+    let total_ms = done_ms.saturating_sub(start_ms);
+    if total_ms > 500 {
+        anyos_std::println!(
+            "[confd] load_entries: query={}ms decode={}ms rows={}",
+            query_ms.saturating_sub(start_ms),
+            done_ms.saturating_sub(query_ms),
+            entries.len()
+        );
     }
 
     entries
