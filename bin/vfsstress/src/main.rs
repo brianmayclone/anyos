@@ -678,6 +678,12 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
             scratch_lifecycle_case(cfg),
         );
     }
+    run_named_with_warning(
+        cfg,
+        summary,
+        "recovery injection",
+        recovery_injection_case(),
+    );
     run_named_with_warning(cfg, summary, "symlink eloop", symlink_eloop_case(cfg));
     run_named(cfg, summary, "fsx random model", fsx_random_model_case(cfg));
     run_named(cfg, summary, "sparse eof gaps", sparse_eof_gap_case(cfg));
@@ -1749,6 +1755,12 @@ fn scratch_lifecycle_case(cfg: &Config) -> TestOutcome {
             ""
         }
     ))
+}
+
+fn recovery_injection_case() -> TestOutcome {
+    TestOutcome::Skip(
+        "blocked-api: device-error-injection/crash-cut/log-replay harness fehlt".into(),
+    )
 }
 
 fn symlink_eloop_case(cfg: &Config) -> TestOutcome {
@@ -3430,7 +3442,7 @@ fn feature_gate_case(cfg: &Config) -> TestOutcome {
         "scratch=configured"
     };
     TestOutcome::Skip(format!(
-        "{}, {}, {}, {}, hardlink=unsupported, special-files=unsupported, file-mmap=unsupported, direct-io=unsupported, xattr=unsupported, overlay=unsupported, whiteout=unsupported, namespace=unsupported",
+        "{}, {}, {}, {}, hardlink=unsupported, special-files=unsupported, file-mmap=unsupported, direct-io=unsupported, xattr=unsupported, error-injection=unsupported, overlay=unsupported, whiteout=unsupported, namespace=unsupported",
         symlink, chmod, chown, scratch
     ))
 }

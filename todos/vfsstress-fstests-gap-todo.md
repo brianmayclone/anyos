@@ -182,6 +182,12 @@ Akzeptanz:
 
 ## [P0] Crash-/Recovery-/EIO-Simulation
 
+Status:
+
+- Explizit als blocked/unsupported in `vfsstress`:
+  - `recovery_injection_case` reportet `SKIP blocked-api`
+  - `feature_gate_case` berichtet `error-injection=unsupported`
+
 Fehlt:
 
 - Harte Unterbrechung waehrend Write/Metadata-Workload.
