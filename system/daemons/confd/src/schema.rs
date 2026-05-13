@@ -78,8 +78,8 @@ pub fn load_entries(db: &Database) -> Vec<RegistryEntry> {
     let query_ms = anyos_std::sys::uptime_ms();
 
     for row in 0..result.row_count() {
-        let canonical_path = result.get_text(row, 0).unwrap_or_default();
-        let logical_path = result.get_text(row, 1).unwrap_or_default();
+        let canonical_path = result.get_text_small(row, 0).unwrap_or_default();
+        let logical_path = result.get_text_small(row, 1).unwrap_or_default();
         let scope = match result.get_int(row, 2).unwrap_or(0) {
             1 => Scope::System,
             2 => Scope::User,
@@ -93,19 +93,19 @@ pub fn load_entries(db: &Database) -> Vec<RegistryEntry> {
         };
         let value = match result.get_int(row, 5).unwrap_or(0) {
             1 => Some(ConfValue::String(
-                result.get_text(row, 6).unwrap_or_default(),
+                result.get_text_small(row, 6).unwrap_or_default(),
             )),
             2 => Some(ConfValue::Int(result.get_int(row, 7).unwrap_or(0))),
             3 => Some(ConfValue::Bool(result.get_int(row, 8).unwrap_or(0) != 0)),
             4 => Some(ConfValue::ExternalRef(
-                result.get_text(row, 6).unwrap_or_default(),
+                result.get_text_small(row, 6).unwrap_or_default(),
             )),
             _ => None,
         };
         let version = result.get_int(row, 9).unwrap_or(0).max(0) as u64;
         let updated_at = result.get_int(row, 10).unwrap_or(0).max(0) as u64;
         let writer_uid = result.get_int(row, 11).unwrap_or(0).max(0) as u16;
-        let writer_name = result.get_text(row, 12).unwrap_or_default();
+        let writer_name = result.get_text_small(row, 12).unwrap_or_default();
 
         entries.push(RegistryEntry {
             canonical_path,

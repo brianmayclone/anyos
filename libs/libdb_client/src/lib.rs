@@ -21,6 +21,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 const LARGE_VALUE_BUF: usize = 2 * 1024 * 1024;
+const SMALL_TEXT_BUF: usize = 4096;
 
 dynlink::dll_exports! {
     lib_path: "/Libraries/libdb.so",
@@ -199,6 +200,30 @@ impl QueryResult {
         );
         if n == 0 {
             // Could be empty string or not text
+            Some(String::new())
+        } else {
+            let s = core::str::from_utf8(&buf[..n as usize]).unwrap_or("");
+            Some(String::from(s))
+        }
+    }
+
+    /// Get a short text value without allocating the large-value buffer first.
+    pub fn get_text_small(&self, row: u32, col: u32) -> Option<String> {
+        if (lib().libdb_result_is_null)(self.id, row, col) == 1 {
+            return None;
+        }
+        let mut buf = [0u8; SMALL_TEXT_BUF];
+        let n = (lib().libdb_result_get_text)(
+            self.id,
+            row,
+            col,
+            buf.as_mut_ptr(),
+            SMALL_TEXT_BUF as u32,
+        );
+        if n as usize >= SMALL_TEXT_BUF {
+            return self.get_text(row, col);
+        }
+        if n == 0 {
             Some(String::new())
         } else {
             let s = core::str::from_utf8(&buf[..n as usize]).unwrap_or("");
