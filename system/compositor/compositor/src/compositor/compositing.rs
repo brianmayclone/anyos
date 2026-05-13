@@ -109,16 +109,16 @@ impl Compositor {
         // self.damage keeps its capacity for next frame's pushes.
         core::mem::swap(&mut self.damage, &mut self.compositing_damage);
 
-        // NOTE: The GPU RECT_COPY drag fast path is intentionally disabled for now.
-        //
-        // On VirtIO GPU this path has proven unstable under rapid window movement:
-        // the compositor emits a tight sequence of RECT_COPY/SYNC/UPDATE/FLUSH
-        // commands, and the kernel-side GPU path has been observed to crash in
-        // SYS_GPU_COMMAND during or immediately after fast drags.
-        //
-        // Until the lower-level VirtIO GPU instability is fully resolved, prefer
-        // the standard software compositing path for correctness and stability.
-        let _ = hint;
+        // Use the hardware RECT_COPY drag fast path only when the compositor
+        // has a real GPU copy engine and is still flushing through VRAM.
+        // GMR mode already avoids the final CPU copy by DMA-reading the
+        // back_buffer, and RECT_COPY would operate on stale/unused VRAM there.
+        if self.gpu_accel && !self.gmr_active {
+            if let Some(ref hint) = hint {
+                self.compose_with_rect_copy(hint);
+                return true;
+            }
+        }
 
         // Standard SW compositing path
         let damage_len = self.compositing_damage.len();

@@ -484,6 +484,70 @@ pub(super) fn linux_sched_yield() -> u64 {
     0
 }
 
+fn linux_affinity_bytes() -> usize {
+    let bytes = (crate::arch::hal::MAX_CPUS + 7) / 8;
+    align_up(bytes.max(1), core::mem::size_of::<u64>())
+}
+
+fn linux_online_cpu_mask() -> u64 {
+    let cpu_count = crate::arch::hal::cpu_count().clamp(1, 64);
+    if cpu_count == 64 {
+        u64::MAX
+    } else {
+        (1u64 << cpu_count) - 1
+    }
+}
+
+pub(super) fn linux_sched_getaffinity(pid: i32, cpusetsize: u64, mask_ptr: u64) -> u64 {
+    if pid < 0 {
+        return linux_err(EINVAL);
+    }
+    if pid > 0 && !crate::task::scheduler::thread_exists(pid as u32) {
+        return linux_err(ESRCH);
+    }
+
+    let needed = linux_affinity_bytes();
+    if cpusetsize < needed as u64 {
+        return linux_err(EINVAL);
+    }
+    if mask_ptr == 0 {
+        return linux_err(EFAULT);
+    }
+    if !handlers::helpers::is_user_range_accessible(mask_ptr, needed as u64) {
+        return linux_err(EFAULT);
+    }
+
+    unsafe {
+        core::ptr::write_bytes(mask_ptr as *mut u8, 0, needed);
+        write_u64(mask_ptr, 0, linux_online_cpu_mask());
+    }
+    needed as u64
+}
+
+pub(super) fn linux_sched_setaffinity(pid: i32, cpusetsize: u64, mask_ptr: u64) -> u64 {
+    if pid < 0 {
+        return linux_err(EINVAL);
+    }
+    if pid > 0 && !crate::task::scheduler::thread_exists(pid as u32) {
+        return linux_err(ESRCH);
+    }
+
+    let needed = linux_affinity_bytes();
+    if cpusetsize < needed as u64 {
+        return linux_err(EINVAL);
+    }
+    if mask_ptr == 0 || !handlers::helpers::is_user_range_accessible(mask_ptr, needed as u64) {
+        return linux_err(EFAULT);
+    }
+
+    let requested_mask = unsafe { read_u64(mask_ptr, 0) };
+    if (requested_mask & linux_online_cpu_mask()) == 0 {
+        return linux_err(EINVAL);
+    }
+
+    0
+}
+
 pub(super) fn linux_getrusage(_who: u64, usage_ptr: u64) -> u64 {
     if usage_ptr == 0 {
         return linux_err(EFAULT);
@@ -831,18 +895,46 @@ pub(super) fn linux_getgroups(size: i32, list_ptr: u64) -> u64 {
     1
 }
 
-pub(super) fn linux_setgroups(size: i32, _list_ptr: u64) -> u64 {
-    if handlers::sys_getuid() != 0 {
-        return linux_err(EPERM);
-    }
+pub(super) fn linux_setgroups(size: i32, list_ptr: u64) -> u64 {
     if !(0..=1024).contains(&size) {
         return linux_err(EINVAL);
+    }
+    if size > 0 {
+        let bytes = (size as u64).saturating_mul(core::mem::size_of::<u32>() as u64);
+        if list_ptr == 0 || !handlers::helpers::is_user_range_accessible(list_ptr, bytes) {
+            return linux_err(EFAULT);
+        }
     }
     0
 }
 
+pub(super) fn linux_setre_id(real: u32, effective: u32, uid: bool) -> u64 {
+    linux_setres_id(real, effective, u32::MAX, uid)
+}
+
 pub(super) fn linux_setres_id(real: u32, effective: u32, saved: u32, uid: bool) -> u64 {
     let current = current_linux_id(uid);
+    if !uid {
+        for value in [real, effective, saved] {
+            if value != u32::MAX && value > u16::MAX as u32 {
+                return linux_err(EINVAL);
+            }
+        }
+        if current == 0 {
+            let next = if effective != u32::MAX {
+                effective
+            } else if real != u32::MAX {
+                real
+            } else if saved != u32::MAX {
+                saved
+            } else {
+                current
+            };
+            return set_current_linux_id(next, false);
+        }
+        return 0;
+    }
+
     if current == 0 {
         let next = if effective != u32::MAX {
             effective
@@ -902,6 +994,13 @@ pub(super) fn current_linux_id(uid: bool) -> u32 {
 
 pub(super) fn linux_set_root_or_current(id: u32, uid: bool) -> u64 {
     let current = current_linux_id(uid);
+    if !uid && current != 0 {
+        return if id <= u16::MAX as u32 {
+            0
+        } else {
+            linux_err(EINVAL)
+        };
+    }
     if current == 0 || id == current {
         return set_current_linux_id(id, uid);
     }

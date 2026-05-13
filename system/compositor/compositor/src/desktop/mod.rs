@@ -338,17 +338,20 @@ impl Desktop {
         // The memcpy path (flush_region with gmr_active=false) always works.
         anyos_std::println!("compositor: initial VRAM flush (pre-accel)");
 
+        // Try DMA back-buffer registration independently of RECT_COPY-style
+        // 2D acceleration. VirtIO-GPU, for example, can transfer a guest
+        // backing resource to the host efficiently even though it has no
+        // hardware rectangle-copy blitter.
+        anyos_std::println!("compositor: trying DMA backbuffer registration...");
+        desktop.compositor.try_enable_gmr();
+        if desktop.compositor.gmr_active {
+            anyos_std::println!("compositor: DMA backbuffer mode active");
+        } else {
+            anyos_std::println!("compositor: DMA backbuffer rejected, using CPU memcpy");
+        }
+
         if desktop.has_gpu_accel {
             desktop.compositor.enable_gpu_accel();
-            // Try to register back buffer as GPU GMR for DMA transfers.
-            // If successful, flush_region() skips CPU memcpy to VRAM.
-            anyos_std::println!("compositor: trying GMR registration...");
-            desktop.compositor.try_enable_gmr();
-            if desktop.compositor.gmr_active {
-                anyos_std::println!("compositor: GMR DMA mode active");
-            } else {
-                anyos_std::println!("compositor: GMR rejected, using CPU memcpy");
-            }
             // Initialize VRAM allocator if enough off-screen VRAM is available
             if !desktop.compositor.gmr_active {
                 let vram_total = anyos_std::ipc::gpu_vram_size();

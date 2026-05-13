@@ -425,6 +425,12 @@ pub struct VirtioGpu {
     fb_phys: u64,
     fb_pages: usize,
     fb_page_list: alloc::vec::Vec<u64>,
+    /// Byte offset inside the scanout resource's attached backing where
+    /// pixel 0 starts. Normally 0 for the driver's own framebuffer pages;
+    /// non-zero when the compositor registers a Vec-backed DMA buffer that
+    /// starts part-way into its first physical page.
+    scanout_backing_offset: u32,
+    scanout_uses_dma_backbuffer: bool,
 
     /// Scanout state for outputs 1..num_scanouts_advertised. Index 0 in
     /// this Vec corresponds to output_id 1.
@@ -931,7 +937,12 @@ impl VirtioGpu {
         // first row. For other resources (e.g. cursor), the backing store IS tightly
         // packed, so use the original rect and offset=0.
         let (r_x, r_y, r_width, offset) = if resource_id == self.scanout_resource_id {
-            (0u32, y, self.width, (y as u64) * (self.pitch as u64))
+            (
+                0u32,
+                y,
+                self.width,
+                self.scanout_backing_offset as u64 + (y as u64) * (self.pitch as u64),
+            )
         } else {
             (x, y, w, 0u64)
         };
@@ -1025,6 +1036,8 @@ impl VirtioGpu {
 
         self.fb_phys = fb_phys;
         self.fb_pages = num_pages;
+        self.scanout_backing_offset = 0;
+        self.scanout_uses_dma_backbuffer = false;
 
         // Create 2D resource
         let res_id = self.next_resource_id;
@@ -1675,6 +1688,8 @@ impl GpuDriver for VirtioGpu {
         self.fb_phys = new_fb_phys;
         self.fb_pages = num_pages;
         self.fb_page_list.clear();
+        self.scanout_backing_offset = 0;
+        self.scanout_uses_dma_backbuffer = false;
         self.width = width;
         self.height = height;
         self.pitch = width * 4;
@@ -1786,7 +1801,62 @@ impl GpuDriver for VirtioGpu {
     }
 
     fn has_accel(&self) -> bool {
-        true // Software fill/copy directly on guest RAM framebuffer
+        // VirtIO-GPU accelerates scanout transfer/flush, but this driver's
+        // RECT_FILL/RECT_COPY helpers below are CPU writes into guest RAM.
+        // Do not advertise compositor 2D acceleration for those paths.
+        false
+    }
+
+    fn register_back_buffer(&mut self, phys_pages: &[u64], sub_page_offset: u32) -> bool {
+        if self.scanout_resource_id == 0 || phys_pages.is_empty() {
+            return false;
+        }
+
+        let required = self
+            .width
+            .saturating_mul(self.height)
+            .saturating_mul(4) as usize;
+        let available = phys_pages
+            .len()
+            .saturating_mul(4096)
+            .saturating_sub(sub_page_offset as usize);
+        if available < required {
+            return false;
+        }
+
+        let old_pages = if !self.fb_page_list.is_empty() {
+            self.fb_page_list.clone()
+        } else if self.fb_phys != 0 && self.fb_pages > 0 {
+            (0..self.fb_pages)
+                .map(|i| self.fb_phys + (i as u64) * 4096)
+                .collect()
+        } else {
+            alloc::vec::Vec::new()
+        };
+        let old_offset = self.scanout_backing_offset;
+
+        self.cmd_detach_backing(self.scanout_resource_id);
+        if self.cmd_attach_backing_pages(self.scanout_resource_id, phys_pages) {
+            self.scanout_backing_offset = sub_page_offset;
+            self.scanout_uses_dma_backbuffer = true;
+            crate::serial_verbose_println!(
+                "  VirtIO GPU: scanout now DMA-reads compositor backbuffer ({} pages, offset={})",
+                phys_pages.len(),
+                sub_page_offset
+            );
+            true
+        } else {
+            if !old_pages.is_empty() {
+                let _ = self.cmd_attach_backing_pages(self.scanout_resource_id, &old_pages);
+            }
+            self.scanout_backing_offset = old_offset;
+            self.scanout_uses_dma_backbuffer = false;
+            false
+        }
+    }
+
+    fn has_dma_back_buffer(&self) -> bool {
+        self.scanout_uses_dma_backbuffer
     }
 
     fn accel_fill_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: u32) -> bool {
@@ -2750,6 +2820,8 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         fb_phys: 0,
         fb_pages: 0,
         fb_page_list: alloc::vec::Vec::new(),
+        scanout_backing_offset: 0,
+        scanout_uses_dma_backbuffer: false,
         extra_scanouts,
         num_scanouts_advertised,
         pending_events: alloc::collections::VecDeque::new(),
