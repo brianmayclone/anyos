@@ -420,7 +420,10 @@ impl GpuDriver for VBoxVgaGpu {
     // ── 2D Acceleration ──────────────────────────────────
 
     fn has_accel(&self) -> bool {
-        self.hgsmi_supported
+        // VBoxVGA/HGSMI gives us display update plumbing, but the fill/copy
+        // implementations below are software writes into the framebuffer.
+        // Keep compositor GPU fast paths disabled for this driver.
+        false
     }
 
     fn accel_fill_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: u32) -> bool {

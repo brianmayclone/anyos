@@ -744,8 +744,9 @@ impl GpuDriver for VmwareSvgaGpu {
     }
 
     fn has_accel(&self) -> bool {
-        (self.capabilities & SVGA_CAP_RECT_FILL) != 0
-            || (self.capabilities & SVGA_CAP_RECT_COPY) != 0
+        // The compositor's current 2D fast path depends on hardware
+        // RECT_COPY. RECT_FILL alone is not enough to accelerate window moves.
+        (self.capabilities & SVGA_CAP_RECT_COPY) != 0
     }
 
     fn accel_fill_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: u32) -> bool {
