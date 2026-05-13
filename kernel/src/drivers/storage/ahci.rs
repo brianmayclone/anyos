@@ -556,8 +556,18 @@ unsafe fn issue_command_once(
     // Clear port interrupt status
     port_write(ahci.mmio_base, ahci.active_port, PORT_IS, 0xFFFF_FFFF);
 
-    // Reset IRQ completion flag
+    // Reset IRQ completion flag and publish the waiter before issuing the
+    // command. Otherwise a very fast MSI can arrive between the fast poll path
+    // and the blocking path, leaving the thread asleep until the timer fallback.
     AHCI_IRQ_FIRED.store(false, core::sync::atomic::Ordering::Release);
+    let waiter_tid = if ahci.interrupt_driven {
+        crate::task::scheduler::current_tid()
+    } else {
+        0
+    };
+    if waiter_tid > 0 {
+        AHCI_WAITER.store(waiter_tid, core::sync::atomic::Ordering::Release);
+    }
 
     dma_publish_before_command();
 
@@ -570,8 +580,14 @@ unsafe fn issue_command_once(
         if ci & 1 == 0 {
             let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
             if tfd & 0x01 != 0 {
+                if waiter_tid > 0 {
+                    AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
+                }
                 crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
                 return false;
+            }
+            if waiter_tid > 0 {
+                AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
             }
             dma_acquire_after_command();
             return true;
@@ -579,68 +595,65 @@ unsafe fn issue_command_once(
         core::hint::spin_loop();
     }
 
-    // Slow path: block on IRQ with timeout when a completion interrupt is known
-    // to be wired. UEFI/OVMF often leaves the legacy PCI interrupt line at 255;
-    // treating that as usable makes every command wait for the 50 ms sleep tick.
-    if !ahci.interrupt_driven {
+    if waiter_tid > 0 {
+        return wait_for_interrupt_completion(ahci, command, lba);
+    }
+
+    poll_completion(ahci)
+}
+
+unsafe fn wait_for_interrupt_completion(
+    ahci: &AhciController,
+    command: u8,
+    lba: u64,
+) -> bool {
+    let hz = crate::arch::hal::timer_frequency_hz() as u32;
+    if hz == 0 {
+        AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
         return poll_completion(ahci);
     }
 
-    // Slow path: block on IRQ with timeout.
-    let tid = crate::task::scheduler::current_tid();
-    if tid > 0 {
-        let hz = crate::arch::hal::timer_frequency_hz() as u32;
-        let timeout_ticks = (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1);
-        let start = crate::arch::hal::timer_current_ticks();
+    let timeout_ticks = (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1);
+    let start = crate::arch::hal::timer_current_ticks();
+    let sleep_interval = (hz / 1000).max(1);
 
-        // Sleep in short intervals (50ms), checking for completion each time.
-        // The IRQ handler will wake us early via try_wake_thread/deferred_wake.
-        let sleep_interval = (hz / 20).max(1); // 50ms
-
-        AHCI_WAITER.store(tid, core::sync::atomic::Ordering::Release);
-
-        loop {
-            let now = crate::arch::hal::timer_current_ticks();
-            let elapsed = now.wrapping_sub(start);
-            if elapsed >= timeout_ticks {
-                // Timeout reached
-                AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
-                crate::serial_println!(
-                    "AHCI: command timeout (cmd={:#x}, lba={}, slow path)",
-                    command,
-                    lba
-                );
+    loop {
+        let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
+        if ci & 1 == 0 {
+            AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
+            let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
+            if tfd & 0x01 != 0 {
+                crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
                 return false;
             }
+            dma_acquire_after_command();
+            return true;
+        }
 
-            let wake_at = now.wrapping_add(sleep_interval);
-            crate::task::scheduler::sleep_until(wake_at);
+        let is = port_read(ahci.mmio_base, ahci.active_port, PORT_IS);
+        if is & (1 << 30) != 0 {
+            AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
+            crate::serial_verbose_println!("AHCI: task file error in interrupt wait, IS={:#x}", is);
+            return false;
+        }
 
-            // Check if command completed (either via IRQ or spontaneously)
-            let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
-            if ci & 1 == 0 {
-                AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
-                let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
-                if tfd & 0x01 != 0 {
-                    crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
-                    return false;
-                }
-                dma_acquire_after_command();
-                return true;
-            }
+        let now = crate::arch::hal::timer_current_ticks();
+        if now.wrapping_sub(start) >= timeout_ticks {
+            AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
+            crate::serial_println!(
+                "AHCI: command timeout (cmd={:#x}, lba={}, interrupt wait)",
+                command,
+                lba
+            );
+            return false;
+        }
 
-            // Check for task file error (device reported failure)
-            let is = port_read(ahci.mmio_base, ahci.active_port, PORT_IS);
-            if is & (1 << 30) != 0 {
-                AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
-                crate::serial_verbose_println!("AHCI: task file error in slow path, IS={:#x}", is);
-                return false;
-            }
+        if AHCI_IRQ_FIRED.load(core::sync::atomic::Ordering::Acquire) {
+            core::hint::spin_loop();
+        } else {
+            crate::task::scheduler::sleep_until(now.wrapping_add(sleep_interval));
         }
     }
-
-    // Fallback: extended poll with timeout (boot thread or no IRQ)
-    poll_completion(ahci)
 }
 
 unsafe fn issue_command(
@@ -813,7 +826,6 @@ unsafe fn poll_completion(ahci: &AhciController) -> bool {
         // Tick-based timeout (~5 seconds)
         let timeout_ticks = (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1);
         let start = crate::arch::hal::timer_current_ticks();
-
         loop {
             let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
             if ci & 1 == 0 {

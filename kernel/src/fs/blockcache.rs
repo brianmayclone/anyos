@@ -37,6 +37,10 @@ static WRITE_RANGE_END: [AtomicU64; MAX_DISKS] = {
     const INIT: AtomicU64 = AtomicU64::new(0);
     [INIT; MAX_DISKS]
 };
+static DIRTY_ESTIMATE: [AtomicU32; MAX_DISKS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; MAX_DISKS]
+};
 static CORRUPT_CACHE_LOGS: AtomicU32 = AtomicU32::new(0);
 
 /// A cached sector entry.
@@ -231,6 +235,13 @@ impl BlockCache {
     /// the first miss. This keeps disk reads coherent with dirty write-back
     /// entries that may live later in the requested range.
     pub fn overlay_range(&mut self, disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> u32 {
+        if count == 0 {
+            return 0;
+        }
+        if count > MAX_PROBES as u32 {
+            return self.overlay_range_by_slot_scan(disk_id, lba, count, buf);
+        }
+
         let mut found = 0u32;
         for i in 0..count {
             let offset = i as usize * 512;
@@ -240,6 +251,37 @@ impl BlockCache {
             if self.lookup(disk_id, lba + i, &mut buf[offset..offset + 512]) {
                 found += 1;
             }
+        }
+        found
+    }
+
+    fn overlay_range_by_slot_scan(
+        &mut self,
+        disk_id: u8,
+        lba: u32,
+        count: u32,
+        buf: &mut [u8],
+    ) -> u32 {
+        let end = (lba as u64).saturating_add(count as u64);
+        let mut found = 0u32;
+        for i in 0..self.slots.len() {
+            self.quarantine_slot(i, "overlay-range");
+            if !self.slot_key_valid(i) || (self.slots[i].key >> 32) != disk_id as u64 {
+                continue;
+            }
+            let slot_lba = self.slots[i].key & 0xFFFF_FFFF;
+            if slot_lba < lba as u64 || slot_lba >= end {
+                continue;
+            }
+            let offset = (slot_lba - lba as u64) as usize * 512;
+            if offset + 512 > buf.len() {
+                continue;
+            }
+            buf[offset..offset + 512].copy_from_slice(&self.slots[i].data);
+            self.tick = self.tick.wrapping_add(1);
+            self.slots[i].tick = self.tick;
+            self.hits += 1;
+            found += 1;
         }
         found
     }
@@ -427,6 +469,30 @@ impl BlockCache {
 
     /// Invalidate a range of sectors.
     pub fn invalidate_range(&mut self, disk_id: u8, lba: u32, count: u32) {
+        if count == 0 {
+            return;
+        }
+        if count > MAX_PROBES as u32 {
+            let end = (lba as u64).saturating_add(count as u64);
+            for i in 0..self.slots.len() {
+                self.quarantine_slot(i, "invalidate-range");
+                if !self.slot_key_valid(i) || (self.slots[i].key >> 32) != disk_id as u64 {
+                    continue;
+                }
+                let slot_lba = self.slots[i].key & 0xFFFF_FFFF;
+                if slot_lba < lba as u64 || slot_lba >= end {
+                    continue;
+                }
+                let key = self.slots[i].key;
+                self.remove_from_hash(key, i);
+                self.set_slot_key(i, 0);
+                self.slots[i].dirty = false;
+                self.slots[i].tick = 0;
+                self.next_free_hint = i;
+            }
+            return;
+        }
+
         for i in 0..count {
             self.invalidate(disk_id, lba + i);
         }
@@ -667,6 +733,7 @@ pub fn write_back(disk_id: u8, lba: u32, count: u32, data: &[u8]) {
         return;
     }
     let mut cache = BLOCK_CACHE.lock();
+    let mut accepted = 0u32;
     for i in 0..count {
         let offset = i as usize * 512;
         if offset + 512 <= data.len() {
@@ -674,7 +741,11 @@ pub fn write_back(disk_id: u8, lba: u32, count: u32, data: &[u8]) {
             // Mark as dirty
             let key = BlockCache::make_key(disk_id, lba + i);
             cache.mark_dirty(key);
+            accepted += 1;
         }
+    }
+    if (disk_id as usize) < MAX_DISKS && accepted > 0 {
+        DIRTY_ESTIMATE[disk_id as usize].fetch_add(accepted, Ordering::Relaxed);
     }
 }
 
@@ -684,6 +755,15 @@ pub fn should_flush_before_write_back(disk_id: u8, incoming_count: u32) -> bool 
     if !CACHE_READY.load(Ordering::Acquire) {
         return false;
     }
+    let idx = disk_id as usize;
+    if idx >= MAX_DISKS {
+        return false;
+    }
+    let estimate = DIRTY_ESTIMATE[idx].load(Ordering::Relaxed);
+    if estimate.saturating_add(incoming_count) < DIRTY_FLUSH_HIGH_WATERMARK {
+        return false;
+    }
+
     let mut cache = BLOCK_CACHE.lock();
     let mut dirty = 0u32;
     for i in 0..cache.slots.len() {
@@ -693,6 +773,7 @@ pub fn should_flush_before_write_back(disk_id: u8, incoming_count: u32) -> bool 
             dirty += 1;
         }
     }
+    DIRTY_ESTIMATE[idx].store(dirty, Ordering::Relaxed);
     dirty.saturating_add(incoming_count) >= DIRTY_FLUSH_HIGH_WATERMARK
 }
 
@@ -746,6 +827,9 @@ pub fn writeback_flush(disk_id: u8) -> u32 {
     }
 
     if snapshot.is_empty() {
+        if (disk_id as usize) < MAX_DISKS {
+            DIRTY_ESTIMATE[disk_id as usize].store(0, Ordering::Relaxed);
+        }
         return 0;
     }
 
@@ -865,6 +949,12 @@ pub fn writeback_flush(disk_id: u8) -> u32 {
         }
 
         i += run_len;
+    }
+
+    if (disk_id as usize) < MAX_DISKS && flushed > 0 {
+        let estimate = DIRTY_ESTIMATE[disk_id as usize].load(Ordering::Relaxed);
+        DIRTY_ESTIMATE[disk_id as usize]
+            .store(estimate.saturating_sub(flushed), Ordering::Relaxed);
     }
 
     flushed

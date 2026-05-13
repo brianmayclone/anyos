@@ -423,8 +423,8 @@ pub fn init() {
     set_gate(51, irq19, KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(52, irq20, KERNEL_CODE_SEG, GATE_INTERRUPT); // IPI: TLB
     set_gate(53, irq21, KERNEL_CODE_SEG, GATE_INTERRUPT); // IPI: Halt
-    set_gate(54, irq22, KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(55, irq23, KERNEL_CODE_SEG, GATE_INTERRUPT); // Spurious / MSI
+    set_gate(54, irq22, KERNEL_CODE_SEG, GATE_INTERRUPT); // IPI: Reschedule
+    set_gate(55, irq23, KERNEL_CODE_SEG, GATE_INTERRUPT); // Reserved APIC slot
                                                           // PCI MSI slots (vectors 56-87)
     set_gate(56, irq24, KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(57, irq25, KERNEL_CODE_SEG, GATE_INTERRUPT);
@@ -2100,6 +2100,11 @@ pub extern "C" fn irq_handler(frame: &InterruptFrame) {
         return;
     }
 
-    // Dispatch to dynamically registered handler
+    // PCI MSI uses the CPU vector directly, not the legacy IRQ line number.
+    if crate::drivers::pci_msi::dispatch_msi(frame.int_no as u8) {
+        return;
+    }
+
+    // Dispatch to dynamically registered legacy/APIC IRQ handler.
     crate::arch::x86::irq::dispatch_irq(irq);
 }

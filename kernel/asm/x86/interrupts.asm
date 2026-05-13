@@ -177,10 +177,10 @@ IRQ 18, 50      ; Reserved
 IRQ 19, 51      ; Reserved
 IRQ 20, 52      ; IPI: TLB shootdown
 IRQ 21, 53      ; IPI: Halt
-IRQ 22, 54      ; MSI vector base (first PCI MSI slot)
-IRQ 23, 55      ; LAPIC Spurious / second MSI slot
+IRQ 22, 54      ; IPI: Reschedule
+IRQ 23, 55      ; Reserved APIC slot
 
-; Additional MSI slots (vectors 56-87) — all route through irq_common_stub
+; MSI slots (vectors 56-87) — all route through irq_common_stub
 ; so PCI MSI devices beyond the first two don't fault with #GP (missing IDT
 ; gate) the moment they try to fire an interrupt.
 %assign n 24
