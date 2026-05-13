@@ -420,6 +420,51 @@ enum DetachedStatBackend {
     ExFat(Arc<ExFatFsDriver>),
 }
 
+enum DetachedDeleteBackend {
+    CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
+    ExFat(Arc<ExFatFsDriver>),
+}
+
+enum DetachedReadDirBackend {
+    CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
+    ExFat(Arc<ExFatFsDriver>),
+}
+
+enum DetachedRenameBackend {
+    CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
+    ExFat(Arc<ExFatFsDriver>),
+}
+
+enum DetachedMkdirBackend {
+    CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
+    ExFat(Arc<ExFatFsDriver>),
+}
+
+struct DetachedDelete {
+    backend: DetachedDeleteBackend,
+    parent_path: String,
+    name: String,
+}
+
+struct DetachedReadDir {
+    backend: DetachedReadDirBackend,
+    path: String,
+    add_dev: bool,
+    add_mnt: bool,
+}
+
+struct DetachedRename {
+    backend: DetachedRenameBackend,
+    old_path: String,
+    new_path: String,
+}
+
+struct DetachedMkdir {
+    backend: DetachedMkdirBackend,
+    parent_path: String,
+    name: String,
+}
+
 fn root_stat_backend(state: &VfsState) -> Option<DetachedStatBackend> {
     if state.root_fs_type == Some(FsType::CoreFs) {
         return state
@@ -434,6 +479,429 @@ fn root_stat_backend(state: &VfsState) -> Option<DetachedStatBackend> {
             .map(|driver| DetachedStatBackend::ExFat(Arc::clone(driver)));
     }
     None
+}
+
+fn split_delete_parent_name(path: &str) -> Result<(String, String), FsError> {
+    let rel = if path.is_empty() { "/" } else { path }.trim_end_matches('/');
+    let (parent, name) = match rel.rfind('/') {
+        Some(0) => ("/", &rel[1..]),
+        Some(pos) => (&rel[..pos], &rel[pos + 1..]),
+        None => ("/", rel),
+    };
+    if name.is_empty() {
+        return Err(FsError::InvalidPath);
+    }
+    Ok((String::from(parent), String::from(name)))
+}
+
+fn prepare_detached_delete(path: &str) -> Result<Option<DetachedDelete>, FsError> {
+    let vfs = vfs_lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points)
+    {
+        return match mnt_fs_type {
+            FsType::CoreFs => {
+                let driver = state
+                    .mounted_corefs
+                    .iter()
+                    .find(|(p, _)| p == mount_path)
+                    .map(|(_, d)| Arc::clone(d))
+                    .ok_or(FsError::NotFound)?;
+                let rel = if relative_path.is_empty() {
+                    "/"
+                } else {
+                    relative_path
+                };
+                let (parent_path, name) = split_delete_parent_name(rel)?;
+                Ok(Some(DetachedDelete {
+                    backend: DetachedDeleteBackend::CoreFs(driver),
+                    parent_path,
+                    name,
+                }))
+            }
+            FsType::ExFat => {
+                let driver = state
+                    .mounted_exfat
+                    .iter()
+                    .find(|(p, _)| p == mount_path)
+                    .map(|(_, d)| Arc::clone(d))
+                    .ok_or(FsError::IoError)?;
+                let rel = if relative_path.is_empty() {
+                    "/"
+                } else {
+                    relative_path
+                };
+                let (parent_path, name) = split_delete_parent_name(rel)?;
+                Ok(Some(DetachedDelete {
+                    backend: DetachedDeleteBackend::ExFat(driver),
+                    parent_path,
+                    name,
+                }))
+            }
+            _ => Ok(None),
+        };
+    }
+
+    if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
+        return Ok(None);
+    }
+
+    let (parent_path, name) = split_delete_parent_name(path)?;
+    if state.root_fs_type == Some(FsType::CoreFs) {
+        return Ok(state.corefs_driver.as_ref().map(|driver| DetachedDelete {
+            backend: DetachedDeleteBackend::CoreFs(Arc::clone(driver)),
+            parent_path,
+            name,
+        }));
+    }
+    if state.root_fs_type == Some(FsType::ExFat) {
+        return Ok(state.exfat_fs.as_ref().map(|driver| DetachedDelete {
+            backend: DetachedDeleteBackend::ExFat(Arc::clone(driver)),
+            parent_path,
+            name,
+        }));
+    }
+    Ok(None)
+}
+
+fn execute_detached_delete(plan: DetachedDelete) -> Result<(), FsError> {
+    match plan.backend {
+        DetachedDeleteBackend::CoreFs(driver) => {
+            let (parent_inode, parent_type, _) =
+                Filesystem::lookup(driver.as_ref(), &plan.parent_path)?;
+            if parent_type != FileType::Directory {
+                return Err(FsError::NotADirectory);
+            }
+            Filesystem::delete(driver.as_ref(), parent_inode, &plan.name)
+        }
+        DetachedDeleteBackend::ExFat(driver) => {
+            let (parent_inode, parent_type, _) =
+                Filesystem::lookup(driver.as_ref(), &plan.parent_path)?;
+            if parent_type != FileType::Directory {
+                return Err(FsError::NotADirectory);
+            }
+            Filesystem::delete(driver.as_ref(), parent_inode, &plan.name)
+        }
+    }
+}
+
+fn prepare_detached_read_dir(path: &str) -> Result<Option<DetachedReadDir>, FsError> {
+    if path == "/dev" || path == "/dev/" || path == "/mnt" || path == "/mnt/" {
+        return Ok(None);
+    }
+
+    let vfs = vfs_lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points)
+    {
+        return match mnt_fs_type {
+            FsType::CoreFs => {
+                let driver = state
+                    .mounted_corefs
+                    .iter()
+                    .find(|(p, _)| p == mount_path)
+                    .map(|(_, d)| Arc::clone(d))
+                    .ok_or(FsError::NotFound)?;
+                let q = if relative_path.is_empty() {
+                    "/"
+                } else {
+                    relative_path
+                };
+                Ok(Some(DetachedReadDir {
+                    backend: DetachedReadDirBackend::CoreFs(driver),
+                    path: String::from(q),
+                    add_dev: false,
+                    add_mnt: false,
+                }))
+            }
+            FsType::ExFat => {
+                let driver = state
+                    .mounted_exfat
+                    .iter()
+                    .find(|(p, _)| p == mount_path)
+                    .map(|(_, d)| Arc::clone(d))
+                    .ok_or(FsError::IoError)?;
+                let q = if relative_path.is_empty() {
+                    "/"
+                } else {
+                    relative_path
+                };
+                Ok(Some(DetachedReadDir {
+                    backend: DetachedReadDirBackend::ExFat(driver),
+                    path: String::from(q),
+                    add_dev: false,
+                    add_mnt: false,
+                }))
+            }
+            _ => Ok(None),
+        };
+    }
+
+    if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
+        return Ok(None);
+    }
+
+    let add_dev = path == "/" && state.devfs.is_some();
+    let add_mnt = path == "/"
+        && state
+            .mount_points
+            .iter()
+            .any(|mp| mp.path.starts_with("/mnt/"));
+    let q = if path.is_empty() { "/" } else { path };
+    if state.root_fs_type == Some(FsType::CoreFs) {
+        return Ok(state.corefs_driver.as_ref().map(|driver| DetachedReadDir {
+            backend: DetachedReadDirBackend::CoreFs(Arc::clone(driver)),
+            path: String::from(q),
+            add_dev,
+            add_mnt,
+        }));
+    }
+    if state.root_fs_type == Some(FsType::ExFat) {
+        return Ok(state.exfat_fs.as_ref().map(|driver| DetachedReadDir {
+            backend: DetachedReadDirBackend::ExFat(Arc::clone(driver)),
+            path: String::from(q),
+            add_dev,
+            add_mnt,
+        }));
+    }
+    Ok(None)
+}
+
+fn execute_detached_read_dir(plan: DetachedReadDir) -> Result<Vec<DirEntry>, FsError> {
+    let (inode, file_type, mut entries) = match plan.backend {
+        DetachedReadDirBackend::CoreFs(driver) => {
+            let (inode, file_type, _) = Filesystem::lookup(driver.as_ref(), &plan.path)?;
+            let entries = if file_type == FileType::Directory {
+                Filesystem::readdir(driver.as_ref(), inode)?
+            } else {
+                Vec::new()
+            };
+            (inode, file_type, entries)
+        }
+        DetachedReadDirBackend::ExFat(driver) => {
+            let (inode, file_type, _) = Filesystem::lookup(driver.as_ref(), &plan.path)?;
+            let entries = if file_type == FileType::Directory {
+                Filesystem::readdir(driver.as_ref(), inode)?
+            } else {
+                Vec::new()
+            };
+            (inode, file_type, entries)
+        }
+    };
+    let _ = inode;
+    if file_type != FileType::Directory {
+        return Err(FsError::NotADirectory);
+    }
+    add_virtual_root_entries_snapshot(plan.add_dev, plan.add_mnt, &mut entries);
+    Ok(entries)
+}
+
+fn prepare_detached_rename(
+    old_path: &str,
+    new_path: &str,
+) -> Result<Option<DetachedRename>, FsError> {
+    let vfs = vfs_lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+
+    let old_sub = find_submount(old_path, &state.mount_points)
+        .map(|(mp, rel, t)| (String::from(mp), String::from(rel), t));
+    let new_sub = find_submount(new_path, &state.mount_points)
+        .map(|(mp, rel, t)| (String::from(mp), String::from(rel), t));
+
+    match (old_sub, new_sub) {
+        (Some((old_mp, old_rel, old_type)), Some((new_mp, new_rel, new_type))) => {
+            if old_mp != new_mp || old_type != new_type {
+                if matches!(old_type, FsType::CoreFs | FsType::ExFat)
+                    || matches!(new_type, FsType::CoreFs | FsType::ExFat)
+                {
+                    return Err(FsError::PermissionDenied);
+                }
+                return Ok(None);
+            }
+            let old_q = if old_rel.is_empty() {
+                "/"
+            } else {
+                old_rel.as_str()
+            };
+            let new_q = if new_rel.is_empty() {
+                "/"
+            } else {
+                new_rel.as_str()
+            };
+            match old_type {
+                FsType::CoreFs => {
+                    let driver = state
+                        .mounted_corefs
+                        .iter()
+                        .find(|(p, _)| p == &old_mp)
+                        .map(|(_, d)| Arc::clone(d))
+                        .ok_or(FsError::NotFound)?;
+                    Ok(Some(DetachedRename {
+                        backend: DetachedRenameBackend::CoreFs(driver),
+                        old_path: String::from(old_q),
+                        new_path: String::from(new_q),
+                    }))
+                }
+                FsType::ExFat => {
+                    let driver = state
+                        .mounted_exfat
+                        .iter()
+                        .find(|(p, _)| p == &old_mp)
+                        .map(|(_, d)| Arc::clone(d))
+                        .ok_or(FsError::IoError)?;
+                    Ok(Some(DetachedRename {
+                        backend: DetachedRenameBackend::ExFat(driver),
+                        old_path: String::from(old_q),
+                        new_path: String::from(new_q),
+                    }))
+                }
+                _ => Ok(None),
+            }
+        }
+        (Some((_, _, t)), None) | (None, Some((_, _, t)))
+            if matches!(t, FsType::CoreFs | FsType::ExFat) =>
+        {
+            Err(FsError::PermissionDenied)
+        }
+        (Some(_), None) | (None, Some(_)) => Ok(None),
+        (None, None) => {
+            if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
+                return Ok(None);
+            }
+            if state.root_fs_type == Some(FsType::CoreFs) {
+                return Ok(state.corefs_driver.as_ref().map(|driver| DetachedRename {
+                    backend: DetachedRenameBackend::CoreFs(Arc::clone(driver)),
+                    old_path: String::from(old_path),
+                    new_path: String::from(new_path),
+                }));
+            }
+            if state.root_fs_type == Some(FsType::ExFat) {
+                return Ok(state.exfat_fs.as_ref().map(|driver| DetachedRename {
+                    backend: DetachedRenameBackend::ExFat(Arc::clone(driver)),
+                    old_path: String::from(old_path),
+                    new_path: String::from(new_path),
+                }));
+            }
+            Ok(None)
+        }
+    }
+}
+
+fn execute_detached_rename(plan: DetachedRename) -> Result<(), FsError> {
+    match plan.backend {
+        DetachedRenameBackend::CoreFs(driver) => {
+            Filesystem::rename(driver.as_ref(), &plan.old_path, &plan.new_path)
+        }
+        DetachedRenameBackend::ExFat(driver) => {
+            Filesystem::rename(driver.as_ref(), &plan.old_path, &plan.new_path)
+        }
+    }
+}
+
+fn prepare_detached_mkdir(path: &str) -> Result<Option<DetachedMkdir>, FsError> {
+    let vfs = vfs_lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points)
+    {
+        return match mnt_fs_type {
+            FsType::CoreFs => {
+                let driver = state
+                    .mounted_corefs
+                    .iter()
+                    .find(|(p, _)| p == mount_path)
+                    .map(|(_, d)| Arc::clone(d))
+                    .ok_or(FsError::NotFound)?;
+                let rel = if relative_path.is_empty() {
+                    "/"
+                } else {
+                    relative_path
+                };
+                let (parent_path, name) = split_delete_parent_name(rel)?;
+                Ok(Some(DetachedMkdir {
+                    backend: DetachedMkdirBackend::CoreFs(driver),
+                    parent_path,
+                    name,
+                }))
+            }
+            FsType::ExFat => {
+                let driver = state
+                    .mounted_exfat
+                    .iter()
+                    .find(|(p, _)| p == mount_path)
+                    .map(|(_, d)| Arc::clone(d))
+                    .ok_or(FsError::IoError)?;
+                let rel = if relative_path.is_empty() {
+                    "/"
+                } else {
+                    relative_path
+                };
+                let (parent_path, name) = split_delete_parent_name(rel)?;
+                Ok(Some(DetachedMkdir {
+                    backend: DetachedMkdirBackend::ExFat(driver),
+                    parent_path,
+                    name,
+                }))
+            }
+            _ => Ok(None),
+        };
+    }
+
+    if state.overlay_fs.is_some() {
+        return Ok(None);
+    }
+
+    let (parent_path, name) = split_delete_parent_name(path)?;
+    if state.root_fs_type == Some(FsType::CoreFs) {
+        return Ok(state.corefs_driver.as_ref().map(|driver| DetachedMkdir {
+            backend: DetachedMkdirBackend::CoreFs(Arc::clone(driver)),
+            parent_path,
+            name,
+        }));
+    }
+    if state.root_fs_type == Some(FsType::ExFat) {
+        return Ok(state.exfat_fs.as_ref().map(|driver| DetachedMkdir {
+            backend: DetachedMkdirBackend::ExFat(Arc::clone(driver)),
+            parent_path,
+            name,
+        }));
+    }
+    Ok(None)
+}
+
+fn execute_detached_mkdir(plan: DetachedMkdir) -> Result<(), FsError> {
+    match plan.backend {
+        DetachedMkdirBackend::CoreFs(driver) => {
+            let (parent_inode, parent_type, _) =
+                Filesystem::lookup(driver.as_ref(), &plan.parent_path)?;
+            if parent_type != FileType::Directory {
+                return Err(FsError::NotADirectory);
+            }
+            Filesystem::create(
+                driver.as_ref(),
+                parent_inode,
+                &plan.name,
+                FileType::Directory,
+            )?;
+            Ok(())
+        }
+        DetachedMkdirBackend::ExFat(driver) => {
+            let (parent_inode, parent_type, _) =
+                Filesystem::lookup(driver.as_ref(), &plan.parent_path)?;
+            if parent_type != FileType::Directory {
+                return Err(FsError::NotADirectory);
+            }
+            Filesystem::create(
+                driver.as_ref(),
+                parent_inode,
+                &plan.name,
+                FileType::Directory,
+            )?;
+            Ok(())
+        }
+    }
 }
 
 fn detached_stat(backend: &DetachedStatBackend, path: &str) -> Result<StatResult, FsError> {
@@ -2603,6 +3071,9 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
 
 /// Read directory entries at a given path.
 pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
+    if let Some(plan) = prepare_detached_read_dir(path)? {
+        return execute_detached_read_dir(plan);
+    }
     let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
@@ -2830,7 +3301,18 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
 
 /// Add virtual directory entries (dev, mnt) to root directory listing.
 fn add_virtual_root_entries(state: &VfsState, entries: &mut Vec<DirEntry>) {
-    if state.devfs.is_some() {
+    add_virtual_root_entries_snapshot(
+        state.devfs.is_some(),
+        state
+            .mount_points
+            .iter()
+            .any(|mp| mp.path.starts_with("/mnt/")),
+        entries,
+    );
+}
+
+fn add_virtual_root_entries_snapshot(add_dev: bool, add_mnt: bool, entries: &mut Vec<DirEntry>) {
+    if add_dev {
         entries.push(DirEntry {
             name: String::from("dev"),
             file_type: FileType::Directory,
@@ -2841,11 +3323,7 @@ fn add_virtual_root_entries(state: &VfsState, entries: &mut Vec<DirEntry>) {
             mode: 0xFFF,
         });
     }
-    if state
-        .mount_points
-        .iter()
-        .any(|mp| mp.path.starts_with("/mnt/"))
-    {
+    if add_mnt {
         entries.push(DirEntry {
             name: String::from("mnt"),
             file_type: FileType::Directory,
@@ -3004,6 +3482,9 @@ pub fn delete(path: &str) -> Result<(), FsError> {
     if is_dev_path(path) {
         return Err(FsError::PermissionDenied);
     }
+    if let Some(plan) = prepare_detached_delete(path)? {
+        return execute_detached_delete(plan);
+    }
     let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
@@ -3109,6 +3590,9 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
     if is_dev_path(old_path) || is_dev_path(new_path) {
         return Err(FsError::PermissionDenied);
     }
+    if let Some(plan) = prepare_detached_rename(old_path, new_path)? {
+        return execute_detached_rename(plan);
+    }
     let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
@@ -3210,6 +3694,9 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
 pub fn mkdir(path: &str) -> Result<(), FsError> {
     if is_dev_path(path) {
         return Err(FsError::PermissionDenied);
+    }
+    if let Some(plan) = prepare_detached_mkdir(path)? {
+        return execute_detached_mkdir(plan);
     }
     let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
