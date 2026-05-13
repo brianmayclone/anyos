@@ -2421,12 +2421,12 @@ fn statfs_accounting_case(cfg: &Config) -> TestOutcome {
     fs::sync();
     let after_unlink = fs::statfs(&probe);
 
-    if let Some(t) = after_truncate {
+    if let Some(ref t) = after_truncate {
         if t.free_bytes < after_write.free_bytes {
             return TestOutcome::Fail("free-decreased-after-truncate");
         }
     }
-    if let (Some(t), Some(u)) = (after_truncate, after_unlink) {
+    if let (Some(ref t), Some(ref u)) = (&after_truncate, &after_unlink) {
         if u.free_bytes < t.free_bytes {
             return TestOutcome::Fail("free-decreased-after-unlink");
         }
@@ -3337,6 +3337,15 @@ fn stat_size(path: &str) -> Result<u32, &'static str> {
 fn stat_exists(path: &str) -> bool {
     let mut stat = [0u32; 7];
     fs::stat(path, &mut stat) == 0
+}
+
+fn statfs_probe_path(cfg: &Config) -> String {
+    for path in [&cfg.dir, "/tmp", "/"] {
+        if fs::statfs(path).is_some() {
+            return String::from(path);
+        }
+    }
+    cfg.dir.clone()
 }
 
 fn stat_size_or_zero(path: &str) -> u32 {

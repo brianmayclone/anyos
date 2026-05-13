@@ -437,21 +437,30 @@ Akzeptanz:
 
 ## [P2] Sparse/Hole/Seek-Semantik
 
+Status:
+
+- Teilweise umgesetzt in `vfsstress`:
+  - `sparse_hole_matrix_case`
+  - Head/Tail-Write mit grossem Hole
+  - Null-Verify vor, zwischen und nach Datenbereichen
+  - Teil-Overwrite mitten im Hole
+  - Truncate auf 0 und Regrow mit erneuter Nullbereich-Pruefung
+
 Fehlt:
 
-- Mehrere Holes, Teil-Overwrites in Holes, Reads ueber Hole/Data-Grenzen.
 - SEEK_DATA/SEEK_HOLE, falls irgendwann unterstuetzt.
-- Truncate groesser/kleiner mit Hole-Verifikation.
+- Truncate auf beliebige Groessen, sobald die API mehr als Truncate-to-zero
+  unterstuetzt.
 
 TODO:
 
-- Bestehenden `sparse_eof_gap_case` zu `sparse_hole_matrix_case` erweitern.
+- Bestehenden `sparse_eof_gap_case` zu `sparse_hole_matrix_case` erweitern. [teilweise umgesetzt]
 - Matrix:
-  - write at 0, write far offset.
-  - read before, across and after data.
-  - overwrite mitten im Hole.
-  - truncate kleiner als Hole-Ende.
-  - truncate groesser und Nullbereich pruefen.
+  - write at 0, write far offset. [umgesetzt]
+  - read before, across and after data. [umgesetzt]
+  - overwrite mitten im Hole. [umgesetzt]
+  - truncate kleiner als Hole-Ende. [blocked: API nur truncate-to-zero]
+  - truncate groesser und Nullbereich pruefen. [blocked: API nur truncate-to-zero]
 
 Akzeptanz:
 
@@ -509,17 +518,24 @@ Akzeptanz:
 
 ## [P2] Statfs/Quota/Accounting-Metriken
 
+Status:
+
+- Teilweise umgesetzt in `vfsstress`:
+  - `statfs_accounting_case`
+  - Probe-Pfad-Fallback fuer `cfg.dir`, `/tmp`, `/`
+  - free/used Plausibilitaet nach write, truncate, unlink und sync
+  - WARN statt FAIL, wenn `statfs` nicht verfuegbar oder ohne sichtbare Deltas ist
+
 Fehlt:
 
-- Systematische Pruefung von `statfs`.
 - Optional Quota oder per-user Accounting, falls anyOS das spaeter bekommt.
 
 TODO:
 
-- `statfs_accounting_case` ergaenzen.
-- Vorher/nachher Werte fuer create/write/unlink/truncate/sync pruefen.
+- `statfs_accounting_case` ergaenzen. [teilweise umgesetzt]
+- Vorher/nachher Werte fuer create/write/unlink/truncate/sync pruefen. [umgesetzt]
 - Negative Deltas und "free wird nach delete nie groesser" als Warn/Fail
-  klassifizieren.
+  klassifizieren. [umgesetzt]
 - Performance-Report um FS-Free/Used Spalten erweitern.
 
 Akzeptanz:
