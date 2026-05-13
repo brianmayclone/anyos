@@ -545,20 +545,30 @@ Akzeptanz:
 
 ## [P2] Pfadnormalisierung und Path-Limits
 
+Status:
+
+- Teilweise umgesetzt in `vfsstress`:
+  - `path_resolution_case`
+  - absolute Pfade mit `.`, `..` und doppelten Slashes
+  - relative Pfade aus wechselndem CWD via `chdir`
+  - tiefe Verzeichniskette
+  - Pfad knapp unter dem aktuellen Budget
+  - Ueberlang-Pfad darf nicht auf Near-Limit-Datei aliasen
+
 Fehlt:
 
-- Relative Pfade, `.`/`..`, doppelte Slashes, trailing Slash.
-- Sehr tiefe Verzeichnisse.
-- Pfade nahe `prepare_path`/Kernel-Limit.
+- Explizite trailing-slash Semantik fuer Datei vs Directory.
+- Ueberlang-Pfad sollte idealerweise sauber mit ENAMETOOLONG fehlschlagen
+  statt nur Nicht-Aliasing zu garantieren.
 
 TODO:
 
-- `path_resolution_case` ergaenzen.
+- `path_resolution_case` ergaenzen. [teilweise umgesetzt]
 - Matrix:
-  - relative Pfade aus wechselndem CWD, falls chdir verfuegbar.
-  - `./a`, `a/../a`, `a//b`, `a/b/`.
-  - tiefe Verzeichnisketten.
-  - Pfadlaengen knapp unter/ueber Limit.
+  - relative Pfade aus wechselndem CWD, falls chdir verfuegbar. [umgesetzt]
+  - `./a`, `a/../a`, `a//b`, `a/b/`. [teilweise umgesetzt, trailing slash offen]
+  - tiefe Verzeichnisketten. [umgesetzt]
+  - Pfadlaengen knapp unter/ueber Limit. [teilweise umgesetzt]
 
 Akzeptanz:
 

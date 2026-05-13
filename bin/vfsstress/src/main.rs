@@ -608,6 +608,7 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
     );
     run_named_with_warning(summary, "fsync ordering", fsync_ordering_case(cfg));
     run_named_with_warning(summary, "statfs accounting", statfs_accounting_case(cfg));
+    run_named_with_warning(summary, "path resolution", path_resolution_case(cfg));
     run_named(summary, "fd offsets", fd_offsets_case(cfg));
     run_named(summary, "user copy boundary", user_copy_boundary_case(cfg));
     run_named(summary, "stack write 64k", stack_write_64k_case(cfg));
@@ -2455,6 +2456,92 @@ fn statfs_accounting_case(cfg: &Config) -> TestOutcome {
     }
 }
 
+fn path_resolution_case(cfg: &Config) -> TestOutcome {
+    let saved_cwd = match current_cwd() {
+        Some(cwd) => cwd,
+        None => return TestOutcome::Warn("skip: getcwd nicht verfuegbar".into()),
+    };
+
+    let dir = format!("{}/full-path-resolution", cfg.dir);
+    let base = format!("{}/base", dir);
+    let sub = format!("{}/sub", base);
+    mkdir_parents(&sub);
+
+    let target = format!("{}/target.txt", sub);
+    if write_bytes_file(&target, b"path-ok").is_err() {
+        let _ = fs::chdir(&saved_cwd);
+        return TestOutcome::Fail("write-target");
+    }
+
+    let abs_dot = format!("{}/./target.txt", sub);
+    let abs_parent = format!("{}/../sub/target.txt", sub);
+    let abs_double = format!("{}//target.txt", sub);
+    if verify_file_bytes(&abs_dot, b"path-ok").is_err() {
+        let _ = fs::chdir(&saved_cwd);
+        return TestOutcome::Fail("abs-dot");
+    }
+    if verify_file_bytes(&abs_parent, b"path-ok").is_err() {
+        let _ = fs::chdir(&saved_cwd);
+        return TestOutcome::Fail("abs-parent");
+    }
+    if verify_file_bytes(&abs_double, b"path-ok").is_err() {
+        let _ = fs::chdir(&saved_cwd);
+        return TestOutcome::Fail("abs-double-slash");
+    }
+
+    if fs::chdir(&base) != 0 {
+        let _ = fs::chdir(&saved_cwd);
+        return TestOutcome::Warn("skip: chdir nicht verfuegbar".into());
+    }
+    if verify_file_bytes("sub/target.txt", b"path-ok").is_err()
+        || verify_file_bytes("./sub/../sub/target.txt", b"path-ok").is_err()
+    {
+        let _ = fs::chdir(&saved_cwd);
+        return TestOutcome::Fail("relative-base");
+    }
+    if fs::chdir("sub") != 0 {
+        let _ = fs::chdir(&saved_cwd);
+        return TestOutcome::Fail("relative-chdir-sub");
+    }
+    if verify_file_bytes("../sub/target.txt", b"path-ok").is_err() {
+        let _ = fs::chdir(&saved_cwd);
+        return TestOutcome::Fail("relative-parent");
+    }
+    let _ = fs::chdir(&saved_cwd);
+
+    let deep_leaf = create_deep_path(&dir, 16);
+    let deep_file = format!("{}/leaf.txt", deep_leaf);
+    if write_bytes_file(&deep_file, b"deep-ok").is_err()
+        || verify_file_bytes(&deep_file, b"deep-ok").is_err()
+    {
+        return TestOutcome::Fail("deep-path");
+    }
+
+    let near_name = make_name_to_path_budget(&dir, 240);
+    let near_path = format!("{}/{}", dir, near_name);
+    if write_bytes_file(&near_path, b"near-limit").is_err()
+        || verify_file_bytes(&near_path, b"near-limit").is_err()
+    {
+        return TestOutcome::Fail("near-limit");
+    }
+    let overlong = format!(
+        "{}-this-suffix-must-not-alias-the-near-limit-file",
+        near_path
+    );
+    let mut stat = [0u32; 7];
+    if fs::stat(&overlong, &mut stat) == 0 {
+        return TestOutcome::Fail("overlong-aliased");
+    }
+
+    if !cfg.keep {
+        let _ = fs::unlink(&target);
+        let _ = fs::unlink(&deep_file);
+        let _ = fs::unlink(&near_path);
+    }
+
+    TestOutcome::Ok("relative/./../double-slash/deep/near-limit Pfade ok".into())
+}
+
 fn fd_offsets_case(cfg: &Config) -> Result<String, &'static str> {
     let path = format!("{}/full-fd-offsets.bin", cfg.dir);
     let _ = fs::unlink(&path);
@@ -3346,6 +3433,34 @@ fn statfs_probe_path(cfg: &Config) -> String {
         }
     }
     cfg.dir.clone()
+}
+
+fn current_cwd() -> Option<String> {
+    let mut buf = [0u8; 257];
+    let len = fs::getcwd(&mut buf);
+    if len == u32::MAX || len == 0 {
+        return None;
+    }
+    core::str::from_utf8(&buf[..len as usize])
+        .ok()
+        .map(String::from)
+}
+
+fn create_deep_path(root: &str, depth: u32) -> String {
+    let mut path = String::from(root);
+    for i in 0..depth {
+        path.push_str(&format!("/d{:02}", i));
+        let _ = fs::mkdir(&path);
+    }
+    path
+}
+
+fn make_name_to_path_budget(dir: &str, budget: usize) -> String {
+    let mut name = String::from("near");
+    while dir.len() + 1 + name.len() < budget {
+        name.push('n');
+    }
+    name
 }
 
 fn stat_size_or_zero(path: &str) -> u32 {
