@@ -401,22 +401,32 @@ Akzeptanz:
 
 ## [P1] Fsync, Close und Writeback-Semantik
 
+Status:
+
+- Teilweise umgesetzt in `vfsstress`:
+  - `fsync_ordering_case`
+  - write + close ohne fsync mit Readback vor/nach globalem `sync`
+  - write + Datei-`fsync` + close
+  - write + globaler `sync` + close
+  - create + Datei-`fsync` + rename + Readback/Old-Path-Verify
+  - create + rename + globaler `sync` + Readback/Old-Path-Verify
+  - Directory-`fsync` wird als `ok` oder `unsupported` berichtet
+
 Fehlt:
 
-- Fsync auf Datei vs globaler Sync vs close-only systematisch getrennt.
-- Fsync auf Directory, falls unterstuetzt.
-- Rename + fsync Reihenfolgen.
+- Remount-Verifikation dieser Matrix im Scratch-Modus.
+- Klare Persistenz-Dokumentation pro FS nach Crash/Powerloss.
 
 TODO:
 
-- `fsync_ordering_case` ergaenzen.
+- `fsync_ordering_case` ergaenzen. [teilweise umgesetzt]
 - Matrix:
-  - write + close ohne fsync.
-  - write + fsync + close.
-  - write + global sync + close.
-  - create + rename + fsync file.
-  - create + rename + global sync.
-  - optional directory fsync.
+  - write + close ohne fsync. [umgesetzt]
+  - write + fsync + close. [umgesetzt]
+  - write + global sync + close. [umgesetzt]
+  - create + rename + fsync file. [umgesetzt]
+  - create + rename + global sync. [umgesetzt]
+  - optional directory fsync. [umgesetzt als ok/unsupported]
 - In Scratch-Modus jeweils remount und verify.
 
 Akzeptanz:

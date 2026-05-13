@@ -568,6 +568,7 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
         "permission metadata",
         permission_metadata_case(cfg),
     );
+    run_named_with_warning(summary, "fsync ordering", fsync_ordering_case(cfg));
     run_named(summary, "fd offsets", fd_offsets_case(cfg));
     run_named(summary, "user copy boundary", user_copy_boundary_case(cfg));
     run_named(summary, "stack write 64k", stack_write_64k_case(cfg));
@@ -2103,6 +2104,105 @@ fn permission_metadata_case(cfg: &Config) -> TestOutcome {
     }
 }
 
+fn fsync_ordering_case(cfg: &Config) -> TestOutcome {
+    let dir = format!("{}/full-fsync-ordering", cfg.dir);
+    let _ = fs::mkdir(&dir);
+
+    let close_only = format!("{}/close-only.txt", dir);
+    let file_fsync = format!("{}/file-fsync.txt", dir);
+    let global_sync = format!("{}/global-sync.txt", dir);
+    let rename_file_tmp = format!("{}/rename-file.tmp", dir);
+    let rename_file_final = format!("{}/rename-file.txt", dir);
+    let rename_sync_tmp = format!("{}/rename-sync.tmp", dir);
+    let rename_sync_final = format!("{}/rename-sync.txt", dir);
+
+    for path in [
+        &close_only,
+        &file_fsync,
+        &global_sync,
+        &rename_file_tmp,
+        &rename_file_final,
+        &rename_sync_tmp,
+        &rename_sync_final,
+    ] {
+        let _ = fs::unlink(path);
+    }
+
+    if write_file_ordered(&close_only, b"close-only", SyncMode::CloseOnly).is_err() {
+        return TestOutcome::Fail("close-only-write");
+    }
+    if verify_file_bytes(&close_only, b"close-only").is_err() {
+        return TestOutcome::Fail("close-only-verify");
+    }
+    fs::sync();
+    if verify_file_bytes(&close_only, b"close-only").is_err() {
+        return TestOutcome::Fail("close-only-sync-verify");
+    }
+
+    if write_file_ordered(&file_fsync, b"file-fsync", SyncMode::FileFsync).is_err() {
+        return TestOutcome::Fail("file-fsync-write");
+    }
+    if verify_file_bytes(&file_fsync, b"file-fsync").is_err() {
+        return TestOutcome::Fail("file-fsync-verify");
+    }
+
+    if write_file_ordered(&global_sync, b"global-sync", SyncMode::GlobalSync).is_err() {
+        return TestOutcome::Fail("global-sync-write");
+    }
+    if verify_file_bytes(&global_sync, b"global-sync").is_err() {
+        return TestOutcome::Fail("global-sync-verify");
+    }
+
+    if write_file_ordered(&rename_file_tmp, b"rename-file-fsync", SyncMode::FileFsync).is_err() {
+        return TestOutcome::Fail("rename-file-write");
+    }
+    if fs::rename(&rename_file_tmp, &rename_file_final) != 0 {
+        return TestOutcome::Fail("rename-file-rename");
+    }
+    if stat_exists(&rename_file_tmp) {
+        return TestOutcome::Fail("rename-file-old-visible");
+    }
+    if verify_file_bytes(&rename_file_final, b"rename-file-fsync").is_err() {
+        return TestOutcome::Fail("rename-file-verify");
+    }
+
+    if write_file_ordered(&rename_sync_tmp, b"rename-global-sync", SyncMode::CloseOnly).is_err() {
+        return TestOutcome::Fail("rename-sync-write");
+    }
+    if fs::rename(&rename_sync_tmp, &rename_sync_final) != 0 {
+        return TestOutcome::Fail("rename-sync-rename");
+    }
+    fs::sync();
+    if stat_exists(&rename_sync_tmp) {
+        return TestOutcome::Fail("rename-sync-old-visible");
+    }
+    if verify_file_bytes(&rename_sync_final, b"rename-global-sync").is_err() {
+        return TestOutcome::Fail("rename-sync-verify");
+    }
+
+    let dir_fsync = match fsync_path(&dir) {
+        FsyncPathResult::Ok => "dir-fsync=ok",
+        FsyncPathResult::Unsupported => "dir-fsync=unsupported",
+    };
+
+    if !cfg.keep {
+        for path in [
+            &close_only,
+            &file_fsync,
+            &global_sync,
+            &rename_file_final,
+            &rename_sync_final,
+        ] {
+            let _ = fs::unlink(path);
+        }
+    }
+
+    TestOutcome::Ok(format!(
+        "close/file-fsync/global-sync/rename Reihenfolgen ok, {}",
+        dir_fsync
+    ))
+}
+
 fn fd_offsets_case(cfg: &Config) -> Result<String, &'static str> {
     let path = format!("{}/full-fd-offsets.bin", cfg.dir);
     let _ = fs::unlink(&path);
@@ -2563,6 +2663,54 @@ fn write_bytes_file(path: &str, bytes: &[u8]) -> Result<(), &'static str> {
     Ok(())
 }
 
+enum SyncMode {
+    CloseOnly,
+    FileFsync,
+    GlobalSync,
+}
+
+fn write_file_ordered(path: &str, bytes: &[u8], mode: SyncMode) -> Result<(), &'static str> {
+    let fd = fs::open(path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if fd == u32::MAX {
+        return Err("open-write");
+    }
+    if fs::write(fd, bytes) != bytes.len() as u32 {
+        fs::close(fd);
+        return Err("write");
+    }
+    match mode {
+        SyncMode::CloseOnly => {}
+        SyncMode::FileFsync => {
+            if !fs::fsync(fd as i32) {
+                fs::close(fd);
+                return Err("fsync");
+            }
+        }
+        SyncMode::GlobalSync => fs::sync(),
+    }
+    fs::close(fd);
+    Ok(())
+}
+
+enum FsyncPathResult {
+    Ok,
+    Unsupported,
+}
+
+fn fsync_path(path: &str) -> FsyncPathResult {
+    let fd = fs::open(path, 0);
+    if fd == u32::MAX {
+        return FsyncPathResult::Unsupported;
+    }
+    let ok = fs::fsync(fd as i32);
+    fs::close(fd);
+    if ok {
+        FsyncPathResult::Ok
+    } else {
+        FsyncPathResult::Unsupported
+    }
+}
+
 fn write_at(path: &str, offset: u32, bytes: &[u8]) -> Result<(), &'static str> {
     let fd = fs::open(path, fs::O_WRITE | fs::O_CREATE);
     if fd == u32::MAX {
@@ -2881,6 +3029,11 @@ fn stat_size(path: &str) -> Result<u32, &'static str> {
         return Err("stat");
     }
     Ok(stat[1])
+}
+
+fn stat_exists(path: &str) -> bool {
+    let mut stat = [0u32; 7];
+    fs::stat(path, &mut stat) == 0
 }
 
 fn stat_size_or_zero(path: &str) -> u32 {
