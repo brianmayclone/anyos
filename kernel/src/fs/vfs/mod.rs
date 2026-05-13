@@ -15,9 +15,12 @@ use crate::fs::iso9660::Iso9660Fs;
 use crate::fs::ntfs::{NtfsFs, NtfsFsDriver};
 use crate::fs::overlayfs::OverlayFs;
 use crate::fs::smbfs::SmbFs;
-use crate::sync::mutex::Mutex;
+use crate::sync::mutex::{Mutex, MutexGuard};
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::ops::{Deref, DerefMut};
+use core::panic::Location;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Maximum number of simultaneously open file descriptors (system-wide).
@@ -111,6 +114,7 @@ fn commit_open_exfat_entry(
             .find(|(p, _)| file_path.starts_with(p.as_str()))
             .map(|(_, fs)| fs)
             .ok_or(FsError::IoError)?;
+        let mut exfat = exfat.lock_inner();
         if entry_dirty {
             exfat.update_entry(parent_cluster, filename, size, inode)?;
         }
@@ -205,6 +209,106 @@ pub fn dir_cache_invalidate() {
 }
 
 static VFS: Mutex<Option<VfsState>> = Mutex::new(None);
+static VFS_LOCK_OWNER_TID: AtomicU32 = AtomicU32::new(0);
+static VFS_LOCK_OWNER_LINE: AtomicU32 = AtomicU32::new(0);
+static VFS_LOCK_WAIT_LOGS: AtomicU32 = AtomicU32::new(0);
+static VFS_LOCK_HOLD_LOGS: AtomicU32 = AtomicU32::new(0);
+const VFS_LOCK_WAIT_WARN_MS: u32 = 50;
+const VFS_LOCK_HOLD_WARN_MS: u32 = 50;
+const VFS_LOCK_LOG_LIMIT: u32 = 128;
+
+struct VfsLockGuard {
+    guard: Option<MutexGuard<'static, Option<VfsState>>>,
+    acquired_tick: u32,
+    owner_tid: u32,
+    caller_line: u32,
+}
+
+impl Deref for VfsLockGuard {
+    type Target = Option<VfsState>;
+
+    fn deref(&self) -> &Self::Target {
+        self.guard.as_ref().expect("VFS lock guard present")
+    }
+}
+
+impl DerefMut for VfsLockGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.guard.as_mut().expect("VFS lock guard present")
+    }
+}
+
+impl Drop for VfsLockGuard {
+    fn drop(&mut self) {
+        let held_ms = vfs_ticks_to_ms(
+            crate::arch::hal::timer_current_ticks().wrapping_sub(self.acquired_tick),
+        );
+        if held_ms >= VFS_LOCK_HOLD_WARN_MS
+            && VFS_LOCK_HOLD_LOGS.fetch_add(1, Ordering::Relaxed) < VFS_LOCK_LOG_LIMIT
+        {
+            crate::serial_println!(
+                "[vfs] VFS lock held {} ms tid={} line={}",
+                held_ms,
+                self.owner_tid,
+                self.caller_line
+            );
+        }
+        self.guard.take();
+        let _ = VFS_LOCK_OWNER_TID.compare_exchange(
+            self.owner_tid,
+            0,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+        let _ = VFS_LOCK_OWNER_LINE.compare_exchange(
+            self.caller_line,
+            0,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+}
+
+fn vfs_ticks_to_ms(ticks: u32) -> u32 {
+    let hz = crate::arch::hal::timer_frequency_hz() as u32;
+    if hz == 0 {
+        ticks
+    } else {
+        ((ticks as u64 * 1000) / hz as u64) as u32
+    }
+}
+
+#[track_caller]
+fn vfs_lock() -> VfsLockGuard {
+    let caller_line = Location::caller().line();
+    let start = crate::arch::hal::timer_current_ticks();
+    let owner_at_start = VFS_LOCK_OWNER_TID.load(Ordering::Relaxed);
+    let owner_line_at_start = VFS_LOCK_OWNER_LINE.load(Ordering::Relaxed);
+    let guard = VFS.lock();
+    let acquired = crate::arch::hal::timer_current_ticks();
+    let waited_ms = vfs_ticks_to_ms(acquired.wrapping_sub(start));
+    let tid = crate::task::scheduler::current_tid();
+    VFS_LOCK_OWNER_TID.store(tid, Ordering::Relaxed);
+    VFS_LOCK_OWNER_LINE.store(caller_line, Ordering::Relaxed);
+    if waited_ms >= VFS_LOCK_WAIT_WARN_MS
+        && VFS_LOCK_WAIT_LOGS.fetch_add(1, Ordering::Relaxed) < VFS_LOCK_LOG_LIMIT
+    {
+        crate::serial_println!(
+            "[vfs] VFS lock wait {} ms tid={} line={} owner_at_start={} owner_line={}",
+            waited_ms,
+            tid,
+            caller_line,
+            owner_at_start,
+            owner_line_at_start
+        );
+    }
+    VfsLockGuard {
+        guard: Some(guard),
+        acquired_tick: acquired,
+        owner_tid: tid,
+        caller_line,
+    }
+}
 
 struct VfsState {
     open_files: Vec<Option<OpenFile>>,
@@ -216,16 +320,16 @@ struct VfsState {
     smbfs: Vec<(String, SmbFs)>,
     /// Mounted exFAT instances (mount_path, instance) for additional partitions.
     /// Separate from `exfat_fs` which is the root filesystem.
-    mounted_exfat: Vec<(String, ExFatFs)>,
+    mounted_exfat: Vec<(String, Arc<ExFatFsDriver>)>,
     /// OverlayFS: writable RAM layer over ISO 9660 (active when booting from CD).
     overlay_fs: Option<OverlayFs>,
     /// CoreFS-Root-Treiber. Aktiv nur wenn die Root-Partition CoreFS ist.
     /// Für zusätzliche CoreFS-Sub-Mounts siehe `mounted_corefs`.
-    corefs_driver: Option<crate::fs::corefs::CoreFsDriver>,
+    corefs_driver: Option<Arc<crate::fs::corefs::CoreFsDriver>>,
     /// Zusätzliche CoreFS-Sub-Mounts (mount_path, driver). Analog zu
     /// `mounted_exfat` — jede Partition bekommt ihren eigenen Treiber, so
     /// dass `statfs` und File-I/O pro Mountpunkt korrekt dispatchen.
-    mounted_corefs: Vec<(String, crate::fs::corefs::CoreFsDriver)>,
+    mounted_corefs: Vec<(String, Arc<crate::fs::corefs::CoreFsDriver>)>,
     // -----------------------------------------------------------------
     // Per-FS typed root drivers (Phase 6).
     //
@@ -238,7 +342,7 @@ struct VfsState {
     // generic [`VfsState::root_fs`] accessor returns whichever is
     // active as a `&dyn Filesystem` for plain trait dispatch.
     /// exFAT root driver (active when root partition holds exFAT).
-    exfat_fs: Option<ExFatFsDriver>,
+    exfat_fs: Option<Arc<ExFatFsDriver>>,
     /// FAT12/16/32 root driver.
     fat_fs: Option<FatFsDriver>,
     /// NTFS root driver (read-only).
@@ -254,6 +358,103 @@ struct VfsState {
     free_slots: Vec<u32>,
 }
 
+enum DetachedReadBackend {
+    CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
+    ExFat(Arc<ExFatFsDriver>),
+}
+
+struct DetachedRead {
+    backend: DetachedReadBackend,
+    inode: u32,
+    position: u32,
+    size: u32,
+    reserved: usize,
+    path: String,
+}
+
+enum DetachedReadPrep {
+    Unsupported,
+    Eof,
+    Ready(DetachedRead),
+}
+
+enum DetachedWriteBackend {
+    CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
+    ExFat(Arc<ExFatFsDriver>),
+}
+
+struct DetachedWrite {
+    backend: DetachedWriteBackend,
+    fs_id: u32,
+    inode: u32,
+    old_inode: u32,
+    old_size: u32,
+    position: u32,
+    reserved: usize,
+    path: String,
+    parent_cluster: u32,
+    seek_hint: Option<(u32, u32)>,
+    sync_write: bool,
+}
+
+struct DetachedExFatWriteResult {
+    new_cluster: u32,
+    new_size: u32,
+    hint_offset: u32,
+    hint_cluster: u32,
+}
+
+enum DetachedWriteResult {
+    CoreFs { bytes_written: usize },
+    ExFat(DetachedExFatWriteResult),
+}
+
+enum DetachedWritePrep {
+    Unsupported,
+    Empty,
+    Ready(DetachedWrite),
+}
+
+enum DetachedStatBackend {
+    CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
+    ExFat(Arc<ExFatFsDriver>),
+}
+
+fn root_stat_backend(state: &VfsState) -> Option<DetachedStatBackend> {
+    if state.root_fs_type == Some(FsType::CoreFs) {
+        return state
+            .corefs_driver
+            .as_ref()
+            .map(|driver| DetachedStatBackend::CoreFs(Arc::clone(driver)));
+    }
+    if state.root_fs_type == Some(FsType::ExFat) {
+        return state
+            .exfat_fs
+            .as_ref()
+            .map(|driver| DetachedStatBackend::ExFat(Arc::clone(driver)));
+    }
+    None
+}
+
+fn detached_stat(backend: &DetachedStatBackend, path: &str) -> Result<StatResult, FsError> {
+    match backend {
+        DetachedStatBackend::CoreFs(driver) => Filesystem::stat(driver.as_ref(), path),
+        DetachedStatBackend::ExFat(driver) => Filesystem::stat(driver.as_ref(), path),
+    }
+}
+
+fn prepare_detached_root_stat(path: &str, follow_last: bool) -> Option<DetachedStatBackend> {
+    if !follow_last || is_dev_path(path) {
+        return None;
+    }
+    let vfs = vfs_lock();
+    let state = vfs.as_ref()?;
+    if find_submount(path, &state.mount_points).is_some() {
+        return None;
+    }
+    root_stat_backend(state)
+}
+
 impl VfsState {
     /// Returns the active root filesystem as a generic
     /// [`Filesystem`] reference, or `None` if no root has been
@@ -261,7 +462,7 @@ impl VfsState {
     /// driver-specific APIs.
     fn root_fs(&self) -> Option<&(dyn Filesystem + Send + Sync)> {
         if let Some(d) = self.exfat_fs.as_ref() {
-            return Some(d);
+            return Some(d.as_ref());
         }
         if let Some(d) = self.fat_fs.as_ref() {
             return Some(d);
@@ -270,7 +471,7 @@ impl VfsState {
             return Some(d);
         }
         if let Some(d) = self.corefs_driver.as_ref() {
-            return Some(d);
+            return Some(d.as_ref());
         }
         self.root_other.as_deref()
     }
@@ -290,14 +491,14 @@ impl VfsState {
     fn corefs_for_mount(&self, mount_path: &str) -> Option<&crate::fs::corefs::CoreFsDriver> {
         if mount_path == "/" {
             if self.root_fs_type == Some(FsType::CoreFs) {
-                return self.corefs_driver.as_ref();
+                return self.corefs_driver.as_deref();
             }
             return None;
         }
         self.mounted_corefs
             .iter()
             .find(|(p, _)| p == mount_path)
-            .map(|(_, d)| d)
+            .map(|(_, d)| d.as_ref())
     }
 
     /// Find the CoreFS driver that serves the absolute file path `path`.
@@ -312,15 +513,40 @@ impl VfsState {
                     .mounted_corefs
                     .iter()
                     .find(|(p, _)| p == mp)
-                    .map(|(_, d)| d);
+                    .map(|(_, d)| d.as_ref());
             }
             return None;
         }
         if self.root_fs_type == Some(FsType::CoreFs) {
-            self.corefs_driver.as_ref()
+            self.corefs_driver.as_deref()
         } else {
             None
         }
+    }
+
+    fn corefs_handle_for_path(&self, path: &str) -> Option<Arc<crate::fs::corefs::CoreFsDriver>> {
+        if let Some((mp, _rel, t)) = path::find_submount(path, &self.mount_points) {
+            if t == FsType::CoreFs {
+                return self
+                    .mounted_corefs
+                    .iter()
+                    .find(|(p, _)| p == mp)
+                    .map(|(_, d)| Arc::clone(d));
+            }
+            return None;
+        }
+        if self.root_fs_type == Some(FsType::CoreFs) {
+            self.corefs_driver.as_ref().map(Arc::clone)
+        } else {
+            None
+        }
+    }
+
+    fn mounted_exfat_handle_for_path(&self, path: &str) -> Option<Arc<ExFatFsDriver>> {
+        self.mounted_exfat
+            .iter()
+            .find(|(p, _)| path.starts_with(p.as_str()))
+            .map(|(_, d)| Arc::clone(d))
     }
 
     /// Allocate a free slot in the global open_files table. O(1) via free stack.
@@ -369,7 +595,7 @@ pub(crate) struct ResolvedEntry {
 
 /// Initialize the VFS, reserving file descriptors 0-2 for stdin/stdout/stderr.
 pub fn init() {
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     *vfs = Some(VfsState {
         open_files: Vec::new(),
         mount_points: Vec::new(),
@@ -399,7 +625,7 @@ pub fn init() {
 
 /// Check if a root disk filesystem is mounted.
 pub fn has_root_fs() -> bool {
-    let vfs = VFS.lock();
+    let vfs = vfs_lock();
     vfs.as_ref().map(|s| s.has_root()).unwrap_or(false)
 }
 
@@ -465,7 +691,7 @@ const ROOT_FS_PROBES: &[RootFsProbe] = &[
 fn probe_mount_corefs(state: &mut VfsState, dev: u32, lba: u32, sectors: u64) -> bool {
     match crate::fs::corefs::try_mount_root_typed(dev, lba, sectors) {
         Some(driver) => {
-            state.corefs_driver = Some(driver);
+            state.corefs_driver = Some(Arc::new(driver));
             true
         }
         None => false,
@@ -475,7 +701,7 @@ fn probe_mount_corefs(state: &mut VfsState, dev: u32, lba: u32, sectors: u64) ->
 fn probe_mount_exfat(state: &mut VfsState, dev: u32, lba: u32, sectors: u64) -> bool {
     match crate::fs::exfat::try_mount_root_typed(dev, lba, sectors) {
         Some(driver) => {
-            state.exfat_fs = Some(driver);
+            state.exfat_fs = Some(Arc::new(driver));
             true
         }
         None => false,
@@ -518,7 +744,7 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
         fs_type,
         device_id
     );
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().expect("VFS not initialized");
 
     let actual_type =
@@ -584,7 +810,7 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
 
 /// Remove a mount point entry by path (used to clean up failed mounts).
 pub fn remove_mount(path: &str) {
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     if let Some(ref mut state) = *vfs {
         state.mount_points.retain(|mp| mp.path != path);
     }
@@ -614,7 +840,7 @@ pub fn mount_corefs(
     )
     .map_err(|e| crate::fs::corefs::corefs_to_fs_error(&e))?;
     let driver = crate::fs::corefs::CoreFsDriver::mount_writable(adapter)?;
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
     if path == "/" {
         // Root mount — populated by the generic `probe_mount_corefs` path
@@ -622,7 +848,7 @@ pub fn mount_corefs(
         if state.corefs_driver.is_some() {
             return Err(FsError::AlreadyExists);
         }
-        state.corefs_driver = Some(driver);
+        state.corefs_driver = Some(Arc::new(driver));
     } else {
         // Sub-mount — each partition lives in its own driver slot so that
         // statfs / read / write dispatch per mount path.
@@ -631,7 +857,9 @@ pub fn mount_corefs(
         {
             return Err(FsError::AlreadyExists);
         }
-        state.mounted_corefs.push((String::from(path), driver));
+        state
+            .mounted_corefs
+            .push((String::from(path), Arc::new(driver)));
     }
     state.mount_points.push(MountPoint {
         path: String::from(path),
@@ -662,7 +890,7 @@ pub fn mount_fuse(mount_path: &str, session_id: u32) -> Result<(), FsError> {
     if crate::fs::fuse::session(session_id).is_none() {
         return Err(FsError::NotFound);
     }
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
     // Duplikatprüfung.
     for mp in &state.mount_points {
@@ -688,7 +916,7 @@ pub fn mount_fuse(mount_path: &str, session_id: u32) -> Result<(), FsError> {
 ///
 /// Returns `Ok(false)` when no CoreFS volume is mounted.
 pub fn sync_corefs() -> Result<bool, FsError> {
-    let vfs = VFS.lock();
+    let vfs = vfs_lock();
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
     let mut any = false;
     if let Some(driver) = state.corefs_driver.as_ref() {
@@ -705,7 +933,7 @@ pub fn sync_corefs() -> Result<bool, FsError> {
 /// Mount the device filesystem at /dev, bridging built-in virtual devices
 /// with HAL-registered hardware devices.
 pub fn mount_devfs() {
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().expect("VFS not initialized");
     let mut devfs = DevFs::new();
     devfs.populate_from_hal();
@@ -721,7 +949,7 @@ pub fn mount_devfs() {
 /// Enable the OverlayFS: writable RAM layer over the ISO 9660 root filesystem.
 /// Call this after mounting ISO 9660 as root (CD-ROM boot without a disk filesystem).
 pub fn enable_overlay() {
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().expect("VFS not initialized");
     if state.iso9660_fs.is_some() && state.overlay_fs.is_none() {
         state.overlay_fs = Some(OverlayFs::new());
@@ -731,7 +959,7 @@ pub fn enable_overlay() {
 
 /// Check if the overlay filesystem is active.
 pub fn has_overlay() -> bool {
-    let vfs = VFS.lock();
+    let vfs = vfs_lock();
     if let Some(ref state) = *vfs {
         state.overlay_fs.is_some()
     } else {
@@ -741,7 +969,7 @@ pub fn has_overlay() -> bool {
 
 /// Open a file by path with the given flags. Returns a file descriptor on success.
 pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // Count actually occupied slots (not None holes left by close())
@@ -847,10 +1075,11 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                     .find(|(p, _)| *p == mount_path_owned)
                     .map(|(_, fs)| fs)
                     .ok_or(FsError::IoError)?;
+                let mut exfat = exfat.lock_inner();
                 let lookup_result = if flags.write || flags.create || flags.truncate {
                     exfat.lookup(relative_path)
                 } else {
-                    resolve_exfat_path(exfat, relative_path, true)
+                    resolve_exfat_path(&exfat, relative_path, true)
                         .map(|r| (r.inode, r.file_type, r.size))
                 };
                 let (inode, file_type, size, parent_cluster) = match lookup_result {
@@ -886,6 +1115,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                     }
                     Err(e) => return Err(e),
                 };
+                drop(exfat);
                 let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
                 let position = if flags.append { size } else { 0 };
                 let file = OpenFile {
@@ -1176,7 +1406,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
 
     // --- CoreFS root path (Phase 6 generic dispatch) ---
     if state.corefs_driver.is_some() {
-        let driver = state.corefs_driver.as_ref().unwrap();
+        let driver = state.corefs_driver.as_ref().unwrap().as_ref();
         let q = if path.is_empty() { "/" } else { path };
         let (inode, file_type, size) = match Filesystem::lookup(driver, q) {
             Ok(r) => {
@@ -1301,8 +1531,9 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
 pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
     let mut do_writeback = false;
     let mut disks_to_flush: Vec<u8> = Vec::new();
+    let mut corefs_to_flush: Option<Arc<crate::fs::corefs::CoreFsDriver>> = None;
     {
-        let mut vfs = VFS.lock();
+        let mut vfs = vfs_lock();
         let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
         let (refcount, fs_id, was_writable) = {
@@ -1335,8 +1566,8 @@ pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
                     .and_then(|e| e.as_ref())
                     .map(|f| f.path.clone())
                 {
-                    if let Some(driver) = state.corefs_for_path(&path) {
-                        let _ = driver.flush();
+                    if let Some(driver) = state.corefs_handle_for_path(&path) {
+                        corefs_to_flush = Some(driver);
                     }
                 }
             }
@@ -1362,12 +1593,15 @@ pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
     if do_writeback {
         flush_blockcache_for_disks(&disks_to_flush);
     }
+    if let Some(driver) = corefs_to_flush {
+        let _ = driver.flush();
+    }
     Ok(())
 }
 
 /// Increment the reference count on a global open file slot (for fork/dup).
 pub fn incref(slot_id: u32) {
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     if let Some(state) = vfs.as_mut() {
         if let Some(Some(file)) = state.open_files.get_mut(slot_id as usize) {
             file.refcount += 1;
@@ -1381,7 +1615,7 @@ pub fn incref(slot_id: u32) {
 /// cluster runs into fewer storage commands. CoreFS deliberately stays on the
 /// conservative syscall chunk size selected by `sys_write`.
 pub fn preferred_write_chunk(slot_id: FileDescriptor) -> usize {
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let Some(state) = vfs.as_mut() else {
         return 16 * 1024;
     };
@@ -1402,7 +1636,8 @@ pub fn preferred_write_chunk(slot_id: FileDescriptor) -> usize {
 pub fn decref(slot_id: u32) {
     let mut do_writeback = false;
     let mut disks_to_flush: Vec<u8> = Vec::new();
-    let mut vfs = VFS.lock();
+    let mut corefs_to_flush: Option<Arc<crate::fs::corefs::CoreFsDriver>> = None;
+    let mut vfs = vfs_lock();
     if let Some(state) = vfs.as_mut() {
         let snapshot = state
             .open_files
@@ -1430,8 +1665,8 @@ pub fn decref(slot_id: u32) {
                         .and_then(|e| e.as_ref())
                         .map(|f| f.path.clone())
                     {
-                        if let Some(driver) = state.corefs_for_path(&path) {
-                            let _ = driver.flush();
+                        if let Some(driver) = state.corefs_handle_for_path(&path) {
+                            corefs_to_flush = Some(driver);
                         }
                     }
                 }
@@ -1456,12 +1691,427 @@ pub fn decref(slot_id: u32) {
     if do_writeback {
         flush_blockcache_for_disks(&disks_to_flush);
     }
+    if let Some(driver) = corefs_to_flush {
+        let _ = driver.flush();
+    }
+}
+
+fn prepare_detached_read(slot_id: FileDescriptor, len: usize) -> Result<DetachedReadPrep, FsError> {
+    if len == 0 {
+        return Ok(DetachedReadPrep::Eof);
+    }
+
+    let mut vfs = vfs_lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+    let (fs_id, path, position, size, inode) = {
+        let file = state
+            .open_files
+            .get(slot_id as usize)
+            .and_then(|e| e.as_ref())
+            .ok_or(FsError::BadFd)?;
+        (
+            file.fs_id,
+            file.path.clone(),
+            file.position,
+            file.size,
+            file.inode,
+        )
+    };
+
+    let backend = match fs_id {
+        3 => {
+            let driver = state
+                .exfat_fs
+                .as_ref()
+                .map(Arc::clone)
+                .ok_or(FsError::IoError)?;
+            DetachedReadBackend::ExFat(driver)
+        }
+        6 => {
+            let driver = state
+                .mounted_exfat_handle_for_path(&path)
+                .ok_or(FsError::IoError)?;
+            DetachedReadBackend::ExFat(driver)
+        }
+        8 => {
+            let driver = state
+                .corefs_handle_for_path(&path)
+                .ok_or(FsError::IoError)?;
+            DetachedReadBackend::CoreFs(driver)
+        }
+        _ => return Ok(DetachedReadPrep::Unsupported),
+    };
+
+    if position >= size {
+        return Ok(DetachedReadPrep::Eof);
+    }
+
+    let remaining = (size - position) as usize;
+    let reserved = len.min(remaining);
+    let file = state
+        .open_files
+        .get_mut(slot_id as usize)
+        .and_then(|e| e.as_mut())
+        .ok_or(FsError::BadFd)?;
+    if file.fs_id != fs_id || file.inode != inode || file.path != path || file.position != position
+    {
+        return Err(FsError::BadFd);
+    }
+    file.position = position.saturating_add(reserved as u32);
+
+    Ok(DetachedReadPrep::Ready(DetachedRead {
+        backend,
+        inode,
+        position,
+        size,
+        reserved,
+        path,
+    }))
+}
+
+fn finish_detached_read(
+    slot_id: FileDescriptor,
+    plan: &DetachedRead,
+    result: Result<usize, FsError>,
+) -> Result<usize, FsError> {
+    let bytes_read = match result {
+        Ok(n) => n,
+        Err(err) => {
+            rollback_detached_read(slot_id, plan, plan.reserved);
+            return Err(err);
+        }
+    };
+
+    let unread = plan.reserved.saturating_sub(bytes_read);
+    if unread > 0 && detached_read_file_changed(slot_id, plan) {
+        rollback_detached_read(slot_id, plan, unread);
+        return Err(FsError::IoError);
+    }
+    if unread == 0 {
+        return Ok(bytes_read);
+    }
+    rollback_detached_read(slot_id, plan, unread);
+    Ok(bytes_read)
+}
+
+fn execute_detached_read(plan: &DetachedRead, buf: &mut [u8]) -> Result<usize, FsError> {
+    let mut total = 0usize;
+    while total < plan.reserved {
+        let offset = plan.position.saturating_add(total as u32);
+        let chunk = &mut buf[total..plan.reserved];
+        let n = match &plan.backend {
+            DetachedReadBackend::CoreFs(driver) => {
+                Filesystem::read(driver.as_ref(), plan.inode, offset, chunk)
+            }
+            DetachedReadBackend::ExFat(driver) => {
+                Filesystem::read(driver.as_ref(), plan.inode, offset, chunk)
+            }
+        }?;
+        if n == 0 {
+            break;
+        }
+        total = total.saturating_add(n.min(chunk.len()));
+    }
+    Ok(total)
+}
+
+fn rollback_detached_read(slot_id: FileDescriptor, plan: &DetachedRead, amount: usize) {
+    if amount == 0 {
+        return;
+    }
+
+    let mut vfs = vfs_lock();
+    let Some(state) = vfs.as_mut() else {
+        return;
+    };
+    let Some(Some(file)) = state.open_files.get_mut(slot_id as usize) else {
+        return;
+    };
+    if file.inode != plan.inode || file.path != plan.path {
+        return;
+    }
+    file.position = file.position.saturating_sub(amount as u32);
+}
+
+fn detached_read_file_changed(slot_id: FileDescriptor, plan: &DetachedRead) -> bool {
+    let vfs = vfs_lock();
+    let Some(state) = vfs.as_ref() else {
+        return true;
+    };
+    let Some(Some(file)) = state.open_files.get(slot_id as usize) else {
+        return true;
+    };
+    file.inode != plan.inode || file.path != plan.path || file.size != plan.size
+}
+
+fn prepare_detached_write(
+    slot_id: FileDescriptor,
+    len: usize,
+) -> Result<DetachedWritePrep, FsError> {
+    if len == 0 {
+        return Ok(DetachedWritePrep::Empty);
+    }
+
+    let mut vfs = vfs_lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+    let (
+        fs_id,
+        path,
+        inode,
+        size,
+        position,
+        parent_cluster,
+        seek_cache_offset,
+        seek_cache_cluster,
+        sync_write,
+    ) = {
+        let file = state
+            .open_files
+            .get(slot_id as usize)
+            .and_then(|e| e.as_ref())
+            .ok_or(FsError::BadFd)?;
+        if !file.flags.write {
+            return Err(FsError::PermissionDenied);
+        }
+        (
+            file.fs_id,
+            file.path.clone(),
+            file.inode,
+            file.size,
+            file.position,
+            file.parent_cluster,
+            file.seek_cache_offset,
+            file.seek_cache_cluster,
+            file.flags.sync,
+        )
+    };
+
+    let backend = match fs_id {
+        3 => {
+            let driver = state
+                .exfat_fs
+                .as_ref()
+                .map(Arc::clone)
+                .ok_or(FsError::IoError)?;
+            DetachedWriteBackend::ExFat(driver)
+        }
+        6 => {
+            let driver = state
+                .mounted_exfat_handle_for_path(&path)
+                .ok_or(FsError::IoError)?;
+            DetachedWriteBackend::ExFat(driver)
+        }
+        8 => {
+            let driver = state
+                .corefs_handle_for_path(&path)
+                .ok_or(FsError::IoError)?;
+            DetachedWriteBackend::CoreFs(driver)
+        }
+        _ => return Ok(DetachedWritePrep::Unsupported),
+    };
+
+    let file = state
+        .open_files
+        .get_mut(slot_id as usize)
+        .and_then(|e| e.as_mut())
+        .ok_or(FsError::BadFd)?;
+    if file.fs_id != fs_id || file.inode != inode || file.path != path || file.position != position
+    {
+        return Err(FsError::BadFd);
+    }
+    file.position = position.saturating_add(len as u32);
+
+    let seek_hint = if seek_cache_cluster >= 2 && seek_cache_offset <= position {
+        Some((seek_cache_offset, seek_cache_cluster))
+    } else {
+        None
+    };
+
+    Ok(DetachedWritePrep::Ready(DetachedWrite {
+        backend,
+        fs_id,
+        inode,
+        old_inode: inode,
+        old_size: size,
+        position,
+        reserved: len,
+        path,
+        parent_cluster,
+        seek_hint,
+        sync_write,
+    }))
+}
+
+fn execute_detached_write(
+    plan: &DetachedWrite,
+    buf: &[u8],
+) -> Result<DetachedWriteResult, FsError> {
+    match &plan.backend {
+        DetachedWriteBackend::CoreFs(driver) => {
+            let bytes_written = Filesystem::write(driver.as_ref(), plan.inode, plan.position, buf)?;
+            Ok(DetachedWriteResult::CoreFs { bytes_written })
+        }
+        DetachedWriteBackend::ExFat(driver) => {
+            let mut exfat = driver.lock_inner();
+            let (new_cluster, new_size, hint_offset, hint_cluster) = exfat.write_file_with_hint(
+                plan.old_inode,
+                plan.position,
+                buf,
+                plan.old_size,
+                plan.seek_hint,
+            )?;
+            Ok(DetachedWriteResult::ExFat(DetachedExFatWriteResult {
+                new_cluster,
+                new_size,
+                hint_offset,
+                hint_cluster,
+            }))
+        }
+    }
+}
+
+fn finish_detached_write(
+    slot_id: FileDescriptor,
+    plan: &DetachedWrite,
+    result: Result<DetachedWriteResult, FsError>,
+) -> Result<usize, FsError> {
+    let result = match result {
+        Ok(result) => result,
+        Err(err) => {
+            rollback_detached_write(slot_id, plan, plan.reserved);
+            return Err(err);
+        }
+    };
+
+    match result {
+        DetachedWriteResult::CoreFs { bytes_written } => {
+            let unread = plan.reserved.saturating_sub(bytes_written);
+            if unread > 0 {
+                rollback_detached_write(slot_id, plan, unread);
+            }
+            {
+                let mut vfs = vfs_lock();
+                let state = vfs.as_mut().ok_or(FsError::IoError)?;
+                let file = state
+                    .open_files
+                    .get_mut(slot_id as usize)
+                    .and_then(|e| e.as_mut())
+                    .ok_or(FsError::BadFd)?;
+                if file.fs_id != plan.fs_id || file.inode != plan.inode || file.path != plan.path {
+                    return Err(FsError::BadFd);
+                }
+                let written_end = plan.position.saturating_add(bytes_written as u32);
+                file.size = core::cmp::max(file.size, core::cmp::max(plan.old_size, written_end));
+            }
+            if plan.sync_write {
+                if let DetachedWriteBackend::CoreFs(driver) = &plan.backend {
+                    driver.flush()?;
+                }
+            }
+            Ok(bytes_written)
+        }
+        DetachedWriteResult::ExFat(exfat_result) => {
+            finish_detached_exfat_write(slot_id, plan, exfat_result)
+        }
+    }
+}
+
+fn finish_detached_exfat_write(
+    slot_id: FileDescriptor,
+    plan: &DetachedWrite,
+    result: DetachedExFatWriteResult,
+) -> Result<usize, FsError> {
+    let mut disks_to_flush = Vec::new();
+    {
+        let mut vfs = vfs_lock();
+        let state = vfs.as_mut().ok_or(FsError::IoError)?;
+        let file = state
+            .open_files
+            .get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
+            .ok_or(FsError::BadFd)?;
+        if file.fs_id != plan.fs_id || file.path != plan.path {
+            return Err(FsError::BadFd);
+        }
+        file.inode = result.new_cluster;
+        file.size = result.new_size;
+        file.seek_cache_offset = result.hint_offset;
+        file.seek_cache_cluster = result.hint_cluster;
+        if result.new_cluster != plan.old_inode || result.new_size != plan.old_size {
+            file.entry_dirty = true;
+        }
+        if plan.sync_write {
+            if let Some(disk_id) = commit_open_exfat_entry(state, slot_id as usize, true)? {
+                queue_disk_flush(&mut disks_to_flush, disk_id);
+            }
+        }
+    }
+
+    if plan.sync_write {
+        flush_blockcache_for_disks(&disks_to_flush);
+        crate::drivers::storage::flush();
+    } else {
+        maybe_flush_exfat_metadata_periodic();
+    }
+    Ok(plan.reserved)
+}
+
+fn rollback_detached_write(slot_id: FileDescriptor, plan: &DetachedWrite, amount: usize) {
+    if amount == 0 {
+        return;
+    }
+
+    let mut vfs = vfs_lock();
+    let Some(state) = vfs.as_mut() else {
+        return;
+    };
+    let Some(Some(file)) = state.open_files.get_mut(slot_id as usize) else {
+        return;
+    };
+    if file.fs_id != plan.fs_id || file.path != plan.path {
+        return;
+    }
+    file.position = file.position.saturating_sub(amount as u32);
+}
+
+fn maybe_flush_exfat_metadata_periodic() {
+    let wc = WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    if wc % FLUSH_INTERVAL != FLUSH_INTERVAL - 1 {
+        return;
+    }
+
+    let mut vfs = vfs_lock();
+    let Some(state) = vfs.as_mut() else {
+        return;
+    };
+    if let Some(exfat_drv) = state.exfat_fs.as_ref() {
+        let mut exfat_guard = exfat_drv.lock_inner();
+        let exfat = &mut *exfat_guard;
+        if exfat.metadata_dirty {
+            let _ = exfat.flush_metadata();
+        }
+    }
+    for (_path, exfat) in &mut state.mounted_exfat {
+        let mut exfat = exfat.lock_inner();
+        if exfat.metadata_dirty {
+            let _ = exfat.flush_metadata();
+        }
+    }
 }
 
 /// Read bytes from an open file into `buf`. `slot_id` is the global open_files index.
 /// Returns the number of bytes read (0 at EOF).
 pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
-    let mut vfs = VFS.lock();
+    match prepare_detached_read(slot_id, buf.len())? {
+        DetachedReadPrep::Eof => return Ok(0),
+        DetachedReadPrep::Ready(plan) => {
+            let result = execute_detached_read(&plan, buf);
+            return finish_detached_read(slot_id, &plan, result);
+        }
+        DetachedReadPrep::Unsupported => {}
+    }
+
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // Direct index lookup
@@ -1494,6 +2144,7 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
             .find(|(p, _)| file_path.starts_with(p.as_str()))
             .map(|(_, fs)| fs)
             .ok_or(FsError::IoError)?;
+        let exfat = exfat.lock_inner();
         let bytes_read = exfat.read_file(file_inode, file_position, &mut buf[..to_read])?;
         let file = state
             .open_files
@@ -1667,7 +2318,16 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
 /// Write bytes from `buf` to an open file. `slot_id` is the global open_files index.
 /// Returns the number of bytes written.
 pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
-    let mut vfs = VFS.lock();
+    match prepare_detached_write(slot_id, buf.len())? {
+        DetachedWritePrep::Empty => return Ok(0),
+        DetachedWritePrep::Ready(plan) => {
+            let result = execute_detached_write(&plan, buf);
+            return finish_detached_write(slot_id, &plan, result);
+        }
+        DetachedWritePrep::Unsupported => {}
+    }
+
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // Direct index lookup
@@ -1732,6 +2392,7 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
             .find(|(p, _)| file_path.starts_with(p.as_str()))
             .map(|(_, fs)| fs)
             .ok_or(FsError::IoError)?;
+        let mut exfat = exfat.lock_inner();
         let (new_cluster, new_size, hint_offset, hint_cluster) =
             exfat.write_file_with_hint(old_inode, position, buf, old_size, hint)?;
         let file = state
@@ -1747,6 +2408,7 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
         if new_cluster != old_inode || new_size != old_size {
             file.entry_dirty = true;
         }
+        drop(exfat);
         if sync_write {
             let mut disks_to_flush = Vec::new();
             if let Some(disk_id) = commit_open_exfat_entry(state, slot_id as usize, true)? {
@@ -1930,6 +2592,7 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
             }
         }
         for (_path, exfat) in &mut state.mounted_exfat {
+            let mut exfat = exfat.lock_inner();
             if exfat.metadata_dirty {
                 let _ = exfat.flush_metadata();
             }
@@ -1940,7 +2603,7 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
 
 /// Read directory entries at a given path.
 pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // --- /dev directory ---
@@ -2005,6 +2668,7 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
                     .find(|(p, _)| *p == mount_path_owned)
                     .map(|(_, fs)| fs)
                     .ok_or(FsError::IoError)?;
+                let exfat = exfat.lock_inner();
                 let (inode, file_type, _size) = exfat.lookup(relative_path)?;
                 if file_type != FileType::Directory {
                     return Err(FsError::NotADirectory);
@@ -2124,6 +2788,7 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
 
     // --- CoreFS root path (Phase 6 generic dispatch) ---
     if let Some(driver) = state.corefs_driver.as_ref() {
+        let driver = driver.as_ref();
         let q = if path.is_empty() { "/" } else { path };
         let (inode, file_type, _size) = Filesystem::lookup(driver, q)?;
         if file_type != FileType::Directory {
@@ -2219,7 +2884,7 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
 
     // Try mount point path (e.g. /mnt/cdrom0/..., /mnt/share/...)
     {
-        let mut vfs = VFS.lock();
+        let mut vfs = vfs_lock();
         let state = vfs.as_mut().ok_or(FsError::IoError)?;
         if let Some((mount_path, relative_path, mnt_fs_type)) =
             find_submount(path, &state.mount_points)
@@ -2239,7 +2904,8 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
                         .find(|(p, _)| *p == mount_path_owned)
                         .map(|(_, fs)| fs)
                         .ok_or(FsError::IoError)?;
-                    let r = resolve_exfat_path(exfat, relative_path, true)?;
+                    let exfat = exfat.lock_inner();
+                    let r = resolve_exfat_path(&exfat, relative_path, true)?;
                     let inode = r.inode;
                     let file_type = r.file_type;
                     let size = r.size;
@@ -2275,7 +2941,7 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
 
     // Phase 1: Under VFS lock — lookup + build read plan (no disk I/O)
     let plan = {
-        let vfs = VFS.lock();
+        let vfs = vfs_lock();
         let state = vfs.as_ref().ok_or(FsError::IoError)?;
         if let Some(exfat_drv) = state.exfat_fs.as_ref() {
             let exfat_guard = exfat_drv.lock_inner();
@@ -2302,6 +2968,7 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
             }
             ReadPlan::Fat(fat.get_file_read_plan(cluster, size))
         } else if let Some(driver) = state.corefs_driver.as_ref() {
+            let driver = driver.as_ref();
             // CoreFS root path: dispatch via the Filesystem trait.  CoreFS
             // already streams through its own block cache so we don't need
             // a deferred read plan like the cluster-based filesystems —
@@ -2337,7 +3004,7 @@ pub fn delete(path: &str) -> Result<(), FsError> {
     if is_dev_path(path) {
         return Err(FsError::PermissionDenied);
     }
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // --- Mount point path (SMB / CoreFS delete) ---
@@ -2442,7 +3109,7 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
     if is_dev_path(old_path) || is_dev_path(new_path) {
         return Err(FsError::PermissionDenied);
     }
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // CoreFS rename/move — currently supported only when source and target
@@ -2544,7 +3211,7 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
     if is_dev_path(path) {
         return Err(FsError::PermissionDenied);
     }
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // --- Mount point path (e.g. /mnt/target/...) ---
@@ -2601,6 +3268,7 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
                 .find(|(p, _)| *p == mount_path_owned)
                 .map(|(_, fs)| fs)
                 .ok_or(FsError::IoError)?;
+            let mut exfat = exfat.lock_inner();
             let (pr_inode, pr_type, _) = exfat.lookup(parent_rel)?;
             if pr_type != FileType::Directory {
                 return Err(FsError::NotADirectory);
@@ -2639,7 +3307,7 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
 /// Seek within an open file. `slot_id` is the global open_files index.
 /// Returns new position.
 pub fn lseek(slot_id: FileDescriptor, offset: i32, whence: u32) -> Result<u32, FsError> {
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     let file = state
@@ -2699,7 +3367,12 @@ pub fn lstat(path: &str) -> Result<StatResult, FsError> {
 }
 
 fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
-    let mut vfs = VFS.lock();
+    if let Some(backend) = prepare_detached_root_stat(path, follow_last) {
+        let q = if path.is_empty() { "/" } else { path };
+        return detached_stat(&backend, q);
+    }
+
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     let default_stat = |ft, sz, sym| StatResult {
@@ -2764,7 +3437,8 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
                     .find(|(p, _)| *p == mount_path_owned)
                     .map(|(_, fs)| fs)
                     .ok_or(FsError::IoError)?;
-                let r = resolve_exfat_path(exfat, relative_path, follow_last)?;
+                let exfat = exfat.lock_inner();
+                let r = resolve_exfat_path(&exfat, relative_path, follow_last)?;
                 return Ok(StatResult {
                     file_type: r.file_type,
                     size: r.size,
@@ -2871,6 +3545,7 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
 
     // --- CoreFS root path (Phase 6 generic dispatch) ---
     if let Some(driver) = state.corefs_driver.as_ref() {
+        let driver = driver.as_ref();
         let q = if path.is_empty() { "/" } else { path };
         return Filesystem::stat(driver, q);
     }
@@ -2911,7 +3586,7 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
 /// Get file info by slot_id (global open_files index).
 /// Returns (file_type, size, position, mtime).
 pub fn fstat(slot_id: FileDescriptor) -> Result<(FileType, u32, u32, u32), FsError> {
-    let vfs = VFS.lock();
+    let vfs = vfs_lock();
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
 
     let file = state
@@ -2949,7 +3624,7 @@ pub fn fstat(slot_id: FileDescriptor) -> Result<(FileType, u32, u32, u32), FsErr
 
 /// Get the path associated with an open file descriptor.
 pub fn get_fd_path(slot_id: FileDescriptor) -> Result<alloc::string::String, FsError> {
-    let vfs = VFS.lock();
+    let vfs = vfs_lock();
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
     let file = state
         .open_files
@@ -2964,7 +3639,7 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
     if is_dev_path(path) {
         return Err(FsError::PermissionDenied);
     }
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // CoreFS truncate-to-zero via driver.
@@ -3058,7 +3733,7 @@ fn resolve_mount_device(
 ///
 /// Returns Ok(()) on success.
 pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), FsError> {
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // Check for duplicate mount point
@@ -3082,7 +3757,10 @@ pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), F
             );
             match ExFatFs::new(bdev.disk_id as u32, start_lba) {
                 Ok(exfat) => {
-                    state.mounted_exfat.push((String::from(mount_path), exfat));
+                    state.mounted_exfat.push((
+                        String::from(mount_path),
+                        Arc::new(ExFatFsDriver::new(exfat)),
+                    ));
                     state.mount_points.push(MountPoint {
                         path: String::from(mount_path),
                         fs_type: FsType::ExFat,
@@ -3144,7 +3822,7 @@ pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), F
             drop(vfs);
             let smb = SmbFs::connect(device)?;
             // Re-acquire lock to update state
-            let mut vfs = VFS.lock();
+            let mut vfs = vfs_lock();
             let state = vfs.as_mut().ok_or(FsError::IoError)?;
             // Re-check for duplicate (could have been added while lock was dropped)
             for mp in &state.mount_points {
@@ -3220,7 +3898,7 @@ pub fn fdatasync(slot_id: FileDescriptor) -> Result<(), FsError> {
 }
 
 fn sync_file(slot_id: FileDescriptor, flush_hardware: bool) -> Result<(), FsError> {
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     let file = state
@@ -3232,6 +3910,7 @@ fn sync_file(slot_id: FileDescriptor, flush_hardware: bool) -> Result<(), FsErro
     let fs_id = file.fs_id;
 
     let mut disks_to_flush: Vec<u8> = Vec::new();
+    let mut corefs_to_flush: Option<Arc<crate::fs::corefs::CoreFsDriver>> = None;
     match fs_id {
         3 => {
             if let Some(disk_id) = commit_open_exfat_entry(state, slot_id as usize, true)? {
@@ -3245,14 +3924,20 @@ fn sync_file(slot_id: FileDescriptor, flush_hardware: bool) -> Result<(), FsErro
         }
         8 => {
             let file_path = file.path.clone();
-            let driver = state.corefs_for_path(&file_path).ok_or(FsError::IoError)?;
-            driver.flush()?;
+            corefs_to_flush = Some(
+                state
+                    .corefs_handle_for_path(&file_path)
+                    .ok_or(FsError::IoError)?,
+            );
         }
         _ => {} // Other filesystems flush synchronously already
     }
 
     // Flush write-back block cache, then storage hardware cache
     drop(vfs);
+    if let Some(driver) = corefs_to_flush {
+        driver.flush()?;
+    }
     flush_blockcache_for_disks(&disks_to_flush);
     if flush_hardware {
         crate::drivers::storage::flush();
@@ -3263,7 +3948,7 @@ fn sync_file(slot_id: FileDescriptor, flush_hardware: bool) -> Result<(), FsErro
 /// Flush all dirty filesystem metadata and storage write caches.
 pub fn sync_all() {
     let mut disks_to_flush: Vec<u8> = Vec::new();
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     if let Some(state) = vfs.as_mut() {
         for idx in 0..state.open_files.len() {
             let needs_commit = state
@@ -3287,6 +3972,7 @@ pub fn sync_all() {
         }
         // Flush all mounted exFAT filesystems
         for (_path, exfat) in &mut state.mounted_exfat {
+            let mut exfat = exfat.lock_inner();
             let _ = exfat.flush_metadata();
             queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
         }
@@ -3305,7 +3991,7 @@ pub fn sync_all() {
 }
 
 pub fn umount_fs(mount_path: &str) -> Result<(), FsError> {
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // Don't allow unmounting root or /dev
@@ -3340,7 +4026,7 @@ pub fn umount_fs(mount_path: &str) -> Result<(), FsError> {
                 .position(|(p, _)| p == mount_path)
             {
                 // Flush any pending metadata before dropping
-                let _ = state.mounted_exfat[idx].1.flush_metadata();
+                let _ = state.mounted_exfat[idx].1.lock_inner().flush_metadata();
                 state.mounted_exfat.remove(idx);
             }
         }
@@ -3391,7 +4077,7 @@ pub fn create_symlink(link_path: &str, target: &str) -> Result<(), FsError> {
     if is_dev_path(link_path) {
         return Err(FsError::PermissionDenied);
     }
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // CoreFS symlinks via driver.
@@ -3420,7 +4106,8 @@ pub fn create_symlink(link_path: &str, target: &str) -> Result<(), FsError> {
             if name.is_empty() {
                 return Err(FsError::InvalidPath);
             }
-            let pr = resolve_exfat_path(exfat, parent, true)?;
+            let mut exfat = exfat.lock_inner();
+            let pr = resolve_exfat_path(&exfat, parent, true)?;
             if pr.file_type != FileType::Directory {
                 return Err(FsError::NotADirectory);
             }
@@ -3486,7 +4173,7 @@ pub fn readlink(path: &str) -> Result<String, FsError> {
     if is_dev_path(path) {
         return Err(FsError::InvalidPath);
     }
-    let vfs = VFS.lock();
+    let vfs = vfs_lock();
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
 
     // FUSE mounts take precedence over legacy backends.
@@ -3501,7 +4188,8 @@ pub fn readlink(path: &str) -> Result<String, FsError> {
                     .find(|(p, _)| *p == mount_path_owned)
                     .map(|(_, fs)| fs)
                     .ok_or(FsError::IoError)?;
-                let r = resolve_exfat_path(exfat, relative_path, false)?;
+                let exfat = exfat.lock_inner();
+                let r = resolve_exfat_path(&exfat, relative_path, false)?;
                 if !r.is_symlink {
                     return Err(FsError::InvalidPath);
                 }
@@ -3552,6 +4240,7 @@ pub fn readlink(path: &str) -> Result<String, FsError> {
         return exfat.readlink(r.inode, r.size);
     }
     if let Some(driver) = state.corefs_driver.as_ref() {
+        let driver = driver.as_ref();
         let st = Filesystem::stat(driver, path)?;
         if !st.is_symlink {
             return Err(FsError::InvalidPath);
@@ -3564,9 +4253,6 @@ pub fn readlink(path: &str) -> Result<String, FsError> {
 
 /// Get (uid, gid, mode) for a path. Returns defaults for non-exFAT filesystems.
 pub fn get_permissions(path: &str) -> Result<(u16, u16, u16), FsError> {
-    let vfs = VFS.lock();
-    let state = vfs.as_ref().ok_or(FsError::NotFound)?;
-
     // Virtual paths always have root/full-access
     if path == "/dev" || path.starts_with("/dev/") || path == "/mnt" || path.starts_with("/mnt/") {
         return Ok((0, 0, 0xFFF));
@@ -3579,10 +4265,23 @@ pub fn get_permissions(path: &str) -> Result<(u16, u16, u16), FsError> {
     // All three now derive from `stat(path)`, which carries uid/gid/mode
     // when the driver populates them (ExFat: dirent, CoreFS: inode
     // metadata; FAT/NTFS return the trait's `0o777` default).
-    if let Some(driver) = state.root_fs() {
-        let q = if path.is_empty() { "/" } else { path };
-        if let Ok(st) = driver.stat(q) {
+    let q = if path.is_empty() { "/" } else { path };
+    let backend = {
+        let vfs = vfs_lock();
+        let state = vfs.as_ref().ok_or(FsError::NotFound)?;
+        root_stat_backend(state)
+    };
+    if let Some(backend) = backend {
+        if let Ok(st) = detached_stat(&backend, q) {
             return Ok((st.uid, st.gid, st.mode));
+        }
+    } else {
+        let vfs = vfs_lock();
+        let state = vfs.as_ref().ok_or(FsError::NotFound)?;
+        if let Some(driver) = state.root_fs() {
+            if let Ok(st) = driver.stat(q) {
+                return Ok((st.uid, st.gid, st.mode));
+            }
         }
     }
 
@@ -3592,7 +4291,7 @@ pub fn get_permissions(path: &str) -> Result<(u16, u16, u16), FsError> {
 
 /// Set the mode bits for a path.
 pub fn set_mode(path: &str, mode: u16) -> Result<(), FsError> {
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::NotFound)?;
 
     if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points)
@@ -3634,7 +4333,7 @@ pub fn set_mode(path: &str, mode: u16) -> Result<(), FsError> {
 
 /// Set the owner (uid, gid) for a path.
 pub fn set_owner(path: &str, uid: u16, gid: u16) -> Result<(), FsError> {
-    let mut vfs = VFS.lock();
+    let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::NotFound)?;
 
     if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points)
@@ -3678,7 +4377,7 @@ pub fn set_owner(path: &str, uid: u16, gid: u16) -> Result<(), FsError> {
 /// Returns `true` if the root filesystem is ISO 9660 (live-CD / read-only boot).
 /// Used by the permission system to skip persisted-permission checks.
 pub fn root_is_iso9660() -> bool {
-    let vfs = VFS.lock();
+    let vfs = vfs_lock();
     if let Some(ref state) = *vfs {
         state
             .mount_points
@@ -3692,7 +4391,7 @@ pub fn root_is_iso9660() -> bool {
 /// Get filesystem statistics for a mount point path.
 /// Returns `None` if the path is not a valid mount point or no stats available.
 pub fn statfs(path: &str) -> Option<StatFs> {
-    let vfs = VFS.lock();
+    let vfs = vfs_lock();
     let state = vfs.as_ref()?;
 
     // Try all mount points matching the path (there can be multiple, e.g.
@@ -3718,6 +4417,7 @@ pub fn statfs(path: &str) -> Option<StatFs> {
                         .iter()
                         .find(|(mnt_path, _)| mnt_path == path)
                         .map(|(_, fs)| {
+                            let fs = fs.lock_inner();
                             let (total, free) = fs.fs_stats();
                             StatFs {
                                 total_bytes: total,
@@ -3802,7 +4502,7 @@ pub fn statfs(path: &str) -> Option<StatFs> {
 /// at boot with a placeholder device_id, so we substitute the resolved root
 /// blockdev ID (recorded via `set_root_blockdev_id()`) when available.
 pub fn list_mounts() -> Vec<(String, &'static str, u32)> {
-    let vfs = VFS.lock();
+    let vfs = vfs_lock();
     let root_id = root_blockdev_id().map(|v| v as u32);
     if let Some(ref state) = *vfs {
         state
@@ -3991,5 +4691,3 @@ fn fuse_session_of(file: &OpenFile) -> Result<(u32, Arc<crate::fs::fuse::FuseSes
     let s = crate::fs::fuse::session(sid).ok_or(FsError::NotFound)?;
     Ok((sid, s))
 }
-
-use alloc::sync::Arc;

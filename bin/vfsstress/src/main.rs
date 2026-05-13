@@ -50,6 +50,7 @@ struct Config {
     scratch_mount: String,
     seconds: u32,
     json: bool,
+    serial_log: bool,
 }
 
 struct WorkerConfig {
@@ -78,6 +79,7 @@ impl Config {
             scratch_mount: String::from("/tmp/vfsstress-scratch"),
             seconds: 0,
             json: false,
+            serial_log: false,
         }
     }
 
@@ -176,6 +178,10 @@ fn main() {
         return;
     };
     apply_profile(&mut cfg);
+    if cfg.serial_log {
+        let _ = sys::set_serial_verbose(true);
+        println!("[vfsstress] serial-log enabled");
+    }
 
     println!();
     println!("vfsstress {} - VFS Diagnose", VERSION);
@@ -190,6 +196,7 @@ fn main() {
     println!("  ops:       {}", cfg.ops);
     println!("  seed:      {}", cfg.seed);
     println!("  enospc:    {} KB cap", cfg.enospc_kb);
+    println!("  serial:    {}", if cfg.serial_log { "yes" } else { "no" });
     if cfg.seconds > 0 {
         println!("  seconds:   {}", cfg.seconds);
     }
@@ -220,6 +227,15 @@ fn main() {
         for &block in &blocks {
             let seed = round.wrapping_mul(131).wrapping_add(block as u32);
             let path = format!("{}/r{}-b{}.bin", cfg.dir, round, block);
+            if cfg.serial_log {
+                println!(
+                    "[vfsstress] begin case round={} block={} total_kb={} path={}",
+                    round,
+                    block,
+                    cfg.total_bytes / 1024,
+                    path
+                );
+            }
             let case_started = sys::uptime_ms();
             let result = run_case(&cfg, &path, block, seed);
             print_case(round, &result);
@@ -569,6 +585,7 @@ fn parse_config() -> Option<Config> {
             }
             "--json" => cfg.json = true,
             "--perf" => cfg.json = true,
+            "--serial-log" | "--serial" => cfg.serial_log = true,
             "--keep" => cfg.keep = true,
             other => {
                 println!("vfsstress: unbekannte Option '{}'", other);
@@ -650,6 +667,7 @@ fn print_usage() {
     println!("  --seconds N       zusaetzliche Soak-Dauer in Sekunden");
     println!("  --json            Summary zusaetzlich als JSON-Zeile ausgeben");
     println!("  --perf            Alias fuer --json mit Perf-Metriken als JSONL");
+    println!("  --serial-log      vfsstress-Ausgabe zusaetzlich ins Serial-Log spiegeln");
     println!("  --repeat N        Wiederholungen pro Blockgroesse");
     println!("  --total-kb N      Dateigroesse pro Testfall in KB");
     println!("  --dir PATH        Testverzeichnis (default: /tmp/vfsstress)");
@@ -668,6 +686,9 @@ fn print_usage() {
 fn run_full_suite(cfg: &Config, summary: &mut Summary) {
     println!();
     println!("--- Volltest-Suite ---");
+    if cfg.serial_log {
+        println!("[vfsstress] begin full-suite");
+    }
 
     run_named(cfg, summary, "small io", small_io_case(cfg));
     run_named(
@@ -1838,6 +1859,7 @@ fn scratch_lifecycle_case(cfg: &Config) -> TestOutcome {
         scratch_mount: cfg.scratch_mount.clone(),
         seconds: 0,
         json: false,
+        serial_log: cfg.serial_log,
     };
     if parallel_fsstress_case(&scratch_cfg).is_err() {
         let _ = fs::umount(&cfg.scratch_mount);
@@ -3992,6 +4014,12 @@ fn writeback_stream_case(cfg: &Config, chunk_size: usize) -> Result<String, &'st
         _ => WRITEBACK_STREAM_SIZE,
     };
     let seed = 0x1208_5491;
+    if cfg.serial_log {
+        println!(
+            "[vfsstress] begin stream-write chunk={} total={} path={}",
+            chunk_size, total, path
+        );
+    }
 
     let fd = fs::open(&path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
     if fd == u32::MAX {

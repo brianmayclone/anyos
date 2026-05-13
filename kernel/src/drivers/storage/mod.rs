@@ -73,6 +73,13 @@ static mut BACKEND: StorageBackend = StorageBackend::Ata;
 /// When contended, yields the CPU time slice instead of busy-spinning,
 /// allowing other threads to make progress while waiting for I/O.
 static IO_LOCK: AtomicBool = AtomicBool::new(false);
+static IO_LOCK_OWNER_TID: AtomicU32 = AtomicU32::new(0);
+static IO_LOCK_ACQUIRED_TICK: AtomicU32 = AtomicU32::new(0);
+static IO_LOCK_WAIT_LOGS: AtomicU32 = AtomicU32::new(0);
+static IO_LOCK_HOLD_LOGS: AtomicU32 = AtomicU32::new(0);
+const IO_LOCK_WAIT_WARN_MS: u32 = 50;
+const IO_LOCK_HOLD_WARN_MS: u32 = 250;
+const IO_LOCK_LOG_LIMIT: u32 = 64;
 
 /// Counter for I/O operations in progress (for statistics).
 static IO_OPS_TOTAL: AtomicU32 = AtomicU32::new(0);
@@ -243,19 +250,22 @@ fn check_backend_io_bounds(disk_id: u8, lba: u32, count: u32, op: &str) -> bool 
 
 #[inline]
 fn io_lock_acquire() {
+    let start = crate::arch::hal::timer_current_ticks();
+    let owner_at_start = IO_LOCK_OWNER_TID.load(Ordering::Relaxed);
     // Fast path: try once without yielding
     if IO_LOCK
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_ok()
     {
+        io_lock_record_acquired(start, owner_at_start);
         return;
     }
     // Slow path: yield between attempts (avoids burning CPU cycles)
-    io_lock_acquire_slow();
+    io_lock_acquire_slow(start, owner_at_start);
 }
 
 #[cold]
-fn io_lock_acquire_slow() {
+fn io_lock_acquire_slow(start: u32, owner_at_start: u32) {
     let can_yield = crate::task::scheduler::current_tid() > 0;
     loop {
         // Brief spin (8 iterations) before yielding — handles very short holds
@@ -264,6 +274,7 @@ fn io_lock_acquire_slow() {
                 .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
             {
+                io_lock_record_acquired(start, owner_at_start);
                 return;
             }
             core::hint::spin_loop();
@@ -275,9 +286,45 @@ fn io_lock_acquire_slow() {
     }
 }
 
+fn ticks_to_ms(ticks: u32) -> u32 {
+    let hz = crate::arch::hal::timer_frequency_hz() as u32;
+    if hz == 0 {
+        ticks
+    } else {
+        ((ticks as u64 * 1000) / hz as u64) as u32
+    }
+}
+
+fn io_lock_record_acquired(start: u32, owner_at_start: u32) {
+    let now = crate::arch::hal::timer_current_ticks();
+    let waited_ms = ticks_to_ms(now.wrapping_sub(start));
+    let tid = crate::task::scheduler::current_tid();
+    IO_LOCK_OWNER_TID.store(tid, Ordering::Relaxed);
+    IO_LOCK_ACQUIRED_TICK.store(now, Ordering::Relaxed);
+    if waited_ms >= IO_LOCK_WAIT_WARN_MS
+        && IO_LOCK_WAIT_LOGS.fetch_add(1, Ordering::Relaxed) < IO_LOCK_LOG_LIMIT
+    {
+        crate::serial_println!(
+            "[storage] IO_LOCK wait {} ms tid={} owner_at_start={}",
+            waited_ms,
+            tid,
+            owner_at_start
+        );
+    }
+}
+
 #[inline]
 fn io_lock_release() {
+    let now = crate::arch::hal::timer_current_ticks();
+    let acquired = IO_LOCK_ACQUIRED_TICK.load(Ordering::Relaxed);
+    let held_ms = ticks_to_ms(now.wrapping_sub(acquired));
+    let owner = IO_LOCK_OWNER_TID.swap(0, Ordering::Relaxed);
     IO_LOCK.store(false, Ordering::Release);
+    if held_ms >= IO_LOCK_HOLD_WARN_MS
+        && IO_LOCK_HOLD_LOGS.fetch_add(1, Ordering::Relaxed) < IO_LOCK_LOG_LIMIT
+    {
+        crate::serial_println!("[storage] IO_LOCK held {} ms owner_tid={}", held_ms, owner);
+    }
 }
 
 /// Switch the active storage backend to AHCI (called after AHCI init succeeds).

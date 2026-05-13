@@ -99,6 +99,13 @@ pub fn sys_write(fd: u32, buf_ptr: u64, len: u32) -> u32 {
                     let Some(buf) = copy_user_bytes(buf_ptr, chunk_len, WRITE_COPY_CHUNK) else {
                         return u32::MAX;
                     };
+                    if crate::drivers::serial::is_verbose() {
+                        let lock_state = crate::drivers::serial::output_lock_acquire();
+                        for &byte in &buf {
+                            crate::drivers::serial::write_byte(byte);
+                        }
+                        crate::drivers::serial::output_lock_release(lock_state);
+                    }
                     crate::ipc::pty::write_slave(pty_id, &buf)
                 }
                 FdKind::PipeRead { .. }
