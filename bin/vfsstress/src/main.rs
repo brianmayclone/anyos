@@ -20,6 +20,7 @@ const FSX_HEAVY_OPS: u32 = 1536;
 const FS_TYPE_EXFAT: u32 = 7;
 const FS_TYPE_COREFS: u32 = 6;
 const WORKER_CONFIG_ENV: &str = "VFSSTRESS_WORKER_CONFIG";
+const WORKER_BATCH_ENV: &str = "VFSSTRESS_WORKER_BATCH";
 
 fn anyos_version() -> &'static str {
     option_env!("ANYOS_VERSION").unwrap_or("dev")
@@ -230,8 +231,12 @@ fn parse_worker_config() -> Option<WorkerConfig> {
             if let Some(cfg) = read_worker_config_file(path) {
                 return Some(cfg);
             }
+        } else if let Some(cfg) = parse_worker_args(raw) {
+            return Some(cfg);
         }
-        if let Some(cfg) = parse_worker_args(raw) {
+    }
+    if has_arg(raw, "--worker-batch") {
+        if let Some(cfg) = parse_worker_batch(raw) {
             return Some(cfg);
         }
     }
@@ -242,6 +247,16 @@ fn parse_worker_config() -> Option<WorkerConfig> {
         let n = (len as usize).min(env_buf.len());
         if let Ok(path) = core::str::from_utf8(&env_buf[..n]) {
             if let Some(cfg) = read_worker_config_file(path.trim_matches(char::from(0))) {
+                return Some(cfg);
+            }
+        }
+    }
+
+    let len = env::get(WORKER_BATCH_ENV, &mut env_buf);
+    if len != u32::MAX && len > 0 {
+        let n = (len as usize).min(env_buf.len());
+        if let Ok(raw) = core::str::from_utf8(&env_buf[..n]) {
+            if let Some(cfg) = parse_worker_batch(raw.trim_matches(char::from(0))) {
                 return Some(cfg);
             }
         }
@@ -325,6 +340,28 @@ fn arg_value<'a>(raw: &'a str, key: &str) -> Option<&'a str> {
 fn read_worker_config_file(path: &str) -> Option<WorkerConfig> {
     let raw = read_small_text_file(path, 512).ok()?;
     parse_worker_args(&raw)
+}
+
+fn parse_worker_batch(raw: &str) -> Option<WorkerConfig> {
+    if !has_arg(raw, "--worker-batch") {
+        return None;
+    }
+    let mut cfg = parse_worker_args(&raw.replace("--worker-batch", "--worker"))?;
+    cfg.worker = claim_worker_id(&cfg.dir, cfg.workers)?;
+    cfg.seed ^= cfg.worker.wrapping_mul(0x9E37);
+    Some(cfg)
+}
+
+fn claim_worker_id(root: &str, workers: u32) -> Option<u32> {
+    let claims = format!("{}/claims", root);
+    let _ = fs::mkdir(&claims);
+    for worker in 0..workers {
+        let claim = format!("{}/w{:02}", claims, worker);
+        if fs::mkdir(&claim) == 0 {
+            return Some(worker);
+        }
+    }
+    None
 }
 
 fn parse_config() -> Option<Config> {
@@ -551,6 +588,7 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
     run_named_with_warning(summary, "symlink eloop", symlink_eloop_case(cfg));
     run_named(summary, "fsx random model", fsx_random_model_case(cfg));
     run_named(summary, "sparse eof gaps", sparse_eof_gap_case(cfg));
+    run_named(summary, "sparse hole matrix", sparse_hole_matrix_case(cfg));
     run_named(summary, "fsstress metadata", fsstress_metadata_case(cfg));
     run_named(summary, "close reopen sync", close_reopen_sync_case(cfg));
     run_named(summary, "open unlink rename", open_unlink_rename_case(cfg));
@@ -827,10 +865,17 @@ fn append_truncate_case(cfg: &Config) -> Result<String, &'static str> {
 }
 
 fn parallel_fsstress_case(cfg: &Config) -> Result<String, &'static str> {
-    let root = format!("{}/full-parallel-fsstress", cfg.dir);
+    let root = format!("{}/full-parallel-fsstress-{}", cfg.dir, sys::uptime_ms());
     mkdir_parents(&root);
     let shared = format!("{}/shared", root);
     let _ = fs::mkdir(&shared);
+    let claims = format!("{}/claims", root);
+    let _ = fs::mkdir(&claims);
+    let batch_args = format!(
+        "--worker-batch --dir {} --workers {} --ops {} --seed {}",
+        root, cfg.workers, cfg.ops, cfg.seed
+    );
+    env::set(WORKER_BATCH_ENV, &batch_args);
 
     let mut tids = Vec::new();
     for worker in 0..cfg.workers {
@@ -846,16 +891,13 @@ fn parallel_fsstress_case(cfg: &Config) -> Result<String, &'static str> {
         );
         let config_path = format!("{}/worker.cfg", worker_dir);
         write_bytes_file(&config_path, worker_args.as_bytes())?;
-        env::set(WORKER_CONFIG_ENV, &config_path);
-        let args = format!("--worker --config {}", config_path);
-        let tid = spawn_vfsstress(&args);
+        let tid = spawn_vfsstress(&batch_args);
         if tid == u32::MAX {
-            env::unset(WORKER_CONFIG_ENV);
+            env::unset(WORKER_BATCH_ENV);
             return Err("spawn-worker");
         }
         tids.push(tid);
     }
-    env::unset(WORKER_CONFIG_ENV);
 
     let mut failures = 0u32;
     for tid in tids {
@@ -864,8 +906,9 @@ fn parallel_fsstress_case(cfg: &Config) -> Result<String, &'static str> {
             failures += 1;
         }
     }
+    env::unset(WORKER_BATCH_ENV);
     if failures != 0 {
-        return Err("worker-failed");
+        return Err(read_parallel_worker_failure(&root, cfg.workers));
     }
 
     fs::sync();
@@ -893,6 +936,27 @@ fn spawn_vfsstress(args: &str) -> u32 {
     process::spawn("vfsstress", args)
 }
 
+fn read_parallel_worker_failure(root: &str, workers: u32) -> &'static str {
+    for worker in 0..workers {
+        let fail = format!("{}/w{:02}/fail.txt", root, worker);
+        if let Ok(data) = read_small_text_file(&fail, 192) {
+            println!("    worker-fail: {}", data.trim());
+            return "worker-failed-detail";
+        }
+    }
+    "worker-failed"
+}
+
+fn write_worker_failure(cfg: &WorkerConfig, op: u32, err: &str) {
+    let own = format!("{}/w{:02}", cfg.dir, cfg.worker);
+    let fail = format!("{}/fail.txt", own);
+    let detail = format!(
+        "worker={} op={} ops={} seed={} error={}\n",
+        cfg.worker, op, cfg.ops, cfg.seed, err
+    );
+    let _ = write_bytes_file(&fail, detail.as_bytes());
+}
+
 fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
     let own = format!("{}/w{:02}", cfg.dir, cfg.worker);
     let shared = format!("{}/shared", cfg.dir);
@@ -902,21 +966,34 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
     let mut buf = [0u8; 2048];
 
     for op in 0..cfg.ops {
+        macro_rules! worker_try {
+            ($expr:expr) => {
+                if let Err(err) = $expr {
+                    write_worker_failure(cfg, op, err);
+                    return Err(err);
+                }
+            };
+        }
         let slot = rng.range(0, 31);
         match rng.next() % 11 {
             0 => {
                 let path = format!("{}/f{:02}.dat", own, slot);
                 let len = rng.range(1, buf.len() as u32) as usize;
                 fill_pattern(&mut buf[..len], 0, cfg.seed ^ slot);
-                write_bytes_file(&path, &buf[..len])?;
-                verify_file_pattern_large(&path, len as u32, cfg.seed ^ slot, 1024)?;
+                worker_try!(write_bytes_file(&path, &buf[..len]));
+                worker_try!(verify_file_pattern_large(
+                    &path,
+                    len as u32,
+                    cfg.seed ^ slot,
+                    1024
+                ));
             }
             1 => {
                 let path = format!("{}/f{:02}.dat", own, slot);
                 let len = rng.range(1, 512) as usize;
                 fill_pattern(&mut buf[..len], stat_size_or_zero(&path), cfg.seed ^ op);
-                append_to_file(&path, &buf[..len])?;
-                let _ = stat_size(&path)?;
+                worker_try!(append_to_file(&path, &buf[..len]));
+                worker_try!(stat_size(&path).map(|_| ()));
             }
             2 => {
                 let a = format!("{}/f{:02}.dat", own, slot);
@@ -938,11 +1015,20 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
                 let path = format!("{}/hot-w{:02}-{:04}.dat", shared, cfg.worker, op);
                 let renamed = format!("{}/hot-w{:02}-{:04}.ren", shared, cfg.worker, op);
                 fill_pattern(&mut buf[..128], op, cfg.seed);
-                write_bytes_file(&path, &buf[..128])?;
+                worker_try!(write_bytes_file(&path, &buf[..128]));
                 if fs::rename(&path, &renamed) != 0 {
+                    write_worker_failure(cfg, op, "shared-rename");
                     return Err("shared-rename");
                 }
-                if stat_size(&renamed)? != 128 {
+                let size = match stat_size(&renamed) {
+                    Ok(size) => size,
+                    Err(err) => {
+                        write_worker_failure(cfg, op, err);
+                        return Err(err);
+                    }
+                };
+                if size != 128 {
+                    write_worker_failure(cfg, op, "shared-stat");
                     return Err("shared-stat");
                 }
                 let _ = fs::unlink(&renamed);
@@ -1466,7 +1552,17 @@ fn fsx_random_model_case(cfg: &Config) -> Result<String, &'static str> {
                     let off = rng.range(0, model.len() as u32) as usize;
                     let max_read = (model.len() - off).min(8192);
                     let len = rng.range(1, max_read as u32) as usize;
-                    verify_read_at(&path, off as u32, &model[off..off + len])?;
+                    if let Err(err) = verify_read_at(&path, off as u32, &model[off..off + len]) {
+                        println!(
+                            "    fsx-fail: op={} read off={} len={} model_len={} err={}",
+                            op,
+                            off,
+                            len,
+                            model.len(),
+                            err
+                        );
+                        return Err("verify-read");
+                    }
                 }
             }
             _ => {
@@ -1477,12 +1573,28 @@ fn fsx_random_model_case(cfg: &Config) -> Result<String, &'static str> {
 
         if op % 31 == 0 {
             fs::sync();
-            verify_file_bytes(&path, &model)?;
+            if let Err(err) = verify_file_bytes(&path, &model) {
+                println!(
+                    "    fsx-fail: op={} checkpoint model_len={} err={}",
+                    op,
+                    model.len(),
+                    err
+                );
+                return Err("verify-checkpoint");
+            }
         }
     }
 
     fs::sync();
-    verify_file_bytes(&path, &model)?;
+    if let Err(err) = verify_file_bytes(&path, &model) {
+        println!(
+            "    fsx-fail: final ops={} model_len={} err={}",
+            ops,
+            model.len(),
+            err
+        );
+        return Err("verify-final");
+    }
     if !cfg.keep {
         let _ = fs::unlink(&path);
     }
@@ -1531,6 +1643,62 @@ fn sparse_eof_gap_case(cfg: &Config) -> Result<String, &'static str> {
         let _ = fs::unlink(&path);
     }
     Ok("EOF-Erweiterung mit Null-Gap ok".into())
+}
+
+fn sparse_hole_matrix_case(cfg: &Config) -> Result<String, &'static str> {
+    let path = format!("{}/full-sparse-hole-matrix.bin", cfg.dir);
+    let _ = fs::unlink(&path);
+
+    let head = b"sparse-head";
+    let mid = b"sparse-mid";
+    let tail = b"sparse-tail";
+    let mid_off = 32 * 1024u32;
+    let tail_off = 96 * 1024u32;
+
+    write_at(&path, 0, head)?;
+    write_at(&path, tail_off, tail)?;
+    fs::sync();
+
+    if stat_size(&path)? != tail_off + tail.len() as u32 {
+        return Err("stat-tail-size");
+    }
+    verify_read_at(&path, 0, head)?;
+    verify_zero_range(&path, head.len() as u32, mid_off - head.len() as u32)?;
+    verify_zero_range(&path, mid_off, tail_off - mid_off)?;
+    verify_read_at(&path, tail_off, tail)?;
+
+    write_at(&path, mid_off, mid)?;
+    if stat_size(&path)? != tail_off + tail.len() as u32 {
+        return Err("stat-mid-size");
+    }
+    verify_read_at(&path, 0, head)?;
+    verify_zero_range(&path, head.len() as u32, mid_off - head.len() as u32)?;
+    verify_read_at(&path, mid_off, mid)?;
+    verify_zero_range(
+        &path,
+        mid_off + mid.len() as u32,
+        tail_off - mid_off - mid.len() as u32,
+    )?;
+    verify_read_at(&path, tail_off, tail)?;
+
+    if fs::truncate(&path) != 0 {
+        return Err("truncate-zero");
+    }
+    if stat_size(&path)? != 0 {
+        return Err("truncate-zero-size");
+    }
+
+    write_at(&path, 4096, tail)?;
+    if stat_size(&path)? != 4096 + tail.len() as u32 {
+        return Err("stat-regrow-size");
+    }
+    verify_zero_range(&path, 0, 4096)?;
+    verify_read_at(&path, 4096, tail)?;
+
+    if !cfg.keep {
+        let _ = fs::unlink(&path);
+    }
+    Ok("Head/Mid/Tail-Holes, Teil-Overwrite und Truncate-Regrow ok".into())
 }
 
 fn fsstress_metadata_case(cfg: &Config) -> Result<String, &'static str> {
@@ -2852,8 +3020,43 @@ fn verify_read_at(path: &str, offset: u32, expected: &[u8]) -> Result<(), &'stat
     Ok(())
 }
 
+fn verify_zero_range(path: &str, offset: u32, len: u32) -> Result<(), &'static str> {
+    let fd = fs::open(path, 0);
+    if fd == u32::MAX {
+        return Err("open-read-zero");
+    }
+    if fs::lseek(fd, offset as i32, fs::SEEK_SET) != offset {
+        fs::close(fd);
+        return Err("seek-zero");
+    }
+    let mut buf = [0xCCu8; 2048];
+    let mut done = 0u32;
+    while done < len {
+        let want = (len - done).min(buf.len() as u32) as usize;
+        let n = fs::read(fd, &mut buf[..want]);
+        if n != want as u32 {
+            fs::close(fd);
+            return Err("read-zero");
+        }
+        if buf[..want].iter().any(|&b| b != 0) {
+            fs::close(fd);
+            return Err("zero-verify");
+        }
+        done += want as u32;
+    }
+    fs::close(fd);
+    Ok(())
+}
+
 fn verify_file_bytes(path: &str, expected: &[u8]) -> Result<(), &'static str> {
-    if stat_size(path)? != expected.len() as u32 {
+    let size = stat_size(path)?;
+    if size != expected.len() as u32 {
+        println!(
+            "    verify-file: path={} size={} expected_size={}",
+            path,
+            size,
+            expected.len()
+        );
         return Err("stat-size");
     }
     let fd = fs::open(path, 0);
@@ -2867,9 +3070,25 @@ fn verify_file_bytes(path: &str, expected: &[u8]) -> Result<(), &'static str> {
         let n = fs::read(fd, &mut buf[..want]);
         if n != want as u32 {
             fs::close(fd);
+            println!(
+                "    verify-file: path={} read_short off={} got={} want={}",
+                path, done, n, want
+            );
             return Err("read-short");
         }
         if buf[..want] != expected[done..done + want] {
+            for i in 0..want {
+                if buf[i] != expected[done + i] {
+                    println!(
+                        "    verify-file: path={} bad_off={} got={} expected={}",
+                        path,
+                        done + i,
+                        buf[i],
+                        expected[done + i]
+                    );
+                    break;
+                }
+            }
             fs::close(fd);
             return Err("verify");
         }
