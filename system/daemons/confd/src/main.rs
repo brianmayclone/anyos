@@ -396,8 +396,10 @@ fn main() {
 
         if !ready_notified {
             retry_counter = retry_counter.saturating_add(1);
-            // Retry roughly every ~500ms regardless of pipe activity.
-            let threshold = if active { 25 } else { 5 };
+            // Keep boot readiness snappy if AMI was not reachable during the
+            // first startup race. Idle iterations sleep for 100ms, active ones
+            // for 20ms, so this retries at roughly 100ms cadence.
+            let threshold = if active { 5 } else { 1 };
             if retry_counter >= threshold {
                 retry_counter = 0;
                 if lifecycle.is_none() {

@@ -15,3 +15,4 @@ EXPORTS
     libdb_result_is_null
     libdb_result_free
     libdb_flush
+    libdb_table_row_count

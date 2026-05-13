@@ -177,6 +177,29 @@ pub extern "C" fn libdb_flush(handle: u32) -> u32 {
     }
 }
 
+/// Return the stored row count for a table, or u32::MAX if the table/handle is invalid.
+#[no_mangle]
+pub extern "C" fn libdb_table_row_count(
+    handle: u32,
+    table_ptr: *const u8,
+    table_len: u32,
+) -> u32 {
+    let table_name = unsafe {
+        let slice = core::slice::from_raw_parts(table_ptr, table_len as usize);
+        core::str::from_utf8(slice).unwrap_or("")
+    };
+    if table_name.is_empty() {
+        return u32::MAX;
+    }
+    let Some(db) = get_db(handle) else {
+        return u32::MAX;
+    };
+    let Some(table_idx) = schema::find_table(&db.tables, table_name) else {
+        return u32::MAX;
+    };
+    db.tables[table_idx].row_count
+}
+
 /// Get the last error message for a handle.
 /// Returns number of bytes written to buf, or 0 if no error.
 #[no_mangle]

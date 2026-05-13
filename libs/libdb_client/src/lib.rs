@@ -110,6 +110,17 @@ impl Database {
         }
     }
 
+    /// Return the stored row count for a table.
+    pub fn table_row_count(&self, table: &str) -> Option<u32> {
+        let table_row_count = libdb_table_row_count()?;
+        let result = table_row_count(self.handle, table.as_ptr(), table.len() as u32);
+        if result == u32::MAX {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
     /// Close the database explicitly.
     pub fn close(self) {
         // Drop will handle it
@@ -122,6 +133,19 @@ impl Drop for Database {
             (lib().libdb_close)(self.handle);
         }
     }
+}
+
+#[cfg(not(feature = "host"))]
+fn libdb_table_row_count() -> Option<extern "C" fn(u32, *const u8, u32) -> u32> {
+    let ptr = dynlink::dl_sym(&lib()._handle, "libdb_table_row_count")?;
+    Some(unsafe {
+        core::mem::transmute_copy::<*const (), extern "C" fn(u32, *const u8, u32) -> u32>(&ptr)
+    })
+}
+
+#[cfg(feature = "host")]
+fn libdb_table_row_count() -> Option<extern "C" fn(u32, *const u8, u32) -> u32> {
+    None
 }
 
 // ── QueryResult ──────────────────────────────────────────────────────────────

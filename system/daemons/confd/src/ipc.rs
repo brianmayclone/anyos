@@ -992,13 +992,6 @@ fn cmd_list(state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
         return;
     };
     let items = state.list_prefix(&canonical_path);
-    anyos_std::println!(
-        "confd: LIST tid={} reply='{}' path='{}' -> {} items",
-        tid,
-        reply_pipe_name,
-        rest,
-        items.len()
-    );
     for entry in &items {
         if !send_line(
             reply_pipe_name,
@@ -1022,11 +1015,6 @@ fn cmd_list(state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
         );
         return;
     }
-    anyos_std::println!(
-        "confd: LIST tid={} reply='{}' sent END",
-        tid,
-        reply_pipe_name
-    );
 }
 
 fn cmd_list_children(state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
@@ -1036,13 +1024,6 @@ fn cmd_list_children(state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &
         return;
     };
     let items = state.list_direct_children(&canonical_path);
-    anyos_std::println!(
-        "confd: LISTCHILDREN tid={} reply='{}' path='{}' -> {} items",
-        tid,
-        reply_pipe_name,
-        rest,
-        items.len()
-    );
     for entry in &items {
         if !send_line(
             reply_pipe_name,
@@ -1066,11 +1047,6 @@ fn cmd_list_children(state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &
         );
         return;
     }
-    anyos_std::println!(
-        "confd: LISTCHILDREN tid={} reply='{}' sent END",
-        tid,
-        reply_pipe_name
-    );
 }
 
 fn cmd_audit(db: &Database, _state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {

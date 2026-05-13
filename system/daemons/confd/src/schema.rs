@@ -40,22 +40,31 @@ pub struct AuditEntry {
 }
 
 pub fn init_tables(db: &Database) {
+    let mut changed = false;
     for sql in CREATE_STATEMENTS {
-        if let Err(err) = db.exec(sql) {
-            if !err.contains("already exists") {
-                anyos_std::println!("confd: CREATE TABLE error: {}", err);
+        match db.exec(sql) {
+            Ok(_) => changed = true,
+            Err(err) => {
+                if !err.contains("already exists") {
+                    anyos_std::println!("confd: CREATE TABLE error: {}", err);
+                }
             }
         }
     }
     for sql in ALTER_STATEMENTS {
-        if let Err(err) = db.exec(sql) {
-            if !err.contains("duplicate column") && !err.contains("already exists") {
-                anyos_std::println!("confd: ALTER TABLE error: {}", err);
+        match db.exec(sql) {
+            Ok(_) => changed = true,
+            Err(err) => {
+                if !err.contains("duplicate column") && !err.contains("already exists") {
+                    anyos_std::println!("confd: ALTER TABLE error: {}", err);
+                }
             }
         }
     }
-    if let Err(err) = db.flush() {
-        anyos_std::println!("confd: database flush after init_tables failed: {}", err);
+    if changed {
+        if let Err(err) = db.flush() {
+            anyos_std::println!("confd: database flush after init_tables failed: {}", err);
+        }
     }
 }
 
@@ -114,6 +123,10 @@ pub fn load_entries(db: &Database) -> Vec<RegistryEntry> {
 }
 
 pub fn load_next_audit_seq(db: &Database) -> u64 {
+    if let Some(row_count) = db.table_row_count("audit") {
+        return row_count as u64 + 1;
+    }
+
     let Ok(result) = db.query("SELECT seq FROM audit ORDER BY seq DESC LIMIT 1") else {
         return 1;
     };

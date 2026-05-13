@@ -101,6 +101,11 @@ fn wait_for_confd_ready() -> bool {
     PROGRESS.store(8, Ordering::Release);
 
     for attempt in 0..200 {
+        if confd_ping_ready() {
+            println!("init: confd pipe responded");
+            return true;
+        }
+
         match AmiClient::connect("init") {
             Ok(mut ami) => match ami.get("svc.confd.ready") {
                 Ok(item) => {
@@ -114,13 +119,56 @@ fn wait_for_confd_ready() -> bool {
             Err(_) => {}
         }
 
-        if attempt % 25 == 0 {
+        if attempt != 0 && attempt % 50 == 0 {
             println!("init: waiting for confd readiness...");
         }
         process::sleep(20);
     }
 
     println!("init: WARNING - timed out waiting for confd readiness");
+    false
+}
+
+fn confd_ping_ready() -> bool {
+    const REQ_PIPE: &str = "confd";
+    const REPLY_PIPE: &str = "confd-init-ready";
+
+    let req_pipe = anyos_std::ipc::pipe_open(REQ_PIPE);
+    if req_pipe == 0 || req_pipe == u32::MAX {
+        return false;
+    }
+
+    let old_reply = anyos_std::ipc::pipe_open(REPLY_PIPE);
+    if old_reply != 0 && old_reply != u32::MAX {
+        anyos_std::ipc::pipe_close(old_reply);
+    }
+
+    let reply_pipe = anyos_std::ipc::pipe_create(REPLY_PIPE);
+    if reply_pipe == 0 || reply_pipe == u32::MAX {
+        return false;
+    }
+
+    let written = anyos_std::ipc::pipe_write(req_pipe, b"0\tconfd-init-ready\tPING\n");
+    if written == 0 || written == u32::MAX {
+        anyos_std::ipc::pipe_close(reply_pipe);
+        return false;
+    }
+
+    let mut buf = [0u8; 16];
+    for _ in 0..60 {
+        let n = anyos_std::ipc::pipe_read(reply_pipe, &mut buf);
+        if n == u32::MAX {
+            anyos_std::ipc::pipe_close(reply_pipe);
+            return false;
+        }
+        if n > 0 {
+            anyos_std::ipc::pipe_close(reply_pipe);
+            return &buf[..n as usize] == b"PONG\n";
+        }
+        process::sleep(2);
+    }
+
+    anyos_std::ipc::pipe_close(reply_pipe);
     false
 }
 
