@@ -602,6 +602,7 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
     run_named(summary, "open unlink rename", open_unlink_rename_case(cfg));
     run_named(summary, "metadata rename", metadata_rename_case(cfg));
     run_named(summary, "directory churn", directory_churn_case(cfg));
+    run_named(summary, "metadata perf", metadata_perf_case(cfg));
     run_named(
         summary,
         "readdir mutation",
@@ -2032,6 +2033,72 @@ fn directory_churn_case(cfg: &Config) -> Result<String, &'static str> {
         }
     }
     Ok("32 create/rename/readdir ok".into())
+}
+
+fn metadata_perf_case(cfg: &Config) -> Result<String, &'static str> {
+    let dir = format!("{}/full-metadata-perf", cfg.dir);
+    let _ = fs::mkdir(&dir);
+    let count = match cfg.profile {
+        Profile::Quick => 64u32,
+        Profile::Normal => 256u32,
+        Profile::Heavy => 1024u32,
+    };
+    for i in 0..count {
+        let _ = fs::unlink(&format!("{}/p{:04}.dat", dir, i));
+        let _ = fs::unlink(&format!("{}/r{:04}.dat", dir, i));
+    }
+
+    let create_start = sys::uptime_ms();
+    for i in 0..count {
+        let path = format!("{}/p{:04}.dat", dir, i);
+        write_bytes_file(&path, &[(i & 0xff) as u8])?;
+    }
+    let create_ms = elapsed_ms(create_start);
+
+    let stat_start = sys::uptime_ms();
+    for i in 0..count {
+        let path = format!("{}/p{:04}.dat", dir, i);
+        if stat_size(&path)? != 1 {
+            return Err("stat-size");
+        }
+    }
+    let stat_ms = elapsed_ms(stat_start);
+
+    let rename_start = sys::uptime_ms();
+    for i in 0..count {
+        let from = format!("{}/p{:04}.dat", dir, i);
+        let to = format!("{}/r{:04}.dat", dir, i);
+        if fs::rename(&from, &to) != 0 {
+            return Err("rename");
+        }
+    }
+    let rename_ms = elapsed_ms(rename_start);
+
+    let readdir_start = sys::uptime_ms();
+    let seen = count_dir_entries(&dir, "r")?;
+    let readdir_ms = elapsed_ms(readdir_start);
+    if seen != count {
+        return Err("readdir-count");
+    }
+
+    let unlink_start = sys::uptime_ms();
+    for i in 0..count {
+        let path = format!("{}/r{:04}.dat", dir, i);
+        if fs::unlink(&path) != 0 {
+            return Err("unlink");
+        }
+    }
+    let unlink_ms = elapsed_ms(unlink_start);
+
+    Ok(format!(
+        "{} Eintraege: create={} ops/s, stat={} ops/s, rename={} ops/s, readdir={} entries/s, unlink={} ops/s",
+        count,
+        ops_per_s(count, create_ms),
+        ops_per_s(count, stat_ms),
+        ops_per_s(count, rename_ms),
+        ops_per_s(count, readdir_ms),
+        ops_per_s(count, unlink_ms)
+    ))
 }
 
 fn readdir_while_mutating_case(cfg: &Config) -> Result<String, &'static str> {
@@ -3774,6 +3841,13 @@ fn kb_per_s(bytes: u32, ms: u32) -> u32 {
         return 0;
     }
     ((bytes as u64 * 1000) / (ms as u64 * 1024)) as u32
+}
+
+fn ops_per_s(ops: u32, ms: u32) -> u32 {
+    if ms == 0 {
+        return ops.saturating_mul(1000);
+    }
+    ((ops as u64 * 1000) / ms as u64) as u32
 }
 
 fn elapsed_ms(start: u32) -> u32 {

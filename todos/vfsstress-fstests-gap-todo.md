@@ -588,9 +588,15 @@ Akzeptanz:
 
 ## [P2] Performance-Baselines
 
+Status:
+
+- Teilweise umgesetzt in `vfsstress`:
+  - `metadata_perf_case`
+  - create/stat/rename/readdir/unlink Durchsatz als ops/s bzw. entries/s
+  - Profilabhaengige Eintragszahlen fuer quick/normal/heavy
+
 Fehlt:
 
-- Reproduzierbare create/s, stat/s, rename/s, unlink/s, readdir/s.
 - Getrennte Datenraten fuer sequential write, sequential read, random overwrite.
 - Vergleichbare Ausgabe fuer CoreFS vs exFAT.
 
@@ -598,10 +604,10 @@ TODO:
 
 - `--perf` oder `--json` Report-Modus ergaenzen.
 - Metriken:
+  - create/stat/rename/unlink ops/s. [umgesetzt]
+  - readdir entries/s. [umgesetzt]
   - sequential write/read KB/s.
   - random overwrite ops/s.
-  - create/stat/rename/unlink ops/s.
-  - readdir entries/s.
   - sync latency.
   - fsync latency p50/p95/max, soweit ohne Heap-heavy Statistik machbar.
 - Output stabil maschinenlesbar machen.
