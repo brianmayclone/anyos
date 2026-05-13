@@ -644,6 +644,11 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
     run_named(summary, "append truncate", append_truncate_case(cfg));
     run_named(summary, "parallel fsstress", parallel_fsstress_case(cfg));
     run_named_with_warning(summary, "enospc accounting", enospc_accounting_case(cfg));
+    run_named_with_warning(
+        summary,
+        "enospc dir growth",
+        enospc_directory_growth_case(cfg),
+    );
     if !cfg.scratch_device.is_empty() {
         run_named_with_warning(summary, "scratch lifecycle", scratch_lifecycle_case(cfg));
     }
@@ -711,6 +716,11 @@ fn run_soak_suite(cfg: &Config, summary: &mut Summary) {
         run_named(summary, "soak metadata", fsstress_metadata_case(cfg));
         run_named(summary, "soak parallel", parallel_fsstress_case(cfg));
         run_named_with_warning(summary, "soak enospc", enospc_accounting_case(cfg));
+        run_named_with_warning(
+            summary,
+            "soak enospc dir",
+            enospc_directory_growth_case(cfg),
+        );
         run_named(summary, "soak sequential", sequential_io_perf_case(cfg));
         run_named(summary, "soak sync", sync_latency_perf_case(cfg));
         fs::sync();
@@ -1341,6 +1351,149 @@ fn enospc_accounting_case(cfg: &Config) -> TestOutcome {
             "{} KB geschrieben, kein ENOSPC innerhalb Limit und statfs nicht verfuegbar",
             written / 1024
         ))
+    }
+}
+
+fn enospc_directory_growth_case(cfg: &Config) -> TestOutcome {
+    let dir = format!("{}/full-enospc-dir", cfg.dir);
+    let _ = fs::mkdir(&dir);
+    let cap_bytes = cfg.enospc_kb.saturating_mul(1024).min(8 * 1024 * 1024);
+    let max_files = match cfg.profile {
+        Profile::Quick => 128u32,
+        Profile::Normal => 512u32,
+        Profile::Heavy => 2048u32,
+        Profile::Soak => 2048u32,
+    };
+    let before = fs::statfs(&cfg.dir);
+    let mut buf = [0u8; 512];
+    let entry_bytes = buf.len() as u32;
+    let mut created = 0u32;
+    let mut bytes = 0u32;
+    let mut hit_limit = false;
+
+    for i in 0..max_files {
+        let path = format!("{}/tiny{:05}.dat", dir, i);
+        let _ = fs::unlink(&path);
+        if bytes.saturating_add(entry_bytes) > cap_bytes {
+            hit_limit = true;
+            break;
+        }
+        fill_pattern(
+            &mut buf,
+            i.saturating_mul(entry_bytes),
+            cfg.seed ^ 0xD112_0001,
+        );
+        let fd = fs::open(&path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+        if fd == u32::MAX {
+            hit_limit = true;
+            break;
+        }
+        if fs::write(fd, &buf) != buf.len() as u32 {
+            fs::close(fd);
+            hit_limit = true;
+            break;
+        }
+        fs::close(fd);
+        created += 1;
+        bytes = bytes.saturating_add(entry_bytes);
+    }
+    fs::sync();
+    let filled = fs::statfs(&cfg.dir);
+
+    let rename_count = created.min(64);
+    for i in 0..rename_count {
+        let from = format!("{}/tiny{:05}.dat", dir, i);
+        let to = format!("{}/renamed{:05}.dat", dir, i);
+        let _ = fs::unlink(&to);
+        if fs::rename(&from, &to) != 0 {
+            return TestOutcome::Fail("rename-near-enospc");
+        }
+    }
+    fs::sync();
+
+    let mut deleted = 0u32;
+    for i in 0..created {
+        if i % 2 == 0 {
+            let path = if i < rename_count {
+                format!("{}/renamed{:05}.dat", dir, i)
+            } else {
+                format!("{}/tiny{:05}.dat", dir, i)
+            };
+            if fs::unlink(&path) == 0 {
+                deleted += 1;
+            }
+        }
+    }
+    fs::sync();
+    let after_delete = fs::statfs(&cfg.dir);
+
+    let mut refill = 0u32;
+    for i in 0..deleted.min(32) {
+        let path = format!("{}/refill{:05}.dat", dir, i);
+        fill_pattern(
+            &mut buf,
+            i.saturating_mul(entry_bytes),
+            cfg.seed ^ 0xD112_0002,
+        );
+        let fd = fs::open(&path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+        if fd == u32::MAX {
+            return TestOutcome::Fail("refill-create-near-enospc");
+        }
+        if fs::write(fd, &buf) != buf.len() as u32 {
+            fs::close(fd);
+            return TestOutcome::Fail("refill-write-near-enospc");
+        }
+        fs::close(fd);
+        refill += 1;
+    }
+    fs::sync();
+
+    for i in 0..created {
+        let p1 = format!("{}/tiny{:05}.dat", dir, i);
+        let p2 = format!("{}/renamed{:05}.dat", dir, i);
+        let _ = fs::unlink(&p1);
+        let _ = fs::unlink(&p2);
+    }
+    for i in 0..refill {
+        let _ = fs::unlink(&format!("{}/refill{:05}.dat", dir, i));
+    }
+
+    if created == 0 {
+        return TestOutcome::Fail("no-directory-entry-created");
+    }
+    if let (Some(b), Some(f), Some(a)) = (before, filled, after_delete) {
+        if f.free_bytes > b.free_bytes {
+            return TestOutcome::Fail("dir-statfs-free-increased");
+        }
+        if a.free_bytes < f.free_bytes {
+            return TestOutcome::Fail("dir-statfs-no-reclaim");
+        }
+        let detail = format!(
+            "{} kleine Dateien, {} renamed, {} deleted, {} refill, free {} -> {} -> {}, limit={}",
+            created,
+            rename_count,
+            deleted,
+            refill,
+            b.free_bytes / 1024,
+            f.free_bytes / 1024,
+            a.free_bytes / 1024,
+            if hit_limit { "yes" } else { "no-within-cap" }
+        );
+        if hit_limit {
+            TestOutcome::Ok(detail)
+        } else {
+            TestOutcome::Warn(detail)
+        }
+    } else {
+        let detail = format!(
+            "{} kleine Dateien, {} renamed, {} deleted, {} refill, statfs nicht verfuegbar",
+            created, rename_count, deleted, refill
+        );
+        if hit_limit {
+            TestOutcome::Ok(detail)
+        } else {
+            TestOutcome::Warn(detail)
+        }
     }
 }
 
@@ -2181,15 +2334,27 @@ fn metadata_perf_case(cfg: &Config) -> Result<String, &'static str> {
         }
     }
     let unlink_ms = elapsed_ms(unlink_start);
+    let create_ops = ops_per_s(count, create_ms);
+    let stat_ops = ops_per_s(count, stat_ms);
+    let rename_ops = ops_per_s(count, rename_ms);
+    let readdir_ops = ops_per_s(count, readdir_ms);
+    let unlink_ops = ops_per_s(count, unlink_ms);
+
+    if cfg.json {
+        println!(
+            "{{\"type\":\"perf\",\"test\":\"metadata\",\"entries\":{},\"create_ops_s\":{},\"stat_ops_s\":{},\"rename_ops_s\":{},\"readdir_entries_s\":{},\"unlink_ops_s\":{}}}",
+            count, create_ops, stat_ops, rename_ops, readdir_ops, unlink_ops
+        );
+    }
 
     Ok(format!(
         "{} Eintraege: create={} ops/s, stat={} ops/s, rename={} ops/s, readdir={} entries/s, unlink={} ops/s",
         count,
-        ops_per_s(count, create_ms),
-        ops_per_s(count, stat_ms),
-        ops_per_s(count, rename_ms),
-        ops_per_s(count, readdir_ms),
-        ops_per_s(count, unlink_ms)
+        create_ops,
+        stat_ops,
+        rename_ops,
+        readdir_ops,
+        unlink_ops
     ))
 }
 
@@ -2250,15 +2415,23 @@ fn sequential_io_perf_case(cfg: &Config) -> Result<String, &'static str> {
     }
     fs::close(fd);
     let read_ms = elapsed_ms(read_start);
+    let write_kb_s = kb_per_s(total, write_ms);
+    let read_kb_s = kb_per_s(total, read_ms);
 
     if !cfg.keep {
         let _ = fs::unlink(&path);
     }
+    if cfg.json {
+        println!(
+            "{{\"type\":\"perf\",\"test\":\"sequential_io\",\"bytes\":{},\"chunk\":{},\"write_ms\":{},\"read_ms\":{},\"write_kb_s\":{},\"read_kb_s\":{}}}",
+            total, chunk, write_ms, read_ms, write_kb_s, read_kb_s
+        );
+    }
     Ok(format!(
         "{} KB sequenziell: write={} KB/s read={} KB/s chunk={}K",
         total / 1024,
-        kb_per_s(total, write_ms),
-        kb_per_s(total, read_ms),
+        write_kb_s,
+        read_kb_s,
         chunk / 1024
     ))
 }
@@ -2308,15 +2481,22 @@ fn random_overwrite_perf_case(cfg: &Config) -> Result<String, &'static str> {
     }
     fs::close(fd);
     let ms = elapsed_ms(started);
+    let op_rate = ops_per_s(ops, ms);
 
     if !cfg.keep {
         let _ = fs::unlink(&path);
+    }
+    if cfg.json {
+        println!(
+            "{{\"type\":\"perf\",\"test\":\"random_overwrite\",\"ops\":{},\"patch_bytes\":{},\"elapsed_ms\":{},\"ops_s\":{}}}",
+            ops, patch_len, ms, op_rate
+        );
     }
     Ok(format!(
         "{} x {}K Random-Overwrites: {} ops/s",
         ops,
         patch_len / 1024,
-        ops_per_s(ops, ms)
+        op_rate
     ))
 }
 
@@ -2335,6 +2515,8 @@ fn sync_latency_perf_case(cfg: &Config) -> Result<String, &'static str> {
     let mut sync_min = u32::MAX;
     let mut sync_max = 0u32;
     let mut sync_sum = 0u32;
+    let mut fsync_samples = Vec::new();
+    let mut sync_samples = Vec::new();
     let mut buf = [0u8; 4096];
 
     for round in 0..rounds {
@@ -2358,6 +2540,7 @@ fn sync_latency_perf_case(cfg: &Config) -> Result<String, &'static str> {
         fsync_min = fsync_min.min(fsync_ms);
         fsync_max = fsync_max.max(fsync_ms);
         fsync_sum = fsync_sum.saturating_add(fsync_ms);
+        fsync_samples.push(fsync_ms);
 
         let started = sys::uptime_ms();
         fs::sync();
@@ -2365,6 +2548,7 @@ fn sync_latency_perf_case(cfg: &Config) -> Result<String, &'static str> {
         sync_min = sync_min.min(sync_ms);
         sync_max = sync_max.max(sync_ms);
         sync_sum = sync_sum.saturating_add(sync_ms);
+        sync_samples.push(sync_ms);
     }
 
     if !cfg.keep {
@@ -2372,14 +2556,40 @@ fn sync_latency_perf_case(cfg: &Config) -> Result<String, &'static str> {
             let _ = fs::unlink(&format!("{}/sync{:03}.bin", dir, round));
         }
     }
+    sort_u32(&mut fsync_samples);
+    sort_u32(&mut sync_samples);
+    let fsync_p50 = percentile_sorted(&fsync_samples, 50);
+    let fsync_p95 = percentile_sorted(&fsync_samples, 95);
+    let sync_p50 = percentile_sorted(&sync_samples, 50);
+    let sync_p95 = percentile_sorted(&sync_samples, 95);
+    if cfg.json {
+        println!(
+            "{{\"type\":\"perf\",\"test\":\"sync_latency\",\"rounds\":{},\"fsync_min_ms\":{},\"fsync_avg_ms\":{},\"fsync_p50_ms\":{},\"fsync_p95_ms\":{},\"fsync_max_ms\":{},\"sync_min_ms\":{},\"sync_avg_ms\":{},\"sync_p50_ms\":{},\"sync_p95_ms\":{},\"sync_max_ms\":{}}}",
+            rounds,
+            fsync_min,
+            fsync_sum / rounds,
+            fsync_p50,
+            fsync_p95,
+            fsync_max,
+            sync_min,
+            sync_sum / rounds,
+            sync_p50,
+            sync_p95,
+            sync_max
+        );
+    }
     Ok(format!(
-        "{} Runden: fsync min/avg/max={}/{}/{} ms, sync min/avg/max={}/{}/{} ms",
+        "{} Runden: fsync min/avg/p50/p95/max={}/{}/{}/{}/{} ms, sync min/avg/p50/p95/max={}/{}/{}/{}/{} ms",
         rounds,
         fsync_min,
         fsync_sum / rounds,
+        fsync_p50,
+        fsync_p95,
         fsync_max,
         sync_min,
         sync_sum / rounds,
+        sync_p50,
+        sync_p95,
         sync_max
     ))
 }
@@ -4158,6 +4368,30 @@ fn ops_per_s(ops: u32, ms: u32) -> u32 {
         return ops.saturating_mul(1000);
     }
     ((ops as u64 * 1000) / ms as u64) as u32
+}
+
+fn sort_u32(values: &mut [u32]) {
+    let len = values.len();
+    let mut i = 1usize;
+    while i < len {
+        let key = values[i];
+        let mut j = i;
+        while j > 0 && values[j - 1] > key {
+            values[j] = values[j - 1];
+            j -= 1;
+        }
+        values[j] = key;
+        i += 1;
+    }
+}
+
+fn percentile_sorted(values: &[u32], percentile: u32) -> u32 {
+    if values.is_empty() {
+        return 0;
+    }
+    let last = values.len() - 1;
+    let idx = ((last as u32).saturating_mul(percentile).saturating_add(99)) / 100;
+    values[idx.min(last as u32) as usize]
 }
 
 fn elapsed_ms(start: u32) -> u32 {

@@ -100,17 +100,19 @@ Status:
 
 - Teilweise umgesetzt in `vfsstress`:
   - `enospc_accounting_case`
+  - `enospc_directory_growth_case`
   - CLI-Option `--enospc-kb`
   - bounded Fill-Workload
   - `statfs`-Vergleich vor Fill, nach Fill, nach Delete
   - `WARN`, wenn innerhalb des Limits kein echtes ENOSPC erreicht wird
   - Delete/Reclaim/Refill-Pfad mit Inhaltsverifikation nach erneutem Schreiben
+  - Directory-Wachstum mit vielen kleinen Dateien, Rename/Unlink/Reclaim und
+    Refill-Pfad nahe dem gesetzten ENOSPC-Limit
 
 Fehlt:
 
 - Erzwingbarer kleiner Scratch-Datentraeger, damit ENOSPC deterministisch
   erreicht wird.
-- Korrekte Fehler bei Directory-Wachstum nahe ENOSPC.
 
 TODO:
 
@@ -598,8 +600,10 @@ Status:
   - `random_overwrite_perf_case`
   - 4K Random-Overwrite-Durchsatz
   - `sync_latency_perf_case`
-  - fsync/global-sync min/avg/max Latenzen
+  - fsync/global-sync min/avg/p50/p95/max Latenzen
   - Profilabhaengige Eintragszahlen fuer quick/normal/heavy
+  - JSONL-Performance-Zeilen fuer Metadata, Sequential-IO, Random-Overwrite
+    und Sync-Latenz
 
 Fehlt:
 
@@ -614,9 +618,9 @@ TODO:
   - readdir entries/s. [umgesetzt]
   - sequential write/read KB/s. [umgesetzt]
   - random overwrite ops/s. [umgesetzt]
-  - sync latency. [umgesetzt als min/avg/max]
-  - fsync latency p50/p95/max, soweit ohne Heap-heavy Statistik machbar. [teilweise: min/avg/max]
-- Output stabil maschinenlesbar machen. [teilweise: Summary-JSON umgesetzt]
+  - sync latency. [umgesetzt als min/avg/p50/p95/max]
+  - fsync latency p50/p95/max, soweit ohne Heap-heavy Statistik machbar. [umgesetzt]
+- Output stabil maschinenlesbar machen. [teilweise: Summary-JSON plus Perf-JSONL umgesetzt]
 
 Akzeptanz:
 
@@ -752,7 +756,7 @@ TODO:
   - FS/Pfad. [teilweise: Pfad umgesetzt]
   - Profil. [umgesetzt]
   - Tests mit Status, Dauer, Details.
-  - Performance-Metriken.
+  - Performance-Metriken. [teilweise: JSONL fuer Perf-Testfamilien]
   - Seeds. [umgesetzt]
 
 Akzeptanz:
