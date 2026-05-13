@@ -3,6 +3,7 @@
 
 anyos_std::entry!(main);
 
+use anyos_std::partition::{partition_type_name, KNOWN_PARTITION_TYPES};
 use anyos_std::{print, println};
 
 /// Read a line from stdin (fd 0) into buf, echoing characters.
@@ -144,23 +145,6 @@ fn format_size(sectors: u64, buf: &mut [u8]) -> &str {
     core::str::from_utf8(&buf[..pos]).unwrap_or("?")
 }
 
-/// MBR partition type byte to name.
-fn type_name(t: u8) -> &'static str {
-    match t {
-        0x00 => "Empty",
-        0x01 => "FAT12",
-        0x04 | 0x06 | 0x0E => "FAT16",
-        0x0B | 0x0C => "FAT32",
-        0x07 => "NTFS/exFAT",
-        0x82 => "Linux swap",
-        0x83 => "Linux",
-        0xCF => "CoreFS",
-        0xEE => "GPT protective",
-        0xEF => "EFI System",
-        _ => "Unknown",
-    }
-}
-
 /// Read u64 LE from buffer.
 fn read_u64_le(buf: &[u8], off: usize) -> u64 {
     u64::from_le_bytes([
@@ -184,6 +168,56 @@ fn write_u32_le(buf: &mut [u8], off: usize, val: u32) {
     buf[off + 3] = b[3];
 }
 
+/// Find the block-device ID for a disk partition.
+fn partition_device_id(disk_id: u32, partition_index: u8) -> Option<u32> {
+    const ENTRY: usize = 64;
+    const MAX_DEVS: usize = 16;
+    let mut buf = [0u8; ENTRY * MAX_DEVS];
+    let count = anyos_std::sys::disk_list(&mut buf);
+    if count == u32::MAX {
+        return None;
+    }
+    for i in 0..count as usize {
+        let off = i * ENTRY;
+        if off + ENTRY > buf.len() {
+            break;
+        }
+        if buf[off + 1] as u32 == disk_id && buf[off + 2] == partition_index {
+            return Some(buf[off] as u32);
+        }
+    }
+    None
+}
+
+/// Probe the filesystem signature at the start of a partition device.
+fn probe_fs(device_id: u32) -> &'static str {
+    let mut sector = [0u8; 512];
+    if anyos_std::sys::disk_read(device_id, 0, 1, &mut sector) != 0 {
+        return "?";
+    }
+
+    if &sector[3..11] == b"EXFAT   " {
+        return "exFAT";
+    }
+    if &sector[3..11] == b"NTFS    " {
+        return "NTFS";
+    }
+    if sector[82..90].starts_with(b"FAT32") {
+        return "FAT32";
+    }
+    if sector[54..62].starts_with(b"FAT16") {
+        return "FAT16";
+    }
+    if sector[54..62].starts_with(b"FAT12") {
+        return "FAT12";
+    }
+    if sector[1..6] == *b"CD001" {
+        return "ISO9660";
+    }
+
+    "Unknown"
+}
+
 /// Print the partition table for a disk.
 fn print_partitions(disk_id: u32) {
     let mut buf = [0u8; 32 * 8]; // up to 8 partitions
@@ -201,12 +235,12 @@ fn print_partitions(disk_id: u32) {
 
     println!("Disk sd{}: {} partitions", disk_letter(disk_id), count);
     println!(
-        "{:<6} {:<4} {:<12} {:>12} {:>12} {:>10}",
-        "Part", "Boot", "Type", "Start LBA", "Sectors", "Size"
+        "{:<6} {:<4} {:<14} {:<8} {:>12} {:>12} {:>10}",
+        "Part", "Boot", "PartType", "FS", "Start LBA", "Sectors", "Size"
     );
     println!(
         "{}",
-        "--------------------------------------------------------------"
+        "--------------------------------------------------------------------------------"
     );
 
     for i in 0..count as usize {
@@ -221,13 +255,17 @@ fn print_partitions(disk_id: u32) {
         let boot_str = if bootable { "*" } else { " " };
         let mut size_buf = [0u8; 32];
         let size_str = format_size(size_sectors, &mut size_buf);
+        let fs_name = partition_device_id(disk_id, index)
+            .map(probe_fs)
+            .unwrap_or("?");
 
         println!(
-            "sd{}{:<3} {:<4} {:<12} {:>12} {:>12} {:>10}",
+            "sd{}{:<3} {:<4} {:<14} {:<8} {:>12} {:>12} {:>10}",
             disk_letter(disk_id),
             index + 1,
             boot_str,
-            type_name(ptype),
+            partition_type_name(ptype),
+            fs_name,
             start_lba,
             size_sectors,
             size_str
@@ -378,15 +416,9 @@ fn interactive(disk_id: u32) {
             }
             Some(b'l') => {
                 println!("Known partition types:");
-                println!("  01  FAT12");
-                println!("  06  FAT16");
-                println!("  0B  FAT32");
-                println!("  0C  FAT32 (LBA)");
-                println!("  07  NTFS/exFAT");
-                println!("  82  Linux swap");
-                println!("  83  Linux");
-                println!("  CF  CoreFS");
-                println!("  EF  EFI System");
+                for info in KNOWN_PARTITION_TYPES {
+                    println!("  {:02X}  {}", info.code, info.name);
+                }
             }
             Some(b'w') => {
                 println!("Rescanning partition table...");
@@ -545,9 +577,7 @@ fn cmd_new_partition(disk_id: u32) {
     let end_lba = start_lba as u64 + size_sectors as u64;
     if let Some(disk_sectors) = disk_total_sectors(disk_id) {
         if end_lba > disk_sectors {
-            let mut sb1 = [0u8; 32];
             let mut sb2 = [0u8; 32];
-            let part_size = format_size(size_sectors as u64, &mut sb1);
             let disk_size = format_size(disk_sectors, &mut sb2);
             println!("Error: partition exceeds disk size!");
             println!(
@@ -606,7 +636,7 @@ fn cmd_new_partition(disk_id: u32) {
             disk_letter(disk_id),
             slot + 1,
             ptype,
-            type_name(ptype),
+            partition_type_name(ptype),
             start_lba,
             size_sectors,
             ss
@@ -704,7 +734,7 @@ fn cmd_change_type(disk_id: u32) {
             "Changed partition {} type to 0x{:02X} ({}).",
             num,
             ptype,
-            type_name(ptype)
+            partition_type_name(ptype)
         );
     } else {
         println!("Error changing type.");

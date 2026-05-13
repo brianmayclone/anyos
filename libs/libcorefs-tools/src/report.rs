@@ -50,6 +50,10 @@ pub fn print_report<R: Report>(report: &R, json: bool) {
     }
 }
 
+/// Host-side placeholder used by `cargo check` for anyOS-only tools.
+#[cfg(not(target_os = "none"))]
+pub fn print_report<R: Report>(_report: &R, _json: bool) {}
+
 // ---------------------------------------------------------------------------
 // JsonBuilder — minimal hand-rolled JSON writer.
 // ---------------------------------------------------------------------------

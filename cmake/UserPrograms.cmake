@@ -1016,6 +1016,16 @@ add_custom_command(
 list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/sbin/mkfs.corefs)
 
 add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/sbin/mkfs.exfat
+  COMMAND ${ANYELF_EXECUTABLE} bin
+    ${USER_TARGET_DIR}/${USER_TARGET_TRIPLE}/release/mkfs_exfat.elf
+    ${SYSROOT_DIR}/System/sbin/mkfs.exfat
+  DEPENDS ${WORKSPACE_STAMP} ${ANYELF_EXECUTABLE}
+  COMMENT "Converting mkfs.exfat ELF to flat binary"
+)
+list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/sbin/mkfs.exfat)
+
+add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/sbin/fsck.corefs
   COMMAND ${ANYELF_EXECUTABLE} bin
     ${USER_TARGET_DIR}/${USER_TARGET_TRIPLE}/release/fsck_corefs.elf
@@ -1025,6 +1035,17 @@ add_custom_command(
 )
 list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/sbin/fsck.corefs)
 
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/sbin/fsck.exfat
+  COMMAND ${ANYELF_EXECUTABLE} bin
+    ${USER_TARGET_DIR}/${USER_TARGET_TRIPLE}/release/fsck_exfat.elf
+    ${SYSROOT_DIR}/System/sbin/fsck.exfat
+  DEPENDS ${WORKSPACE_STAMP} ${ANYELF_EXECUTABLE}
+  COMMENT "Converting fsck.exfat ELF to flat binary"
+)
+list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/sbin/fsck.exfat)
+
+add_rust_sbin_program(fsck)
 add_rust_sbin_program(corefs-dump)
 add_rust_sbin_program(corefs-scrub)
 add_rust_sbin_program(corefs-defrag)

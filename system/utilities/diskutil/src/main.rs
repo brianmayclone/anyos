@@ -3,6 +3,7 @@
 #![no_std]
 #![no_main]
 
+use anyos_std::partition::partition_type_name;
 use anyos_std::sys;
 use anyos_std::{format, i18n, vec, String, Vec};
 use libanyui_client as ui;
@@ -41,21 +42,6 @@ fn read_u64_le(buf: &[u8], off: usize) -> u64 {
         buf[off + 6],
         buf[off + 7],
     ])
-}
-
-fn type_name(t: u8) -> &'static str {
-    match t {
-        0x01 => "FAT12",
-        0x04 | 0x06 | 0x0E => "FAT16",
-        0x0B | 0x0C => "FAT32",
-        0x07 => "exFAT/NTFS",
-        0x82 => "Linux swap",
-        0x83 => "Linux (ext)",
-        0xEE => "GPT",
-        0xEF => "EFI System",
-        0x00 => "unallocated",
-        _ => "Unknown",
-    }
 }
 
 fn type_color(t: u8) -> u32 {
@@ -255,7 +241,7 @@ fn build_display_rows(
 
         rows.push(DisplayRow {
             name: part_name,
-            fs_type: String::from(type_name(p.ptype)),
+            fs_type: String::from(partition_type_name(p.ptype)),
             ptype: p.ptype,
             mount_point: mp,
             flags,

@@ -72,6 +72,7 @@ pub mod error;
 pub mod fmt;
 pub mod hashmap;
 pub mod json;
+pub mod partition;
 pub mod path;
 pub mod xml;
 

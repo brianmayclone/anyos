@@ -42,7 +42,6 @@ pub trait DiskBackend: Send + fmt::Debug {
 // ---------------------------------------------------------------------------
 
 /// The default backend that calls the anyOS kernel directly.
-#[cfg(target_os = "none")]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SyscallBackend;
 
@@ -53,6 +52,17 @@ impl DiskBackend for SyscallBackend {
     }
     fn write(&mut self, device_id: u32, lba: u64, count: u32, buf: &[u8]) -> u32 {
         anyos_std::sys::disk_write(device_id, lba, count, buf)
+    }
+}
+
+#[cfg(not(target_os = "none"))]
+impl DiskBackend for SyscallBackend {
+    fn read(&self, _device_id: u32, _lba: u64, _count: u32, _buf: &mut [u8]) -> u32 {
+        u32::MAX
+    }
+
+    fn write(&mut self, _device_id: u32, _lba: u64, _count: u32, _buf: &[u8]) -> u32 {
+        u32::MAX
     }
 }
 
@@ -135,7 +145,6 @@ impl<B: DiskBackend> AnyOsBlockDevice<B> {
     }
 }
 
-#[cfg(target_os = "none")]
 impl AnyOsBlockDevice<SyscallBackend> {
     /// Convenience constructor using the default syscall backend and a
     /// 512-byte sector size.
@@ -174,6 +183,11 @@ impl AnyOsBlockDevice<SyscallBackend> {
             SECTOR_SIZE_512,
         )
     }
+}
+
+#[cfg(not(target_os = "none"))]
+pub fn query_device_capacity(_device_id: u32) -> Option<u64> {
+    None
 }
 
 /// Query the capacity (in bytes) of a block device by scanning the

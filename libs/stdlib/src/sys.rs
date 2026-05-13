@@ -227,7 +227,7 @@ pub fn disk_list(buf: &mut [u8]) -> u32 {
 
 /// List partitions for a specific disk. Each 32-byte entry:
 ///   [0]      index (u8)
-///   [1]      part_type (MBR type byte: 0x07=NTFS/exFAT, 0x0B=FAT32, etc.)
+///   [1]      part_type (see `partition::partition_type_name`)
 ///   [2]      bootable (0 or 1)
 ///   [3]      scheme (0=None, 1=MBR, 2=GPT)
 ///   [4..8]   padding
