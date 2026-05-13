@@ -59,35 +59,39 @@ Jede Kategorie hat mehrere konkrete Testpunkte in den Detailabschnitten unten.
 
 Status:
 
-- Teilweise umgesetzt in `vfsstress`:
+- Umgesetzt in `vfsstress`:
   - `parallel_fsstress_case`
   - versteckter Worker-Modus `--worker`
   - CLI-Optionen `--workers`, `--ops`, `--seed`
   - parallele Prozesse via `process::spawn`/`waitpid`
-  - per-Worker Manifest-Datei `done.txt`
+  - per-Worker Abschlussdatei `done.txt`
+  - per-Worker Manifest-Datei `manifest.txt` mit Seed und Operationszaehlern
   - gemeinsame Shared-Hot-Directory-Namen mit Cross-Worker
     Create/Rename/Unlink-Kollisionen
+  - Worker-Directory-Scan nach Worker-Ende mit Manifest/Stat/Read-Sanity-Check
   - Shared-Directory-Scan nach Worker-Ende mit Stat/Read-Sanity-Check
   - Worker-Zwischenwrites verwenden relaxed close/write; strikte fsync-Semantik
     wird separat in `fsync_ordering_case` und `sync_latency_perf_case` getestet
 
 Fehlt:
 
-- Optional echte Thread-Variante, falls wir In-Process VFS-Races testen wollen.
+- Keine offene P0-Luecke fuer die CoreFS/exFAT-Freigabe. Eine optionale
+  In-Process-Thread-Variante waere ein separater Spezialtest, falls wir spaeter
+  gezielt VFS-Races innerhalb eines einzelnen Prozesses testen wollen.
 
 TODO:
 
-- `parallel_fsstress_case` in `vfsstress` ergaenzen.
+- `parallel_fsstress_case` in `vfsstress` ergaenzen. [umgesetzt]
 - CLI-Optionen:
-  - `--workers N` fuer Worker-Anzahl.
-  - `--ops N` fuer Operationen pro Worker.
-  - `--seed N` fuer reproduzierbare Fehler.
+  - `--workers N` fuer Worker-Anzahl. [umgesetzt]
+  - `--ops N` fuer Operationen pro Worker. [umgesetzt]
+  - `--seed N` fuer reproduzierbare Fehler. [umgesetzt]
 - Jeder Worker schreibt deterministische Inhalte und legt ein kleines Manifest
-  pro Worker ab.
+  pro Worker ab. [umgesetzt]
 - Nach Worker-Ende alle uebrigen Dateien per Manifest oder Readdir scannen und
-  Inhalt/Stat pruefen.
+  Inhalt/Stat pruefen. [umgesetzt]
 - Bei Fehlern Seed, Worker, Operation, Pfad und erwartete/gelesene Werte
-  ausgeben.
+  ausgeben. [umgesetzt als Worker-Fail-Datei und Parent-Ausgabe]
 
 Akzeptanz:
 

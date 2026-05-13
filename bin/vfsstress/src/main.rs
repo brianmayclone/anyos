@@ -1188,6 +1188,9 @@ fn parallel_fsstress_case(cfg: &Config) -> Result<String, &'static str> {
         if data.as_slice() != expected.as_bytes() {
             return Err("done-verify");
         }
+        let manifest = format!("{}/w{:02}/manifest.txt", root, worker);
+        verify_worker_manifest(&manifest, worker, cfg.ops)?;
+        verify_worker_dir(&format!("{}/w{:02}", root, worker), cfg.ops)?;
     }
     verify_shared_hot_dir(&shared)?;
     fs::sync();
@@ -1216,6 +1219,75 @@ fn read_parallel_worker_failure(root: &str, workers: u32) -> &'static str {
     "worker-failed"
 }
 
+fn verify_worker_manifest(path: &str, worker: u32, ops: u32) -> Result<(), &'static str> {
+    let text = read_small_text_file(path, 256)?;
+    let worker_field = format!("worker={}", worker);
+    let ops_field = format!("ops={}", ops);
+    if !text.contains(&worker_field) || !text.contains(&ops_field) || !text.contains("seed=") {
+        return Err("manifest-header");
+    }
+    for key in [
+        "create=",
+        "append=",
+        "rename=",
+        "unlink=",
+        "truncate=",
+        "readdir=",
+        "shared=",
+        "sync=",
+    ] {
+        if !text.contains(key) {
+            return Err("manifest-counter");
+        }
+    }
+    Ok(())
+}
+
+fn verify_worker_dir(path: &str, ops: u32) -> Result<(), &'static str> {
+    let mut buf = Vec::new();
+    buf.resize(fs::READDIR_LONG_ENTRY_SIZE * 128, 0);
+    let count = fs::readdir_long(path, &mut buf);
+    if count == u32::MAX {
+        return Err("worker-readdir");
+    }
+    let max_expected_size = ops.saturating_mul(2048).max(4096);
+    for i in 0..count as usize {
+        let off = i * fs::READDIR_LONG_ENTRY_SIZE;
+        if off + fs::READDIR_LONG_ENTRY_SIZE > buf.len() {
+            break;
+        }
+        let name_len = u16::from_le_bytes([buf[off + 2], buf[off + 3]]) as usize;
+        if name_len == 0 || name_len > 256 {
+            continue;
+        }
+        let name = core::str::from_utf8(&buf[off + 8..off + 8 + name_len]).unwrap_or("");
+        if name == "." || name == ".." || name == "done.txt" || name == "manifest.txt" {
+            continue;
+        }
+        if name == "worker.cfg" || name == "fail.txt" {
+            continue;
+        }
+        let file = format!("{}/{}", path, name);
+        let size = stat_size(&file)?;
+        if size > max_expected_size {
+            return Err("worker-file-size");
+        }
+        if size > 0 {
+            let fd = fs::open(&file, 0);
+            if fd == u32::MAX {
+                return Err("worker-open");
+            }
+            let mut one = [0u8; 1];
+            let n = fs::read(fd, &mut one);
+            fs::close(fd);
+            if n != 1 {
+                return Err("worker-read");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn write_worker_failure(cfg: &WorkerConfig, op: u32, err: &str) {
     let own = format!("{}/w{:02}", cfg.dir, cfg.worker);
     let fail = format!("{}/fail.txt", own);
@@ -1233,6 +1305,14 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
     let _ = fs::mkdir(&shared);
     let mut rng = Lcg::new(cfg.seed ^ cfg.worker.rotate_left(7));
     let mut buf = [0u8; 2048];
+    let mut create_ops = 0u32;
+    let mut append_ops = 0u32;
+    let mut rename_ops = 0u32;
+    let mut unlink_ops = 0u32;
+    let mut truncate_ops = 0u32;
+    let mut readdir_ops = 0u32;
+    let mut shared_ops = 0u32;
+    let mut sync_ops = 0u32;
 
     for op in 0..cfg.ops {
         macro_rules! worker_try {
@@ -1256,6 +1336,7 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
                     cfg.seed ^ slot,
                     1024
                 ));
+                create_ops += 1;
             }
             1 => {
                 let path = format!("{}/f{:02}.dat", own, slot);
@@ -1263,6 +1344,7 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
                 fill_pattern(&mut buf[..len], stat_size_or_zero(&path), cfg.seed ^ op);
                 worker_try!(append_to_file_relaxed(&path, &buf[..len]));
                 worker_try!(stat_size(&path).map(|_| ()));
+                append_ops += 1;
             }
             2 => {
                 let a = format!("{}/f{:02}.dat", own, slot);
@@ -1271,14 +1353,17 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
                     let _ = fs::rename(&a, &b);
                     let _ = fs::rename(&b, &a);
                 }
+                rename_ops += 1;
             }
             3 => {
                 let path = format!("{}/f{:02}.dat", own, slot);
                 let _ = fs::unlink(&path);
+                unlink_ops += 1;
             }
             4 => {
                 let path = format!("{}/f{:02}.dat", own, slot);
                 let _ = truncate_to_zero(&path);
+                truncate_ops += 1;
             }
             5 => {
                 let path = format!("{}/hot-w{:02}-{:04}.dat", shared, cfg.worker, op);
@@ -1301,10 +1386,12 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
                     return Err("shared-stat");
                 }
                 let _ = fs::unlink(&renamed);
+                shared_ops += 1;
             }
             6 => {
                 let name = format!("f{:02}.dat", slot);
                 let _ = dir_contains(&own, &name);
+                readdir_ops += 1;
             }
             7 => {
                 let hot = rng.range(0, cfg.workers.saturating_mul(2).max(1) - 1);
@@ -1317,6 +1404,7 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
                 );
                 let _ = write_bytes_file(&path, &buf[..len]);
                 let _ = stat_size(&path);
+                shared_ops += 1;
             }
             8 => {
                 let hot = rng.range(0, cfg.workers.saturating_mul(2).max(1) - 1);
@@ -1325,14 +1413,17 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
                 if fs::rename(&a, &b) == 0 {
                     let _ = fs::rename(&b, &a);
                 }
+                shared_ops += 1;
             }
             9 => {
                 let hot = rng.range(0, cfg.workers.saturating_mul(2).max(1) - 1);
                 let path = format!("{}/hot{:02}.dat", shared, hot);
                 let _ = fs::unlink(&path);
+                shared_ops += 1;
             }
             _ => {
                 fs::sync();
+                sync_ops += 1;
             }
         }
         if op % 17 == 0 {
@@ -1343,6 +1434,22 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
     let done = format!("{}/done.txt", own);
     let body = format!("worker={} ops={} ok\n", cfg.worker, cfg.ops);
     write_bytes_file(&done, body.as_bytes())?;
+    let manifest = format!("{}/manifest.txt", own);
+    let manifest_body = format!(
+        "worker={} ops={} seed={} create={} append={} rename={} unlink={} truncate={} readdir={} shared={} sync={}\n",
+        cfg.worker,
+        cfg.ops,
+        cfg.seed,
+        create_ops,
+        append_ops,
+        rename_ops,
+        unlink_ops,
+        truncate_ops,
+        readdir_ops,
+        shared_ops,
+        sync_ops
+    );
+    write_bytes_file(&manifest, manifest_body.as_bytes())?;
     fs::sync();
     Ok(())
 }
