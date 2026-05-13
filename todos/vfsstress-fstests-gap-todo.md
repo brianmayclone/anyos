@@ -470,6 +470,11 @@ Akzeptanz:
 
 ## [P2] Mmap-/Mapped-IO-Paritaet
 
+Status:
+
+- Explizit als unsupported in `vfsstress`:
+  - `feature_gate_case` berichtet `file-mmap=unsupported`
+
 Fehlt:
 
 - xfstests hat viele mmap/fsx-Varianten. `vfsstress` nutzt nur read/write
@@ -486,7 +491,7 @@ TODO:
   - syscall write + mmap-read verify.
   - mmap-write + fsync/sync + remount verify.
 - Wenn nicht vorhanden:
-  - TODO als blocked markieren und API-Anforderung dokumentieren.
+  - TODO als blocked markieren und API-Anforderung dokumentieren. [umgesetzt via SKIP/Feature-Gate]
 
 Akzeptanz:
 
@@ -494,6 +499,11 @@ Akzeptanz:
   reportet.
 
 ## [P2] Direct-IO/AIO-Analoga
+
+Status:
+
+- Explizit als unsupported in `vfsstress`:
+  - `feature_gate_case` berichtet `direct-io=unsupported`
 
 Fehlt:
 
@@ -509,7 +519,7 @@ TODO:
     korrekt lesen/schreiben.
   - Parallel direct/buffered IO testen.
 - Falls nein:
-  - In `vfsstress` als `SKIP direct-io unsupported` reporten.
+  - In `vfsstress` als `SKIP direct-io unsupported` reporten. [umgesetzt]
 
 Akzeptanz:
 
@@ -603,6 +613,11 @@ Akzeptanz:
 
 ## [P3] Xattrs, Special Files und erweiterte Attribute
 
+Status:
+
+- Explizit als unsupported in `vfsstress`:
+  - `feature_gate_case` berichtet `xattr=unsupported`
+
 Fehlt:
 
 - xfstests prueft viele xattr/attr-Faelle.
@@ -671,14 +686,14 @@ Akzeptanz:
 
 TODO:
 
-- `Summary` um `skips` erweitern.
+- `Summary` um `skips` erweitern. [umgesetzt]
 - Feature-Erkennung einbauen:
-  - symlink supported.
-  - chmod/chown supported.
-  - mount/remount supported.
-  - direct IO supported.
-  - file mmap supported.
-- Unsupported Features als `SKIP`, nicht als `FAIL`.
+  - symlink supported. [umgesetzt]
+  - chmod/chown supported. [umgesetzt]
+  - mount/remount supported. [teilweise: scratch configured/no-device]
+  - direct IO supported. [umgesetzt als unsupported]
+  - file mmap supported. [umgesetzt als unsupported]
+- Unsupported Features als `SKIP`, nicht als `FAIL`. [umgesetzt]
 
 Akzeptanz:
 

@@ -89,6 +89,7 @@ struct Summary {
     tests: u32,
     failures: u32,
     warnings: u32,
+    skips: u32,
 }
 
 impl Summary {
@@ -97,6 +98,7 @@ impl Summary {
             tests: 0,
             failures: 0,
             warnings: 0,
+            skips: 0,
         }
     }
 
@@ -115,6 +117,12 @@ impl Summary {
         self.tests += 1;
         self.warnings += 1;
         println!("  [WARN] {:<22} {}", name, detail);
+    }
+
+    fn skip(&mut self, name: &str, detail: &str) {
+        self.tests += 1;
+        self.skips += 1;
+        println!("  [SKIP] {:<22} {}", name, detail);
     }
 }
 
@@ -609,6 +617,7 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
     run_named_with_warning(summary, "fsync ordering", fsync_ordering_case(cfg));
     run_named_with_warning(summary, "statfs accounting", statfs_accounting_case(cfg));
     run_named_with_warning(summary, "path resolution", path_resolution_case(cfg));
+    run_named_with_warning(summary, "feature gates", feature_gate_case(cfg));
     run_named(summary, "fd offsets", fd_offsets_case(cfg));
     run_named(summary, "user copy boundary", user_copy_boundary_case(cfg));
     run_named(summary, "stack write 64k", stack_write_64k_case(cfg));
@@ -636,6 +645,7 @@ fn run_named(summary: &mut Summary, name: &str, result: Result<String, &'static 
 enum TestOutcome {
     Ok(String),
     Warn(String),
+    Skip(String),
     Fail(&'static str),
 }
 
@@ -643,6 +653,7 @@ fn run_named_with_warning(summary: &mut Summary, name: &str, result: TestOutcome
     match result {
         TestOutcome::Ok(detail) => summary.ok(name, &detail),
         TestOutcome::Warn(detail) => summary.warn(name, &detail),
+        TestOutcome::Skip(detail) => summary.skip(name, &detail),
         TestOutcome::Fail(err) => summary.fail(name, err),
     }
 }
@@ -2542,6 +2553,33 @@ fn path_resolution_case(cfg: &Config) -> TestOutcome {
     TestOutcome::Ok("relative/./../double-slash/deep/near-limit Pfade ok".into())
 }
 
+fn feature_gate_case(cfg: &Config) -> TestOutcome {
+    let symlink = if symlink_supported(cfg) {
+        "symlink=yes"
+    } else {
+        "symlink=no"
+    };
+    let chmod = if chmod_supported_probe(cfg) {
+        "chmod=yes"
+    } else {
+        "chmod=no"
+    };
+    let chown = if chown_supported_probe(cfg) {
+        "chown=yes"
+    } else {
+        "chown=no"
+    };
+    let scratch = if cfg.scratch_device.is_empty() {
+        "scratch=no-device"
+    } else {
+        "scratch=configured"
+    };
+    TestOutcome::Skip(format!(
+        "{}, {}, {}, {}, file-mmap=unsupported, direct-io=unsupported, xattr=unsupported",
+        symlink, chmod, chown, scratch
+    ))
+}
+
 fn fd_offsets_case(cfg: &Config) -> Result<String, &'static str> {
     let path = format!("{}/full-fd-offsets.bin", cfg.dir);
     let _ = fs::unlink(&path);
@@ -3463,6 +3501,52 @@ fn make_name_to_path_budget(dir: &str, budget: usize) -> String {
     name
 }
 
+fn symlink_supported(cfg: &Config) -> bool {
+    let dir = format!("{}/feature-gates", cfg.dir);
+    let _ = fs::mkdir(&dir);
+    let target = format!("{}/symlink-target.txt", dir);
+    let link = format!("{}/symlink-link.txt", dir);
+    let _ = fs::unlink(&link);
+    let _ = fs::unlink(&target);
+    if write_bytes_file(&target, b"feature").is_err() {
+        return false;
+    }
+    let ok = fs::symlink(&target, &link) == 0 && readlink_matches(&link, &target);
+    let _ = fs::unlink(&link);
+    let _ = fs::unlink(&target);
+    ok
+}
+
+fn chmod_supported_probe(cfg: &Config) -> bool {
+    let dir = format!("{}/feature-gates", cfg.dir);
+    let _ = fs::mkdir(&dir);
+    let path = format!("{}/chmod.txt", dir);
+    let _ = fs::unlink(&path);
+    if write_bytes_file(&path, b"feature").is_err() {
+        return false;
+    }
+    let ok = fs::chmod(&path, 0o640) == 0 && stat_mode_is(&path, 0o640);
+    let _ = fs::unlink(&path);
+    ok
+}
+
+fn chown_supported_probe(cfg: &Config) -> bool {
+    let dir = format!("{}/feature-gates", cfg.dir);
+    let _ = fs::mkdir(&dir);
+    let path = format!("{}/chown.txt", dir);
+    let _ = fs::unlink(&path);
+    if write_bytes_file(&path, b"feature").is_err() {
+        return false;
+    }
+    let mut stat = [0u32; 7];
+    let ok = fs::chown(&path, 12, 34) == 0
+        && fs::stat(&path, &mut stat) == 0
+        && stat[3] == 12
+        && stat[4] == 34;
+    let _ = fs::unlink(&path);
+    ok
+}
+
 fn stat_size_or_zero(path: &str) -> u32 {
     stat_size(path).unwrap_or(0)
 }
@@ -3675,6 +3759,7 @@ fn print_summary(summary: &Summary, started: u32) {
     println!("=== Zusammenfassung ===");
     println!("  Tests:    {}", summary.tests);
     println!("  Warns:    {}", summary.warnings);
+    println!("  Skips:    {}", summary.skips);
     println!("  Fehler:   {}", summary.failures);
     println!("  Laufzeit: {} ms", elapsed_ms(started));
     if summary.failures == 0 {
