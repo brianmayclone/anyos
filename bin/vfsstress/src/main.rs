@@ -3556,7 +3556,7 @@ fn feature_gate_case(cfg: &Config) -> TestOutcome {
         "scratch=configured"
     };
     TestOutcome::Skip(format!(
-        "{}, {}, {}, {}, hardlink=unsupported, special-files=unsupported, file-mmap=unsupported, direct-io=unsupported, xattr=unsupported, error-injection=unsupported, overlay=unsupported, whiteout=unsupported, namespace=unsupported",
+        "{}, {}, {}, {}, hardlink=unsupported, special-files=unsupported, file-mmap=unsupported, direct-io=unsupported, aio=unsupported, xattr=unsupported, quota=unsupported, fd-readdir=unsupported, seek-data-hole=unsupported, partial-truncate=unsupported, permission-enforcement=unsupported, error-injection=unsupported, overlay=unsupported, whiteout=unsupported, namespace=unsupported",
         symlink, chmod, chown, scratch
     ))
 }
@@ -4783,12 +4783,13 @@ fn print_summary(cfg: &Config, summary: &Summary, started: u32) {
 }
 
 fn print_json_summary(cfg: &Config, summary: &Summary, elapsed: u32) {
+    let fs_fields = perf_fs_json_fields(cfg);
     println!(
-        "{{\"tool\":\"vfsstress\",\"version\":\"{}\",\"anyos\":\"{}\",\"profile\":\"{}\",\"dir\":\"{}\",\"seed\":{},\"seconds\":{},\"elapsed_ms\":{},\"tests\":{},\"failures\":{},\"warnings\":{},\"skips\":{},\"result\":\"{}\"}}",
+        "{{\"tool\":\"vfsstress\",\"version\":\"{}\",\"anyos\":\"{}\",\"profile\":\"{}\",\"dir\":\"{}\",\"seed\":{},\"seconds\":{},\"elapsed_ms\":{},\"tests\":{},\"failures\":{},\"warnings\":{},\"skips\":{}{},\"result\":\"{}\"}}",
         VERSION,
-        anyos_version(),
+        json_escape(anyos_version()),
         cfg.profile_name(),
-        cfg.dir,
+        json_escape(&cfg.dir),
         cfg.seed,
         cfg.seconds,
         elapsed,
@@ -4796,6 +4797,7 @@ fn print_json_summary(cfg: &Config, summary: &Summary, elapsed: u32) {
         summary.failures,
         summary.warnings,
         summary.skips,
+        fs_fields,
         if summary.failures == 0 { "PASS" } else { "FAIL" }
     );
 }

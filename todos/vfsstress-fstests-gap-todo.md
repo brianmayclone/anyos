@@ -465,6 +465,8 @@ Status:
   - Null-Verify vor, zwischen und nach Datenbereichen
   - Teil-Overwrite mitten im Hole
   - Truncate auf 0 und Regrow mit erneuter Nullbereich-Pruefung
+  - `feature_gate_case` berichtet `seek-data-hole=unsupported` und
+    `partial-truncate=unsupported`
 
 Fehlt:
 
@@ -524,6 +526,7 @@ Status:
 
 - Explizit als unsupported in `vfsstress`:
   - `feature_gate_case` berichtet `direct-io=unsupported`
+  - `feature_gate_case` berichtet `aio=unsupported`
 
 Fehlt:
 
@@ -555,6 +558,8 @@ Status:
   - Probe-Pfad-Fallback fuer `cfg.dir`, `/tmp`, `/`
   - free/used Plausibilitaet nach write, truncate, unlink und sync
   - WARN statt FAIL, wenn `statfs` nicht verfuegbar oder ohne sichtbare Deltas ist
+  - Summary-/Perf-JSON enthaelt FS-Probe/total/used/free, falls verfuegbar
+  - `feature_gate_case` berichtet `quota=unsupported`
 
 Fehlt:
 
@@ -566,7 +571,7 @@ TODO:
 - Vorher/nachher Werte fuer create/write/unlink/truncate/sync pruefen. [umgesetzt]
 - Negative Deltas und "free wird nach delete nie groesser" als Warn/Fail
   klassifizieren. [umgesetzt]
-- Performance-Report um FS-Free/Used Spalten erweitern.
+- Performance-Report um FS-Free/Used Spalten erweitern. [umgesetzt]
 
 Akzeptanz:
 
@@ -656,6 +661,8 @@ Status:
 - Explizit als unsupported in `vfsstress`:
   - `feature_gate_case` berichtet `xattr=unsupported`
   - `feature_gate_case` berichtet `special-files=unsupported`
+  - `feature_gate_case` berichtet weitere API-Gates wie `quota=unsupported`,
+    `fd-readdir=unsupported`, `permission-enforcement=unsupported`
 
 Fehlt:
 
@@ -777,10 +784,10 @@ TODO:
 - `--json` ergaenzen. [teilweise umgesetzt]
 - Report:
   - Version. [umgesetzt]
-  - FS/Pfad. [teilweise: Pfad umgesetzt]
+  - FS/Pfad. [umgesetzt als `dir`, `fs_probe`, `fs_total/used/free` soweit verfuegbar]
   - Profil. [umgesetzt]
   - Tests mit Status, Dauer, Details. [umgesetzt als JSONL-Testevents]
-  - Performance-Metriken. [teilweise: JSONL fuer Perf-Testfamilien]
+  - Performance-Metriken. [umgesetzt als JSONL fuer Perf-Testfamilien]
   - Seeds. [umgesetzt]
 
 Akzeptanz:
