@@ -568,6 +568,7 @@ fn parse_config() -> Option<Config> {
                 }
             }
             "--json" => cfg.json = true,
+            "--perf" => cfg.json = true,
             "--keep" => cfg.keep = true,
             other => {
                 println!("vfsstress: unbekannte Option '{}'", other);
@@ -648,6 +649,7 @@ fn print_usage() {
     println!("  --soak            Profil soak und default 3600 Sekunden Laufzeit");
     println!("  --seconds N       zusaetzliche Soak-Dauer in Sekunden");
     println!("  --json            Summary zusaetzlich als JSON-Zeile ausgeben");
+    println!("  --perf            Alias fuer --json mit Perf-Metriken als JSONL");
     println!("  --repeat N        Wiederholungen pro Blockgroesse");
     println!("  --total-kb N      Dateigroesse pro Testfall in KB");
     println!("  --dir PATH        Testverzeichnis (default: /tmp/vfsstress)");
@@ -2635,9 +2637,10 @@ fn metadata_perf_case(cfg: &Config) -> Result<String, &'static str> {
     let unlink_ops = ops_per_s(count, unlink_ms);
 
     if cfg.json {
+        let fs_fields = perf_fs_json_fields(cfg);
         println!(
-            "{{\"type\":\"perf\",\"test\":\"metadata\",\"entries\":{},\"create_ops_s\":{},\"stat_ops_s\":{},\"rename_ops_s\":{},\"readdir_entries_s\":{},\"unlink_ops_s\":{}}}",
-            count, create_ops, stat_ops, rename_ops, readdir_ops, unlink_ops
+            "{{\"type\":\"perf\",\"test\":\"metadata\",\"entries\":{},\"create_ops_s\":{},\"stat_ops_s\":{},\"rename_ops_s\":{},\"readdir_entries_s\":{},\"unlink_ops_s\":{}{}}}",
+            count, create_ops, stat_ops, rename_ops, readdir_ops, unlink_ops, fs_fields
         );
     }
 
@@ -2716,9 +2719,10 @@ fn sequential_io_perf_case(cfg: &Config) -> Result<String, &'static str> {
         let _ = fs::unlink(&path);
     }
     if cfg.json {
+        let fs_fields = perf_fs_json_fields(cfg);
         println!(
-            "{{\"type\":\"perf\",\"test\":\"sequential_io\",\"bytes\":{},\"chunk\":{},\"write_ms\":{},\"read_ms\":{},\"write_kb_s\":{},\"read_kb_s\":{}}}",
-            total, chunk, write_ms, read_ms, write_kb_s, read_kb_s
+            "{{\"type\":\"perf\",\"test\":\"sequential_io\",\"bytes\":{},\"chunk\":{},\"write_ms\":{},\"read_ms\":{},\"write_kb_s\":{},\"read_kb_s\":{}{}}}",
+            total, chunk, write_ms, read_ms, write_kb_s, read_kb_s, fs_fields
         );
     }
     Ok(format!(
@@ -2781,9 +2785,10 @@ fn random_overwrite_perf_case(cfg: &Config) -> Result<String, &'static str> {
         let _ = fs::unlink(&path);
     }
     if cfg.json {
+        let fs_fields = perf_fs_json_fields(cfg);
         println!(
-            "{{\"type\":\"perf\",\"test\":\"random_overwrite\",\"ops\":{},\"patch_bytes\":{},\"elapsed_ms\":{},\"ops_s\":{}}}",
-            ops, patch_len, ms, op_rate
+            "{{\"type\":\"perf\",\"test\":\"random_overwrite\",\"ops\":{},\"patch_bytes\":{},\"elapsed_ms\":{},\"ops_s\":{}{}}}",
+            ops, patch_len, ms, op_rate, fs_fields
         );
     }
     Ok(format!(
@@ -2857,8 +2862,9 @@ fn sync_latency_perf_case(cfg: &Config) -> Result<String, &'static str> {
     let sync_p50 = percentile_sorted(&sync_samples, 50);
     let sync_p95 = percentile_sorted(&sync_samples, 95);
     if cfg.json {
+        let fs_fields = perf_fs_json_fields(cfg);
         println!(
-            "{{\"type\":\"perf\",\"test\":\"sync_latency\",\"rounds\":{},\"fsync_min_ms\":{},\"fsync_avg_ms\":{},\"fsync_p50_ms\":{},\"fsync_p95_ms\":{},\"fsync_max_ms\":{},\"sync_min_ms\":{},\"sync_avg_ms\":{},\"sync_p50_ms\":{},\"sync_p95_ms\":{},\"sync_max_ms\":{}}}",
+            "{{\"type\":\"perf\",\"test\":\"sync_latency\",\"rounds\":{},\"fsync_min_ms\":{},\"fsync_avg_ms\":{},\"fsync_p50_ms\":{},\"fsync_p95_ms\":{},\"fsync_max_ms\":{},\"sync_min_ms\":{},\"sync_avg_ms\":{},\"sync_p50_ms\":{},\"sync_p95_ms\":{},\"sync_max_ms\":{}{}}}",
             rounds,
             fsync_min,
             fsync_sum / rounds,
@@ -2869,7 +2875,8 @@ fn sync_latency_perf_case(cfg: &Config) -> Result<String, &'static str> {
             sync_sum / rounds,
             sync_p50,
             sync_p95,
-            sync_max
+            sync_max,
+            fs_fields
         );
     }
     Ok(format!(
@@ -3077,6 +3084,7 @@ fn long_name_case(cfg: &Config) -> Result<String, &'static str> {
     let base_len = dir.len() + 1;
     let path_budget = 255usize.saturating_sub(base_len);
     let mut tested = 0u32;
+    let mut utf8_tested = 0u32;
 
     for &requested in &[63usize, 127, 180, 220] {
         let name_len = requested.min(path_budget);
@@ -3097,6 +3105,32 @@ fn long_name_case(cfg: &Config) -> Result<String, &'static str> {
             return Err("long-name-stat");
         }
         tested += 1;
+        if !cfg.keep {
+            let _ = fs::unlink(&path);
+        }
+    }
+
+    for (idx, raw) in [
+        b"utf8-\xc3\xa4\xc3\xb6\xc3\xbc.dat" as &[u8],
+        b"utf8-\xe2\x82\xacuro.dat" as &[u8],
+        b"utf8-\xf0\x9f\x98\x80.dat" as &[u8],
+    ]
+    .iter()
+    .enumerate()
+    {
+        let name = core::str::from_utf8(raw).map_err(|_| "utf8-case")?;
+        if name.len() > path_budget {
+            continue;
+        }
+        let path = format!("{}/{}", dir, name);
+        let _ = fs::unlink(&path);
+        let payload = [0x55, idx as u8, name.len() as u8, 0xAA];
+        write_bytes_file(&path, &payload)?;
+        verify_file_bytes(&path, &payload)?;
+        if !dir_contains_long(&dir, name) {
+            return Err("utf8-name-readdir");
+        }
+        utf8_tested += 1;
         if !cfg.keep {
             let _ = fs::unlink(&path);
         }
@@ -3130,8 +3164,8 @@ fn long_name_case(cfg: &Config) -> Result<String, &'static str> {
         return Err("long-name-budget");
     }
     Ok(format!(
-        "{} lange Pfadnamen bis {} Byte, {}",
-        tested, path_budget, case_detail
+        "{} lange Pfadnamen bis {} Byte, {} UTF-8-Namen, {}",
+        tested, path_budget, utf8_tested, case_detail
     ))
 }
 
@@ -4778,6 +4812,24 @@ fn print_json_test(cfg: &Config, name: &str, status: &str, elapsed: u32, detail:
         cfg.seed,
         json_escape(detail)
     );
+}
+
+fn perf_fs_json_fields(cfg: &Config) -> String {
+    let probe = statfs_probe_path(cfg);
+    if let Some(stat) = fs::statfs(&probe) {
+        format!(
+            ",\"fs_probe\":\"{}\",\"fs_total_bytes\":{},\"fs_used_bytes\":{},\"fs_free_bytes\":{}",
+            json_escape(&probe),
+            stat.total_bytes,
+            stat.used_bytes,
+            stat.free_bytes
+        )
+    } else {
+        format!(
+            ",\"fs_probe\":\"{}\",\"fs_statfs\":\"unavailable\"",
+            json_escape(&probe)
+        )
+    }
 }
 
 fn json_escape(input: &str) -> String {

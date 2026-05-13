@@ -346,6 +346,7 @@ Status:
   - `readdir`-Count, Stichproben-Readback und einfache Zeitmessung
   - `long_name_case`
   - lange Pfade bis zum aktuellen anyOS-Path-Budget via `stat/open/unlink`
+  - valide UTF-8-Namen inklusive Mehrbyte-Codepoints via `stat/open/readdir`
   - Long-Name-Readdir-Verify via `SYS_READDIR_LONG`/`fs::readdir_long`
   - Case-Matrix dokumentiert beobachtetes case-sensitive/case-folded/collision
   - anyOS-API erweitert:
@@ -355,7 +356,8 @@ Status:
 
 Fehlt:
 
-- Nicht-ASCII/UTF-8/UTF-16-Grenzen, soweit anyOS-Userland sie unterstuetzt.
+- UTF-16/exFAT-spezifische Normalisierung, falls anyOS diese Semantik
+  produktiv garantieren soll.
 - Direkte Raw-`SYS_READDIR`-Nutzer koennen weiter das alte kompatible
   64-Byte-Format verwenden; sichtbare Tools sollen auf `read_dir` oder
   `readdir_long` migriert werden.
@@ -369,6 +371,7 @@ TODO:
   - 8.3-aehnliche Namen.
   - 63/127/255 Byte Namen.
   - gleiche Praefixe mit unterschiedlichem Suffix.
+  - valide UTF-8-Namen. [umgesetzt]
   - Case-Varianten wie `Foo`, `foo`, `FOO`.
 - Fuer exFAT explizit dokumentieren, ob case-insensitive Semantik erwartet
   wird oder aktuell nicht unterstuetzt ist.
@@ -577,8 +580,8 @@ Status:
 - Teilweise umgesetzt in `vfsstress`:
   - `path_resolution_case`
   - absolute Pfade mit `.`, `..` und doppelten Slashes
-  - trailing slash: Datei mit Slash muss fehlschlagen, Directory mit Slash
-    muss statbar bleiben
+  - trailing slash: Directory mit Slash muss statbar bleiben, Datei mit Slash
+    wird als beobachtete Semantik `accepted/rejected` berichtet
   - relative Pfade aus wechselndem CWD via `chdir`
   - tiefe Verzeichniskette
   - Pfad knapp unter dem aktuellen Budget
@@ -609,6 +612,7 @@ Akzeptanz:
 Status:
 
 - Teilweise umgesetzt in `vfsstress`:
+  - `--perf` als Alias fuer `--json`
   - `metadata_perf_case`
   - create/stat/rename/readdir/unlink Durchsatz als ops/s bzw. entries/s
   - `sequential_io_perf_case`
@@ -620,6 +624,8 @@ Status:
   - Profilabhaengige Eintragszahlen fuer quick/normal/heavy
   - JSONL-Performance-Zeilen fuer Metadata, Sequential-IO, Random-Overwrite
     und Sync-Latenz
+  - FS-Probe/total/used/free Felder in Perf-JSONL, falls `statfs`
+    verfuegbar ist
 
 Fehlt:
 
@@ -628,7 +634,7 @@ Fehlt:
 
 TODO:
 
-- `--perf` oder `--json` Report-Modus ergaenzen. [teilweise: `--json` Summary umgesetzt]
+- `--perf` oder `--json` Report-Modus ergaenzen. [umgesetzt]
 - Metriken:
   - create/stat/rename/unlink ops/s. [umgesetzt]
   - readdir entries/s. [umgesetzt]
@@ -636,7 +642,7 @@ TODO:
   - random overwrite ops/s. [umgesetzt]
   - sync latency. [umgesetzt als min/avg/p50/p95/max]
   - fsync latency p50/p95/max, soweit ohne Heap-heavy Statistik machbar. [umgesetzt]
-- Output stabil maschinenlesbar machen. [teilweise: Summary-JSON plus Perf-JSONL umgesetzt]
+- Output stabil maschinenlesbar machen. [teilweise: Summary-JSON plus Test-/Perf-JSONL umgesetzt]
 
 Akzeptanz:
 
@@ -809,7 +815,7 @@ TODO:
 
 - Upstream-Testnummern in ein Manifest mappen.
 - Fuer jeden Test `covered`, `adapted`, `skip-unsupported` oder `blocked-api`
-  pflegen.
+  pflegen. [initiales Manifest: `todos/vfsstress-xfstests-manifest.md`]
 - Feature-Familien erst in P4-Portierung aufnehmen, wenn anyOS sie produktiv
   anbietet: Overlay/Whiteout, Namespace/idmapped mounts, xattrs, file mmap,
   direct IO/AIO, Quotas.
