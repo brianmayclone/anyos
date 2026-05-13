@@ -60,7 +60,8 @@ const BOUNCE_BUF_SECTORS: u32 = 1024;
 const BOUNCE_BUF_SIZE: usize = BOUNCE_BUF_SECTORS as usize * 512;
 const BOUNCE_BUF_FRAMES: usize = BOUNCE_BUF_SIZE / 4096; // 128
 
-const MAX_PRDT: usize = 8;
+const MAX_PRDT: usize = 128;
+const PRDT_MAX_BYTES: u32 = 4 * 1024 * 1024;
 
 // ── HBA Data Structures (all DMA-accessible) ────────
 
@@ -83,6 +84,14 @@ struct PrdtEntry {
     _reserved: u32,
     dbc: u32, // bit 31 = IOC, bits 21:0 = byte count minus 1
 }
+
+#[derive(Clone, Copy)]
+struct PrdtSpec {
+    phys: u64,
+    len: u32,
+}
+
+const EMPTY_PRDT_SPEC: PrdtSpec = PrdtSpec { phys: 0, len: 0 };
 
 /// Command Table (128-byte header + PRDT entries).
 #[repr(C)]
@@ -234,6 +243,44 @@ fn dma_ptr<T>(phys: u64) -> *mut T {
 #[inline(always)]
 unsafe fn dma_zero(phys: u64, len: usize) {
     core::ptr::write_bytes(dma_ptr::<u8>(phys), 0, len);
+}
+
+fn build_prdt_from_virt(ptr: *const u8, len: usize, out: &mut [PrdtSpec; MAX_PRDT]) -> Option<usize> {
+    if len == 0 {
+        return Some(0);
+    }
+
+    let mut used = 0usize;
+    let start = ptr as usize;
+    let mut done = 0usize;
+    while done < len {
+        let virt = start + done;
+        let phys = virtual_mem::virt_to_phys(VirtAddr::new(virt as u64))?;
+        let page_left = 4096 - (virt & 0xFFF);
+        let chunk = page_left.min(len - done).min(PRDT_MAX_BYTES as usize);
+
+        if used > 0 {
+            let prev = &mut out[used - 1];
+            let combined = prev.len as usize + chunk;
+            if prev.phys + prev.len as u64 == phys && combined <= PRDT_MAX_BYTES as usize {
+                prev.len = combined as u32;
+                done += chunk;
+                continue;
+            }
+        }
+
+        if used >= MAX_PRDT {
+            return None;
+        }
+        out[used] = PrdtSpec {
+            phys,
+            len: chunk as u32,
+        };
+        used += 1;
+        done += chunk;
+    }
+
+    Some(used)
 }
 
 #[inline(always)]
@@ -508,8 +555,7 @@ unsafe fn issue_command_once(
     command: u8,
     lba: u64,
     count: u16,
-    dma_phys: u64,
-    dma_size: u32,
+    prdt: &[PrdtSpec],
     write: bool,
 ) -> bool {
     // Set up command header (slot 0)
@@ -517,7 +563,7 @@ unsafe fn issue_command_once(
     let cfl: u16 = 5; // 5 DWORDs for Register H2D FIS
     let w_bit: u16 = if write { 1 << 6 } else { 0 };
     (*cmd_header).flags = cfl | w_bit;
-    (*cmd_header).prdtl = if dma_size > 0 { 1 } else { 0 };
+    (*cmd_header).prdtl = prdt.len() as u16;
     (*cmd_header).prdbc = 0;
     // ctba/ctbau already set during init
 
@@ -545,12 +591,18 @@ unsafe fn issue_command_once(
     (*fis).features_lo = 0;
     (*fis).features_hi = 0;
 
-    // Fill PRDT[0] if data transfer
-    if dma_size > 0 {
-        (*cmd_table).prdt[0].dba = dma_phys as u32;
-        (*cmd_table).prdt[0].dbau = (dma_phys >> 32) as u32;
-        (*cmd_table).prdt[0]._reserved = 0;
-        (*cmd_table).prdt[0].dbc = (dma_size - 1) | (1 << 31); // IOC + byte count
+    for entry in (*cmd_table).prdt.iter_mut() {
+        entry.dba = 0;
+        entry.dbau = 0;
+        entry._reserved = 0;
+        entry.dbc = 0;
+    }
+    for (i, spec) in prdt.iter().enumerate() {
+        (*cmd_table).prdt[i].dba = spec.phys as u32;
+        (*cmd_table).prdt[i].dbau = (spec.phys >> 32) as u32;
+        (*cmd_table).prdt[i]._reserved = 0;
+        let interrupt_on_completion = if i + 1 == prdt.len() { 1 << 31 } else { 0 };
+        (*cmd_table).prdt[i].dbc = (spec.len - 1) | interrupt_on_completion;
     }
 
     // Clear port interrupt status
@@ -656,17 +708,16 @@ unsafe fn wait_for_interrupt_completion(
     }
 }
 
-unsafe fn issue_command(
+unsafe fn issue_command_prdt(
     ahci: &AhciController,
     command: u8,
     lba: u64,
     count: u16,
-    dma_phys: u64,
-    dma_size: u32,
+    prdt: &[PrdtSpec],
     write: bool,
 ) -> bool {
     // First attempt
-    if issue_command_once(ahci, command, lba, count, dma_phys, dma_size, write) {
+    if issue_command_once(ahci, command, lba, count, prdt, write) {
         return true;
     }
 
@@ -687,7 +738,7 @@ unsafe fn issue_command(
         port_write(ahci.mmio_base, ahci.active_port, PORT_IS, 0xFFFF_FFFF);
         start_port(ahci.mmio_base, ahci.active_port);
 
-        if issue_command_once(ahci, command, lba, count, dma_phys, dma_size, write) {
+        if issue_command_once(ahci, command, lba, count, prdt, write) {
             return true;
         }
     }
@@ -698,6 +749,23 @@ unsafe fn issue_command(
         lba
     );
     false
+}
+
+unsafe fn issue_command(
+    ahci: &AhciController,
+    command: u8,
+    lba: u64,
+    count: u16,
+    dma_phys: u64,
+    dma_size: u32,
+    write: bool,
+) -> bool {
+    let specs = [PrdtSpec {
+        phys: dma_phys,
+        len: dma_size,
+    }];
+    let prdt = if dma_size > 0 { &specs[..] } else { &specs[..0] };
+    issue_command_prdt(ahci, command, lba, count, prdt, write)
 }
 
 /// Issue a command on a specific port with given DMA structures (polled I/O).
@@ -896,30 +964,42 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
     while remaining > 0 {
         let batch = remaining.min(BOUNCE_BUF_SECTORS);
         let byte_count = batch as usize * 512;
+        let dst = unsafe { buf.as_mut_ptr().add(offset) };
+        let mut prdt = [EMPTY_PRDT_SPEC; MAX_PRDT];
 
-        let ok = unsafe {
-            issue_command(
-                ahci,
-                ATA_CMD_READ_DMA_EXT,
-                cur_lba,
-                batch as u16,
-                ahci.bounce_phys,
-                byte_count as u32,
-                false,
-            )
+        let ok = if let Some(prdt_len) = build_prdt_from_virt(dst as *const u8, byte_count, &mut prdt) {
+            unsafe {
+                issue_command_prdt(
+                    ahci,
+                    ATA_CMD_READ_DMA_EXT,
+                    cur_lba,
+                    batch as u16,
+                    &prdt[..prdt_len],
+                    false,
+                )
+            }
+        } else {
+            let ok = unsafe {
+                issue_command(
+                    ahci,
+                    ATA_CMD_READ_DMA_EXT,
+                    cur_lba,
+                    batch as u16,
+                    ahci.bounce_phys,
+                    byte_count as u32,
+                    false,
+                )
+            };
+            if ok {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(ahci.bounce_virt as *const u8, dst, byte_count);
+                }
+            }
+            ok
         };
 
         if !ok {
             return false;
-        }
-
-        // Copy from bounce buffer to caller buffer
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                ahci.bounce_virt as *const u8,
-                buf.as_mut_ptr().add(offset),
-                byte_count,
-            );
         }
 
         offset += byte_count;
@@ -944,26 +1024,33 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
     while remaining > 0 {
         let batch = remaining.min(BOUNCE_BUF_SECTORS);
         let byte_count = batch as usize * 512;
+        let src = unsafe { buf.as_ptr().add(offset) };
+        let mut prdt = [EMPTY_PRDT_SPEC; MAX_PRDT];
 
-        // Copy caller data to bounce buffer
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                buf.as_ptr().add(offset),
-                ahci.bounce_virt as *mut u8,
-                byte_count,
-            );
-        }
-
-        let ok = unsafe {
-            issue_command(
-                ahci,
-                ATA_CMD_WRITE_DMA_EXT,
-                cur_lba,
-                batch as u16,
-                ahci.bounce_phys,
-                byte_count as u32,
-                true,
-            )
+        let ok = if let Some(prdt_len) = build_prdt_from_virt(src, byte_count, &mut prdt) {
+            unsafe {
+                issue_command_prdt(
+                    ahci,
+                    ATA_CMD_WRITE_DMA_EXT,
+                    cur_lba,
+                    batch as u16,
+                    &prdt[..prdt_len],
+                    true,
+                )
+            }
+        } else {
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, ahci.bounce_virt as *mut u8, byte_count);
+                issue_command(
+                    ahci,
+                    ATA_CMD_WRITE_DMA_EXT,
+                    cur_lba,
+                    batch as u16,
+                    ahci.bounce_phys,
+                    byte_count as u32,
+                    true,
+                )
+            }
         };
 
         if !ok {

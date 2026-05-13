@@ -85,6 +85,7 @@ static LAST_READ_END_LBA: AtomicU32 = AtomicU32::new(0);
 static READAHEAD_LEVEL: AtomicU32 = AtomicU32::new(64);
 const READAHEAD_MIN: u32 = 16; //   8 KiB
 const READAHEAD_MAX: u32 = 512; // 256 KiB
+const READ_CACHE_POPULATE_MAX: u32 = 128; // avoid polluting cache with large streams
 
 /// Reusable readahead buffer pool.
 ///
@@ -384,6 +385,7 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
 
     let total_fetch = miss_count + readahead;
     let fetch_bytes = total_fetch as usize * 512;
+    let populate_after_read = miss_count <= READ_CACHE_POPULATE_MAX;
     if cache_active {
         LAST_READ_END_LBA.store(miss_lba + total_fetch, Ordering::Relaxed);
     }
@@ -402,12 +404,14 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
                 let needed = miss_count as usize * 512;
                 let copy_end = needed.min(buf.len() - miss_offset);
                 buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);
-                crate::fs::blockcache::populate(
-                    disk_id,
-                    miss_lba,
-                    total_fetch,
-                    &big_buf[..fetch_bytes],
-                );
+                if populate_after_read {
+                    crate::fs::blockcache::populate(
+                        disk_id,
+                        miss_lba,
+                        total_fetch,
+                        &big_buf[..fetch_bytes],
+                    );
+                }
                 true
             } else {
                 false
@@ -422,7 +426,9 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
                 let needed = miss_count as usize * 512;
                 let copy_end = needed.min(buf.len() - miss_offset);
                 buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);
-                crate::fs::blockcache::populate(disk_id, miss_lba, total_fetch, &big_buf);
+                if populate_after_read {
+                    crate::fs::blockcache::populate(disk_id, miss_lba, total_fetch, &big_buf);
+                }
                 true
             } else {
                 false
@@ -443,8 +449,9 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
                     &mut buf[miss_offset..miss_offset + fetched_bytes],
                 );
             }
-            // Populate cache with fetched sectors
-            if buf.len() >= miss_offset + fetched_bytes {
+            // Populate cache with small/random reads only. Large streaming reads
+            // otherwise evict useful metadata and pay one cache insert per sector.
+            if populate_after_read && buf.len() >= miss_offset + fetched_bytes {
                 crate::fs::blockcache::populate(
                     disk_id,
                     miss_lba,

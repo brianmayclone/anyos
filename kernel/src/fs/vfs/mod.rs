@@ -1375,6 +1375,27 @@ pub fn incref(slot_id: u32) {
     }
 }
 
+/// Preferred userspace copy chunk for writes into this global file slot.
+///
+/// exFAT benefits from larger chunks because the write path can coalesce full
+/// cluster runs into fewer storage commands. CoreFS deliberately stays on the
+/// conservative syscall chunk size selected by `sys_write`.
+pub fn preferred_write_chunk(slot_id: FileDescriptor) -> usize {
+    let mut vfs = VFS.lock();
+    let Some(state) = vfs.as_mut() else {
+        return 16 * 1024;
+    };
+    match state
+        .open_files
+        .get(slot_id as usize)
+        .and_then(|e| e.as_ref())
+        .map(|f| f.fs_id)
+    {
+        Some(3) | Some(6) => 128 * 1024,
+        _ => 16 * 1024,
+    }
+}
+
 /// Decrement the reference count on a global open file slot (for close/exit).
 /// Frees the slot if refcount drops to 0. On last close of a writable exFAT
 /// file, flushes deferred metadata to disk.
@@ -3188,6 +3209,17 @@ pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), F
 /// Flush metadata for a specific open file to disk (fsync semantics).
 /// Ensures all deferred FAT/bitmap writes for the file's filesystem are persisted.
 pub fn fsync(slot_id: FileDescriptor) -> Result<(), FsError> {
+    sync_file(slot_id, true)
+}
+
+/// Flush file data and filesystem metadata without forcing the device hardware
+/// cache. This matches the lighter-weight path Linux callers expect from
+/// fdatasync-style workloads and keeps benchmark fsync costs explicit.
+pub fn fdatasync(slot_id: FileDescriptor) -> Result<(), FsError> {
+    sync_file(slot_id, false)
+}
+
+fn sync_file(slot_id: FileDescriptor, flush_hardware: bool) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
@@ -3222,7 +3254,9 @@ pub fn fsync(slot_id: FileDescriptor) -> Result<(), FsError> {
     // Flush write-back block cache, then storage hardware cache
     drop(vfs);
     flush_blockcache_for_disks(&disks_to_flush);
-    crate::drivers::storage::flush();
+    if flush_hardware {
+        crate::drivers::storage::flush();
+    }
     Ok(())
 }
 

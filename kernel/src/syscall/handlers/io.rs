@@ -12,6 +12,7 @@ use crate::fs::permissions::{check_permission, PERM_CREATE};
 // single userspace write is forwarded as several large 64 KiB appends before
 // metadata is flushed; 16 KiB matches the stable download/write path.
 const WRITE_COPY_CHUNK: usize = 16 * 1024;
+const MAX_FILE_WRITE_COPY_CHUNK: usize = 128 * 1024;
 const READ_COPY_CHUNK: usize = 16 * 1024;
 
 /// sys_write - Write to a file descriptor
@@ -32,12 +33,15 @@ pub fn sys_write(fd: u32, buf_ptr: u64, len: u32) -> u32 {
             match entry.kind {
                 FdKind::File { global_id } => {
                     let mut total = 0usize;
+                    let chunk_cap = crate::fs::vfs::preferred_write_chunk(global_id)
+                        .min(MAX_FILE_WRITE_COPY_CHUNK)
+                        .max(WRITE_COPY_CHUNK);
                     while total < len as usize {
-                        let chunk_len = ((len as usize) - total).min(WRITE_COPY_CHUNK);
+                        let chunk_len = ((len as usize) - total).min(chunk_cap);
                         let Some(buf) = copy_user_bytes(
                             buf_ptr.wrapping_add(total as u64),
                             chunk_len,
-                            WRITE_COPY_CHUNK,
+                            chunk_cap,
                         ) else {
                             return if total > 0 { total as u32 } else { u32::MAX };
                         };

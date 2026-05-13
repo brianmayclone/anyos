@@ -658,13 +658,26 @@ pub fn sys_sync() -> u32 {
 /// SYS_FSYNC — Flush deferred metadata for a specific open file to disk.
 /// arg1 = local file descriptor
 pub fn sys_fsync(fd: u32) -> u32 {
+    sync_fd(fd, true)
+}
+
+pub fn sys_fdatasync(fd: u32) -> u32 {
+    sync_fd(fd, false)
+}
+
+fn sync_fd(fd: u32, flush_hardware: bool) -> u32 {
     use crate::fs::fd_table::FdKind;
 
     match crate::task::scheduler::current_fd_get(fd) {
         Some(entry) => {
             match entry.kind {
                 FdKind::File { global_id } => {
-                    match crate::fs::vfs::fsync(global_id) {
+                    let result = if flush_hardware {
+                        crate::fs::vfs::fsync(global_id)
+                    } else {
+                        crate::fs::vfs::fdatasync(global_id)
+                    };
+                    match result {
                         Ok(()) => 0,
                         Err(_) => u32::MAX, // EIO
                     }
