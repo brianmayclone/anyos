@@ -721,6 +721,7 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
             "scratch lifecycle",
             scratch_lifecycle_case(cfg),
         );
+        run_named_with_warning(cfg, summary, "scratch enospc", scratch_enospc_case(cfg));
     }
     run_named_with_warning(
         cfg,
@@ -1806,31 +1807,10 @@ fn scratch_lifecycle_case(cfg: &Config) -> TestOutcome {
         return TestOutcome::Fail("scratch-fs");
     }
 
-    let _ = fs::umount(&cfg.scratch_mount);
-    mkdir_parents(&cfg.scratch_mount);
-
-    let mkfs_bin = if cfg.scratch_fs.as_str() == "exfat" {
-        "/System/sbin/mkfs.exfat"
-    } else {
-        "/System/sbin/mkfs.corefs"
+    let fs_type_id = match format_and_mount_scratch(cfg) {
+        Ok(fs_type_id) => fs_type_id,
+        Err(err) => return TestOutcome::Fail(err),
     };
-    let mkfs_args = format!("--device {} --label vfsstress", cfg.scratch_device);
-    let mkfs_tid = process::spawn(mkfs_bin, &mkfs_args);
-    if mkfs_tid == u32::MAX {
-        return TestOutcome::Fail("spawn-mkfs");
-    }
-    if process::waitpid(mkfs_tid) != 0 {
-        return TestOutcome::Fail("mkfs");
-    }
-
-    let fs_type_id = if cfg.scratch_fs.as_str() == "exfat" {
-        FS_TYPE_EXFAT
-    } else {
-        FS_TYPE_COREFS
-    };
-    if fs::mount(&cfg.scratch_mount, &cfg.scratch_device, fs_type_id) == u32::MAX {
-        return TestOutcome::Fail("mount");
-    }
 
     let sentinel = format!("{}/sentinel.bin", cfg.scratch_mount);
     if write_pattern_file(&sentinel, 128 * 1024, 4096, cfg.seed ^ 0xC0FE).is_err() {
@@ -1939,6 +1919,133 @@ fn scratch_lifecycle_case(cfg: &Config) -> TestOutcome {
         } else {
             ""
         }
+    ))
+}
+
+fn scratch_enospc_case(cfg: &Config) -> TestOutcome {
+    if cfg.scratch_device.is_empty() {
+        return TestOutcome::Warn("skip: --scratch-device nicht gesetzt".into());
+    }
+    let fs_type_id = match format_and_mount_scratch(cfg) {
+        Ok(fs_type_id) => fs_type_id,
+        Err(err) => return TestOutcome::Fail(err),
+    };
+
+    let Some(before) = fs::statfs(&cfg.scratch_mount) else {
+        let _ = fs::umount(&cfg.scratch_mount);
+        return TestOutcome::Fail("scratch-statfs");
+    };
+    let cap_bytes = cfg.enospc_kb as u64 * 1024;
+    if before.free_bytes > cap_bytes {
+        let _ = fs::umount(&cfg.scratch_mount);
+        return TestOutcome::Warn(format!(
+            "scratch free {} KB groesser als --enospc-kb {} KB; kleines Scratch-Device oder hoeheres Limit noetig",
+            before.free_bytes / 1024,
+            cfg.enospc_kb
+        ));
+    }
+
+    let dir = format!("{}/enospc", cfg.scratch_mount);
+    let _ = fs::mkdir(&dir);
+    let mut buf = Vec::new();
+    buf.resize(32 * 1024, 0);
+    let mut files = 0u32;
+    let mut written = 0u64;
+    let mut hit_enospc = false;
+
+    while written <= cap_bytes.saturating_add(buf.len() as u64) {
+        let path = format!("{}/fill{:04}.bin", dir, files);
+        let fd = fs::open(&path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+        if fd == u32::MAX {
+            hit_enospc = true;
+            break;
+        }
+        loop {
+            fill_pattern(&mut buf, written as u32, cfg.seed ^ files);
+            let n = fs::write(fd, &buf);
+            if n != buf.len() as u32 {
+                if n != u32::MAX {
+                    written = written.saturating_add(n as u64);
+                }
+                hit_enospc = true;
+                break;
+            }
+            written = written.saturating_add(buf.len() as u64);
+            if written > cap_bytes.saturating_add(buf.len() as u64) {
+                break;
+            }
+        }
+        let _ = fs::fsync(fd as i32);
+        fs::close(fd);
+        files += 1;
+        if hit_enospc {
+            break;
+        }
+    }
+    fs::sync();
+    let filled = fs::statfs(&cfg.scratch_mount);
+    if !hit_enospc {
+        let _ = fs::umount(&cfg.scratch_mount);
+        return TestOutcome::Fail("scratch-enospc-not-reached");
+    }
+
+    let mut deleted = 0u32;
+    for i in 0..files {
+        if i % 2 == 0 {
+            let path = format!("{}/fill{:04}.bin", dir, i);
+            if fs::unlink(&path) == 0 {
+                deleted += 1;
+            }
+        }
+    }
+    fs::sync();
+    let after_delete = fs::statfs(&cfg.scratch_mount);
+
+    let refill = format!("{}/refill.bin", dir);
+    let fd = fs::open(&refill, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if fd == u32::MAX {
+        let _ = fs::umount(&cfg.scratch_mount);
+        return TestOutcome::Fail("scratch-refill-open");
+    }
+    fill_pattern(&mut buf, 0, cfg.seed ^ 0xE05C_F111);
+    if fs::write(fd, &buf) != buf.len() as u32 {
+        fs::close(fd);
+        let _ = fs::umount(&cfg.scratch_mount);
+        return TestOutcome::Fail("scratch-refill-write");
+    }
+    let _ = fs::fsync(fd as i32);
+    fs::close(fd);
+    if verify_file_pattern_large(&refill, buf.len() as u32, cfg.seed ^ 0xE05C_F111, 4096).is_err() {
+        let _ = fs::umount(&cfg.scratch_mount);
+        return TestOutcome::Fail("scratch-refill-verify");
+    }
+
+    if fs::umount(&cfg.scratch_mount) == u32::MAX {
+        return TestOutcome::Fail("scratch-enospc-umount");
+    }
+    if run_scratch_fsck(cfg).is_err() {
+        return TestOutcome::Fail("scratch-enospc-fsck");
+    }
+    if fs::mount(&cfg.scratch_mount, &cfg.scratch_device, fs_type_id) == u32::MAX {
+        return TestOutcome::Fail("scratch-enospc-remount");
+    }
+    if verify_file_pattern_large(&refill, buf.len() as u32, cfg.seed ^ 0xE05C_F111, 4096).is_err() {
+        let _ = fs::umount(&cfg.scratch_mount);
+        return TestOutcome::Fail("scratch-refill-remount");
+    }
+    let _ = fs::umount(&cfg.scratch_mount);
+
+    let filled_free = filled.map(|s| s.free_bytes / 1024).unwrap_or(u64::MAX);
+    let delete_free = after_delete
+        .map(|s| s.free_bytes / 1024)
+        .unwrap_or(u64::MAX);
+    TestOutcome::Ok(format!(
+        "{} KB bis ENOSPC geschrieben, {} Dateien geloescht, free {} -> {} -> {} KB, fsck/remount/refill ok",
+        written / 1024,
+        deleted,
+        before.free_bytes / 1024,
+        filled_free,
+        delete_free
     ))
 }
 
@@ -2108,6 +2215,41 @@ fn readlink_matches(path: &str, expected: &str) -> bool {
 fn lstat_is_symlink(path: &str) -> bool {
     let mut stat = [0u32; 7];
     fs::lstat(path, &mut stat) == 0 && (stat[2] & 1) != 0
+}
+
+fn format_and_mount_scratch(cfg: &Config) -> Result<u32, &'static str> {
+    let _ = fs::umount(&cfg.scratch_mount);
+    mkdir_parents(&cfg.scratch_mount);
+
+    let mkfs_bin = if cfg.scratch_fs.as_str() == "exfat" {
+        "/System/sbin/mkfs.exfat"
+    } else {
+        "/System/sbin/mkfs.corefs"
+    };
+    let mkfs_args = format!("--device {} --label vfsstress", cfg.scratch_device);
+    let mkfs_tid = process::spawn(mkfs_bin, &mkfs_args);
+    if mkfs_tid == u32::MAX {
+        return Err("spawn-mkfs");
+    }
+    if process::waitpid(mkfs_tid) != 0 {
+        return Err("mkfs");
+    }
+
+    let fs_type_id = scratch_fs_type_id(cfg)?;
+    if fs::mount(&cfg.scratch_mount, &cfg.scratch_device, fs_type_id) == u32::MAX {
+        return Err("mount");
+    }
+    Ok(fs_type_id)
+}
+
+fn scratch_fs_type_id(cfg: &Config) -> Result<u32, &'static str> {
+    if cfg.scratch_fs.as_str() == "exfat" {
+        Ok(FS_TYPE_EXFAT)
+    } else if cfg.scratch_fs.as_str() == "corefs" {
+        Ok(FS_TYPE_COREFS)
+    } else {
+        Err("scratch-fs")
+    }
 }
 
 fn run_scratch_fsck(cfg: &Config) -> Result<(), &'static str> {

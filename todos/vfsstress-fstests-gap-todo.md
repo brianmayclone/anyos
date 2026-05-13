@@ -104,9 +104,10 @@ Akzeptanz:
 
 Status:
 
-- Teilweise umgesetzt in `vfsstress`:
+- Umgesetzt in `vfsstress`:
   - `enospc_accounting_case`
   - `enospc_directory_growth_case`
+  - `scratch_enospc_case`
   - CLI-Option `--enospc-kb`
   - bounded Fill-Workload
   - `statfs`-Vergleich vor Fill, nach Fill, nach Delete
@@ -114,27 +115,31 @@ Status:
   - Delete/Reclaim/Refill-Pfad mit Inhaltsverifikation nach erneutem Schreiben
   - Directory-Wachstum mit vielen kleinen Dateien, Rename/Unlink/Reclaim und
     Refill-Pfad nahe dem gesetzten ENOSPC-Limit
+  - bei explizitem kleinem `--scratch-device`: destruktiver mkfs/mount-Test,
+    echtes ENOSPC, Delete/Reclaim, Refill, fsck und Remount-Verify
 
 Fehlt:
 
-- Erzwingbarer kleiner Scratch-Datentraeger, damit ENOSPC deterministisch
-  erreicht wird.
+- Keine offene P0-Luecke fuer die CoreFS/exFAT-Freigabe. Fuer echtes ENOSPC
+  muss ein Scratch-Device bereitgestellt werden, dessen freier Platz innerhalb
+  von `--enospc-kb` liegt; groessere Devices werden aus Sicherheitsgruenden
+  nicht vollgeschrieben und als WARN gemeldet.
 
 TODO:
 
-- `enospc_accounting_case` ergaenzen.
-- Testverzeichnis kontrolliert bis nahe voll schreiben.
+- `enospc_accounting_case` ergaenzen. [umgesetzt]
+- Testverzeichnis kontrolliert bis nahe voll schreiben. [umgesetzt]
 - Danach:
-  - grosse Datei bis Write-Fehler,
-  - viele kleine Dateien bis Create/Write-Fehler,
-  - Rename/Unlink unter Speicherknappheit,
-  - `sync`,
-  - Teil loeschen,
-  - erneut schreiben.
+  - grosse Datei bis Write-Fehler. [umgesetzt bounded, echt auf Scratch]
+  - viele kleine Dateien bis Create/Write-Fehler. [umgesetzt bounded, echt auf Scratch]
+  - Rename/Unlink unter Speicherknappheit. [umgesetzt]
+  - `sync`. [umgesetzt]
+  - Teil loeschen. [umgesetzt]
+  - erneut schreiben. [umgesetzt]
 - `statfs` in Summary ausgeben: total, free vorher, free voll, free nach
-  Delete, free nach Refill.
+  Delete, free nach Refill. [umgesetzt in Details/JSON]
 - Optional `--enospc-max-kb N`, damit der Test in normalen Images begrenzt
-  bleibt.
+  bleibt. [umgesetzt als `--enospc-kb`]
 
 Akzeptanz:
 
