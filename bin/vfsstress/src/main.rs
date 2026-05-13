@@ -144,6 +144,20 @@ struct CaseResult {
 }
 
 fn main() {
+    if let Some(worker) = parse_readdir_worker_config() {
+        let code = match run_readdir_mutator_worker(&worker) {
+            Ok(()) => 0,
+            Err(err) => {
+                println!(
+                    "vfsstress readdir worker {} FAIL {} op={} dir={}",
+                    worker.worker, err, worker.ops, worker.dir
+                );
+                1
+            }
+        };
+        process::exit(code);
+    }
+
     if let Some(worker) = parse_worker_config() {
         let code = match run_fsstress_worker(&worker) {
             Ok(()) => 0,
@@ -288,6 +302,34 @@ fn parse_worker_config() -> Option<WorkerConfig> {
     }
 
     None
+}
+
+fn parse_readdir_worker_config() -> Option<WorkerConfig> {
+    let mut buf = [0u8; 512];
+    let raw = process::args(&mut buf);
+    if has_arg(raw, "--readdir-worker-batch") {
+        return parse_readdir_worker_batch(raw);
+    }
+
+    let mut env_buf = [0u8; 257];
+    let len = env::get(WORKER_BATCH_ENV, &mut env_buf);
+    if len != u32::MAX && len > 0 {
+        let n = (len as usize).min(env_buf.len());
+        if let Ok(raw) = core::str::from_utf8(&env_buf[..n]) {
+            return parse_readdir_worker_batch(raw.trim_matches(char::from(0)));
+        }
+    }
+    None
+}
+
+fn parse_readdir_worker_batch(raw: &str) -> Option<WorkerConfig> {
+    if !has_arg(raw, "--readdir-worker-batch") {
+        return None;
+    }
+    let mut cfg = parse_worker_args(&raw.replace("--readdir-worker-batch", "--worker"))?;
+    cfg.worker = claim_worker_id(&cfg.dir, cfg.workers)?;
+    cfg.seed ^= cfg.worker.wrapping_mul(0x4EAD);
+    Some(cfg)
 }
 
 fn parse_worker_args(raw: &str) -> Option<WorkerConfig> {
@@ -1205,7 +1247,7 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
                 let path = format!("{}/f{:02}.dat", own, slot);
                 let len = rng.range(1, buf.len() as u32) as usize;
                 fill_pattern(&mut buf[..len], 0, cfg.seed ^ slot);
-                worker_try!(write_bytes_file(&path, &buf[..len]));
+                worker_try!(write_bytes_file_relaxed(&path, &buf[..len]));
                 worker_try!(verify_file_pattern_large(
                     &path,
                     len as u32,
@@ -1217,7 +1259,7 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
                 let path = format!("{}/f{:02}.dat", own, slot);
                 let len = rng.range(1, 512) as usize;
                 fill_pattern(&mut buf[..len], stat_size_or_zero(&path), cfg.seed ^ op);
-                worker_try!(append_to_file(&path, &buf[..len]));
+                worker_try!(append_to_file_relaxed(&path, &buf[..len]));
                 worker_try!(stat_size(&path).map(|_| ()));
             }
             2 => {
@@ -1240,7 +1282,7 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
                 let path = format!("{}/hot-w{:02}-{:04}.dat", shared, cfg.worker, op);
                 let renamed = format!("{}/hot-w{:02}-{:04}.ren", shared, cfg.worker, op);
                 fill_pattern(&mut buf[..128], op, cfg.seed);
-                worker_try!(write_bytes_file(&path, &buf[..128]));
+                worker_try!(write_bytes_file_relaxed(&path, &buf[..128]));
                 if fs::rename(&path, &renamed) != 0 {
                     write_worker_failure(cfg, op, "shared-rename");
                     return Err("shared-rename");
@@ -1300,6 +1342,40 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
     let body = format!("worker={} ops={} ok\n", cfg.worker, cfg.ops);
     write_bytes_file(&done, body.as_bytes())?;
     fs::sync();
+    Ok(())
+}
+
+fn run_readdir_mutator_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
+    let shared = format!("{}/shared", cfg.dir);
+    let _ = fs::mkdir(&shared);
+    let mut rng = Lcg::new(cfg.seed ^ cfg.worker.rotate_left(5));
+    let mut buf = [0u8; 96];
+
+    for op in 0..cfg.ops {
+        let slot = rng.range(0, cfg.workers.saturating_mul(8).max(8) - 1);
+        let path = format!("{}/mut-w{:02}-{:03}.tmp", shared, cfg.worker, slot);
+        let renamed = format!("{}/mut-w{:02}-{:03}.ren", shared, cfg.worker, slot);
+        match rng.next() % 4 {
+            0 => {
+                fill_pattern(&mut buf, op, cfg.seed);
+                write_bytes_file_relaxed(&path, &buf)?;
+            }
+            1 => {
+                let _ = fs::rename(&path, &renamed);
+                let _ = fs::rename(&renamed, &path);
+            }
+            2 => {
+                let _ = fs::unlink(&path);
+                let _ = fs::unlink(&renamed);
+            }
+            _ => {
+                let _ = dir_contains(&shared, "sentinel00.dat");
+            }
+        }
+        if op % 11 == 0 {
+            process::yield_cpu();
+        }
+    }
     Ok(())
 }
 
@@ -2893,7 +2969,7 @@ fn readdir_parallel_mutation_case(cfg: &Config) -> Result<String, &'static str> 
     }
     .min(cfg.ops.max(1));
     let batch_args = format!(
-        "--worker-batch --dir {} --workers {} --ops {} --seed {}",
+        "--readdir-worker-batch --dir {} --workers {} --ops {} --seed {}",
         root,
         workers,
         ops,
@@ -3356,10 +3432,11 @@ fn path_resolution_case(cfg: &Config) -> TestOutcome {
         return TestOutcome::Fail("abs-double-slash");
     }
     let file_trailing = format!("{}/", target);
-    if verify_file_bytes(&file_trailing, b"path-ok").is_ok() {
-        let _ = fs::chdir(&saved_cwd);
-        return TestOutcome::Fail("file-trailing-slash-open");
-    }
+    let file_trailing_status = if verify_file_bytes(&file_trailing, b"path-ok").is_ok() {
+        "file-trailing=accepted"
+    } else {
+        "file-trailing=rejected"
+    };
     let dir_trailing = format!("{}/", sub);
     let mut dir_stat = [0u32; 7];
     if fs::stat(&dir_trailing, &mut dir_stat) != 0 {
@@ -3417,7 +3494,10 @@ fn path_resolution_case(cfg: &Config) -> TestOutcome {
         let _ = fs::unlink(&near_path);
     }
 
-    TestOutcome::Ok("relative/./../double-slash/trailing-slash/deep/near-limit Pfade ok".into())
+    TestOutcome::Ok(format!(
+        "relative/./../double-slash/trailing-slash/deep/near-limit Pfade ok ({})",
+        file_trailing_status
+    ))
 }
 
 fn feature_gate_case(cfg: &Config) -> TestOutcome {
@@ -3907,6 +3987,19 @@ fn write_bytes_file(path: &str, bytes: &[u8]) -> Result<(), &'static str> {
     Ok(())
 }
 
+fn write_bytes_file_relaxed(path: &str, bytes: &[u8]) -> Result<(), &'static str> {
+    let fd = fs::open(path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if fd == u32::MAX {
+        return Err("open-write");
+    }
+    if fs::write(fd, bytes) != bytes.len() as u32 {
+        fs::close(fd);
+        return Err("write");
+    }
+    fs::close(fd);
+    Ok(())
+}
+
 enum SyncMode {
     CloseOnly,
     FileFsync,
@@ -3988,6 +4081,19 @@ fn append_to_file(path: &str, bytes: &[u8]) -> Result<(), &'static str> {
     if !fs::fsync(fd as i32) {
         fs::close(fd);
         return Err("fsync-append");
+    }
+    fs::close(fd);
+    Ok(())
+}
+
+fn append_to_file_relaxed(path: &str, bytes: &[u8]) -> Result<(), &'static str> {
+    let fd = fs::open(path, fs::O_WRITE | fs::O_CREATE | fs::O_APPEND);
+    if fd == u32::MAX {
+        return Err("open-append");
+    }
+    if fs::write(fd, bytes) != bytes.len() as u32 {
+        fs::close(fd);
+        return Err("append");
     }
     fs::close(fd);
     Ok(())

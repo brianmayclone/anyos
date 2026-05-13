@@ -68,6 +68,8 @@ Status:
   - gemeinsame Shared-Hot-Directory-Namen mit Cross-Worker
     Create/Rename/Unlink-Kollisionen
   - Shared-Directory-Scan nach Worker-Ende mit Stat/Read-Sanity-Check
+  - Worker-Zwischenwrites verwenden relaxed close/write; strikte fsync-Semantik
+    wird separat in `fsync_ordering_case` und `sync_latency_perf_case` getestet
 
 Fehlt:
 
