@@ -603,6 +603,9 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
     run_named(summary, "metadata rename", metadata_rename_case(cfg));
     run_named(summary, "directory churn", directory_churn_case(cfg));
     run_named(summary, "metadata perf", metadata_perf_case(cfg));
+    run_named(summary, "sequential perf", sequential_io_perf_case(cfg));
+    run_named(summary, "overwrite perf", random_overwrite_perf_case(cfg));
+    run_named(summary, "sync latency", sync_latency_perf_case(cfg));
     run_named(
         summary,
         "readdir mutation",
@@ -2098,6 +2101,193 @@ fn metadata_perf_case(cfg: &Config) -> Result<String, &'static str> {
         ops_per_s(count, rename_ms),
         ops_per_s(count, readdir_ms),
         ops_per_s(count, unlink_ms)
+    ))
+}
+
+fn sequential_io_perf_case(cfg: &Config) -> Result<String, &'static str> {
+    let path = format!("{}/full-sequential-perf.bin", cfg.dir);
+    let _ = fs::unlink(&path);
+    let total = match cfg.profile {
+        Profile::Quick => 2 * 1024 * 1024u32,
+        Profile::Normal => cfg.total_bytes.max(8 * 1024 * 1024),
+        Profile::Heavy => cfg.total_bytes.max(32 * 1024 * 1024),
+    };
+    let chunk = 64 * 1024usize;
+    let seed = cfg.seed ^ 0x5E90_1001;
+    let mut buf = Vec::new();
+    buf.resize(chunk, 0);
+
+    let fd = fs::open(&path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if fd == u32::MAX {
+        return Err("open-write");
+    }
+    let write_start = sys::uptime_ms();
+    let mut offset = 0u32;
+    while offset < total {
+        let len = (total - offset).min(chunk as u32) as usize;
+        fill_pattern(&mut buf[..len], offset, seed);
+        if fs::write(fd, &buf[..len]) != len as u32 {
+            fs::close(fd);
+            return Err("write");
+        }
+        offset += len as u32;
+    }
+    if !fs::fsync(fd as i32) {
+        fs::close(fd);
+        return Err("fsync");
+    }
+    fs::close(fd);
+    let write_ms = elapsed_ms(write_start);
+
+    let fd = fs::open(&path, 0);
+    if fd == u32::MAX {
+        return Err("open-read");
+    }
+    let read_start = sys::uptime_ms();
+    offset = 0;
+    while offset < total {
+        let len = (total - offset).min(chunk as u32) as usize;
+        let n = fs::read(fd, &mut buf[..len]);
+        if n != len as u32 {
+            fs::close(fd);
+            return Err("read");
+        }
+        if verify_pattern(&buf[..len], offset, seed).is_some() {
+            fs::close(fd);
+            return Err("verify");
+        }
+        offset += len as u32;
+    }
+    fs::close(fd);
+    let read_ms = elapsed_ms(read_start);
+
+    if !cfg.keep {
+        let _ = fs::unlink(&path);
+    }
+    Ok(format!(
+        "{} KB sequenziell: write={} KB/s read={} KB/s chunk={}K",
+        total / 1024,
+        kb_per_s(total, write_ms),
+        kb_per_s(total, read_ms),
+        chunk / 1024
+    ))
+}
+
+fn random_overwrite_perf_case(cfg: &Config) -> Result<String, &'static str> {
+    let path = format!("{}/full-random-overwrite-perf.bin", cfg.dir);
+    let _ = fs::unlink(&path);
+    let total = match cfg.profile {
+        Profile::Quick => 512 * 1024u32,
+        Profile::Normal => 2 * 1024 * 1024u32,
+        Profile::Heavy => 8 * 1024 * 1024u32,
+    };
+    let ops = match cfg.profile {
+        Profile::Quick => 64u32,
+        Profile::Normal => 256u32,
+        Profile::Heavy => 1024u32,
+    };
+    let patch_len = 4096usize;
+    write_pattern_file(&path, total, 64 * 1024, cfg.seed ^ 0xB45E_0001)?;
+
+    let fd = fs::open(&path, fs::O_WRITE);
+    if fd == u32::MAX {
+        return Err("open-write");
+    }
+    let mut rng = Lcg::new(cfg.seed ^ 0x0E41_2026);
+    let mut buf = [0u8; 4096];
+    let started = sys::uptime_ms();
+    for op in 0..ops {
+        let max_slot = total.saturating_sub(patch_len as u32) / patch_len as u32;
+        let slot = rng.range(0, max_slot.max(1) - 1);
+        let off = slot.saturating_mul(patch_len as u32);
+        fill_pattern(&mut buf, off, cfg.seed ^ 0x0F0F_0000 ^ op);
+        if fs::lseek(fd, off as i32, fs::SEEK_SET) != off {
+            fs::close(fd);
+            return Err("seek");
+        }
+        if fs::write(fd, &buf) != patch_len as u32 {
+            fs::close(fd);
+            return Err("write");
+        }
+    }
+    if !fs::fsync(fd as i32) {
+        fs::close(fd);
+        return Err("fsync");
+    }
+    fs::close(fd);
+    let ms = elapsed_ms(started);
+
+    if !cfg.keep {
+        let _ = fs::unlink(&path);
+    }
+    Ok(format!(
+        "{} x {}K Random-Overwrites: {} ops/s",
+        ops,
+        patch_len / 1024,
+        ops_per_s(ops, ms)
+    ))
+}
+
+fn sync_latency_perf_case(cfg: &Config) -> Result<String, &'static str> {
+    let dir = format!("{}/full-sync-latency", cfg.dir);
+    let _ = fs::mkdir(&dir);
+    let rounds = match cfg.profile {
+        Profile::Quick => 8u32,
+        Profile::Normal => 24u32,
+        Profile::Heavy => 64u32,
+    };
+    let mut fsync_min = u32::MAX;
+    let mut fsync_max = 0u32;
+    let mut fsync_sum = 0u32;
+    let mut sync_min = u32::MAX;
+    let mut sync_max = 0u32;
+    let mut sync_sum = 0u32;
+    let mut buf = [0u8; 4096];
+
+    for round in 0..rounds {
+        let path = format!("{}/sync{:03}.bin", dir, round);
+        let fd = fs::open(&path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+        if fd == u32::MAX {
+            return Err("open");
+        }
+        fill_pattern(&mut buf, round * 4096, cfg.seed ^ 0x51C0_0001);
+        if fs::write(fd, &buf) != buf.len() as u32 {
+            fs::close(fd);
+            return Err("write");
+        }
+        let started = sys::uptime_ms();
+        if !fs::fsync(fd as i32) {
+            fs::close(fd);
+            return Err("fsync");
+        }
+        let fsync_ms = elapsed_ms(started);
+        fs::close(fd);
+        fsync_min = fsync_min.min(fsync_ms);
+        fsync_max = fsync_max.max(fsync_ms);
+        fsync_sum = fsync_sum.saturating_add(fsync_ms);
+
+        let started = sys::uptime_ms();
+        fs::sync();
+        let sync_ms = elapsed_ms(started);
+        sync_min = sync_min.min(sync_ms);
+        sync_max = sync_max.max(sync_ms);
+        sync_sum = sync_sum.saturating_add(sync_ms);
+    }
+
+    if !cfg.keep {
+        for round in 0..rounds {
+            let _ = fs::unlink(&format!("{}/sync{:03}.bin", dir, round));
+        }
+    }
+    Ok(format!(
+        "{} Runden: fsync min/avg/max={}/{}/{} ms, sync min/avg/max={}/{}/{} ms",
+        rounds,
+        fsync_min,
+        fsync_sum / rounds,
+        fsync_max,
+        sync_min,
+        sync_sum / rounds,
+        sync_max
     ))
 }
 

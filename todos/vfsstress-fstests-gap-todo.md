@@ -593,12 +593,18 @@ Status:
 - Teilweise umgesetzt in `vfsstress`:
   - `metadata_perf_case`
   - create/stat/rename/readdir/unlink Durchsatz als ops/s bzw. entries/s
+  - `sequential_io_perf_case`
+  - sequentielle Write-/Read-Datenrate mit 64K Chunks
+  - `random_overwrite_perf_case`
+  - 4K Random-Overwrite-Durchsatz
+  - `sync_latency_perf_case`
+  - fsync/global-sync min/avg/max Latenzen
   - Profilabhaengige Eintragszahlen fuer quick/normal/heavy
 
 Fehlt:
 
-- Getrennte Datenraten fuer sequential write, sequential read, random overwrite.
 - Vergleichbare Ausgabe fuer CoreFS vs exFAT.
+- Maschinenlesbare JSON-Ausgabe und Regressionsschwellen.
 
 TODO:
 
@@ -606,10 +612,10 @@ TODO:
 - Metriken:
   - create/stat/rename/unlink ops/s. [umgesetzt]
   - readdir entries/s. [umgesetzt]
-  - sequential write/read KB/s.
-  - random overwrite ops/s.
-  - sync latency.
-  - fsync latency p50/p95/max, soweit ohne Heap-heavy Statistik machbar.
+  - sequential write/read KB/s. [umgesetzt]
+  - random overwrite ops/s. [umgesetzt]
+  - sync latency. [umgesetzt als min/avg/max]
+  - fsync latency p50/p95/max, soweit ohne Heap-heavy Statistik machbar. [teilweise: min/avg/max]
 - Output stabil maschinenlesbar machen.
 
 Akzeptanz:
