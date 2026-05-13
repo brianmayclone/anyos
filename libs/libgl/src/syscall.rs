@@ -1,17 +1,16 @@
 //! Syscall wrappers for libgl — delegates to libsyscall.
 
 pub use libsyscall::{
-    sbrk, mmap, munmap, exit, write_bytes,
-    gpu_3d_has_hw, gpu_3d_hw_version, gpu_3d_submit, gpu_3d_sync,
-    gpu_3d_surface_dma, gpu_3d_surface_dma_read,
-    gpu_query_type, dll_load,
-    serial_print, uptime_ms,
-    syscall0, syscall1, syscall2, syscall3, syscall5,
+    dll_load, exit, gpu_3d_has_hw, gpu_3d_hw_version, gpu_3d_submit, gpu_3d_surface_dma,
+    gpu_3d_surface_dma_read, gpu_3d_sync, gpu_query_type, mmap, munmap, sbrk, serial_print,
+    syscall0, syscall1, syscall2, syscall3, syscall5, uptime_ms, write_bytes,
 };
 
 const SYS_GETPID: u32 = 6;
 const SYS_KILL: u32 = 13;
 const SYS_SYSINFO: u32 = 32;
+const SYS_YIELD: u32 = 7;
+const SYS_SLEEP: u32 = 8;
 const SYS_SLEEP_US: u32 = 36;
 const SYS_THREAD_CREATE: u32 = 170;
 
@@ -29,6 +28,14 @@ pub fn cpu_count() -> u32 {
 /// Sleep for `us` microseconds (non-busy for >= 1ms).
 pub fn sleep_us(us: u32) {
     syscall1(SYS_SLEEP_US, us as u64);
+}
+
+pub fn sleep_ms(ms: u32) {
+    syscall1(SYS_SLEEP, ms as u64);
+}
+
+pub fn yield_cpu() {
+    syscall0(SYS_YIELD);
 }
 
 pub fn getpid() -> u32 {

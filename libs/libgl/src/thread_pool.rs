@@ -8,11 +8,11 @@
 //! automatically at `gl_init` and workers are cleaned up at `gl_deinit`
 //! (or when the process exits, if the kernel supports it).
 
-use core::sync::atomic::{AtomicU32, Ordering};
-use crate::syscall;
-use crate::rasterizer::ClipVertex;
 use crate::rasterizer::raster::ResolvedTexture;
+use crate::rasterizer::ClipVertex;
 use crate::state::MAX_TEXTURE_UNITS;
+use crate::syscall;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Maximum number of worker threads (hard cap).
 const MAX_WORKERS: usize = 7;
@@ -167,7 +167,9 @@ fn worker_exit_stub() {
 /// Initialize the thread pool with `n` workers.
 fn init_pool(n: usize, fb_h: u32) {
     let n = n.min(MAX_WORKERS);
-    if n == 0 { return; }
+    if n == 0 {
+        return;
+    }
 
     unsafe {
         let pool = POOL.get_or_insert_with(|| ThreadPool {
@@ -196,14 +198,23 @@ fn init_pool(n: usize, fb_h: u32) {
         let band_h = fb_h / n as u32;
         for i in 0..n {
             pool.workers[i].band_min_y = i as u32 * band_h;
-            pool.workers[i].band_max_y = if i == n - 1 { fb_h } else { (i as u32 + 1) * band_h };
+            pool.workers[i].band_max_y = if i == n - 1 {
+                fb_h
+            } else {
+                (i as u32 + 1) * band_h
+            };
             pool.workers[i].state.store(WORKER_IDLE, Ordering::Relaxed);
         }
 
         // Spawn worker threads
         static WORKER_ENTRIES: [fn(); MAX_WORKERS] = [
-            worker_entry_0, worker_entry_1, worker_entry_2, worker_entry_3,
-            worker_entry_4, worker_entry_5, worker_entry_6,
+            worker_entry_0,
+            worker_entry_1,
+            worker_entry_2,
+            worker_entry_3,
+            worker_entry_4,
+            worker_entry_5,
+            worker_entry_6,
         ];
 
         for i in 0..n {
@@ -221,7 +232,10 @@ fn init_pool(n: usize, fb_h: u32) {
             }
             let tid = syscall::thread_create(WORKER_ENTRIES[i], stack_top, "gl_worker");
             if tid == 0 {
-                crate::serial_println!("[libgl] thread_pool: thread_create failed for worker {}", i);
+                crate::serial_println!(
+                    "[libgl] thread_pool: thread_create failed for worker {}",
+                    i
+                );
                 syscall::munmap(stack_addr, WORKER_STACK_MAPPING_SIZE as u32);
                 WORKER_STACKS[i] = 0;
                 pool.num_workers = i;
@@ -235,13 +249,27 @@ fn init_pool(n: usize, fb_h: u32) {
 }
 
 // Worker entry points
-fn worker_entry_0() { worker_main(0); }
-fn worker_entry_1() { worker_main(1); }
-fn worker_entry_2() { worker_main(2); }
-fn worker_entry_3() { worker_main(3); }
-fn worker_entry_4() { worker_main(4); }
-fn worker_entry_5() { worker_main(5); }
-fn worker_entry_6() { worker_main(6); }
+fn worker_entry_0() {
+    worker_main(0);
+}
+fn worker_entry_1() {
+    worker_main(1);
+}
+fn worker_entry_2() {
+    worker_main(2);
+}
+fn worker_entry_3() {
+    worker_main(3);
+}
+fn worker_entry_4() {
+    worker_main(4);
+}
+fn worker_entry_5() {
+    worker_main(5);
+}
+fn worker_entry_6() {
+    worker_main(6);
+}
 
 /// Worker main loop. Sleeps until work arrives, processes ALL sub-batches
 /// for its y-band, then signals done.
@@ -254,12 +282,16 @@ fn worker_main(id: usize) {
         let mut idle_spins: u32 = 0;
         loop {
             let s = ctl.state.load(Ordering::Acquire);
-            if s == WORKER_WORK { break; }
-            if s == WORKER_EXIT { return; }
+            if s == WORKER_WORK {
+                break;
+            }
+            if s == WORKER_EXIT {
+                return;
+            }
             if idle_spins < 50 {
                 core::hint::spin_loop();
             } else {
-                syscall::sleep_us(100);
+                syscall::sleep_ms(1);
             }
             idle_spins = idle_spins.saturating_add(1);
         }
@@ -295,9 +327,18 @@ pub fn pool_active() -> bool {
 /// Determine optimal worker count based on available CPU cores.
 fn optimal_worker_count() -> usize {
     let raw = syscall::cpu_count();
-    let cpus = if raw == 0 || raw > 64 { 1 } else { raw as usize };
-    crate::serial_println!("[libgl] thread_pool: raw cpu_count={}, effective={}", raw, cpus);
-    cpus.min(MAX_WORKERS)
+    let cpus = if raw == 0 || raw > 64 {
+        1
+    } else {
+        raw as usize
+    };
+    let workers = cpus.saturating_sub(1).max(1).min(MAX_WORKERS);
+    crate::serial_println!(
+        "[libgl] thread_pool: raw cpu_count={}, workers={} (reserve=1)",
+        raw,
+        workers
+    );
+    workers
 }
 
 /// Ensure pool is initialized for the given framebuffer height.
@@ -317,7 +358,11 @@ pub fn ensure_pool(fb_h: u32) {
                 let band_h = fb_h / n as u32;
                 for i in 0..n {
                     pool.workers[i].band_min_y = i as u32 * band_h;
-                    pool.workers[i].band_max_y = if i == n - 1 { fb_h } else { (i as u32 + 1) * band_h };
+                    pool.workers[i].band_max_y = if i == n - 1 {
+                        fb_h
+                    } else {
+                        (i as u32 + 1) * band_h
+                    };
                 }
             }
         }
@@ -352,34 +397,55 @@ pub fn shutdown_pool() {
 /// Append triangles from one draw call into the frame buffer.
 /// Returns the number of triangles actually added.
 pub fn append_tris(tris: &[ScreenTri]) -> usize {
-    let pool = unsafe { match POOL.as_mut() { Some(p) => p, None => return 0 } };
+    let pool = unsafe {
+        match POOL.as_mut() {
+            Some(p) => p,
+            None => return 0,
+        }
+    };
     let avail = MAX_TRIS - pool.tri_count;
     let n = tris.len().min(avail);
-    if n == 0 { return 0; }
+    if n == 0 {
+        return 0;
+    }
     pool.tri_buf[pool.tri_count..pool.tri_count + n].copy_from_slice(&tris[..n]);
     pool.tri_count += n;
     n
 }
 
 pub fn remaining_tri_capacity() -> usize {
-    unsafe { POOL.as_ref().map_or(0, |p| MAX_TRIS.saturating_sub(p.tri_count)) }
+    unsafe {
+        POOL.as_ref()
+            .map_or(0, |p| MAX_TRIS.saturating_sub(p.tri_count))
+    }
 }
 
 pub fn remaining_sub_batch_capacity() -> usize {
-    unsafe { POOL.as_ref().map_or(0, |p| MAX_SUB_BATCHES.saturating_sub(p.sub_batch_count)) }
+    unsafe {
+        POOL.as_ref()
+            .map_or(0, |p| MAX_SUB_BATCHES.saturating_sub(p.sub_batch_count))
+    }
 }
 
 pub fn has_pending_work() -> bool {
     unsafe {
-        POOL.as_ref().map_or(false, |p| p.sub_batch_count > 0 && p.tri_count > 0)
+        POOL.as_ref()
+            .map_or(false, |p| p.sub_batch_count > 0 && p.tri_count > 0)
     }
 }
 
 /// Begin a sub-batch for the current draw call's render state.
 /// Call this BEFORE `append_tris`. Returns the tri_start index.
 pub fn begin_sub_batch() -> Option<u32> {
-    let pool = unsafe { match POOL.as_mut() { Some(p) => p, None => return None } };
-    if pool.sub_batch_count >= MAX_SUB_BATCHES { return None; }
+    let pool = unsafe {
+        match POOL.as_mut() {
+            Some(p) => p,
+            None => return None,
+        }
+    };
+    if pool.sub_batch_count >= MAX_SUB_BATCHES {
+        return None;
+    }
     Some(pool.tri_count as u32)
 }
 
@@ -399,10 +465,19 @@ pub fn end_sub_batch(
     fs_jit: Option<crate::compiler::backend_jit::JitFn>,
     bound_textures: &[u32; MAX_TEXTURE_UNITS],
 ) {
-    let pool = unsafe { match POOL.as_mut() { Some(p) => p, None => return } };
+    let pool = unsafe {
+        match POOL.as_mut() {
+            Some(p) => p,
+            None => return,
+        }
+    };
     let tri_end = pool.tri_count as u32;
-    if tri_end <= tri_start { return; } // no triangles added
-    if pool.sub_batch_count >= MAX_SUB_BATCHES { return; }
+    if tri_end <= tri_start {
+        return;
+    } // no triangles added
+    if pool.sub_batch_count >= MAX_SUB_BATCHES {
+        return;
+    }
 
     let idx = pool.sub_batch_count;
     let sb = &mut pool.sub_batches[idx];
@@ -469,7 +544,12 @@ pub fn end_sub_batch(
 /// Flush all accumulated sub-batches: wake workers, wait for completion, reset.
 /// Called from `gl_swap_buffers`.
 pub fn flush_frame(ctx: &mut crate::state::GlContext) {
-    let pool = unsafe { match POOL.as_mut() { Some(p) => p, None => return } };
+    let pool = unsafe {
+        match POOL.as_mut() {
+            Some(p) => p,
+            None => return,
+        }
+    };
     let n = pool.num_workers;
     if n == 0 || pool.sub_batch_count == 0 {
         pool.tri_count = 0;
@@ -498,9 +578,15 @@ pub fn flush_frame(ctx: &mut crate::state::GlContext) {
 
     static mut FLUSH_DBG: u32 = 0;
     if unsafe { FLUSH_DBG } < 5 {
-        unsafe { FLUSH_DBG += 1; }
-        crate::serial_println!("[libgl] flush_frame: {} sub-batches, {} tris, {} workers",
-            pool.sub_batch_count, pool.tri_count, n);
+        unsafe {
+            FLUSH_DBG += 1;
+        }
+        crate::serial_println!(
+            "[libgl] flush_frame: {} sub-batches, {} tris, {} workers",
+            pool.sub_batch_count,
+            pool.tri_count,
+            n
+        );
     }
 
     for worker_idx in 0..n {
@@ -542,11 +628,13 @@ pub fn flush_frame(ctx: &mut crate::state::GlContext) {
         let mut wait_spins: u32 = 0;
         loop {
             let s = pool.workers[i].state.load(Ordering::Acquire);
-            if s == WORKER_DONE { break; }
+            if s == WORKER_DONE {
+                break;
+            }
             if wait_spins < 100 {
                 core::hint::spin_loop();
             } else {
-                syscall::sleep_us(10);
+                syscall::yield_cpu();
             }
             wait_spins += 1;
         }
@@ -565,7 +653,9 @@ pub fn flush_frame(ctx: &mut crate::state::GlContext) {
 pub fn tri_buffer_slice(start: usize, count: usize) -> Option<&'static mut [ScreenTri]> {
     let pool = unsafe { POOL.as_mut()? };
     let end = start + count;
-    if end > MAX_TRIS { return None; }
+    if end > MAX_TRIS {
+        return None;
+    }
     Some(&mut pool.tri_buf[start..end])
 }
 
@@ -576,16 +666,22 @@ pub fn tri_count() -> usize {
 
 /// Add to triangle count (after direct buffer fill).
 pub fn advance_tri_count(n: usize) {
-    unsafe { if let Some(p) = POOL.as_mut() { p.tri_count = (p.tri_count + n).min(MAX_TRIS); } }
+    unsafe {
+        if let Some(p) = POOL.as_mut() {
+            p.tri_count = (p.tri_count + n).min(MAX_TRIS);
+        }
+    }
 }
 
 /// Maximum triangles the buffer can hold.
-pub fn max_tris() -> usize { MAX_TRIS }
+pub fn max_tris() -> usize {
+    MAX_TRIS
+}
 
 // ── Band-restricted rasterization ──────────────────────────────────────────
 
-use crate::rasterizer::raster::{self, edge_fn, min3, max3, fast_rcp};
 use crate::rasterizer::fragment;
+use crate::rasterizer::raster::{self, edge_fn, fast_rcp, max3, min3};
 use crate::rasterizer::MAX_VARYINGS;
 use crate::simd::Vec4;
 
@@ -616,13 +712,27 @@ fn worker_tex_sample(worker_id: usize, unit: u32, u: f32, v: f32) -> [f32; 4] {
     }
 }
 
-fn worker_tex_sample_0(unit: u32, u: f32, v: f32) -> [f32; 4] { worker_tex_sample(0, unit, u, v) }
-fn worker_tex_sample_1(unit: u32, u: f32, v: f32) -> [f32; 4] { worker_tex_sample(1, unit, u, v) }
-fn worker_tex_sample_2(unit: u32, u: f32, v: f32) -> [f32; 4] { worker_tex_sample(2, unit, u, v) }
-fn worker_tex_sample_3(unit: u32, u: f32, v: f32) -> [f32; 4] { worker_tex_sample(3, unit, u, v) }
-fn worker_tex_sample_4(unit: u32, u: f32, v: f32) -> [f32; 4] { worker_tex_sample(4, unit, u, v) }
-fn worker_tex_sample_5(unit: u32, u: f32, v: f32) -> [f32; 4] { worker_tex_sample(5, unit, u, v) }
-fn worker_tex_sample_6(unit: u32, u: f32, v: f32) -> [f32; 4] { worker_tex_sample(6, unit, u, v) }
+fn worker_tex_sample_0(unit: u32, u: f32, v: f32) -> [f32; 4] {
+    worker_tex_sample(0, unit, u, v)
+}
+fn worker_tex_sample_1(unit: u32, u: f32, v: f32) -> [f32; 4] {
+    worker_tex_sample(1, unit, u, v)
+}
+fn worker_tex_sample_2(unit: u32, u: f32, v: f32) -> [f32; 4] {
+    worker_tex_sample(2, unit, u, v)
+}
+fn worker_tex_sample_3(unit: u32, u: f32, v: f32) -> [f32; 4] {
+    worker_tex_sample(3, unit, u, v)
+}
+fn worker_tex_sample_4(unit: u32, u: f32, v: f32) -> [f32; 4] {
+    worker_tex_sample(4, unit, u, v)
+}
+fn worker_tex_sample_5(unit: u32, u: f32, v: f32) -> [f32; 4] {
+    worker_tex_sample(5, unit, u, v)
+}
+fn worker_tex_sample_6(unit: u32, u: f32, v: f32) -> [f32; 4] {
+    worker_tex_sample(6, unit, u, v)
+}
 
 static WORKER_TEX_SAMPLE_FNS: [fn(u32, f32, f32) -> [f32; 4]; MAX_WORKERS] = [
     worker_tex_sample_0,
@@ -635,7 +745,13 @@ static WORKER_TEX_SAMPLE_FNS: [fn(u32, f32, f32) -> [f32; 4]; MAX_WORKERS] = [
 ];
 
 /// Rasterize one triangle in fast path, restricted to [band_min_y, band_max_y].
-fn rasterize_tri_fast_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_min_y: i32, band_max_y: i32) {
+fn rasterize_tri_fast_band(
+    pool: &ThreadPool,
+    sb: &SubBatch,
+    tri: &ScreenTri,
+    band_min_y: i32,
+    band_max_y: i32,
+) {
     let s0 = &tri.s0;
     let s1 = &tri.s1;
     let s2 = &tri.s2;
@@ -645,31 +761,62 @@ fn rasterize_tri_fast_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, ba
     let min_x = min3(s0[0], s1[0], s2[0]).max(0.0) as i32;
     let max_x = (crate::rasterizer::math::ceil(max3(s0[0], s1[0], s2[0])) as i32).min(fb_w - 1);
     let min_y = (min3(s0[1], s1[1], s2[1]).max(0.0) as i32).max(band_min_y);
-    let max_y = (crate::rasterizer::math::ceil(max3(s0[1], s1[1], s2[1])) as i32).min(fb_h - 1).min(band_max_y);
-    if min_x > max_x || min_y > max_y { return; }
+    let max_y = (crate::rasterizer::math::ceil(max3(s0[1], s1[1], s2[1])) as i32)
+        .min(fb_h - 1)
+        .min(band_max_y);
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
 
     let area = edge_fn(s0, s1, s2);
-    if area.abs() < 1e-6 { return; }
+    if area.abs() < 1e-6 {
+        return;
+    }
     let inv_area = 1.0 / area.abs();
 
     let w0_clip = tri.v0.position[3];
     let w1_clip = tri.v1.position[3];
     let w2_clip = tri.v2.position[3];
-    if w0_clip.abs() < 1e-6 || w1_clip.abs() < 1e-6 || w2_clip.abs() < 1e-6 { return; }
+    if w0_clip.abs() < 1e-6 || w1_clip.abs() < 1e-6 || w2_clip.abs() < 1e-6 {
+        return;
+    }
 
     let inv_w0c = 1.0 / w0_clip;
     let inv_w1c = 1.0 / w1_clip;
     let inv_w2c = 1.0 / w2_clip;
 
-    let v0_lit = [tri.v0.varyings[0][0] * inv_w0c, tri.v0.varyings[0][1] * inv_w0c, tri.v0.varyings[0][2] * inv_w0c];
-    let v1_lit = [tri.v1.varyings[0][0] * inv_w1c, tri.v1.varyings[0][1] * inv_w1c, tri.v1.varyings[0][2] * inv_w1c];
-    let v2_lit = [tri.v2.varyings[0][0] * inv_w2c, tri.v2.varyings[0][1] * inv_w2c, tri.v2.varyings[0][2] * inv_w2c];
+    let v0_lit = [
+        tri.v0.varyings[0][0] * inv_w0c,
+        tri.v0.varyings[0][1] * inv_w0c,
+        tri.v0.varyings[0][2] * inv_w0c,
+    ];
+    let v1_lit = [
+        tri.v1.varyings[0][0] * inv_w1c,
+        tri.v1.varyings[0][1] * inv_w1c,
+        tri.v1.varyings[0][2] * inv_w1c,
+    ];
+    let v2_lit = [
+        tri.v2.varyings[0][0] * inv_w2c,
+        tri.v2.varyings[0][1] * inv_w2c,
+        tri.v2.varyings[0][2] * inv_w2c,
+    ];
 
-    let v0_uv = [tri.v0.varyings[1][0] * inv_w0c, tri.v0.varyings[1][1] * inv_w0c];
-    let v1_uv = [tri.v1.varyings[1][0] * inv_w1c, tri.v1.varyings[1][1] * inv_w1c];
-    let v2_uv = [tri.v2.varyings[1][0] * inv_w2c, tri.v2.varyings[1][1] * inv_w2c];
+    let v0_uv = [
+        tri.v0.varyings[1][0] * inv_w0c,
+        tri.v0.varyings[1][1] * inv_w0c,
+    ];
+    let v1_uv = [
+        tri.v1.varyings[1][0] * inv_w1c,
+        tri.v1.varyings[1][1] * inv_w1c,
+    ];
+    let v2_uv = [
+        tri.v2.varyings[1][0] * inv_w2c,
+        tri.v2.varyings[1][1] * inv_w2c,
+    ];
 
-    let z0 = s0[2]; let z1 = s1[2]; let z2 = s2[2];
+    let z0 = s0[2];
+    let z1 = s1[2];
+    let z2 = s2[2];
     let fb_width = pool.fb_w;
 
     let tex_data = sb.fast_tex_data;
@@ -697,10 +844,15 @@ fn rasterize_tri_fast_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, ba
     let mut w2_row = (s1[0] - s0[0]) * (p0y - s0[1]) - (s1[1] - s0[1]) * (p0x - s0[0]);
 
     if area < 0.0 {
-        w0_row = -w0_row; w1_row = -w1_row; w2_row = -w2_row;
-        a12 = -a12; b12 = -b12;
-        a20 = -a20; b20 = -b20;
-        a01 = -a01; b01 = -b01;
+        w0_row = -w0_row;
+        w1_row = -w1_row;
+        w2_row = -w2_row;
+        a12 = -a12;
+        b12 = -b12;
+        a20 = -a20;
+        b20 = -b20;
+        a01 = -a01;
+        b01 = -b01;
     }
 
     let depth_test = sb.depth_test;
@@ -720,15 +872,22 @@ fn rasterize_tri_fast_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, ba
                     if a_val > 1e-8 {
                         if w_val < 0.0 {
                             let x = min_x + crate::rasterizer::math::ceil((-w_val) / a_val) as i32;
-                            if x > span_left { span_left = x; }
+                            if x > span_left {
+                                span_left = x;
+                            }
                         }
                     } else if a_val < -1e-8 {
-                        if w_val < 0.0 { empty = true; }
-                        else {
+                        if w_val < 0.0 {
+                            empty = true;
+                        } else {
                             let x = min_x + (w_val / (-a_val)) as i32;
-                            if x < span_right { span_right = x; }
+                            if x < span_right {
+                                span_right = x;
+                            }
                         }
-                    } else if w_val < -1e-8 { empty = true; }
+                    } else if w_val < -1e-8 {
+                        empty = true;
+                    }
                 }
             };
         }
@@ -760,7 +919,9 @@ fn rasterize_tri_fast_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, ba
                             1.0
                         };
                         if !fragment::depth_test(depth, cur, depth_func) {
-                            w0 += a12; w1 += a20; w2 += a01;
+                            w0 += a12;
+                            w1 += a20;
+                            w2 += a01;
                             continue;
                         }
                     }
@@ -803,15 +964,26 @@ fn rasterize_tri_fast_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, ba
                         }
                     }
                 }
-                w0 += a12; w1 += a20; w2 += a01;
+                w0 += a12;
+                w1 += a20;
+                w2 += a01;
             }
         }
-        w0_row += b12; w1_row += b20; w2_row += b01;
+        w0_row += b12;
+        w1_row += b20;
+        w2_row += b01;
     }
 }
 
 /// Rasterize one triangle in general path, restricted to [band_min_y, band_max_y].
-fn rasterize_tri_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_min_y: i32, band_max_y: i32, _worker_id: usize) {
+fn rasterize_tri_band(
+    pool: &ThreadPool,
+    sb: &SubBatch,
+    tri: &ScreenTri,
+    band_min_y: i32,
+    band_max_y: i32,
+    _worker_id: usize,
+) {
     let s0 = &tri.s0;
     let s1 = &tri.s1;
     let s2 = &tri.s2;
@@ -821,11 +993,17 @@ fn rasterize_tri_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_mi
     let min_x = min3(s0[0], s1[0], s2[0]).max(0.0) as i32;
     let max_x = (crate::rasterizer::math::ceil(max3(s0[0], s1[0], s2[0])) as i32).min(fb_w - 1);
     let min_y = (min3(s0[1], s1[1], s2[1]).max(0.0) as i32).max(band_min_y);
-    let max_y = (crate::rasterizer::math::ceil(max3(s0[1], s1[1], s2[1])) as i32).min(fb_h - 1).min(band_max_y);
-    if min_x > max_x || min_y > max_y { return; }
+    let max_y = (crate::rasterizer::math::ceil(max3(s0[1], s1[1], s2[1])) as i32)
+        .min(fb_h - 1)
+        .min(band_max_y);
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
 
     let area = edge_fn(s0, s1, s2);
-    if area.abs() < 1e-6 { return; }
+    if area.abs() < 1e-6 {
+        return;
+    }
     let inv_area = 1.0 / area.abs();
 
     let v0 = &tri.v0;
@@ -835,7 +1013,9 @@ fn rasterize_tri_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_mi
     let w0_clip = v0.position[3];
     let w1_clip = v1.position[3];
     let w2_clip = v2.position[3];
-    if w0_clip.abs() < 1e-6 || w1_clip.abs() < 1e-6 || w2_clip.abs() < 1e-6 { return; }
+    if w0_clip.abs() < 1e-6 || w1_clip.abs() < 1e-6 || w2_clip.abs() < 1e-6 {
+        return;
+    }
 
     let inv_w0c = 1.0 / w0_clip;
     let inv_w1c = 1.0 / w1_clip;
@@ -849,12 +1029,20 @@ fn rasterize_tri_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_mi
         let iw0 = Vec4::splat(inv_w0c);
         let iw1 = Vec4::splat(inv_w1c);
         let iw2 = Vec4::splat(inv_w2c);
-        Vec4::load(&v0.varyings[vi]).mul(iw0).store(&mut v0_persp[vi]);
-        Vec4::load(&v1.varyings[vi]).mul(iw1).store(&mut v1_persp[vi]);
-        Vec4::load(&v2.varyings[vi]).mul(iw2).store(&mut v2_persp[vi]);
+        Vec4::load(&v0.varyings[vi])
+            .mul(iw0)
+            .store(&mut v0_persp[vi]);
+        Vec4::load(&v1.varyings[vi])
+            .mul(iw1)
+            .store(&mut v1_persp[vi]);
+        Vec4::load(&v2.varyings[vi])
+            .mul(iw2)
+            .store(&mut v2_persp[vi]);
     }
 
-    let z0 = s0[2]; let z1 = s1[2]; let z2 = s2[2];
+    let z0 = s0[2];
+    let z1 = s1[2];
+    let z2 = s2[2];
     let fb_width = pool.fb_w;
     let tex_sample_fn = WORKER_TEX_SAMPLE_FNS[_worker_id];
     let tex_sample_addr = tex_sample_fn as usize;
@@ -873,10 +1061,15 @@ fn rasterize_tri_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_mi
     let mut w2_row = (s1[0] - s0[0]) * (p0y - s0[1]) - (s1[1] - s0[1]) * (p0x - s0[0]);
 
     if area < 0.0 {
-        w0_row = -w0_row; w1_row = -w1_row; w2_row = -w2_row;
-        a12 = -a12; b12 = -b12;
-        a20 = -a20; b20 = -b20;
-        a01 = -a01; b01 = -b01;
+        w0_row = -w0_row;
+        w1_row = -w1_row;
+        w2_row = -w2_row;
+        a12 = -a12;
+        b12 = -b12;
+        a20 = -a20;
+        b20 = -b20;
+        a01 = -a01;
+        b01 = -b01;
     }
 
     let depth_test_enabled = sb.depth_test;
@@ -906,15 +1099,22 @@ fn rasterize_tri_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_mi
                     if a_val > 1e-8 {
                         if w_val < 0.0 {
                             let x = min_x + crate::rasterizer::math::ceil((-w_val) / a_val) as i32;
-                            if x > span_left { span_left = x; }
+                            if x > span_left {
+                                span_left = x;
+                            }
                         }
                     } else if a_val < -1e-8 {
-                        if w_val < 0.0 { empty = true; }
-                        else {
+                        if w_val < 0.0 {
+                            empty = true;
+                        } else {
                             let x = min_x + (w_val / (-a_val)) as i32;
-                            if x < span_right { span_right = x; }
+                            if x < span_right {
+                                span_right = x;
+                            }
                         }
-                    } else if w_val < -1e-8 { empty = true; }
+                    } else if w_val < -1e-8 {
+                        empty = true;
+                    }
                 }
             };
         }
@@ -946,14 +1146,18 @@ fn rasterize_tri_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_mi
                             1.0
                         };
                         if !fragment::depth_test(depth, cur, depth_func) {
-                            w0 += a12; w1 += a20; w2 += a01;
+                            w0 += a12;
+                            w1 += a20;
+                            w2 += a01;
                             continue;
                         }
                     }
 
                     let inv_w = bary0 * inv_w0c + bary1 * inv_w1c + bary2 * inv_w2c;
                     if inv_w.abs() < 1e-10 {
-                        w0 += a12; w1 += a20; w2 += a01;
+                        w0 += a12;
+                        w1 += a20;
+                        w2 += a01;
                         continue;
                     }
                     let corr = fast_rcp(inv_w);
@@ -986,15 +1190,27 @@ fn rasterize_tri_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_mi
                             tex_sample: tex_sample_addr,
                             discarded: 0,
                         };
-                        unsafe { jit(&mut jit_ctx); }
+                        unsafe {
+                            jit(&mut jit_ctx);
+                        }
                         if jit_ctx.discarded != 0 {
-                            w0 += a12; w1 += a20; w2 += a01;
+                            w0 += a12;
+                            w1 += a20;
+                            w2 += a01;
                             continue;
                         }
                     } else {
-                        fs_exec.execute(fs_ir, &[], uniforms, Some(&varying_buf[..nv]), raster::real_tex_sample);
+                        fs_exec.execute(
+                            fs_ir,
+                            &[],
+                            uniforms,
+                            Some(&varying_buf[..nv]),
+                            raster::real_tex_sample,
+                        );
                         if fs_exec.discarded {
-                            w0 += a12; w1 += a20; w2 += a01;
+                            w0 += a12;
+                            w1 += a20;
+                            w2 += a01;
                             continue;
                         }
                     }
@@ -1026,9 +1242,13 @@ fn rasterize_tri_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_mi
                         }
                     }
                 }
-                w0 += a12; w1 += a20; w2 += a01;
+                w0 += a12;
+                w1 += a20;
+                w2 += a01;
             }
         }
-        w0_row += b12; w1_row += b20; w2_row += b01;
+        w0_row += b12;
+        w1_row += b20;
+        w2_row += b01;
     }
 }
