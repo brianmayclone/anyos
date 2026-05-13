@@ -2,7 +2,7 @@
 #![no_main]
 
 use alloc::format;
-use anyos_std::{fs, println, process, sys, String, Vec};
+use anyos_std::{env, fs, println, process, sys, String, Vec};
 
 anyos_std::entry!(main);
 
@@ -19,6 +19,7 @@ const FSX_NORMAL_OPS: u32 = 384;
 const FSX_HEAVY_OPS: u32 = 1536;
 const FS_TYPE_EXFAT: u32 = 7;
 const FS_TYPE_COREFS: u32 = 6;
+const WORKER_CONFIG_ENV: &str = "VFSSTRESS_WORKER_CONFIG";
 
 fn anyos_version() -> &'static str {
     option_env!("ANYOS_VERSION").unwrap_or("dev")
@@ -223,10 +224,36 @@ fn main() {
 fn parse_worker_config() -> Option<WorkerConfig> {
     let mut buf = [0u8; 512];
     let raw = process::args(&mut buf);
-    if !raw.split_ascii_whitespace().any(|arg| arg == "--worker") {
-        return None;
+
+    if has_arg(raw, "--worker") {
+        if let Some(path) = arg_value(raw, "--config") {
+            if let Some(cfg) = read_worker_config_file(path) {
+                return Some(cfg);
+            }
+        }
+        if let Some(cfg) = parse_worker_args(raw) {
+            return Some(cfg);
+        }
     }
 
+    let mut env_buf = [0u8; 257];
+    let len = env::get(WORKER_CONFIG_ENV, &mut env_buf);
+    if len != u32::MAX && len > 0 {
+        let n = (len as usize).min(env_buf.len());
+        if let Ok(path) = core::str::from_utf8(&env_buf[..n]) {
+            if let Some(cfg) = read_worker_config_file(path.trim_matches(char::from(0))) {
+                return Some(cfg);
+            }
+        }
+    }
+
+    None
+}
+
+fn parse_worker_args(raw: &str) -> Option<WorkerConfig> {
+    if !has_arg(raw, "--worker") {
+        return None;
+    }
     let args: Vec<&str> = raw.split_ascii_whitespace().collect();
     let mut cfg = WorkerConfig {
         dir: String::from(DEFAULT_DIR),
@@ -239,6 +266,9 @@ fn parse_worker_config() -> Option<WorkerConfig> {
     while i < args.len() {
         match args[i] {
             "--worker" => {}
+            "--config" => {
+                i += 1;
+            }
             "--dir" | "-d" => {
                 i += 1;
                 if i < args.len() {
@@ -274,6 +304,27 @@ fn parse_worker_config() -> Option<WorkerConfig> {
         i += 1;
     }
     Some(cfg)
+}
+
+fn has_arg(raw: &str, needle: &str) -> bool {
+    raw.split_ascii_whitespace().any(|arg| arg == needle)
+}
+
+fn arg_value<'a>(raw: &'a str, key: &str) -> Option<&'a str> {
+    let args: Vec<&str> = raw.split_ascii_whitespace().collect();
+    let mut i = 0usize;
+    while i < args.len() {
+        if args[i] == key {
+            return args.get(i + 1).copied();
+        }
+        i += 1;
+    }
+    None
+}
+
+fn read_worker_config_file(path: &str) -> Option<WorkerConfig> {
+    let raw = read_small_text_file(path, 512).ok()?;
+    parse_worker_args(&raw)
 }
 
 fn parse_config() -> Option<Config> {
@@ -784,7 +835,7 @@ fn parallel_fsstress_case(cfg: &Config) -> Result<String, &'static str> {
     for worker in 0..cfg.workers {
         let worker_dir = format!("{}/w{:02}", root, worker);
         let _ = fs::mkdir(&worker_dir);
-        let args = format!(
+        let worker_args = format!(
             "--worker --dir {} --worker-id {} --workers {} --ops {} --seed {}",
             root,
             worker,
@@ -792,12 +843,18 @@ fn parallel_fsstress_case(cfg: &Config) -> Result<String, &'static str> {
             cfg.ops,
             cfg.seed ^ worker.wrapping_mul(0x9E37)
         );
+        let config_path = format!("{}/worker.cfg", worker_dir);
+        write_bytes_file(&config_path, worker_args.as_bytes())?;
+        env::set(WORKER_CONFIG_ENV, &config_path);
+        let args = format!("--worker --config {}", config_path);
         let tid = spawn_vfsstress(&args);
         if tid == u32::MAX {
+            env::unset(WORKER_CONFIG_ENV);
             return Err("spawn-worker");
         }
         tids.push(tid);
     }
+    env::unset(WORKER_CONFIG_ENV);
 
     let mut failures = 0u32;
     for tid in tids {
@@ -2755,6 +2812,31 @@ fn read_exact_file(path: &str, len: usize) -> Result<Vec<u8>, &'static str> {
     }
     fs::close(fd);
     Ok(out)
+}
+
+fn read_small_text_file(path: &str, max_len: usize) -> Result<String, &'static str> {
+    let fd = fs::open(path, 0);
+    if fd == u32::MAX {
+        return Err("open-read");
+    }
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 128];
+    while out.len() < max_len {
+        let want = (max_len - out.len()).min(chunk.len());
+        let n = fs::read(fd, &mut chunk[..want]);
+        if n == u32::MAX {
+            fs::close(fd);
+            return Err("read");
+        }
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&chunk[..n as usize]);
+    }
+    fs::close(fd);
+    core::str::from_utf8(&out)
+        .map(String::from)
+        .map_err(|_| "utf8")
 }
 
 fn read_exact_file_retry(path: &str, len: usize, retries: u32) -> Result<Vec<u8>, &'static str> {
