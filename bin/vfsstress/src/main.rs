@@ -670,6 +670,11 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
         "readdir mutation",
         readdir_while_mutating_case(cfg),
     );
+    run_named(
+        summary,
+        "readdir parallel",
+        readdir_parallel_mutation_case(cfg),
+    );
     run_named(summary, "large directory", large_directory_case(cfg));
     run_named(summary, "long names", long_name_case(cfg));
     run_named_with_warning(
@@ -1610,6 +1615,8 @@ fn symlink_eloop_case(cfg: &Config) -> TestOutcome {
     let cycle_a = format!("{}/cycle-a", dir);
     let cycle_b = format!("{}/cycle-b", dir);
     let long_link = format!("{}/long-target", dir);
+    let deep_head = format!("{}/deep00", dir);
+    let too_deep_head = format!("{}/too-deep00", dir);
 
     let _ = fs::mkdir(&dir);
     for path in [
@@ -1617,6 +1624,8 @@ fn symlink_eloop_case(cfg: &Config) -> TestOutcome {
     ] {
         let _ = fs::unlink(path);
     }
+    cleanup_numbered_links(&dir, "deep", 16);
+    cleanup_numbered_links(&dir, "too-deep", 48);
 
     if write_bytes_file(&target, b"symlink-target").is_err() {
         return TestOutcome::Fail("write-target");
@@ -1685,7 +1694,25 @@ fn symlink_eloop_case(cfg: &Config) -> TestOutcome {
         return TestOutcome::Fail("readlink-long-target");
     }
 
+    if create_symlink_chain(&dir, "deep", 16, &target).is_err() {
+        return TestOutcome::Fail("symlink-deep-create");
+    }
+    if verify_file_bytes(&deep_head, b"symlink-target").is_err() {
+        return TestOutcome::Fail("symlink-deep-read");
+    }
+
+    if create_symlink_chain(&dir, "too-deep", 48, &target).is_err() {
+        return TestOutcome::Fail("symlink-too-deep-create");
+    }
+    let too_deep_status = if verify_file_bytes(&too_deep_head, b"symlink-target").is_ok() {
+        "deep-chain-ok"
+    } else {
+        "deep-chain-clean-fail"
+    };
+
     if !cfg.keep {
+        cleanup_numbered_links(&dir, "too-deep", 48);
+        cleanup_numbered_links(&dir, "deep", 16);
         for path in [
             &long_link, &cycle_a, &cycle_b, &self_loop, &dangling, &chain2, &chain1, &link, &target,
         ] {
@@ -1693,7 +1720,36 @@ fn symlink_eloop_case(cfg: &Config) -> TestOutcome {
         }
     }
 
-    TestOutcome::Ok("normal/link-chain/dangling/ELOOP/long-target ok".into())
+    TestOutcome::Ok(format!(
+        "normal/link-chain/dangling/ELOOP/long-target/deep-chain {} ok",
+        too_deep_status
+    ))
+}
+
+fn create_symlink_chain(
+    dir: &str,
+    prefix: &str,
+    count: u32,
+    final_target: &str,
+) -> Result<(), &'static str> {
+    for i in (0..count).rev() {
+        let link = format!("{}/{}{:02}", dir, prefix, i);
+        let target = if i + 1 == count {
+            String::from(final_target)
+        } else {
+            format!("{}/{}{:02}", dir, prefix, i + 1)
+        };
+        if fs::symlink(&target, &link) != 0 {
+            return Err("symlink-chain-create");
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_numbered_links(dir: &str, prefix: &str, count: u32) {
+    for i in 0..count {
+        let _ = fs::unlink(&format!("{}/{}{:02}", dir, prefix, i));
+    }
 }
 
 fn readlink_matches(path: &str, expected: &str) -> bool {
@@ -2658,6 +2714,81 @@ fn readdir_while_mutating_case(cfg: &Config) -> Result<String, &'static str> {
     ))
 }
 
+fn readdir_parallel_mutation_case(cfg: &Config) -> Result<String, &'static str> {
+    let root = format!("{}/full-readdir-parallel-{}", cfg.dir, sys::uptime_ms());
+    mkdir_parents(&root);
+    let shared = format!("{}/shared", root);
+    let claims = format!("{}/claims", root);
+    let _ = fs::mkdir(&shared);
+    let _ = fs::mkdir(&claims);
+    for i in 0..4u32 {
+        write_bytes_file(&format!("{}/sentinel{:02}.dat", shared, i), b"sentinel")?;
+    }
+
+    let workers = cfg.workers.max(1).min(8);
+    let ops = match cfg.profile {
+        Profile::Quick => 24u32,
+        Profile::Normal => 96u32,
+        Profile::Heavy => 256u32,
+        Profile::Soak => 256u32,
+    }
+    .min(cfg.ops.max(1));
+    let batch_args = format!(
+        "--worker-batch --dir {} --workers {} --ops {} --seed {}",
+        root,
+        workers,
+        ops,
+        cfg.seed ^ 0x4EAD_1D1A
+    );
+    env::set(WORKER_BATCH_ENV, &batch_args);
+
+    let mut tids = Vec::new();
+    for _ in 0..workers {
+        let tid = spawn_vfsstress(&batch_args);
+        if tid == u32::MAX {
+            env::unset(WORKER_BATCH_ENV);
+            return Err("spawn-readdir-worker");
+        }
+        tids.push(tid);
+    }
+
+    let mut sentinel_hits = [0u32; 4];
+    let rounds = ops.saturating_mul(2).max(16);
+    for _ in 0..rounds {
+        validate_readdir_snapshot(&shared, &mut sentinel_hits)?;
+        process::yield_cpu();
+    }
+
+    let mut failures = 0u32;
+    for tid in tids {
+        if process::waitpid(tid) != 0 {
+            failures += 1;
+        }
+    }
+    env::unset(WORKER_BATCH_ENV);
+    if failures != 0 {
+        return Err(read_parallel_worker_failure(&root, workers));
+    }
+    validate_readdir_snapshot(&shared, &mut sentinel_hits)?;
+    verify_shared_hot_dir(&shared)?;
+    for hits in &sentinel_hits {
+        if *hits == 0 {
+            return Err("parallel-sentinel-visibility");
+        }
+    }
+
+    if !cfg.keep {
+        for i in 0..4u32 {
+            let _ = fs::unlink(&format!("{}/sentinel{:02}.dat", shared, i));
+        }
+    }
+
+    Ok(format!(
+        "{} Worker x {} Ops mit {} Readdir-Snapshots ok",
+        workers, ops, rounds
+    ))
+}
+
 fn large_directory_case(cfg: &Config) -> Result<String, &'static str> {
     let dir = format!("{}/full-large-dir", cfg.dir);
     let _ = fs::mkdir(&dir);
@@ -3065,6 +3196,17 @@ fn path_resolution_case(cfg: &Config) -> TestOutcome {
         let _ = fs::chdir(&saved_cwd);
         return TestOutcome::Fail("abs-double-slash");
     }
+    let file_trailing = format!("{}/", target);
+    if verify_file_bytes(&file_trailing, b"path-ok").is_ok() {
+        let _ = fs::chdir(&saved_cwd);
+        return TestOutcome::Fail("file-trailing-slash-open");
+    }
+    let dir_trailing = format!("{}/", sub);
+    let mut dir_stat = [0u32; 7];
+    if fs::stat(&dir_trailing, &mut dir_stat) != 0 {
+        let _ = fs::chdir(&saved_cwd);
+        return TestOutcome::Fail("dir-trailing-slash-stat");
+    }
 
     if fs::chdir(&base) != 0 {
         let _ = fs::chdir(&saved_cwd);
@@ -3116,7 +3258,7 @@ fn path_resolution_case(cfg: &Config) -> TestOutcome {
         let _ = fs::unlink(&near_path);
     }
 
-    TestOutcome::Ok("relative/./../double-slash/deep/near-limit Pfade ok".into())
+    TestOutcome::Ok("relative/./../double-slash/trailing-slash/deep/near-limit Pfade ok".into())
 }
 
 fn feature_gate_case(cfg: &Config) -> TestOutcome {

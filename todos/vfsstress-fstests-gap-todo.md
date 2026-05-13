@@ -221,12 +221,13 @@ Status:
   - dangling Symlink mit `readlink`-Verify und fehlgeschlagenem Open
   - Self-Loop und Zwei-Element-Zyklus muessen sauber fehlschlagen
   - langer Link-Target-String mit exaktem `readlink`
+  - tiefe endliche Symlink-Kette und sehr tiefe Kette mit sauberem
+    Readback-oder-Fehler-Verhalten
   - `lstat`-Flag fuer Symlink
   - WARN/SKIP, falls das Filesystem keine Symlinks unterstuetzt
 
 Fehlt:
 
-- Verhalten bei zu tiefen Symlink-Aufloesungen.
 - Hardlink-/Linkcount-Semantik, falls anyOS eine `link`-API bekommt.
 
 TODO:
@@ -239,6 +240,7 @@ TODO:
   - Zwei-Element-Zyklus.
   - dangling Symlink.
   - langer Link-Target-String.
+  - tiefe Symlink-Ketten. [umgesetzt]
 - `readlink` gegen erwartete Targets pruefen.
 - Hardlink-Status klaeren:
   - aktuell gibt es in `anyos_std::fs` Symlink/Readlink, aber keine erkennbare
@@ -297,14 +299,16 @@ Status:
 
 - Teilweise umgesetzt in `vfsstress`:
   - `readdir_while_mutating_case`
+  - `readdir_parallel_mutation_case`
   - wiederholte Snapshot-Readdir-Pruefung waehrend Create/Rename/Unlink-Zyklen
+  - parallele Worker-Prozesse mutieren Shared-Hot-Directory, waehrend der
+    Parent Readdir-Snapshots validiert
   - Sentinel-Dateien bleiben ueber Mutationen sichtbar
   - Readdir-Namen werden auf Laenge und UTF-8-Gueltigkeit validiert
 
 Fehlt:
 
 - Directory-Cursor-/Offset-Stabilitaet unter Mutation.
-- Echte Parallelvariante mit separatem Reader-Prozess und Mutator-Workern.
 
 TODO:
 
@@ -562,6 +566,8 @@ Status:
 - Teilweise umgesetzt in `vfsstress`:
   - `path_resolution_case`
   - absolute Pfade mit `.`, `..` und doppelten Slashes
+  - trailing slash: Datei mit Slash muss fehlschlagen, Directory mit Slash
+    muss statbar bleiben
   - relative Pfade aus wechselndem CWD via `chdir`
   - tiefe Verzeichniskette
   - Pfad knapp unter dem aktuellen Budget
@@ -569,7 +575,6 @@ Status:
 
 Fehlt:
 
-- Explizite trailing-slash Semantik fuer Datei vs Directory.
 - Ueberlang-Pfad sollte idealerweise sauber mit ENAMETOOLONG fehlschlagen
   statt nur Nicht-Aliasing zu garantieren.
 
@@ -578,7 +583,7 @@ TODO:
 - `path_resolution_case` ergaenzen. [teilweise umgesetzt]
 - Matrix:
   - relative Pfade aus wechselndem CWD, falls chdir verfuegbar. [umgesetzt]
-  - `./a`, `a/../a`, `a//b`, `a/b/`. [teilweise umgesetzt, trailing slash offen]
+  - `./a`, `a/../a`, `a//b`, `a/b/`. [umgesetzt]
   - tiefe Verzeichnisketten. [umgesetzt]
   - Pfadlaengen knapp unter/ueber Limit. [teilweise umgesetzt]
 
