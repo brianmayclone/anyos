@@ -1,0 +1,702 @@
+# vfsstress / fstests Gap TODO
+
+Stand: 2026-05-13
+
+Kontext:
+
+- `vfsstress` ist der anyOS-Userland-Stresstest fuer VFS, CoreFS und exFAT.
+- Die aktuelle Suite deckt bereits sequentielle Datenintegritaet, Overwrites,
+  Append/Truncate, fsx-artige Random-IO, Sparse-Gaps, Metadaten-Churn,
+  Readdir, FD-Offsets, Usercopy-Grenzen und Writeback-Readback ab.
+- Im Vergleich zu `xfstests` fehlen vor allem parallele Workloads,
+  ENOSPC-Szenarien, Scratch-Filesystem-Lebenszyklen, Recovery/Error-Injection,
+  Symlink/Permission/Metadata-Semantik und reproduzierbare Performance-Messung.
+- Ziel: ein kleiner, anyOS-nativer fstests-Kern, der CoreFS und exFAT stabiler
+  und messbar performanter macht.
+
+## Prio-Legende
+
+- P0: Kritisch fuer Datenintegritaet oder realistische CoreFS/exFAT-Freigabe.
+- P1: Hoher Bug-Find-Wert; sollte vor breiter Nutzung dauerhaft laufen.
+- P2: Wichtige Semantik-/Performance-Abdeckung, aber weniger akut.
+- P3: Langfristige/erweiterte fstests-Paritaet oder Spezialfaelle.
+
+## Aktuelle Abdeckung
+
+- Schreib-/Readback-Matrix mit 4 KiB, 16 KiB, 64 KiB und 256 KiB Blocks.
+- Kleine IOs mit ungeraden Laengen.
+- Overwrites innerhalb eines Blocks, ueber Blockgrenzen und ueber mehrere
+  Blocks.
+- Seek-Overwrite plus Verify gegen deterministisches Pattern.
+- Append und Truncate auf 0.
+- fsx-artiges Random-Modell mit Write/Append/Read/Truncate.
+- Sparse/EOF-Erweiterung mit Null-Gap-Verifikation.
+- Metadaten-Churn mit Create/Rename/Unlink/Readdir/Stat.
+- Close/Reopen/Sync-Readback.
+- Separate FD-Offsets.
+- Usercopy-Grenzen und misaligned 32K/64K Userbuffer.
+- Close-ohne-fsync Writeback-Readback vor und nach globalem `sync`.
+
+## 10-Kategorien-Abgleich gegen xfstests
+
+Diese Matrix ist die Kontrollliste aus dem erneuten Vergleich mit `xfstests`.
+Jede Kategorie hat mehrere konkrete Testpunkte in den Detailabschnitten unten.
+
+| Kategorie | Prio | Status in dieser TODO | xfstests-Bezug |
+| --- | --- | --- | --- |
+| 1. Echte Parallelitaet / fsstress | P0 | `parallel_fsstress_case`, Worker, Hot-Directories, Manifest-Verify | `generic/013`, `generic/476`, `fsstress` |
+| 2. ENOSPC / volles FS | P0 | `enospc_accounting_case`, Full-Write, Delete/Reclaim, `statfs` | `generic/083`, `generic/269`, `fill`, `fill2fs` |
+| 3. Scratch-FS Lifecycle | P0 | `--scratch`, mkfs, mount, unmount, remount, verify, fsck/scrub | xfstests `TEST_DEV`/`SCRATCH_DEV` Modell |
+| 4. Crash/Recovery/EIO | P0 | `recovery_loop_case`, Device-Fail, Flush-Fail, fsck/scrub | `generic/475`, log-writes/dm-error Tests |
+| 5. Symlinks/Links/ELOOP | P1 | `symlink_eloop_case`, Readlink, Loops, Hardlink-API-Check | `generic/005`, fsstress `link` Operation |
+| 6. Permissions/Ownership/Metadata | P1 | `permission_metadata_case`, chmod/chown/stat/sync/remount | `generic/313`, `generic/317`, `generic/355` |
+| 7. Open-Unlink/Rename/FD Lifetime | P1 | `open_unlink_rename_case`, overwrite rename, FD after unlink | `multi_open_unlink`, `rename`, rename regression tests |
+| 8. Readdir unter Mutation | P1 | `readdir_while_mutating_case`, Sentinel-Snapshots, Cursor-Safety | `generic/310`, `readdir-while-renames` |
+| 9. Grosse Directories / lange Namen | P1 | `large_directory_case`, `long_name_case`, case/LFN Matrix | `dirstress`, `dirperf`, `nametest`, create-long-dirs |
+| 10. Performance-Baselines | P2 | `--perf`/`--json`, ops/s, KB/s, sync/fsync latency | `dirperf`, `metaperf`, `scaleread`, perf reports |
+
+## [P0] Echte Parallelitaet wie fsstress
+
+Status:
+
+- Teilweise umgesetzt in `vfsstress`:
+  - `parallel_fsstress_case`
+  - versteckter Worker-Modus `--worker`
+  - CLI-Optionen `--workers`, `--ops`, `--seed`
+  - parallele Prozesse via `process::spawn`/`waitpid`
+  - per-Worker Manifest-Datei `done.txt`
+  - gemeinsame Shared-Hot-Directory-Namen mit Cross-Worker
+    Create/Rename/Unlink-Kollisionen
+  - Shared-Directory-Scan nach Worker-Ende mit Stat/Read-Sanity-Check
+
+Fehlt:
+
+- Optional echte Thread-Variante, falls wir In-Process VFS-Races testen wollen.
+
+TODO:
+
+- `parallel_fsstress_case` in `vfsstress` ergaenzen.
+- CLI-Optionen:
+  - `--workers N` fuer Worker-Anzahl.
+  - `--ops N` fuer Operationen pro Worker.
+  - `--seed N` fuer reproduzierbare Fehler.
+- Jeder Worker schreibt deterministische Inhalte und legt ein kleines Manifest
+  pro Worker ab.
+- Nach Worker-Ende alle uebrigen Dateien per Manifest oder Readdir scannen und
+  Inhalt/Stat pruefen.
+- Bei Fehlern Seed, Worker, Operation, Pfad und erwartete/gelesene Werte
+  ausgeben.
+
+Akzeptanz:
+
+- `vfsstress --profile quick --workers 2` laeuft stabil.
+- `vfsstress --profile heavy --workers 8` laeuft ohne Korruption auf exFAT.
+- Derselbe Workload laeuft auf CoreFS.
+- Fehler sind deterministisch reproduzierbar mit `--seed`.
+
+## [P0] ENOSPC und Space Accounting
+
+Status:
+
+- Teilweise umgesetzt in `vfsstress`:
+  - `enospc_accounting_case`
+  - CLI-Option `--enospc-kb`
+  - bounded Fill-Workload
+  - `statfs`-Vergleich vor Fill, nach Fill, nach Delete
+  - `WARN`, wenn innerhalb des Limits kein echtes ENOSPC erreicht wird
+  - Delete/Reclaim/Refill-Pfad mit Inhaltsverifikation nach erneutem Schreiben
+
+Fehlt:
+
+- Erzwingbarer kleiner Scratch-Datentraeger, damit ENOSPC deterministisch
+  erreicht wird.
+- Korrekte Fehler bei Directory-Wachstum nahe ENOSPC.
+
+TODO:
+
+- `enospc_accounting_case` ergaenzen.
+- Testverzeichnis kontrolliert bis nahe voll schreiben.
+- Danach:
+  - grosse Datei bis Write-Fehler,
+  - viele kleine Dateien bis Create/Write-Fehler,
+  - Rename/Unlink unter Speicherknappheit,
+  - `sync`,
+  - Teil loeschen,
+  - erneut schreiben.
+- `statfs` in Summary ausgeben: total, free vorher, free voll, free nach
+  Delete, free nach Refill.
+- Optional `--enospc-max-kb N`, damit der Test in normalen Images begrenzt
+  bleibt.
+
+Akzeptanz:
+
+- Kein Panic/Freeze bei vollem exFAT/CoreFS.
+- Fehler kommen sauber zurueck, keine stillen Short-Writes als Erfolg.
+- Nach `unlink` kann wieder mindestens die geloeschte Datenmenge geschrieben
+  werden.
+- `fs::sync()` nach ENOSPC bleibt stabil.
+
+## [P0] Scratch-Filesystem Lifecycle
+
+Status:
+
+- Teilweise umgesetzt in `vfsstress`:
+  - CLI-Optionen `--scratch-device`, `--scratch-fs`, `--scratch-mount`
+  - `scratch_lifecycle_case`
+  - `mkfs.corefs`/`mkfs.exfat`
+  - mount, Sentinel-Write/Verify, paralleler Mini-Workload, sync, unmount,
+    fsck, remount, Readback-Verify
+- Neu umgesetzt als anyOS-API/Tool:
+  - `/System/sbin/mkfs.exfat`
+  - no_std exFAT-Formatter fuer leere Scratch-Volumes
+  - automatische Groessenermittlung via `sys::disk_list`
+  - Boot-Region, FAT, Allocation Bitmap, Upcase Table und Root Directory
+  - `/System/sbin/fsck.exfat`
+  - read-only exFAT-Strukturcheck fuer Boot-Region, FAT-Ketten, Root Directory
+    und Allocation Bitmap
+  - optionaler `/System/sbin/corefs-scrub --mode read-only` nach CoreFS
+    Remount-Verify
+
+Fehlt:
+
+- Deterministisch kleines Testdevice fuer ENOSPC/Recovery.
+- Separater Harness mit `TEST_DEV`/`SCRATCH_DEV` Sicherheitsmodell.
+- Manifest-Mapping fuer alle Scratch-basierten upstream Tests.
+
+TODO:
+
+- Schutzabfrage/Harness fuer destruktive Scratch-Devices zentralisieren.
+- exFAT-Formatter und `fsck.exfat` bei groesseren Volumes gegen externe Tools
+  validieren.
+- Separate Quick/Normal/Heavy Scratch-Profile definieren.
+
+Akzeptanz:
+
+- Scratch-Modus veraendert nie unbeabsichtigt das System-FS.
+- Remount-Verify findet verlorene Daten/Metadaten.
+- CoreFS-Check-Tool kann optional in denselben Report aufgenommen werden.
+
+## [P0] Crash-/Recovery-/EIO-Simulation
+
+Fehlt:
+
+- Harte Unterbrechung waehrend Write/Metadata-Workload.
+- Simulierter Device-Fehler oder gezielter Write-Fail.
+- Recovery-Check nach Remount.
+
+TODO:
+
+- Kernel/Test-Device-Schicht fuer Fehler-Injektion entwerfen:
+  - Write nach N Sektoren fehlschlagen lassen.
+  - Read nach N Sektoren fehlschlagen lassen.
+  - Flush/Fsync fehlschlagen lassen.
+  - Device "weg" simulieren.
+- `recovery_loop_case` bauen:
+  - Workload starten.
+  - Fehler injizieren.
+  - Prozess/FS sauber abbrechen lassen.
+  - remount/reopen.
+  - fsck/scrub/readback.
+- Fuer CoreFS Journaling/Atomicitaet separat dokumentieren:
+  - Was darf nach Crash garantiert sein?
+  - Was darf verloren gehen?
+  - Was darf nie passieren?
+
+Akzeptanz:
+
+- Kein dauerhaft unmountbares CoreFS nach injiziertem Fehler.
+- fsck/scrub meldet reproduzierbare, erklaerbare Ergebnisse.
+- exFAT bleibt mindestens readbar oder liefert saubere Fehler.
+
+## [P1] Symlinks, Hardlinks, Readlink und ELOOP
+
+Status:
+
+- Teilweise umgesetzt in `vfsstress`:
+  - `symlink_eloop_case`
+  - normaler Symlink auf Datei mit Read-through-Verify
+  - Symlink-auf-Symlink-Kette
+  - dangling Symlink mit `readlink`-Verify und fehlgeschlagenem Open
+  - Self-Loop und Zwei-Element-Zyklus muessen sauber fehlschlagen
+  - langer Link-Target-String mit exaktem `readlink`
+  - `lstat`-Flag fuer Symlink
+  - WARN/SKIP, falls das Filesystem keine Symlinks unterstuetzt
+
+Fehlt:
+
+- Verhalten bei zu tiefen Symlink-Aufloesungen.
+- Hardlink-/Linkcount-Semantik, falls anyOS eine `link`-API bekommt.
+
+TODO:
+
+- `symlink_eloop_case` ergaenzen.
+- Testfaelle:
+  - normaler Symlink auf Datei.
+  - Symlink auf Symlink-Kette.
+  - Self-Loop.
+  - Zwei-Element-Zyklus.
+  - dangling Symlink.
+  - langer Link-Target-String.
+- `readlink` gegen erwartete Targets pruefen.
+- Hardlink-Status klaeren:
+  - aktuell gibt es in `anyos_std::fs` Symlink/Readlink, aber keine erkennbare
+    Hardlink-API.
+  - falls Hardlinks geplant sind: `link_count_case` und
+    `hardlink_unlink_lifetime_case` ergaenzen.
+  - falls nicht geplant: `SKIP hardlink unsupported` reporten.
+
+Akzeptanz:
+
+- Normale Symlinks lesen korrekte Inhalte.
+- `readlink` liefert exakt das Target.
+- Loops fuehren zu sauberem Fehler, nicht zu Stackoverflow/Hang.
+- Hardlinks sind entweder getestet oder explizit als unsupported dokumentiert.
+
+## [P1] Open-Unlink, Rename-Overwrite und FD-Lifetime
+
+Status:
+
+- Teilweise umgesetzt in `vfsstress`:
+  - `open_unlink_rename_case`
+  - offener FD bleibt nach `unlink` lesbar, waehrend der Pfad verschwindet
+  - derselbe Pfad kann nach `unlink` neu angelegt und separat verifiziert werden
+  - offener FD bleibt nach `rename` lesbar, neuer Pfad enthaelt denselben Inhalt
+  - Rename ueber existierende Datei ersetzt den Zielinhalt
+  - Rename auf sich selbst bleibt gueltig und erhaelt Inhalt
+  - Rename ueber Directory-Grenzen
+  - Fehlerfaelle fuer fehlende Quelle und Ziel in fehlendem Directory
+
+Fehlt:
+
+- Weiteres Schreiben ueber alten FD nach Unlink/Rename, sobald eine passende
+  Read/Write-Open-Flag-Kombination oder FD-dual-mode Semantik festgelegt ist.
+- Directory-FD/fsync-Reihenfolgen fuer Rename-Persistenz.
+
+TODO:
+
+- `open_unlink_rename_case` ergaenzen.
+- Szenarien:
+  - open file, unlink path, FD readback muss stabil bleiben.
+  - open file, rename path, alter FD bleibt gueltig.
+  - rename `a` ueber existierende Datei `b`, danach `b` verify.
+  - rename `a` nach `dir2/a`.
+  - rename Fehlerfaelle pruefen: fehlende Quelle, Ziel im nicht vorhandenen
+    Directory.
+
+Akzeptanz:
+
+- Keine verlorenen oder vermischten Inhalte.
+- Directory-Eintraege entsprechen nach jedem Schritt der erwarteten Sicht.
+- Fehlerfaelle liefern Fehler statt stiller Teilerfolge.
+
+## [P1] Readdir unter Mutation
+
+Status:
+
+- Teilweise umgesetzt in `vfsstress`:
+  - `readdir_while_mutating_case`
+  - wiederholte Snapshot-Readdir-Pruefung waehrend Create/Rename/Unlink-Zyklen
+  - Sentinel-Dateien bleiben ueber Mutationen sichtbar
+  - Readdir-Namen werden auf Laenge und UTF-8-Gueltigkeit validiert
+
+Fehlt:
+
+- Directory-Cursor-/Offset-Stabilitaet unter Mutation.
+- Echte Parallelvariante mit separatem Reader-Prozess und Mutator-Workern.
+
+TODO:
+
+- `readdir_while_mutating_case` ergaenzen.
+- Worker A: dauernd `readdir`.
+- Worker B/C: create/rename/unlink in demselben Directory.
+- Optional: bekannte Sentinel-Dateien, die nie geloescht werden, muessen in
+  ausreichend vielen Snapshots sichtbar bleiben.
+- Falls anyOS nur path-basiertes `readdir` hat, Test als repeated snapshot
+  bauen; spaeter FD-basiertes Readdir ergaenzen.
+
+Akzeptanz:
+
+- Kein Panic/Hang.
+- `readdir` liefert nie ungueltige Namen/Laengen.
+- Sentinel-Dateien verschwinden nicht dauerhaft aus Snapshots.
+
+## [P1] Grosse Directories, lange Namen und exFAT-Namenssemantik
+
+Status:
+
+- Teilweise umgesetzt in `vfsstress`:
+  - `large_directory_case`
+  - Quick/Normal/Heavy-Directory mit 128/512/1536 Eintraegen
+  - `readdir`-Count, Stichproben-Readback und einfache Zeitmessung
+  - `long_name_case`
+  - lange Pfade bis zum aktuellen anyOS-Path-Budget via `stat/open/unlink`
+  - Long-Name-Readdir-Verify via `SYS_READDIR_LONG`/`fs::readdir_long`
+  - Case-Matrix dokumentiert beobachtetes case-sensitive/case-folded/collision
+  - anyOS-API erweitert:
+    - `SYS_READDIR_LONG`
+    - `anyos_std::fs::readdir_long`
+    - `anyos_std::fs::read_dir` nutzt automatisch das Long-Name-ABI
+
+Fehlt:
+
+- Nicht-ASCII/UTF-8/UTF-16-Grenzen, soweit anyOS-Userland sie unterstuetzt.
+- Direkte Raw-`SYS_READDIR`-Nutzer koennen weiter das alte kompatible
+  64-Byte-Format verwenden; sichtbare Tools sollen auf `read_dir` oder
+  `readdir_long` migriert werden.
+
+TODO:
+
+- `large_directory_case` ergaenzen.
+- `long_name_case` ergaenzen.
+- Namensmatrix:
+  - kurze Namen.
+  - 8.3-aehnliche Namen.
+  - 63/127/255 Byte Namen.
+  - gleiche Praefixe mit unterschiedlichem Suffix.
+  - Case-Varianten wie `Foo`, `foo`, `FOO`.
+- Fuer exFAT explizit dokumentieren, ob case-insensitive Semantik erwartet
+  wird oder aktuell nicht unterstuetzt ist.
+
+Akzeptanz:
+
+- `readdir` findet alle erwarteten Namen.
+- `stat/open/unlink` funktionieren fuer lange Namen.
+- Case-Verhalten ist konsistent und dokumentiert.
+- Performance-Metrik fuer create/stat/readdir/unlink wird ausgegeben.
+
+## [P1] Permissions, Ownership und Metadata Persistenz
+
+Status:
+
+- Teilweise umgesetzt in `vfsstress`:
+  - `permission_metadata_case`
+  - `chmod` mit `stat`-Verify direkt und nach `sync`
+  - `chown` mit uid/gid-Verify direkt und nach `sync`, falls unterstuetzt
+  - Content-Verify nach Metadata-Aenderungen
+  - Groessen- und mtime-Plausibilitaet nach Append
+  - WARN, falls chmod/chown vom getesteten FS nicht unterstuetzt werden
+
+Fehlt:
+
+- Fehlerfaelle fuer unzulaessige Zugriffe, soweit anyOS Permissions enforced.
+- Metadata nach Remount im Scratch-Modus.
+- Detaillierte Timestamps/ctime/mtime bei Truncate und Rename.
+
+TODO:
+
+- `permission_metadata_case` ergaenzen.
+- Testfaelle:
+  - `chmod` verschiedene Modi.
+  - `chown` verschiedene uid/gid.
+  - `stat` direkt danach.
+  - `sync`, close/reopen, erneut `stat`.
+  - im Scratch-Modus nach Remount erneut `stat`.
+  - truncate muss Metadata-Version/Timestamps aktualisieren, sobald im stat API
+    sichtbar.
+
+Akzeptanz:
+
+- Mode/uid/gid gehen nicht nach Sync/Remount verloren.
+- Unsupported Semantik wird klar als `SKIP` statt `PASS` gemeldet.
+
+## [P1] Fsync, Close und Writeback-Semantik
+
+Fehlt:
+
+- Fsync auf Datei vs globaler Sync vs close-only systematisch getrennt.
+- Fsync auf Directory, falls unterstuetzt.
+- Rename + fsync Reihenfolgen.
+
+TODO:
+
+- `fsync_ordering_case` ergaenzen.
+- Matrix:
+  - write + close ohne fsync.
+  - write + fsync + close.
+  - write + global sync + close.
+  - create + rename + fsync file.
+  - create + rename + global sync.
+  - optional directory fsync.
+- In Scratch-Modus jeweils remount und verify.
+
+Akzeptanz:
+
+- Persistenzregeln pro FS sind dokumentiert.
+- CoreFS liefert die staerkeren Garantien, die wir festlegen.
+- exFAT-Verhalten wird realistisch, aber deterministisch getestet.
+
+## [P2] Sparse/Hole/Seek-Semantik
+
+Fehlt:
+
+- Mehrere Holes, Teil-Overwrites in Holes, Reads ueber Hole/Data-Grenzen.
+- SEEK_DATA/SEEK_HOLE, falls irgendwann unterstuetzt.
+- Truncate groesser/kleiner mit Hole-Verifikation.
+
+TODO:
+
+- Bestehenden `sparse_eof_gap_case` zu `sparse_hole_matrix_case` erweitern.
+- Matrix:
+  - write at 0, write far offset.
+  - read before, across and after data.
+  - overwrite mitten im Hole.
+  - truncate kleiner als Hole-Ende.
+  - truncate groesser und Nullbereich pruefen.
+
+Akzeptanz:
+
+- Holes lesen als Nullbytes.
+- Dateigroesse ist nach jedem Schritt korrekt.
+- Keine alten Daten werden durch Hole-Reads sichtbar.
+
+## [P2] Mmap-/Mapped-IO-Paritaet
+
+Fehlt:
+
+- xfstests hat viele mmap/fsx-Varianten. `vfsstress` nutzt nur read/write
+  Syscalls.
+- anyOS stdlib hat Memory-Mapping fuer anonymen Speicher, aber keine klare
+  file-backed mmap API im `fs`-Modul.
+
+TODO:
+
+- Klaeren, ob file-backed mmap in anyOS existiert oder geplant ist.
+- Wenn vorhanden:
+  - `mmap_write_read_case` ergaenzen.
+  - mmap-write + read syscall verify.
+  - syscall write + mmap-read verify.
+  - mmap-write + fsync/sync + remount verify.
+- Wenn nicht vorhanden:
+  - TODO als blocked markieren und API-Anforderung dokumentieren.
+
+Akzeptanz:
+
+- File-backed mmap wird entweder getestet oder explizit als nicht unterstuetzt
+  reportet.
+
+## [P2] Direct-IO/AIO-Analoga
+
+Fehlt:
+
+- xfstests testet O_DIRECT und AIO stark. anyOS hat dafuer aktuell keine
+  offensichtliche Userland-API in `anyos_std::fs`.
+
+TODO:
+
+- Klaeren, ob direct IO, uncached IO oder async IO existieren sollen.
+- Falls ja:
+  - Flags in `anyos_std::fs` ergaenzen.
+  - Alignment-Matrix bauen: unaligned muss sauber fehlschlagen, aligned muss
+    korrekt lesen/schreiben.
+  - Parallel direct/buffered IO testen.
+- Falls nein:
+  - In `vfsstress` als `SKIP direct-io unsupported` reporten.
+
+Akzeptanz:
+
+- Keine stille Vermischung von cached/uncached Daten.
+- Unsupported Pfade sind transparent.
+
+## [P2] Statfs/Quota/Accounting-Metriken
+
+Fehlt:
+
+- Systematische Pruefung von `statfs`.
+- Optional Quota oder per-user Accounting, falls anyOS das spaeter bekommt.
+
+TODO:
+
+- `statfs_accounting_case` ergaenzen.
+- Vorher/nachher Werte fuer create/write/unlink/truncate/sync pruefen.
+- Negative Deltas und "free wird nach delete nie groesser" als Warn/Fail
+  klassifizieren.
+- Performance-Report um FS-Free/Used Spalten erweitern.
+
+Akzeptanz:
+
+- `statfs` ist monoton plausibel fuer Writes und Deletes.
+- Test toleriert FS-Metadaten-Overhead mit definierter Toleranz.
+
+## [P2] Pfadnormalisierung und Path-Limits
+
+Fehlt:
+
+- Relative Pfade, `.`/`..`, doppelte Slashes, trailing Slash.
+- Sehr tiefe Verzeichnisse.
+- Pfade nahe `prepare_path`/Kernel-Limit.
+
+TODO:
+
+- `path_resolution_case` ergaenzen.
+- Matrix:
+  - relative Pfade aus wechselndem CWD, falls chdir verfuegbar.
+  - `./a`, `a/../a`, `a//b`, `a/b/`.
+  - tiefe Verzeichnisketten.
+  - Pfadlaengen knapp unter/ueber Limit.
+
+Akzeptanz:
+
+- Normale Pfade werden konsistent aufgeloest.
+- Ueberlange Pfade schlagen sauber fehl.
+- Keine stillen Truncations auf falsche Dateien.
+
+## [P2] Performance-Baselines
+
+Fehlt:
+
+- Reproduzierbare create/s, stat/s, rename/s, unlink/s, readdir/s.
+- Getrennte Datenraten fuer sequential write, sequential read, random overwrite.
+- Vergleichbare Ausgabe fuer CoreFS vs exFAT.
+
+TODO:
+
+- `--perf` oder `--json` Report-Modus ergaenzen.
+- Metriken:
+  - sequential write/read KB/s.
+  - random overwrite ops/s.
+  - create/stat/rename/unlink ops/s.
+  - readdir entries/s.
+  - sync latency.
+  - fsync latency p50/p95/max, soweit ohne Heap-heavy Statistik machbar.
+- Output stabil maschinenlesbar machen.
+
+Akzeptanz:
+
+- Ein CI/Runner kann CoreFS vs exFAT vergleichen.
+- Regressionsschwellen koennen spaeter definiert werden.
+
+## [P3] Xattrs, Special Files und erweiterte Attribute
+
+Fehlt:
+
+- xfstests prueft viele xattr/attr-Faelle.
+- anyOS-Unterstuetzung ist unklar.
+
+TODO:
+
+- Klaeren, ob xattrs geplant sind.
+- Falls ja:
+  - set/get/list/remove xattr Tests.
+  - grosse Werte.
+  - viele Attribute.
+  - Persistenz nach sync/remount.
+- Special Files nur testen, falls anyOS mknod/devfs-Semantik fuer normale FS
+  vorsieht.
+
+Akzeptanz:
+
+- Unsupported Features werden als `SKIP` gefuehrt.
+- Implementierte Features haben Persistenz- und Fehlerpfadtests.
+
+## [P3] Whiteout/Overlay/FUSE/Namespace-Paritaet
+
+Fehlt:
+
+- xfstests enthaelt Overlay-/Whiteout-/Namespace-Spezialfaelle.
+- Fuer CoreFS/exFAT ist das aktuell nachrangig.
+
+TODO:
+
+- Erst anfassen, wenn overlayfs/fuse/idmapped/userns-Features in anyOS
+  produktiv relevant werden.
+- Dann eigene Testgruppe `feature-overlay` oder separates Tool bauen.
+
+Akzeptanz:
+
+- Keine Vermischung mit CoreFS/exFAT-Basisfreigabe.
+
+## [P3] Lange Soak-/Dauerlaeufe
+
+Fehlt:
+
+- xfstests hat `soak`/`long_rw` Tests mit sehr vielen Operationen.
+- `vfsstress heavy` ist noch kein echter Stundenlauf.
+
+TODO:
+
+- `--seconds N` wie bei `kstress` ergaenzen.
+- `--soak` Profil ergaenzen.
+- Workloads zyklisch mischen:
+  - parallel fsstress.
+  - fsx random.
+  - enospc light.
+  - metadata churn.
+  - sync/remount, falls Scratch-Modus aktiv.
+
+Akzeptanz:
+
+- `vfsstress --seconds 3600 --profile heavy` laeuft ohne Speicherdrift.
+- Fortschritt wird periodisch ausgegeben.
+- Letzter Seed/Checkpoint ist bei Crash sichtbar.
+
+## Report-/Harness-Aufgaben
+
+### [P1] SKIP/WARN/PASS/FAIL Modell
+
+TODO:
+
+- `Summary` um `skips` erweitern.
+- Feature-Erkennung einbauen:
+  - symlink supported.
+  - chmod/chown supported.
+  - mount/remount supported.
+  - direct IO supported.
+  - file mmap supported.
+- Unsupported Features als `SKIP`, nicht als `FAIL`.
+
+Akzeptanz:
+
+- Quick-Run auf minimalem System bleibt nuetzlich.
+- Fehlende optionale Features verbergen keine echten Datenfehler.
+
+### [P1] Reproduzierbare Seeds und Fehlerprotokoll
+
+TODO:
+
+- Globalen Seed im Header ausgeben.
+- Pro Testfall abgeleitete Seeds ausgeben.
+- Bei Failure Operation-Index, Worker-ID und Pfad ausgeben.
+- Optional `--keep` automatisch empfehlen, wenn Artefakte vorhanden bleiben.
+
+Akzeptanz:
+
+- Ein Fail kann mit einem einzelnen Kommando reproduziert werden.
+
+### [P2] JSON-Ausgabe fuer CI
+
+TODO:
+
+- `--json` ergaenzen.
+- Report:
+  - Version.
+  - FS/Pfad.
+  - Profil.
+  - Tests mit Status, Dauer, Details.
+  - Performance-Metriken.
+  - Seeds.
+
+Akzeptanz:
+
+- CI kann Failures und Performance-Regressions maschinenlesbar auswerten.
+
+## Vorgeschlagene Umsetzungsreihenfolge
+
+1. P0 Parallelitaet: `parallel_fsstress_case`. [umgesetzt]
+2. P1 Harness-Basis: `SKIP/WARN/PASS/FAIL` und Seed-Protokoll. [teilweise umgesetzt in `vfsstress`]
+3. P1 Open-Unlink/Rename und Symlink/ELOOP.
+4. P0 ENOSPC + `statfs`-Accounting. [teilweise umgesetzt]
+5. P1 Readdir unter Mutation + grosse Directories/lange Namen.
+6. P0 Scratch-FS Lifecycle fuer CoreFS/exFAT. [teilweise umgesetzt]
+7. P1 Fsync/Close/Remount-Ordering.
+8. P0 Recovery/Error-Injection Design und erste CoreFS-Variante.
+9. P2 Performance-JSON und Baselines.
+10. P2/P3 mmap/direct-io/xattr/overlay nur nach Feature-Verfuegbarkeit.
+
+## Mindestziel fuer CoreFS/exFAT Freigabe
+
+- P0 komplett gruen auf CoreFS und exFAT.
+- P1 bis einschliesslich Open-Unlink, Symlink, Readdir-Mutation, lange Namen
+  und Fsync/Close gruen oder sauber als unsupported dokumentiert.
+- Quick-Profil unter 2 Minuten.
+- Normal-Profil fuer lokale Entwicklung.
+- Heavy/Soak fuer Nachtlauf oder Vor-Release-Check.
