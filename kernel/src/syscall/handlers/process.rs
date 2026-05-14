@@ -1072,6 +1072,22 @@ pub fn sys_fork_with_child_tidptr(
     // Capabilities, identity
     scheduler::set_thread_capabilities(child_tid, snap.capabilities);
     scheduler::set_thread_identity(child_tid, snap.uid, snap.gid);
+    scheduler::set_process_linux_ids(
+        child_tid,
+        true,
+        Some(snap.linux_real_uid),
+        Some(snap.uid),
+        Some(snap.linux_saved_uid),
+        Some(snap.linux_fs_uid),
+    );
+    scheduler::set_process_linux_ids(
+        child_tid,
+        false,
+        Some(snap.linux_real_gid),
+        Some(snap.gid),
+        Some(snap.linux_saved_gid),
+        Some(snap.linux_fs_gid),
+    );
     scheduler::set_thread_abi(child_tid, snap.abi);
     if snap.abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
         scheduler::set_thread_linux_fs_base(child_tid, snap.linux_fs_base);
@@ -1248,6 +1264,22 @@ pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
 
     scheduler::set_thread_capabilities(child_tid, snap.capabilities);
     scheduler::set_thread_identity(child_tid, snap.uid, snap.gid);
+    scheduler::set_process_linux_ids(
+        child_tid,
+        true,
+        Some(snap.linux_real_uid),
+        Some(snap.uid),
+        Some(snap.linux_saved_uid),
+        Some(snap.linux_fs_uid),
+    );
+    scheduler::set_process_linux_ids(
+        child_tid,
+        false,
+        Some(snap.linux_real_gid),
+        Some(snap.gid),
+        Some(snap.linux_saved_gid),
+        Some(snap.linux_fs_gid),
+    );
     scheduler::set_thread_abi(child_tid, snap.abi);
     if snap.abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
         scheduler::set_thread_linux_fs_base(child_tid, snap.linux_fs_base);

@@ -201,8 +201,13 @@ Current default environment:
 
 ```text
 PATH=/usr/bin:/bin
-HOME=/
-TERM=ansi
+HOME=/root
+PWD=/
+TERM=xterm-256color
+SHELL=/bin/bash
+USER=root
+LOGNAME=root
+PS1=#<space>
 LXE=1
 ```
 

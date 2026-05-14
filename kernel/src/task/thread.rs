@@ -220,9 +220,20 @@ pub struct Thread {
     /// Set from Info.conf for .app bundles, inherited (capped) for CLI programs.
     pub capabilities: CapSet,
     /// User ID — 0 = root, >=1000 for regular users.
+    /// For Linux ABI threads this is the effective UID.
     pub uid: u16,
     /// Group ID — 0 = root/wheel, >=1000 for regular groups.
+    /// For Linux ABI threads this is the effective GID.
     pub gid: u16,
+    /// Linux real/saved/fs UID. The effective UID is stored in `uid` so native
+    /// permission checks continue to use the active Linux credential.
+    pub linux_real_uid: u16,
+    pub linux_saved_uid: u16,
+    pub linux_fs_uid: u16,
+    /// Linux real/saved/fs GID. The effective GID is stored in `gid`.
+    pub linux_real_gid: u16,
+    pub linux_saved_gid: u16,
+    pub linux_fs_gid: u16,
     /// Per-process file descriptor table (maps local FDs to global VFS slots / pipes).
     pub fd_table: FdTable,
     /// POSIX signal state: pending/blocked bitmasks and handler table.
@@ -391,6 +402,12 @@ impl Thread {
             capabilities: 0,
             uid: 0,
             gid: 0,
+            linux_real_uid: 0,
+            linux_saved_uid: 0,
+            linux_fs_uid: 0,
+            linux_real_gid: 0,
+            linux_saved_gid: 0,
+            linux_fs_gid: 0,
             fd_table: FdTable::new(),
             signals: SignalState::new(),
             parent_tid: 0,

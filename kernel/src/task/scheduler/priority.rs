@@ -136,6 +136,35 @@ pub fn current_thread_gid() -> u16 {
     0
 }
 
+/// Get the Linux real/effective/saved/fs UID or GID of the current thread.
+pub fn current_thread_linux_ids(uid: bool) -> (u16, u16, u16, u16) {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    let sched = match guard.as_ref() {
+        Some(s) => s,
+        None => return (0, 0, 0, 0),
+    };
+    let Some(idx) = sched.current_idx(cpu_id) else {
+        return (0, 0, 0, 0);
+    };
+    let thread = &sched.threads[idx];
+    if uid {
+        (
+            thread.linux_real_uid,
+            thread.uid,
+            thread.linux_saved_uid,
+            thread.linux_fs_uid,
+        )
+    } else {
+        (
+            thread.linux_real_gid,
+            thread.gid,
+            thread.linux_saved_gid,
+            thread.linux_fs_gid,
+        )
+    }
+}
+
 /// Set the user and group IDs for a specific thread.
 pub fn set_thread_identity(tid: u32, uid: u16, gid: u16) {
     let mut guard = SCHEDULER.lock();
@@ -146,6 +175,68 @@ pub fn set_thread_identity(tid: u32, uid: u16, gid: u16) {
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.uid = uid;
         thread.gid = gid;
+        thread.linux_real_uid = uid;
+        thread.linux_saved_uid = uid;
+        thread.linux_fs_uid = uid;
+        thread.linux_real_gid = gid;
+        thread.linux_saved_gid = gid;
+        thread.linux_fs_gid = gid;
+    }
+}
+
+/// Set the Linux real/effective/saved/fs UID or GID for all threads sharing
+/// the target process page directory.
+pub fn set_process_linux_ids(
+    tid: u32,
+    uid: bool,
+    real: Option<u16>,
+    effective: Option<u16>,
+    saved: Option<u16>,
+    fs: Option<u16>,
+) {
+    let mut guard = SCHEDULER.lock();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
+    let pd = {
+        let thread = match sched.threads.iter().find(|t| t.tid == tid) {
+            Some(t) => t,
+            None => return,
+        };
+        thread.page_directory
+    };
+    for thread in sched.threads.iter_mut() {
+        if thread.page_directory != pd {
+            continue;
+        }
+        if uid {
+            if let Some(value) = real {
+                thread.linux_real_uid = value;
+            }
+            if let Some(value) = effective {
+                thread.uid = value;
+            }
+            if let Some(value) = saved {
+                thread.linux_saved_uid = value;
+            }
+            if let Some(value) = fs {
+                thread.linux_fs_uid = value;
+            }
+        } else {
+            if let Some(value) = real {
+                thread.linux_real_gid = value;
+            }
+            if let Some(value) = effective {
+                thread.gid = value;
+            }
+            if let Some(value) = saved {
+                thread.linux_saved_gid = value;
+            }
+            if let Some(value) = fs {
+                thread.linux_fs_gid = value;
+            }
+        }
     }
 }
 
@@ -170,6 +261,12 @@ pub fn set_process_identity(tid: u32, uid: u16, gid: u16) {
         if thread.page_directory == pd {
             thread.uid = uid;
             thread.gid = gid;
+            thread.linux_real_uid = uid;
+            thread.linux_saved_uid = uid;
+            thread.linux_fs_uid = uid;
+            thread.linux_real_gid = gid;
+            thread.linux_saved_gid = gid;
+            thread.linux_fs_gid = gid;
         }
     }
 }

@@ -444,7 +444,10 @@ pub(super) fn linux_select(
     }
     let fdset_bytes = (((nfds + 63) / 64) * 8) as usize;
     for ptr in [readfds, writefds, exceptfds] {
-        if ptr != 0 && !handlers::helpers::is_user_range_accessible(ptr, fdset_bytes as u64) {
+        if ptr != 0
+            && fdset_bytes != 0
+            && !handlers::helpers::is_user_range_accessible(ptr, fdset_bytes as u64)
+        {
             return linux_err(EFAULT);
         }
     }
@@ -515,7 +518,10 @@ fn linux_pselect(nfds: u64, readfds: u64, writefds: u64, exceptfds: u64, timeout
     }
     let fdset_bytes = (((nfds + 63) / 64) * 8) as usize;
     for ptr in [readfds, writefds, exceptfds] {
-        if ptr != 0 && !handlers::helpers::is_user_range_accessible(ptr, fdset_bytes as u64) {
+        if ptr != 0
+            && fdset_bytes != 0
+            && !handlers::helpers::is_user_range_accessible(ptr, fdset_bytes as u64)
+        {
             return linux_err(EFAULT);
         }
     }

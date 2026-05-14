@@ -913,46 +913,36 @@ pub(super) fn linux_setre_id(real: u32, effective: u32, uid: bool) -> u64 {
 }
 
 pub(super) fn linux_setres_id(real: u32, effective: u32, saved: u32, uid: bool) -> u64 {
-    let current = current_linux_id(uid);
-    if !uid {
+    for value in [real, effective, saved] {
+        if value != u32::MAX && value > u16::MAX as u32 {
+            return linux_err(EINVAL);
+        }
+    }
+
+    let (old_real, old_effective, old_saved, _old_fs) = current_linux_ids(uid);
+    let privileged = old_effective == 0;
+    if !privileged {
         for value in [real, effective, saved] {
-            if value != u32::MAX && value > u16::MAX as u32 {
-                return linux_err(EINVAL);
+            if value != u32::MAX
+                && value != old_real
+                && value != old_effective
+                && value != old_saved
+            {
+                return linux_err(EPERM);
             }
         }
-        if current == 0 {
-            let next = if effective != u32::MAX {
-                effective
-            } else if real != u32::MAX {
-                real
-            } else if saved != u32::MAX {
-                saved
-            } else {
-                current
-            };
-            return set_current_linux_id(next, false);
-        }
-        return 0;
     }
 
-    if current == 0 {
-        let next = if effective != u32::MAX {
-            effective
-        } else if real != u32::MAX {
-            real
-        } else if saved != u32::MAX {
-            saved
-        } else {
-            current
-        };
-        return set_current_linux_id(next, uid);
-    }
-
-    for value in [real, effective, saved] {
-        if value != u32::MAX && value != current {
-            return linux_err(EPERM);
-        }
-    }
+    let next_real = linux_id_or_old(real, old_real);
+    let next_effective = linux_id_or_old(effective, old_effective);
+    let next_saved = linux_id_or_old(saved, old_saved);
+    set_current_linux_ids(
+        uid,
+        Some(next_real),
+        Some(next_effective),
+        Some(next_saved),
+        Some(next_effective),
+    );
     0
 }
 
@@ -960,65 +950,84 @@ pub(super) fn linux_getres_id(real_ptr: u64, effective_ptr: u64, saved_ptr: u64,
     if real_ptr == 0 || effective_ptr == 0 || saved_ptr == 0 {
         return linux_err(EFAULT);
     }
-    let id = current_linux_id(uid);
+    let (real, effective, saved, _fs) = current_linux_ids(uid);
     unsafe {
-        write_u32(real_ptr, 0, id);
-        write_u32(effective_ptr, 0, id);
-        write_u32(saved_ptr, 0, id);
+        write_u32(real_ptr, 0, real);
+        write_u32(effective_ptr, 0, effective);
+        write_u32(saved_ptr, 0, saved);
     }
     0
 }
 
 pub(super) fn linux_setfs_id(id: u32, uid: bool) -> u64 {
-    let old = current_linux_id(uid);
+    let (real, effective, saved, old) = current_linux_ids(uid);
     if id == u32::MAX || id == old {
         return old as u64;
     }
-    if old == 0 {
-        let _ = set_current_linux_id(id, uid);
+    if id > u16::MAX as u32 {
         return old as u64;
     }
-    if id != 0 {
-        return linux_err(EPERM);
+    if effective == 0 || id == real || id == effective || id == saved || id == old {
+        set_current_linux_ids(uid, None, None, None, Some(id as u16));
+        return old as u64;
     }
     old as u64
 }
 
 pub(super) fn current_linux_id(uid: bool) -> u32 {
-    if uid {
-        handlers::sys_getuid()
-    } else {
-        handlers::sys_getgid()
-    }
+    let (_real, effective, _saved, _fs) = current_linux_ids(uid);
+    effective as u32
+}
+
+pub(super) fn current_linux_real_id(uid: bool) -> u32 {
+    let (real, _effective, _saved, _fs) = current_linux_ids(uid);
+    real as u32
+}
+
+fn current_linux_ids(uid: bool) -> (u32, u32, u32, u32) {
+    let (real, effective, saved, fs) = crate::task::scheduler::current_thread_linux_ids(uid);
+    (real as u32, effective as u32, saved as u32, fs as u32)
 }
 
 pub(super) fn linux_set_root_or_current(id: u32, uid: bool) -> u64 {
-    let current = current_linux_id(uid);
-    if !uid && current != 0 {
-        return if id <= u16::MAX as u32 {
-            0
-        } else {
-            linux_err(EINVAL)
-        };
-    }
-    if current == 0 || id == current {
-        return set_current_linux_id(id, uid);
-    }
-    linux_err(EPERM)
-}
-
-fn set_current_linux_id(id: u32, uid: bool) -> u64 {
     if id > u16::MAX as u32 {
         return linux_err(EINVAL);
     }
-    let tid = crate::task::scheduler::current_tid();
-    let current_uid = handlers::sys_getuid() as u16;
-    let current_gid = handlers::sys_getgid() as u16;
-    if uid {
-        crate::task::scheduler::set_process_identity(tid, id as u16, current_gid);
-    } else {
-        crate::task::scheduler::set_process_identity(tid, current_uid, id as u16);
+    let (real, effective, saved, _fs) = current_linux_ids(uid);
+    if effective == 0 {
+        return set_current_linux_ids(
+            uid,
+            Some(id as u16),
+            Some(id as u16),
+            Some(id as u16),
+            Some(id as u16),
+        );
     }
+    if id == real || id == effective || id == saved {
+        set_current_linux_ids(uid, None, Some(id as u16), None, Some(id as u16));
+        0
+    } else {
+        linux_err(EPERM)
+    }
+}
+
+fn linux_id_or_old(value: u32, old: u32) -> u16 {
+    if value == u32::MAX {
+        old as u16
+    } else {
+        value as u16
+    }
+}
+
+fn set_current_linux_ids(
+    uid: bool,
+    real: Option<u16>,
+    effective: Option<u16>,
+    saved: Option<u16>,
+    fs: Option<u16>,
+) -> u64 {
+    let tid = crate::task::scheduler::current_tid();
+    crate::task::scheduler::set_process_linux_ids(tid, uid, real, effective, saved, fs);
     0
 }
 
@@ -1031,7 +1040,7 @@ pub(super) fn linux_capget(header_ptr: u64, data_ptr: u64) -> u64 {
         write_u32(header_ptr, 0, LINUX_CAPABILITY_VERSION_3);
     }
     if data_ptr != 0 {
-        let effective = if handlers::sys_getuid() == 0 {
+        let effective = if current_linux_id(true) == 0 {
             u32::MAX
         } else {
             0
@@ -1049,7 +1058,7 @@ pub(super) fn linux_capget(header_ptr: u64, data_ptr: u64) -> u64 {
 }
 
 pub(super) fn linux_capset(_header_ptr: u64, _data_ptr: u64) -> u64 {
-    if handlers::sys_getuid() == 0 {
+    if current_linux_id(true) == 0 {
         0
     } else {
         linux_err(EPERM)

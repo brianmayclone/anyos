@@ -570,7 +570,7 @@ fn default_envp() -> alloc::vec::Vec<alloc::string::String> {
         alloc::string::String::from("PATH=/usr/bin:/bin"),
         alloc::string::String::from("HOME=/root"),
         alloc::string::String::from("PWD=/"),
-        alloc::string::String::from("TERM=ansi"),
+        alloc::string::String::from("TERM=xterm-256color"),
         alloc::string::String::from("SHELL=/bin/bash"),
         alloc::string::String::from("USER=root"),
         alloc::string::String::from("LOGNAME=root"),
