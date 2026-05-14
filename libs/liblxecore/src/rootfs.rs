@@ -10,6 +10,11 @@ const FS_TYPE_REGULAR: u32 = 0;
 const FS_TYPE_DIRECTORY: u32 = 1;
 const LXE_APT_UID: u16 = 100;
 const LXE_ROOT_GID: u16 = 0;
+const UTC_TZIF: &[u8] = b"TZif\0\
+\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\
+\0\0\0\0\0\0\0\0\0\0\0\0\
+\0\0\0\0\0\0\0\x01\0\0\0\x04\
+\0\0\0\0\0\0UTC\0";
 
 pub(crate) fn ensure_rootfs_layout(config: &LxeConfig) {
     ensure_dir_recursive(&config.root);
@@ -46,6 +51,7 @@ pub(crate) fn ensure_rootfs_layout(config: &LxeConfig) {
     );
     ensure_linux_account_files(rootfs);
     ensure_linux_network_files(rootfs);
+    ensure_linux_timezone_files(rootfs);
 }
 
 fn ensure_linux_account_files(rootfs: &str) {

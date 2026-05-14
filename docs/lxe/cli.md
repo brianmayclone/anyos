@@ -176,8 +176,10 @@ database when the files are missing. The seed includes `/etc/passwd`,
 `/etc/group`, `/etc/shadow`, `/etc/gshadow`, `/etc/nsswitch.conf`, and `/root`.
 It also creates minimal PAM `common-*` include files in `/etc/pam.d` so tools
 such as `passwd` can reach the local `pam_unix` path, plus `/etc/pam.d/other`
-as the PAM fallback service file. Existing files are preserved so `passwd`,
-later package installs, or manual edits are not overwritten.
+as the PAM fallback service file. The runtime repair also creates a conservative
+UTC timezone setup: `/etc/timezone`, `/etc/localtime`, and
+`/usr/share/zoneinfo/Etc/UTC`. Existing files are preserved so `passwd`, later
+package installs, or manual edits are not overwritten.
 
 ## `lxe apt install`
 
