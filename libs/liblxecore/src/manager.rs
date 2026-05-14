@@ -1,7 +1,8 @@
 use crate::config::LxeConfig;
 use crate::daemon;
 use crate::package::{
-    install_package, package_installed, InstallProgress, InstallProgressObserver,
+    install_package, package_installed, prefetch_install_plan, resolve_install_plan,
+    InstallProgress, InstallProgressObserver,
 };
 use crate::rootfs::{ensure_dir_recursive, ensure_rootfs_layout, file_size, path_exists};
 use alloc::format;
@@ -96,6 +97,13 @@ pub fn install_or_repair(
         progress.set_overall(0, config.bootstrap_seed.len() as u32);
 
         let mut done = 0u32;
+        let plan_packages = config.bootstrap_seed.clone();
+        if let Some(plan) =
+            resolve_install_plan(config, &plan_packages, &config.rootfs, &mut progress)
+        {
+            let _ = prefetch_install_plan(config, &plan, &mut progress);
+        }
+
         for package in &config.bootstrap_seed {
             if package_installed(config, package, &config.rootfs) {
                 done += 1;

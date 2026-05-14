@@ -1,7 +1,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use libconf_schema::{
-    default_int, default_string, manifest, migration_string, RegistryScope, ServiceSchema,
+    default_int, default_string, manifest, migration_int, migration_string, RegistryScope,
+    ServiceSchema,
 };
 
 const DEFAULT_ROOT: &str = "/System/var/lxe";
@@ -15,6 +16,7 @@ const DEFAULT_APT_COMPONENT: &str = "main";
 const DEFAULT_APT_ARCH: &str = "amd64";
 const DEFAULT_WGET: &str = "/System/bin/wget";
 const DEFAULT_DOWNLOAD_ATTEMPTS: i64 = 4;
+const DEFAULT_DOWNLOAD_JOBS: i64 = 4;
 const DEFAULT_INDEX_REQUIRED_PACKAGES: &str =
     "apt,base-files,base-passwd,bash,coreutils,dash,debian-archive-keyring,libc6,libgcc-s1,libpam-runtime,libstdc++6,login,passwd,zlib1g";
 const DEFAULT_BOOTSTRAP_SEED: &str =
@@ -36,6 +38,7 @@ const LXE_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
         DEFAULT_INDEX_REQUIRED_PACKAGES,
     ),
     default_int("apt/download_attempts", DEFAULT_DOWNLOAD_ATTEMPTS),
+    default_int("apt/download_jobs", DEFAULT_DOWNLOAD_JOBS),
     default_string("bootstrap/packages_csv", DEFAULT_BOOTSTRAP_SEED),
     default_string("tools/wget", DEFAULT_WGET),
 ];
@@ -59,11 +62,12 @@ const LXE_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[
     migration_string(3, "bootstrap/packages_csv", DEFAULT_BOOTSTRAP_SEED),
     migration_string(4, "bootstrap/packages_csv", DEFAULT_BOOTSTRAP_SEED),
     migration_string(5, "bootstrap/packages_csv", DEFAULT_BOOTSTRAP_SEED),
+    migration_int(6, "apt/download_jobs", DEFAULT_DOWNLOAD_JOBS),
 ];
 const LXE_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
     "services/lxe",
     RegistryScope::System,
-    5,
+    6,
     LXE_DIRS,
     LXE_DEFAULTS,
     LXE_MIGRATIONS,
@@ -83,6 +87,7 @@ pub struct LxeConfig {
     pub apt_arch: String,
     pub wget: String,
     pub download_attempts: u8,
+    pub download_jobs: u8,
     pub index_required_packages: Vec<String>,
     pub bootstrap_seed: Vec<String>,
 }
@@ -101,6 +106,7 @@ impl LxeConfig {
             apt_arch: String::from(DEFAULT_APT_ARCH),
             wget: String::from(DEFAULT_WGET),
             download_attempts: DEFAULT_DOWNLOAD_ATTEMPTS as u8,
+            download_jobs: DEFAULT_DOWNLOAD_JOBS as u8,
             index_required_packages: parse_csv(DEFAULT_INDEX_REQUIRED_PACKAGES),
             bootstrap_seed: parse_csv(DEFAULT_BOOTSTRAP_SEED),
         }
@@ -174,6 +180,11 @@ impl LxeConfig {
                 self.download_attempts = v as u8;
             }
         }
+        if let Some(v) = LXE_SCHEMA.read_i64("apt/download_jobs") {
+            if v > 0 && v <= u8::MAX as i64 {
+                self.download_jobs = v as u8;
+            }
+        }
     }
 
     fn normalize(&mut self) {
@@ -185,6 +196,9 @@ impl LxeConfig {
         trim_trailing_slashes(&mut self.apt_base);
         if self.download_attempts == 0 {
             self.download_attempts = DEFAULT_DOWNLOAD_ATTEMPTS as u8;
+        }
+        if self.download_jobs == 0 {
+            self.download_jobs = DEFAULT_DOWNLOAD_JOBS as u8;
         }
     }
 }

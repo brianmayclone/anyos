@@ -478,12 +478,6 @@ pub(crate) fn start_anim_timer() {
                 IDLE_TICKS = 0;
             }
         } else {
-            if network_work_pending() {
-                unsafe {
-                    IDLE_TICKS = 0;
-                }
-                return;
-            }
             unsafe {
                 IDLE_TICKS += 1;
             }

@@ -276,6 +276,60 @@ pub(crate) fn package_installed(config: &LxeConfig, pkg: &str, rootfs: &str) -> 
     is_installed(config, pkg, rootfs)
 }
 
+pub(crate) fn resolve_install_plan(
+    config: &LxeConfig,
+    packages: &[String],
+    rootfs: &str,
+    progress: &mut InstallProgress,
+) -> Option<Vec<PackageInfo>> {
+    progress.phase("apt resolve", "building dependency plan");
+    if !ensure_apt_index(config, progress) {
+        return None;
+    }
+
+    let mut plan = Vec::new();
+    let mut pending = Vec::new();
+    for pkg in packages {
+        if !resolve_package_plan_inner(config, pkg, rootfs, 0, &mut pending, &mut plan, progress) {
+            return None;
+        }
+    }
+    Some(plan)
+}
+
+pub(crate) fn prefetch_install_plan(
+    config: &LxeConfig,
+    plan: &[PackageInfo],
+    progress: &mut InstallProgress,
+) -> bool {
+    if plan.is_empty() {
+        return true;
+    }
+
+    let missing = missing_cached_packages(config, plan);
+    if missing.is_empty() {
+        progress.phase("deb prefetch", "all packages already cached");
+        return true;
+    }
+
+    if !path_exists(&config.wget) || config.download_jobs <= 1 || missing.len() == 1 {
+        progress.phase(
+            "deb prefetch",
+            &alloc::format!("serial cache fill for {} packages", missing.len()),
+        );
+        for info in &missing {
+            let dest = package_deb_path(config, info);
+            let url = alloc::format!("{}/{}", config.apt_base, info.filename);
+            if !download_verified_package(config, info, &url, &dest, progress) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    prefetch_packages_with_wget(config, &missing, progress)
+}
+
 fn install_package_inner(
     config: &LxeConfig,
     pkg: &str,
@@ -349,11 +403,7 @@ fn install_package_inner(
         }
     }
 
-    let deb_path = alloc::format!(
-        "{}/{}",
-        config.cache,
-        cache_deb_name(&info.package, &info.version, &info.filename)
-    );
+    let deb_path = package_deb_path(config, &info);
     if fs::stat(&deb_path, &mut [0u32; 7]) == 0 && !verify_package_file(&info, &deb_path) {
         let _ = fs::unlink(&deb_path);
     }
@@ -395,6 +445,309 @@ fn install_dependency_group(
         );
     }
     alternatives.is_empty()
+}
+
+fn resolve_package_plan_inner(
+    config: &LxeConfig,
+    pkg: &str,
+    rootfs: &str,
+    depth: u8,
+    pending: &mut Vec<String>,
+    plan: &mut Vec<PackageInfo>,
+    progress: &mut InstallProgress,
+) -> bool {
+    if depth > 32 {
+        progress.finish();
+        println!("lxe apt: dependency recursion too deep at '{}'", pkg);
+        return false;
+    }
+    if is_installed(config, pkg, rootfs) || plan_contains(plan, pkg) {
+        return true;
+    }
+
+    progress.phase("apt parse", pkg);
+    let package_index_txt = config.package_index_txt();
+    let Some(info) = find_package_in_index(config, pkg) else {
+        progress.finish();
+        println!("lxe apt: package '{}' not found", pkg);
+        if package_name_present(&package_index_txt, pkg) {
+            println!(
+                "lxe apt: package '{}' exists in raw index but could not be parsed",
+                pkg
+            );
+        } else {
+            println!(
+                "lxe apt: package '{}' is absent from cached index ({} bytes)",
+                pkg,
+                file_size(&package_index_txt)
+            );
+        }
+        return false;
+    };
+    if is_installed(config, &info.package, rootfs) || plan_contains(plan, &info.package) {
+        return true;
+    }
+    if dependency_pending(pkg, pending) || dependency_pending(&info.package, pending) {
+        if progress.verbose() {
+            println!(
+                "lxe apt: dependency '{}' is already scheduled; continuing",
+                pkg
+            );
+        }
+        return true;
+    }
+
+    pending.push(info.package.clone());
+    progress.phase("apt depends", &info.package);
+    for dep_group in parse_depends(&info.pre_depends) {
+        if !resolve_dependency_group(
+            config,
+            &dep_group,
+            rootfs,
+            depth + 1,
+            pending,
+            plan,
+            progress,
+        ) {
+            progress.finish();
+            println!("lxe apt: dependency for '{}' not satisfied", info.package);
+            pending.pop();
+            return false;
+        }
+    }
+    for dep_group in parse_depends(&info.depends) {
+        if !resolve_dependency_group(
+            config,
+            &dep_group,
+            rootfs,
+            depth + 1,
+            pending,
+            plan,
+            progress,
+        ) {
+            progress.finish();
+            println!("lxe apt: dependency for '{}' not satisfied", info.package);
+            pending.pop();
+            return false;
+        }
+    }
+    pending.pop();
+
+    if !plan_contains(plan, &info.package) {
+        plan.push(info);
+    }
+    true
+}
+
+fn resolve_dependency_group(
+    config: &LxeConfig,
+    alternatives: &[String],
+    rootfs: &str,
+    depth: u8,
+    pending: &mut Vec<String>,
+    plan: &mut Vec<PackageInfo>,
+    progress: &mut InstallProgress,
+) -> bool {
+    for dep in alternatives {
+        if resolve_package_plan_inner(config, dep, rootfs, depth, pending, plan, progress) {
+            return true;
+        }
+    }
+    if !alternatives.is_empty() {
+        progress.finish();
+        println!(
+            "lxe apt: no dependency alternative worked: {}",
+            alternatives[0]
+        );
+    }
+    alternatives.is_empty()
+}
+
+fn plan_contains(plan: &[PackageInfo], pkg: &str) -> bool {
+    plan.iter().any(|info| info.package == pkg)
+}
+
+fn missing_cached_packages(config: &LxeConfig, plan: &[PackageInfo]) -> Vec<PackageInfo> {
+    let mut missing = Vec::new();
+    for info in plan {
+        let deb_path = package_deb_path(config, info);
+        if fs::stat(&deb_path, &mut [0u32; 7]) == 0 && verify_package_file(info, &deb_path) {
+            continue;
+        }
+        let _ = fs::unlink(&deb_path);
+        missing.push(info.clone());
+    }
+    missing
+}
+
+struct PrefetchJob {
+    info: PackageInfo,
+    url: String,
+    dest: String,
+    temp: String,
+    tid: u32,
+    attempt: u8,
+    started_ms: u32,
+}
+
+fn prefetch_packages_with_wget(
+    config: &LxeConfig,
+    packages: &[PackageInfo],
+    progress: &mut InstallProgress,
+) -> bool {
+    ensure_dir_recursive(&config.cache);
+    let max_jobs = {
+        let configured = config.download_jobs as usize;
+        if configured == 0 {
+            1
+        } else if configured > 8 {
+            8
+        } else {
+            configured
+        }
+    };
+    progress.phase(
+        "deb prefetch",
+        &alloc::format!(
+            "{} packages with up to {} parallel downloads",
+            packages.len(),
+            max_jobs
+        ),
+    );
+
+    let mut active: Vec<PrefetchJob> = Vec::new();
+    let mut next = 0usize;
+    let mut done = 0usize;
+    let mut failed = false;
+
+    while done < packages.len() {
+        while !failed && active.len() < max_jobs && next < packages.len() {
+            let info = packages[next].clone();
+            next += 1;
+            if let Some(job) = start_prefetch_job(config, info, 1) {
+                active.push(job);
+            } else {
+                failed = true;
+            }
+        }
+
+        if active.is_empty() {
+            break;
+        }
+
+        let mut i = 0usize;
+        while i < active.len() {
+            let status = process::try_waitpid(active[i].tid);
+            if status == process::STILL_RUNNING {
+                i += 1;
+                continue;
+            }
+
+            let mut job = active.remove(i);
+            if finish_prefetch_job(&job, status) {
+                done += 1;
+                progress.phase(
+                    "deb prefetch",
+                    &alloc::format!("{}/{} cached", done, packages.len()),
+                );
+                continue;
+            }
+
+            let _ = fs::unlink(&job.temp);
+            if job.attempt < config.download_attempts {
+                job.attempt += 1;
+                if let Some(retry) = start_prefetch_job(config, job.info, job.attempt) {
+                    active.push(retry);
+                } else {
+                    failed = true;
+                }
+            } else {
+                println!(
+                    "lxe apt: parallel download failed for {} after {} attempts",
+                    job.info.package, config.download_attempts
+                );
+                failed = true;
+            }
+        }
+
+        if failed {
+            break;
+        }
+        process::sleep(20);
+    }
+
+    for job in active {
+        let _ = process::kill(job.tid);
+        let _ = process::waitpid(job.tid);
+        let _ = fs::unlink(&job.temp);
+    }
+
+    !failed && done == packages.len()
+}
+
+fn start_prefetch_job(config: &LxeConfig, info: PackageInfo, attempt: u8) -> Option<PrefetchJob> {
+    let dest = package_deb_path(config, &info);
+    let temp = alloc::format!("{}.part-{}", dest, attempt);
+    let url = alloc::format!("{}/{}", config.apt_base, info.filename);
+    let _ = fs::unlink(&temp);
+    println!(
+        "lxe apt: prefetch {} {} attempt {}/{}",
+        info.package, info.version, attempt, config.download_attempts
+    );
+    let args = alloc::format!("wget -q -O {} {}", temp, url);
+    let tid = process::spawn(&config.wget, &args);
+    if tid == u32::MAX {
+        println!("lxe apt: failed to start wget for {}", info.package);
+        let _ = fs::unlink(&temp);
+        return None;
+    }
+    Some(PrefetchJob {
+        info,
+        url,
+        dest,
+        temp,
+        tid,
+        attempt,
+        started_ms: sys::uptime_ms(),
+    })
+}
+
+fn finish_prefetch_job(job: &PrefetchJob, status: u32) -> bool {
+    if status == u32::MAX {
+        println!("lxe apt: wait failed for {}", job.info.package);
+        return false;
+    }
+    if status != 0 {
+        println!(
+            "lxe apt: wget exited with status {} for {}",
+            status, job.info.package
+        );
+        return false;
+    }
+    if file_size(&job.temp) == 0 {
+        println!("lxe apt: empty download for {}", job.info.package);
+        return false;
+    }
+    if !verify_package_file(&job.info, &job.temp) {
+        return false;
+    }
+    let _ = fs::unlink(&job.dest);
+    if fs::rename(&job.temp, &job.dest) != 0 {
+        println!(
+            "lxe apt: cannot move downloaded package into cache: {}",
+            job.dest
+        );
+        return false;
+    }
+    let ms = sys::uptime_ms().wrapping_sub(job.started_ms);
+    println!(
+        "lxe apt: cached {} ({} bytes in {} ms) from {}",
+        job.info.package,
+        file_size(&job.dest),
+        ms,
+        job.url
+    );
+    true
 }
 
 fn download_verified_package(
@@ -1432,6 +1785,14 @@ fn installed_db_dir(config: &LxeConfig, rootfs: &str) -> String {
 
 fn deb_basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
+}
+
+fn package_deb_path(config: &LxeConfig, info: &PackageInfo) -> String {
+    alloc::format!(
+        "{}/{}",
+        config.cache,
+        cache_deb_name(&info.package, &info.version, &info.filename)
+    )
 }
 
 fn cache_deb_name(package: &str, version: &str, filename: &str) -> String {

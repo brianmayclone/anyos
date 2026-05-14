@@ -264,8 +264,14 @@ impl Renderer {
             Self::prioritized_tile_rows(first_row, last_row, scroll_y, viewport_h);
 
         if !self.display_list_complete {
-            let (band_y_start, band_y_end) =
-                Self::progressive_band_range(scroll_y, viewport_h, doc_h);
+            let (band_y_start, band_y_end) = if scrolling {
+                let vp = viewport_h.max(1) as i32;
+                let start = (scroll_y - vp).max(0);
+                let end = (scroll_y + vp * 2).min(doc_h as i32).max(start + 1);
+                (start, end)
+            } else {
+                Self::progressive_band_range(scroll_y, viewport_h, doc_h)
+            };
             let needs_band_expand = match self.display_list_y_range {
                 Some((built_y_start, built_y_end)) => {
                     band_y_start < built_y_start || band_y_end > built_y_end
@@ -280,19 +286,21 @@ impl Renderer {
                 );
                 self.hit_regions.clear();
                 self.link_map.clear();
-                for fc in &mut self.form_controls {
-                    fc.seen = false;
+                if !scrolling {
+                    for fc in &mut self.form_controls {
+                        fc.seen = false;
+                    }
+                    self.walk_controls_visible(
+                        root,
+                        0,
+                        0,
+                        parent,
+                        self.submit_cb,
+                        self.submit_cb_ud,
+                        band_y_start,
+                        band_y_end,
+                    );
                 }
-                self.walk_controls_visible(
-                    root,
-                    0,
-                    0,
-                    parent,
-                    self.submit_cb,
-                    self.submit_cb_ud,
-                    band_y_start,
-                    band_y_end,
-                );
                 self.display_list = DisplayList::build_visible(root, band_y_start, band_y_end);
                 self.display_list_complete = false;
                 self.display_list_y_range = Some((band_y_start, band_y_end));

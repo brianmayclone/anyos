@@ -4,7 +4,10 @@ use anyos_std::{fs, println, process};
 
 use crate::config::LxeConfig;
 use crate::daemon;
-use crate::package::{install_deb, install_package, package_installed, InstallProgress};
+use crate::package::{
+    install_deb, install_package, package_installed, prefetch_install_plan, resolve_install_plan,
+    InstallProgress,
+};
 use crate::rootfs::{
     ensure_rootfs_layout, find_linux_shell, linux_path_in_rootfs, path_exists, print_path_probe,
     repair_rootfs_runtime, write_bytes_atomic,
@@ -266,6 +269,23 @@ fn bootstrap_rootfs(config: &LxeConfig, rootfs: &str, verbose: bool) -> bool {
     write_bootstrap_state(config, rootfs, "running", &failed);
 
     let mut done = 0u32;
+    let plan_packages = config.bootstrap_seed.clone();
+    if let Some(plan) = resolve_install_plan(config, &plan_packages, rootfs, &mut progress) {
+        if !plan.is_empty() {
+            log_ok!(
+                "lxe init: downloading {} package archives before install",
+                plan.len()
+            );
+        }
+        if !prefetch_install_plan(config, &plan, &mut progress) {
+            log_warn!(
+                "lxe init: parallel prefetch incomplete; continuing with on-demand downloads"
+            );
+        }
+    } else {
+        log_warn!("lxe init: could not build full download plan; falling back to serial resolver");
+    }
+
     for pkg in &config.bootstrap_seed {
         if package_installed(config, pkg, rootfs) {
             done += 1;
