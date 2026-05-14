@@ -124,11 +124,11 @@ int needs_lfn(const char *filename)
  */
 void generate_short_name(const char *filename, char *out11)
 {
-    char name_up[256];
-    char base[256];
-    char ext[256];
-    char base_filtered[256];
-    char ext_filtered[256];
+    char name_up[256] = {0};
+    char base[256] = {0};
+    char ext[256] = {0};
+    char base_filtered[256] = {0};
+    char ext_filtered[256] = {0};
     char key[16];           /* "BBBBBB.EEE" for hash */
     unsigned slot;
     uint16_t counter;
@@ -458,9 +458,9 @@ static void fat16_write_to_clusters(Fat16 *fs, uint32_t first_cluster,
  */
 static void fat16_make_83_name(const char *filename, char *out11)
 {
-    char name_up[256];
-    char base[9];
-    char ext[4];
+    char name_up[256] = {0};
+    char base[9] = {0};
+    char ext[4] = {0};
     size_t fi;
     const char *dot;
     int i;
