@@ -85,13 +85,22 @@ fn run_service_manager() {
     let path = "/System/bin/svc";
     let args = "/System/bin/svc start-all";
 
-    println!("init: spawning '{}'", args);
+    println!("init: spawning '{}' in background", args);
     let tid = process::spawn(path, args);
-    if tid == u32::MAX {
+    if tid == 0 || tid == u32::MAX {
         println!("init: FAILED to spawn '{}'", path);
         return;
     }
 
+    if process::detach(tid) {
+        println!("init: '{}' started in background (TID={})", path, tid);
+        return;
+    }
+
+    println!(
+        "init: WARNING - failed to detach '{}', waiting for completion",
+        path
+    );
     let code = process::waitpid(tid);
     println!("init: '{}' exited (code={})", path, code);
 }
