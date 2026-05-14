@@ -201,6 +201,18 @@ http-alt\t8080/tcp\n",
     );
 }
 
+fn ensure_linux_timezone_files(rootfs: &str) {
+    ensure_dir_recursive(&linux_path_in_rootfs(rootfs, "/usr/share/zoneinfo/Etc"));
+    ensure_rootfs_file(rootfs, "/etc/timezone", b"Etc/UTC\n", 0o644);
+    ensure_rootfs_file(rootfs, "/usr/share/zoneinfo/Etc/UTC", UTC_TZIF, 0o644);
+
+    let localtime = linux_path_in_rootfs(rootfs, "/etc/localtime");
+    if path_exists_no_follow(&localtime) {
+        return;
+    }
+    let _ = fs::symlink("/usr/share/zoneinfo/Etc/UTC", &localtime);
+}
+
 fn ensure_linux_pam_files(rootfs: &str) {
     ensure_rootfs_file(
         rootfs,
@@ -484,6 +496,7 @@ pub(crate) fn repair_rootfs_runtime(rootfs: &str) {
     ensure_dir_recursive(&linux_path_in_rootfs(rootfs, "/lib64"));
     ensure_linux_account_files(rootfs);
     ensure_linux_network_files(rootfs);
+    ensure_linux_timezone_files(rootfs);
     repair_dynamic_loader(rootfs);
     repair_common_library_links(rootfs, "/lib/x86_64-linux-gnu");
     repair_common_library_links(rootfs, "/usr/lib/x86_64-linux-gnu");
