@@ -377,48 +377,52 @@ pub fn inject_absolute(x: i32, y: i32, buttons: MouseButtons) {
         crate::serial_verbose_println!("[mouse] inject_absolute first event: x={} y={}", x, y);
     }
 
-    let mut state = MOUSE_STATE.lock();
-    let old_buttons = state.buttons;
+    {
+        let mut state = MOUSE_STATE.lock();
+        let old_buttons = state.buttons;
 
-    let buttons_changed = buttons.left != old_buttons.left
-        || buttons.right != old_buttons.right
-        || buttons.middle != old_buttons.middle;
+        let buttons_changed = buttons.left != old_buttons.left
+            || buttons.right != old_buttons.right
+            || buttons.middle != old_buttons.middle;
 
-    state.buttons = buttons;
+        state.buttons = buttons;
 
-    let mut buf = MOUSE_BUFFER.lock();
+        let mut buf = MOUSE_BUFFER.lock();
 
-    // Always emit the position update as MoveAbsolute
-    if buf.len() < 256 {
-        buf.push_back(MouseEvent {
-            dx: x,
-            dy: y,
-            dz: 0,
-            buttons,
-            event_type: MouseEventType::MoveAbsolute,
-            output_id: OUTPUT_AGNOSTIC,
-        });
+        // Always emit the position update as MoveAbsolute.
+        if buf.len() < 256 {
+            buf.push_back(MouseEvent {
+                dx: x,
+                dy: y,
+                dz: 0,
+                buttons,
+                event_type: MouseEventType::MoveAbsolute,
+                output_id: OUTPUT_AGNOSTIC,
+            });
+        }
+
+        // If buttons changed, emit a separate ButtonDown/ButtonUp event (no position).
+        if buttons_changed && buf.len() < 256 {
+            let btn_event_type = if (buttons.left && !old_buttons.left)
+                || (buttons.right && !old_buttons.right)
+                || (buttons.middle && !old_buttons.middle)
+            {
+                MouseEventType::ButtonDown
+            } else {
+                MouseEventType::ButtonUp
+            };
+            buf.push_back(MouseEvent {
+                dx: 0,
+                dy: 0,
+                dz: 0,
+                buttons,
+                event_type: btn_event_type,
+                output_id: OUTPUT_AGNOSTIC,
+            });
+        }
     }
 
-    // If buttons changed, emit a separate ButtonDown/ButtonUp event (no position)
-    if buttons_changed && buf.len() < 256 {
-        let btn_event_type = if (buttons.left && !old_buttons.left)
-            || (buttons.right && !old_buttons.right)
-            || (buttons.middle && !old_buttons.middle)
-        {
-            MouseEventType::ButtonDown
-        } else {
-            MouseEventType::ButtonUp
-        };
-        buf.push_back(MouseEvent {
-            dx: 0,
-            dy: 0,
-            dz: 0,
-            buttons,
-            event_type: btn_event_type,
-            output_id: OUTPUT_AGNOSTIC,
-        });
-    }
+    crate::syscall::handlers::wake_compositor_if_blocked();
 }
 
 /// Inject an absolute position-only event (no button state change).
@@ -427,18 +431,21 @@ pub fn inject_absolute(x: i32, y: i32, buttons: MouseButtons) {
 /// where reading `get_current_buttons()` would race with IRQ-driven
 /// `inject_absolute()` calls, causing spurious ButtonDown/ButtonUp events.
 pub fn inject_position(x: i32, y: i32) {
-    let mut buf = MOUSE_BUFFER.lock();
-    if buf.len() < 256 {
-        // Read current buttons for the event struct but do NOT compare/change them
+    {
+        // Keep the same lock order as inject_absolute/process_packet.
         let buttons = MOUSE_STATE.lock().buttons;
-        buf.push_back(MouseEvent {
-            dx: x,
-            dy: y,
-            dz: 0,
-            buttons,
-            event_type: MouseEventType::MoveAbsolute,
-            output_id: OUTPUT_AGNOSTIC,
-        });
+        let mut buf = MOUSE_BUFFER.lock();
+        if buf.len() < 256 {
+            // Read current buttons for the event struct but do NOT compare/change them.
+            buf.push_back(MouseEvent {
+                dx: x,
+                dy: y,
+                dz: 0,
+                buttons,
+                event_type: MouseEventType::MoveAbsolute,
+                output_id: OUTPUT_AGNOSTIC,
+            });
+        }
     }
 }
 

@@ -132,6 +132,12 @@ pub(crate) fn management_loop(
     const INPUT_CFG_POLL_INTERVAL_MS: u32 = 500;
     let mut last_cursor_report_ms: u32 = sys::uptime_ms();
     const CURSOR_REPORT_INTERVAL_MS: u32 = 15_000;
+    const BOOT_EVENT_WAIT_MS: u32 = 50;
+    const IDLE_INPUT_WAIT_MS: u32 = 16;
+    const ACTIVE_INPUT_WAIT_MS: u32 = 8;
+    const INPUT_WAIT_STALL_LOG_MS: u32 = 75;
+    const INPUT_PROCESS_STALL_LOG_MS: u32 = 50;
+    const INPUT_SUBMIT_STALL_LOG_MS: u32 = 50;
 
     loop {
         let now_ms = sys::uptime_ms();
@@ -278,11 +284,24 @@ pub(crate) fn management_loop(
         }
 
         let timeout = if *init_pending || *login_pending {
-            100
+            BOOT_EVENT_WAIT_MS
         } else {
-            5000
+            acquire_lock();
+            let desktop = unsafe { desktop_ref() };
+            let pointer_active = desktop.dragging.is_some()
+                || desktop.resizing.is_some()
+                || desktop.global_drag.is_some()
+                || desktop.mouse_buttons != 0;
+            release_lock();
+            if pointer_active {
+                ACTIVE_INPUT_WAIT_MS
+            } else {
+                IDLE_INPUT_WAIT_MS
+            }
         };
+        let wait_start_ms = sys::uptime_ms();
         ipc::evt_chan_wait(compositor_channel, compositor_sub, timeout);
+        let wait_elapsed_ms = sys::uptime_ms().wrapping_sub(wait_start_ms);
 
         // Check whether init has exited.  The management thread performs the
         // reap itself so the subsequent login spawn happens from the same
@@ -394,6 +413,13 @@ pub(crate) fn management_loop(
         let event_count = ipc::input_poll(&mut events_buf) as usize;
         if event_count > 0 {
             mgmt_input += 1;
+            if wait_elapsed_ms >= INPUT_WAIT_STALL_LOG_MS {
+                println!(
+                    "[compositor/input] wait {} ms before {} events timeout={}ms",
+                    wait_elapsed_ms, event_count, timeout
+                );
+            }
+            let process_start_ms = sys::uptime_ms();
             let cursor_cmds = {
                 acquire_lock();
                 let desktop = unsafe { desktop_ref() };
@@ -404,7 +430,22 @@ pub(crate) fn management_loop(
                 release_lock();
                 cmds
             };
+            let process_elapsed_ms = sys::uptime_ms().wrapping_sub(process_start_ms);
+            if process_elapsed_ms >= INPUT_PROCESS_STALL_LOG_MS {
+                println!(
+                    "[compositor/input] process {} events took {} ms",
+                    event_count, process_elapsed_ms
+                );
+            }
+            let submit_start_ms = sys::uptime_ms();
             crate::compositor::Compositor::submit_cmds(cursor_cmds);
+            let submit_elapsed_ms = sys::uptime_ms().wrapping_sub(submit_start_ms);
+            if submit_elapsed_ms >= INPUT_SUBMIT_STALL_LOG_MS {
+                println!(
+                    "[compositor/input] submit after {} events took {} ms",
+                    event_count, submit_elapsed_ms
+                );
+            }
             signal_render();
         }
 
