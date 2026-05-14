@@ -83,6 +83,38 @@ pub(super) fn linux_write(fd: u32, buf_ptr: u64, len: u64) -> u64 {
     anyos_u32_ret(handlers::sys_write(fd, buf_ptr, len as u32))
 }
 
+pub(super) fn linux_pipe2(pipefd_ptr: u64, linux_flags: u64) -> u64 {
+    const O_NONBLOCK: u64 = 0x800;
+    const O_CLOEXEC: u64 = 0x80000;
+    const SUPPORTED: u64 = O_NONBLOCK | O_CLOEXEC;
+
+    if (linux_flags & !SUPPORTED) != 0 {
+        return linux_err(EINVAL);
+    }
+    if pipefd_ptr == 0 || !handlers::helpers::is_user_range_accessible(pipefd_ptr, 8) {
+        return linux_err(EFAULT);
+    }
+
+    let anyos_flags = if (linux_flags & O_CLOEXEC) != 0 {
+        0x10
+    } else {
+        0
+    };
+    let ret = handlers::sys_pipe2(pipefd_ptr, anyos_flags);
+    if (ret as i32) < 0 {
+        return anyos_u32_ret(ret);
+    }
+
+    if (linux_flags & O_NONBLOCK) != 0 {
+        let read_fd = unsafe { *((pipefd_ptr) as *const u32) };
+        let write_fd = unsafe { *((pipefd_ptr + 4) as *const u32) };
+        crate::task::scheduler::current_fd_set_nonblock(read_fd, true);
+        crate::task::scheduler::current_fd_set_nonblock(write_fd, true);
+    }
+
+    0
+}
+
 pub(super) fn linux_lseek(fd: u32, offset: u64, whence: u64) -> u64 {
     if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
         if let crate::fs::fd_table::FdKind::LinuxProc {
@@ -581,15 +613,14 @@ fn linux_select_once(
         } else {
             crate::task::scheduler::current_fd_get(fd as u32)
         };
-        let valid = fd < 3 || entry.is_some();
         let requested =
             (if want_read { 0x0001 } else { 0 }) | (if want_write { 0x0004 } else { 0 });
-        let revents = match entry.map(|e| e.kind) {
-            Some(crate::fs::fd_table::FdKind::LinuxSocket { socket_id }) => {
-                linux_socket_poll_revents(socket_id, requested)
-            }
-            _ if valid => requested,
-            _ => 0,
+        let revents = if fd < 3 {
+            requested
+        } else if let Some(entry) = entry {
+            linux_fd_poll_revents(entry.kind, requested)
+        } else {
+            0
         };
 
         if want_read && revents & 0x0001 != 0 {
@@ -688,12 +719,7 @@ fn linux_poll_once(fds_ptr: u64, nfds: u64) -> u64 {
             if fd < 3 {
                 revents = events & 0x0005; // POLLIN | POLLOUT
             } else if let Some(entry) = crate::task::scheduler::current_fd_get(fd as u32) {
-                revents = match entry.kind {
-                    crate::fs::fd_table::FdKind::LinuxSocket { socket_id } => {
-                        linux_socket_poll_revents(socket_id, events)
-                    }
-                    _ => events & 0x0005, // POLLIN | POLLOUT
-                };
+                revents = linux_fd_poll_revents(entry.kind, events);
             } else {
                 revents = 0x0020; // POLLNVAL
             }
@@ -706,6 +732,49 @@ fn linux_poll_once(fds_ptr: u64, nfds: u64) -> u64 {
         }
     }
     ready
+}
+
+fn linux_fd_poll_revents(kind: crate::fs::fd_table::FdKind, events: i16) -> i16 {
+    const POLLIN: i16 = 0x0001;
+    const POLLOUT: i16 = 0x0004;
+    const POLLERR: i16 = 0x0008;
+    const POLLHUP: i16 = 0x0010;
+
+    match kind {
+        crate::fs::fd_table::FdKind::LinuxSocket { socket_id } => {
+            linux_socket_poll_revents(socket_id, events)
+        }
+        crate::fs::fd_table::FdKind::PipeRead { pipe_id } => {
+            let mut revents = 0;
+            let available = crate::ipc::anon_pipe::bytes_available(pipe_id);
+            if (events & POLLIN) != 0
+                && (available > 0 || crate::ipc::anon_pipe::is_write_closed(pipe_id))
+            {
+                revents |= POLLIN;
+            }
+            if available == 0 && crate::ipc::anon_pipe::is_write_closed(pipe_id) {
+                revents |= POLLHUP;
+            }
+            revents
+        }
+        crate::fs::fd_table::FdKind::PipeWrite { pipe_id } => {
+            if crate::ipc::anon_pipe::is_read_closed(pipe_id) {
+                POLLERR
+            } else if (events & POLLOUT) != 0
+                && crate::ipc::anon_pipe::bytes_available(pipe_id)
+                    < crate::ipc::anon_pipe::PIPE_BUF_SIZE as u32
+            {
+                POLLOUT
+            } else {
+                0
+            }
+        }
+        crate::fs::fd_table::FdKind::File { .. }
+        | crate::fs::fd_table::FdKind::Tty
+        | crate::fs::fd_table::FdKind::PtySlave { .. }
+        | crate::fs::fd_table::FdKind::LinuxProc { .. } => events & (POLLIN | POLLOUT),
+        crate::fs::fd_table::FdKind::None => POLLERR,
+    }
 }
 
 fn select_timeval_ticks(timeout: u64) -> Result<Option<u32>, i32> {
@@ -859,6 +928,15 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
             if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
                 if let crate::fs::fd_table::FdKind::LinuxSocket { socket_id } = entry.kind {
                     return linux_socket_fionread(socket_id, arg);
+                }
+                if let crate::fs::fd_table::FdKind::PipeRead { pipe_id } = entry.kind {
+                    if arg == 0 || !handlers::helpers::is_user_range_accessible(arg, 4) {
+                        return linux_err(EFAULT);
+                    }
+                    unsafe {
+                        write_u32(arg, 0, crate::ipc::anon_pipe::bytes_available(pipe_id));
+                    }
+                    return 0;
                 }
             }
             if arg == 0 || !handlers::helpers::is_user_range_accessible(arg, 4) {

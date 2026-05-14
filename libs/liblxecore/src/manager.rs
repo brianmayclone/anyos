@@ -1,8 +1,8 @@
 use crate::config::LxeConfig;
 use crate::daemon;
 use crate::package::{
-    install_package, package_installed, prefetch_install_plan, resolve_install_plan,
-    InstallProgress, InstallProgressObserver,
+    install_package, install_resolved_plan, package_installed, prefetch_install_plan,
+    resolve_install_plan, InstallProgress, InstallProgressObserver,
 };
 use crate::rootfs::{ensure_dir_recursive, ensure_rootfs_layout, file_size, path_exists};
 use alloc::format;
@@ -97,24 +97,33 @@ pub fn install_or_repair(
         progress.set_overall(0, config.bootstrap_seed.len() as u32);
 
         let mut done = 0u32;
+        let mut plan_installed = false;
         let plan_packages = config.bootstrap_seed.clone();
         if let Some(plan) =
             resolve_install_plan(config, &plan_packages, &config.rootfs, &mut progress)
         {
             let _ = prefetch_install_plan(config, &plan, &mut progress);
+            plan_installed = install_resolved_plan(config, &plan, &config.rootfs, &mut progress);
         }
 
-        for package in &config.bootstrap_seed {
-            if package_installed(config, package, &config.rootfs) {
+        if plan_installed {
+            done = count_installed_bootstrap_packages(config);
+            progress.set_overall(done, config.bootstrap_seed.len() as u32);
+        }
+
+        if !plan_installed {
+            for package in &config.bootstrap_seed {
+                if package_installed(config, package, &config.rootfs) {
+                    done += 1;
+                    progress.set_overall(done, config.bootstrap_seed.len() as u32);
+                    continue;
+                }
+                if !install_package(config, package, &config.rootfs, 0, &mut progress) {
+                    return Err(format!("package '{}' could not be installed", package));
+                }
                 done += 1;
                 progress.set_overall(done, config.bootstrap_seed.len() as u32);
-                continue;
             }
-            if !install_package(config, package, &config.rootfs, 0, &mut progress) {
-                return Err(format!("package '{}' could not be installed", package));
-            }
-            done += 1;
-            progress.set_overall(done, config.bootstrap_seed.len() as u32);
         }
         progress.finish();
     }
@@ -212,6 +221,16 @@ pub fn repair_only(
         0,
     );
     Ok(())
+}
+
+fn count_installed_bootstrap_packages(config: &LxeConfig) -> u32 {
+    let mut installed = 0u32;
+    for package in &config.bootstrap_seed {
+        if package_installed(config, package, &config.rootfs) {
+            installed += 1;
+        }
+    }
+    installed
 }
 
 pub fn delete_rootfs(

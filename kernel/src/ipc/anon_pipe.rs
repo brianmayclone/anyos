@@ -352,6 +352,19 @@ pub fn is_write_closed(pipe_id: u32) -> bool {
         .unwrap_or(true) // pipe not found → treat as closed
 }
 
+/// Return true if the read end of the pipe has been fully closed.
+pub fn is_read_closed(pipe_id: u32) -> bool {
+    let guard = PIPES.lock();
+    guard
+        .iter()
+        .find_map(|slot| {
+            slot.as_ref()
+                .filter(|p| p.id == pipe_id)
+                .map(|p| p.read_refs == 0)
+        })
+        .unwrap_or(true)
+}
+
 // ---- Internal helpers ----
 
 fn find_pipe<'a>(

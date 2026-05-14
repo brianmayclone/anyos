@@ -5,8 +5,8 @@ use anyos_std::{fs, println, process};
 use crate::config::LxeConfig;
 use crate::daemon;
 use crate::package::{
-    install_deb, install_package, package_installed, prefetch_install_plan, resolve_install_plan,
-    InstallProgress,
+    install_deb, install_package, install_resolved_plan, package_installed, prefetch_install_plan,
+    resolve_install_plan, InstallProgress,
 };
 use crate::rootfs::{
     ensure_rootfs_layout, find_linux_shell, linux_path_in_rootfs, path_exists, print_path_probe,
@@ -269,6 +269,7 @@ fn bootstrap_rootfs(config: &LxeConfig, rootfs: &str, verbose: bool) -> bool {
     write_bootstrap_state(config, rootfs, "running", &failed);
 
     let mut done = 0u32;
+    let mut plan_installed = false;
     let plan_packages = config.bootstrap_seed.clone();
     if let Some(plan) = resolve_install_plan(config, &plan_packages, rootfs, &mut progress) {
         if !plan.is_empty() {
@@ -282,27 +283,37 @@ fn bootstrap_rootfs(config: &LxeConfig, rootfs: &str, verbose: bool) -> bool {
                 "lxe init: parallel prefetch incomplete; continuing with on-demand downloads"
             );
         }
+        if install_resolved_plan(config, &plan, rootfs, &mut progress) {
+            plan_installed = true;
+            done = count_installed_bootstrap_packages(config, rootfs);
+            progress.set_overall(done, config.bootstrap_seed.len() as u32);
+            write_bootstrap_state(config, rootfs, "running", &failed);
+        } else {
+            log_warn!("lxe init: planned install incomplete; falling back to recursive installer");
+        }
     } else {
         log_warn!("lxe init: could not build full download plan; falling back to serial resolver");
     }
 
-    for pkg in &config.bootstrap_seed {
-        if package_installed(config, pkg, rootfs) {
-            done += 1;
+    if !plan_installed {
+        for pkg in &config.bootstrap_seed {
+            if package_installed(config, pkg, rootfs) {
+                done += 1;
+                progress.set_overall(done, config.bootstrap_seed.len() as u32);
+                write_bootstrap_state(config, rootfs, "running", &failed);
+                continue;
+            }
+            log_ok!("lxe init: bootstrap installing missing seed '{}'", pkg);
+            if install_package(config, pkg, rootfs, 0, &mut progress) {
+                done += 1;
+            } else {
+                progress.finish();
+                log_error!("lxe init: bootstrap seed '{}' failed", pkg);
+                failed.push(pkg.clone());
+            }
             progress.set_overall(done, config.bootstrap_seed.len() as u32);
             write_bootstrap_state(config, rootfs, "running", &failed);
-            continue;
         }
-        log_ok!("lxe init: bootstrap installing missing seed '{}'", pkg);
-        if install_package(config, pkg, rootfs, 0, &mut progress) {
-            done += 1;
-        } else {
-            progress.finish();
-            log_error!("lxe init: bootstrap seed '{}' failed", pkg);
-            failed.push(pkg.clone());
-        }
-        progress.set_overall(done, config.bootstrap_seed.len() as u32);
-        write_bootstrap_state(config, rootfs, "running", &failed);
     }
 
     let mut ok = bootstrap_packages_complete(config, rootfs);
@@ -336,6 +347,16 @@ fn bootstrap_packages_complete(config: &LxeConfig, rootfs: &str) -> bool {
         }
     }
     true
+}
+
+fn count_installed_bootstrap_packages(config: &LxeConfig, rootfs: &str) -> u32 {
+    let mut installed = 0u32;
+    for pkg in &config.bootstrap_seed {
+        if package_installed(config, pkg, rootfs) {
+            installed += 1;
+        }
+    }
+    installed
 }
 
 fn write_bootstrap_state(

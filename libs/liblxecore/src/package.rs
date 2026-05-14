@@ -6,6 +6,7 @@ use crate::rootfs::{
     path_under_rootfs, print_path_probe, replace_with_temp_file, resolve_rootfs_symlink_path,
     symlink_points_to, write_bytes_atomic,
 };
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::{
@@ -287,10 +288,20 @@ pub(crate) fn resolve_install_plan(
         return None;
     }
 
+    let lookup = PackageLookup::load(config, progress)?;
     let mut plan = Vec::new();
     let mut pending = Vec::new();
     for pkg in packages {
-        if !resolve_package_plan_inner(config, pkg, rootfs, 0, &mut pending, &mut plan, progress) {
+        if !resolve_package_plan_inner(
+            config,
+            &lookup,
+            pkg,
+            rootfs,
+            0,
+            &mut pending,
+            &mut plan,
+            progress,
+        ) {
             return None;
         }
     }
@@ -328,6 +339,39 @@ pub(crate) fn prefetch_install_plan(
     }
 
     prefetch_packages_with_wget(config, &missing, progress)
+}
+
+pub(crate) fn install_resolved_plan(
+    config: &LxeConfig,
+    plan: &[PackageInfo],
+    rootfs: &str,
+    progress: &mut InstallProgress,
+) -> bool {
+    for info in plan {
+        if is_installed(config, &info.package, rootfs) {
+            continue;
+        }
+
+        let deb_path = package_deb_path(config, info);
+        if fs::stat(&deb_path, &mut [0u32; 7]) == 0 && !verify_package_file(info, &deb_path) {
+            let _ = fs::unlink(&deb_path);
+        }
+        if fs::stat(&deb_path, &mut [0u32; 7]) != 0 {
+            let url = alloc::format!("{}/{}", config.apt_base, info.filename);
+            ensure_dir_recursive(&config.cache);
+            if !download_verified_package(config, info, &url, &deb_path, progress) {
+                return false;
+            }
+        } else {
+            progress.phase("deb cache", &info.package);
+        }
+
+        progress.phase("deb extract", &info.package);
+        if !install_deb(config, &deb_path, rootfs, Some(info), progress) {
+            return false;
+        }
+    }
+    true
 }
 
 fn install_package_inner(
@@ -447,8 +491,96 @@ fn install_dependency_group(
     alternatives.is_empty()
 }
 
+struct PackageLookup {
+    packages: BTreeMap<String, PackageInfo>,
+    providers: BTreeMap<String, String>,
+}
+
+impl PackageLookup {
+    fn load(config: &LxeConfig, progress: &mut InstallProgress) -> Option<Self> {
+        progress.phase("apt index parse", "building package lookup");
+        let packages_txt = config.package_index_txt();
+        let index = match fs::read_to_vec(&packages_txt) {
+            Ok(data) => data,
+            Err(_) => {
+                println!(
+                    "lxe apt: cannot read package index '{}'; trying compressed cache",
+                    packages_txt
+                );
+                read_compressed_package_index(config)?
+            }
+        };
+        let lookup = package_lookup_from_bytes(config, &index);
+        println!(
+            "lxe apt: package lookup ready ({} packages, {} virtual names)",
+            lookup.packages.len(),
+            lookup.providers.len()
+        );
+        Some(lookup)
+    }
+
+    fn find(&self, wanted: &str) -> Option<PackageInfo> {
+        let wanted = preferred_package(wanted).unwrap_or(wanted);
+        if let Some(info) = self.packages.get(wanted) {
+            return Some(info.clone());
+        }
+        let provider = self.providers.get(wanted)?;
+        self.packages.get(provider.as_str()).cloned()
+    }
+}
+
+fn package_lookup_from_bytes(config: &LxeConfig, index: &[u8]) -> PackageLookup {
+    let mut lookup = PackageLookup {
+        packages: BTreeMap::new(),
+        providers: BTreeMap::new(),
+    };
+    let mut start = 0usize;
+    let mut pos = 0usize;
+    let mut newline_run = 0usize;
+
+    while pos < index.len() {
+        let b = index[pos];
+        if b == b'\n' {
+            newline_run += 1;
+            if newline_run >= 2 {
+                add_lookup_package(config, &mut lookup, &index[start..=pos]);
+                start = pos + 1;
+                newline_run = 0;
+            }
+        } else if b != b'\r' {
+            newline_run = 0;
+        }
+        pos += 1;
+    }
+
+    if start < index.len() {
+        add_lookup_package(config, &mut lookup, &index[start..]);
+    }
+    lookup
+}
+
+fn add_lookup_package(config: &LxeConfig, lookup: &mut PackageLookup, para: &[u8]) {
+    let Some(info) = package_info_from_para_any(config, para) else {
+        return;
+    };
+    if lookup.packages.contains_key(info.package.as_str()) {
+        return;
+    }
+
+    let provides = field_value(para, b"Provides").unwrap_or_default();
+    for provided in parse_depends(&provides) {
+        for name in provided {
+            if !lookup.providers.contains_key(name.as_str()) {
+                lookup.providers.insert(name, info.package.clone());
+            }
+        }
+    }
+    lookup.packages.insert(info.package.clone(), info);
+}
+
 fn resolve_package_plan_inner(
     config: &LxeConfig,
+    lookup: &PackageLookup,
     pkg: &str,
     rootfs: &str,
     depth: u8,
@@ -465,9 +597,9 @@ fn resolve_package_plan_inner(
         return true;
     }
 
-    progress.phase("apt parse", pkg);
+    progress.phase("apt lookup", pkg);
     let package_index_txt = config.package_index_txt();
-    let Some(info) = find_package_in_index(config, pkg) else {
+    let Some(info) = lookup.find(pkg) else {
         progress.finish();
         println!("lxe apt: package '{}' not found", pkg);
         if package_name_present(&package_index_txt, pkg) {
@@ -502,6 +634,7 @@ fn resolve_package_plan_inner(
     for dep_group in parse_depends(&info.pre_depends) {
         if !resolve_dependency_group(
             config,
+            lookup,
             &dep_group,
             rootfs,
             depth + 1,
@@ -518,6 +651,7 @@ fn resolve_package_plan_inner(
     for dep_group in parse_depends(&info.depends) {
         if !resolve_dependency_group(
             config,
+            lookup,
             &dep_group,
             rootfs,
             depth + 1,
@@ -541,6 +675,7 @@ fn resolve_package_plan_inner(
 
 fn resolve_dependency_group(
     config: &LxeConfig,
+    lookup: &PackageLookup,
     alternatives: &[String],
     rootfs: &str,
     depth: u8,
@@ -549,7 +684,7 @@ fn resolve_dependency_group(
     progress: &mut InstallProgress,
 ) -> bool {
     for dep in alternatives {
-        if resolve_package_plan_inner(config, dep, rootfs, depth, pending, plan, progress) {
+        if resolve_package_plan_inner(config, lookup, dep, rootfs, depth, pending, plan, progress) {
             return true;
         }
     }
@@ -1053,6 +1188,25 @@ fn package_info_from_para(config: &LxeConfig, para: &[u8], wanted: &str) -> Opti
     if !exact && !provides_package_bytes(para, wanted) {
         return None;
     }
+    let arch = field_value(para, b"Architecture").unwrap_or_default();
+    if arch != config.apt_arch && arch != "all" {
+        return None;
+    }
+    Some(PackageInfo {
+        package,
+        version: field_value(para, b"Version").unwrap_or_else(|| String::from("unknown")),
+        filename: field_value(para, b"Filename")?,
+        size: field_value(para, b"Size")
+            .and_then(|s| parse_decimal(&s))
+            .unwrap_or(0),
+        md5: field_value(para, b"MD5sum").unwrap_or_default(),
+        depends: field_value(para, b"Depends").unwrap_or_default(),
+        pre_depends: field_value(para, b"Pre-Depends").unwrap_or_default(),
+    })
+}
+
+fn package_info_from_para_any(config: &LxeConfig, para: &[u8]) -> Option<PackageInfo> {
+    let package = field_value(para, b"Package")?;
     let arch = field_value(para, b"Architecture").unwrap_or_default();
     if arch != config.apt_arch && arch != "all" {
         return None;
