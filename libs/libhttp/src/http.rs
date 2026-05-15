@@ -1094,8 +1094,12 @@ fn build_request_with_headers(
         push_u32(&mut req, url.port as u32);
     }
     req.push_str("\r\nUser-Agent: node/anyos");
-    req.push_str("\r\nAccept: */*");
-    req.push_str("\r\nAccept-Encoding: gzip, deflate");
+    if !header_block_has(extra_headers, "accept") {
+        req.push_str("\r\nAccept: */*");
+    }
+    if !header_block_has(extra_headers, "accept-encoding") {
+        req.push_str("\r\nAccept-Encoding: gzip, deflate");
+    }
     if !content_type.is_empty() && !header_block_has(extra_headers, "content-type") {
         req.push_str("\r\nContent-Type: ");
         req.push_str(content_type);

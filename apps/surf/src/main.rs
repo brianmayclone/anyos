@@ -1624,6 +1624,23 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
     }
 }
 
+fn record_resource_completion(
+    url: &http::Url,
+    size: u64,
+    timing: Option<http::RequestTiming>,
+    from_cache: bool,
+) {
+    if let Some(timing) = timing {
+        if from_cache {
+            devtools::record_request_cached_with_timing(&url.host, &url.path, size, timing);
+        } else {
+            devtools::record_request_done_with_timing(&url.host, &url.path, 200, size, timing);
+        }
+    } else {
+        devtools::record_request_done(&url.host, &url.path, 200, size);
+    }
+}
+
 fn process_single_fetch_result(result: net_worker::FetchResult) {
     match result {
         net_worker::FetchResult::NavDone {
@@ -1662,19 +1679,10 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
             headers,
             parsed,
             timing,
+            from_cache,
             generation,
         } => {
-            if let Some(timing) = timing {
-                devtools::record_request_done_with_timing(
-                    &url.host,
-                    &url.path,
-                    200,
-                    body.len() as u64,
-                    timing,
-                );
-            } else {
-                devtools::record_request_done(&url.host, &url.path, 200, body.len() as u64);
-            }
+            record_resource_completion(&url, body.len() as u64, timing, from_cache);
             let start_ms = anyos_std::sys::uptime_ms();
             handle_css_done(tab_index, href, body, headers, parsed, generation);
             log_main_phase_elapsed("handle_css_done", start_ms);
@@ -1690,19 +1698,10 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
             priority,
             from_deferred,
             timing,
+            from_cache,
             generation,
         } => {
-            if let Some(timing) = timing {
-                devtools::record_request_done_with_timing(
-                    &url.host,
-                    &url.path,
-                    200,
-                    encoded_len as u64,
-                    timing,
-                );
-            } else {
-                devtools::record_request_done(&url.host, &url.path, 200, encoded_len as u64);
-            }
+            record_resource_completion(&url, encoded_len as u64, timing, from_cache);
             let start_ms = anyos_std::sys::uptime_ms();
             let needs_layout = handle_image_done(
                 tab_index,
@@ -1731,19 +1730,10 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
             body,
             display,
             timing,
+            from_cache,
             generation,
         } => {
-            if let Some(timing) = timing {
-                devtools::record_request_done_with_timing(
-                    &url.host,
-                    &url.path,
-                    200,
-                    body.len() as u64,
-                    timing,
-                );
-            } else {
-                devtools::record_request_done(&url.host, &url.path, 200, body.len() as u64);
-            }
+            record_resource_completion(&url, body.len() as u64, timing, from_cache);
             let start_ms = anyos_std::sys::uptime_ms();
             let needs_layout =
                 handle_font_done(tab_index, family, weight, italic, body, display, generation);
@@ -1759,19 +1749,10 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
             body,
             headers,
             timing,
+            from_cache,
             generation,
         } => {
-            if let Some(timing) = timing {
-                devtools::record_request_done_with_timing(
-                    &url.host,
-                    &url.path,
-                    200,
-                    body.len() as u64,
-                    timing,
-                );
-            } else {
-                devtools::record_request_done(&url.host, &url.path, 200, body.len() as u64);
-            }
+            record_resource_completion(&url, body.len() as u64, timing, from_cache);
             crate::surf_log!(
                 "[surf] received ScriptDone: tab={} slot={} bytes={} gen={}",
                 tab_index,
@@ -1790,19 +1771,10 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
             body,
             headers,
             timing,
+            from_cache,
             generation,
         } => {
-            if let Some(timing) = timing {
-                devtools::record_request_done_with_timing(
-                    &url.host,
-                    &url.path,
-                    200,
-                    body.len() as u64,
-                    timing,
-                );
-            } else {
-                devtools::record_request_done(&url.host, &url.path, 200, body.len() as u64);
-            }
+            record_resource_completion(&url, body.len() as u64, timing, from_cache);
             crate::surf_log!(
                 "[surf] received ModuleScriptDone: tab={} specifier={} bytes={} gen={}",
                 tab_index,

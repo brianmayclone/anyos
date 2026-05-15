@@ -254,7 +254,10 @@ impl RegistryClient {
 
     pub fn fetch_metadata(&self, package_name: &str) -> Option<PackageMetadata> {
         let url = self.package_metadata_url(package_name);
-        let text = match libhttp_client::get(&url).and_then(|data| String::from_utf8(data).ok()) {
+        let text = match self
+            .fetch_install_metadata_text(&url)
+            .or_else(|| libhttp_client::get(&url).and_then(|data| String::from_utf8(data).ok()))
+        {
             Some(text) if metadata_looks_complete(&text, package_name) => text,
             _ => {
                 let path = metadata_cache_path(package_name);
@@ -269,6 +272,13 @@ impl RegistryClient {
             package_name: String::from(package_name),
             raw_json: text,
         })
+    }
+
+    fn fetch_install_metadata_text(&self, url: &str) -> Option<String> {
+        let headers =
+            "Accept: application/vnd.npm.install-v1+json\r\nAccept-Encoding: identity\r\n";
+        libhttp_client::request_with_headers(url, "GET", &[], "", headers)
+            .and_then(|data| String::from_utf8(data).ok())
     }
 
     pub fn fetch_tarball(&self, url: &str) -> Option<Vec<u8>> {

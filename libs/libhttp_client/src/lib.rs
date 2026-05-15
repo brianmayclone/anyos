@@ -4,7 +4,7 @@
 //! for HTTP/HTTPS operations.
 //!
 //! # Usage
-//! ```rust
+//! ```no_run
 //! libhttp_client::init();
 //! let data = libhttp_client::get("https://example.com/file.txt").unwrap();
 //! libhttp_client::download("https://example.com/pkg.tar.gz", "/tmp/pkg.tar.gz");
@@ -480,6 +480,9 @@ mod imp {
         if n == u32::MAX {
             return None;
         }
+        if last_error() == 8 {
+            return None;
+        }
 
         buf.truncate(n as usize);
         Some(buf)
@@ -497,6 +500,8 @@ mod imp {
             buf.len() as u32,
         );
         if n == u32::MAX {
+            None
+        } else if last_error() == 8 {
             None
         } else {
             Some(n as usize)
@@ -620,6 +625,9 @@ mod imp {
         if n == u32::MAX {
             return None;
         }
+        if last_error() == 8 {
+            return None;
+        }
         buf.truncate(n as usize);
         Some(buf)
     }
@@ -653,6 +661,9 @@ mod imp {
             buf.len() as u32,
         );
         if n == u32::MAX {
+            return None;
+        }
+        if last_error() == 8 {
             return None;
         }
         buf.truncate(n as usize);

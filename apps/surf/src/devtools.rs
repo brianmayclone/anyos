@@ -28,6 +28,7 @@ const COLOR_FILTER_INACTIVE: u32 = 0xFF333333;
 const NET_COLS: u32 = 20;
 
 const STATUS_OK: u32 = 0xFF6BB36B; // green
+const STATUS_CACHE: u32 = 0xFF4EA1D3; // blue
 const STATUS_REDIRECT: u32 = 0xFFD7BA7D; // yellow
 const STATUS_ERROR: u32 = 0xFFE06C75; // red
 const STATUS_PENDING: u32 = 0xFF888888; // dim
@@ -37,6 +38,7 @@ const STATUS_PENDING: u32 = 0xFF888888; // dim
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum NetStatus {
     Pending,
+    Cached,
     Ok(u16),
     Redirect(u16),
     ClientError(u16),
@@ -59,6 +61,7 @@ impl NetStatus {
     pub fn label(&self) -> String {
         match self {
             Self::Pending => String::from("…"),
+            Self::Cached => String::from("Cache"),
             Self::Ok(c) | Self::Redirect(c) | Self::ClientError(c) | Self::ServerError(c) => {
                 format!("{}", c)
             }
@@ -68,6 +71,7 @@ impl NetStatus {
     pub fn color(&self) -> u32 {
         match self {
             Self::Pending => STATUS_PENDING,
+            Self::Cached => STATUS_CACHE,
             Self::Ok(_) => STATUS_OK,
             Self::Redirect(_) => STATUS_REDIRECT,
             Self::ClientError(_) | Self::ServerError(_) | Self::Blocked => STATUS_ERROR,
@@ -809,7 +813,7 @@ fn current_initiator() -> String {
 /// Hook called when a request completes — matches by host+path of the most
 /// recent entry without an end time.
 pub fn record_request_done(host: &str, path: &str, status: u32, size: u64) {
-    record_request_done_inner(host, path, status, size, None);
+    record_request_finished_inner(host, path, NetStatus::from_http(status), size, size, None);
 }
 
 pub fn record_request_done_with_timing(
@@ -819,14 +823,26 @@ pub fn record_request_done_with_timing(
     size: u64,
     timing: RequestTiming,
 ) {
-    record_request_done_inner(host, path, status, size, Some(timing));
+    record_request_finished_inner(
+        host,
+        path,
+        NetStatus::from_http(status),
+        size,
+        size,
+        Some(timing),
+    );
 }
 
-fn record_request_done_inner(
+pub fn record_request_cached_with_timing(host: &str, path: &str, size: u64, timing: RequestTiming) {
+    record_request_finished_inner(host, path, NetStatus::Cached, size, 0, Some(timing));
+}
+
+fn record_request_finished_inner(
     host: &str,
     path: &str,
-    status: u32,
+    status: NetStatus,
     size: u64,
+    transferred: u64,
     timing: Option<RequestTiming>,
 ) {
     let st = crate::state();
@@ -840,9 +856,9 @@ fn record_request_done_inner(
         let url_matches =
             matches!(e.status, NetStatus::Pending) && e.host == host && e.path == path;
         if matches!(e.status, NetStatus::Pending) && (id_matches || url_matches) {
-            e.status = NetStatus::from_http(status);
+            e.status = status;
             e.size = size;
-            e.transferred = size;
+            e.transferred = transferred;
             e.end_ms = now;
             if let Some(mut t) = timing {
                 t.ui_done_ms = now;

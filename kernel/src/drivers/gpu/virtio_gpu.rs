@@ -1812,10 +1812,7 @@ impl GpuDriver for VirtioGpu {
             return false;
         }
 
-        let required = self
-            .width
-            .saturating_mul(self.height)
-            .saturating_mul(4) as usize;
+        let required = self.width.saturating_mul(self.height).saturating_mul(4) as usize;
         let available = phys_pages
             .len()
             .saturating_mul(4096)

@@ -141,6 +141,7 @@ pub(crate) enum FetchResult {
         headers: String,
         parsed: Option<DecodedCss>,
         timing: Option<http::RequestTiming>,
+        from_cache: bool,
         generation: u32,
     },
     /// Image fetch completed successfully.
@@ -155,6 +156,7 @@ pub(crate) enum FetchResult {
         priority: ImagePriority,
         from_deferred: bool,
         timing: Option<http::RequestTiming>,
+        from_cache: bool,
         generation: u32,
     },
     /// Web font fetch completed successfully.
@@ -167,6 +169,7 @@ pub(crate) enum FetchResult {
         body: Vec<u8>,
         display: libwebview::css::FontDisplay,
         timing: Option<http::RequestTiming>,
+        from_cache: bool,
         generation: u32,
     },
     /// External script fetch completed successfully.
@@ -179,6 +182,7 @@ pub(crate) enum FetchResult {
         body: Vec<u8>,
         headers: String,
         timing: Option<http::RequestTiming>,
+        from_cache: bool,
         generation: u32,
     },
     /// ES module dependency fetch completed.
@@ -189,6 +193,7 @@ pub(crate) enum FetchResult {
         body: Vec<u8>,
         headers: String,
         timing: Option<http::RequestTiming>,
+        from_cache: bool,
         generation: u32,
     },
 }
@@ -735,7 +740,7 @@ const MAX_CACHE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_CACHEABLE_BODY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CACHEABLE_IMAGE_BODY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_DISK_CACHEABLE_BODY_BYTES: usize = 32 * 1024 * 1024;
-const DISK_CACHE_ROOT: &str = "/tmp/surf/caches";
+const DISK_CACHE_MIN_FREE_BYTES: u64 = 512 * 1024 * 1024;
 const DISK_CACHE_DEFAULT_MAX_AGE_SECS: u32 = 60 * 60;
 /// A cached HTTP response for a sub-resource.
 struct CacheEntry {
@@ -745,6 +750,8 @@ struct CacheEntry {
     body: Vec<u8>,
     /// Response headers.
     headers: String,
+    /// Unix timestamp when the response entered the cache.
+    stored_secs: u32,
 }
 
 /// Shared sub-resource cache for CSS, scripts, images, and fonts.
@@ -764,7 +771,9 @@ impl SubResourceCache {
     fn get(&self, url_key: &str) -> Option<(Vec<u8>, String)> {
         self.entries
             .iter()
-            .find(|e| e.url_key == url_key)
+            .find(|e| {
+                e.url_key == url_key && cache_stored_response_is_fresh(e.stored_secs, &e.headers)
+            })
             .map(|e| (e.body.clone(), e.headers.clone()))
     }
 
@@ -790,6 +799,7 @@ impl SubResourceCache {
             url_key,
             body,
             headers,
+            stored_secs: current_unix_secs(),
         });
     }
 }
@@ -812,6 +822,9 @@ fn cache_get(url_key: &str) -> Option<(Vec<u8>, String)> {
 }
 
 fn cache_put(url_key: String, body: Vec<u8>, headers: String) {
+    if body.is_empty() || !headers_cacheable(&headers) {
+        return;
+    }
     disk_cache_put(&url_key, &body, &headers);
     cache_put_memory_only(url_key, body, headers);
 }
@@ -844,27 +857,33 @@ fn disk_cache_put(url_key: &str, body: &[u8], headers: &str) {
     {
         return;
     }
+    if !disk_cache_has_space_for(body.len()) {
+        return;
+    }
 
     let (body_path, headers_path) = disk_cache_paths(url_key);
-    ensure_disk_cache_dir(url_key);
+    if !ensure_disk_cache_dir(url_key) {
+        return;
+    }
     if anyos_std::fs::write_bytes(&body_path, body).is_err() {
         return;
     }
     let _ = anyos_std::fs::write_bytes(&headers_path, headers.as_bytes());
 }
 
-fn ensure_disk_cache_dir(url_key: &str) {
-    let _ = anyos_std::fs::mkdir("/tmp");
-    let _ = anyos_std::fs::mkdir("/tmp/surf");
-    let _ = anyos_std::fs::mkdir(DISK_CACHE_ROOT);
-    let mut dir = String::from(DISK_CACHE_ROOT);
+fn ensure_disk_cache_dir(url_key: &str) -> bool {
+    let root = disk_cache_root();
+    if !ensure_dir_recursive(&root) {
+        return false;
+    }
+    let mut dir = root;
     dir.push('/');
     append_hex64(&mut dir, hash_str64(url_key));
-    let _ = anyos_std::fs::mkdir(&dir);
+    ensure_dir_recursive(&dir)
 }
 
 fn disk_cache_paths(url_key: &str) -> (String, String) {
-    let mut dir = String::from(DISK_CACHE_ROOT);
+    let mut dir = disk_cache_root();
     dir.push('/');
     append_hex64(&mut dir, hash_str64(url_key));
     dir.push('/');
@@ -880,6 +899,87 @@ fn disk_cache_paths(url_key: &str) -> (String, String) {
     let mut headers = body.clone();
     headers.push_str(".headers");
     (body, headers)
+}
+
+fn disk_cache_root() -> String {
+    let mut home_buf = [0u8; 256];
+    let home_len = anyos_std::env::get("HOME", &mut home_buf);
+    let home = if home_len != u32::MAX && home_len > 0 {
+        String::from(core::str::from_utf8(&home_buf[..home_len as usize]).unwrap_or("/Users/root"))
+    } else {
+        let uid = anyos_std::process::getuid();
+        let mut name_buf = [0u8; 64];
+        let name_len = anyos_std::process::getusername(uid, &mut name_buf);
+        let username = if name_len != u32::MAX && name_len > 0 {
+            core::str::from_utf8(&name_buf[..name_len as usize]).unwrap_or("root")
+        } else {
+            "root"
+        };
+        let mut fallback = String::from("/Users/");
+        fallback.push_str(username);
+        fallback
+    };
+    let mut root = String::from(home.trim_end_matches('/'));
+    root.push_str("/.cache/surf/http");
+    root
+}
+
+fn disk_cache_has_space_for(bytes: usize) -> bool {
+    let mut candidate = disk_cache_root();
+    let needed = (bytes as u64).saturating_add(DISK_CACHE_MIN_FREE_BYTES);
+    loop {
+        if let Some(stats) = anyos_std::fs::statfs(&candidate) {
+            return stats.free_bytes >= needed;
+        }
+        if candidate == "/" {
+            return true;
+        }
+        while candidate.len() > 1 && candidate.ends_with('/') {
+            candidate.pop();
+        }
+        match candidate.rfind('/') {
+            Some(0) | None => {
+                candidate.truncate(1);
+            }
+            Some(idx) => candidate.truncate(idx),
+        }
+    }
+}
+
+fn ensure_dir_recursive(path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    let mut current = String::new();
+    let mut saw_component = false;
+    for part in path.split('/') {
+        if part.is_empty() {
+            if current.is_empty() {
+                current.push('/');
+            }
+            continue;
+        }
+        if current.len() > 1 && !current.ends_with('/') {
+            current.push('/');
+        }
+        current.push_str(part);
+        saw_component = true;
+
+        let mut stat = [0u32; 7];
+        if anyos_std::fs::stat(&current, &mut stat) == 0 {
+            if stat[0] != 1 {
+                return false;
+            }
+            continue;
+        }
+        if anyos_std::fs::mkdir(&current) != 0 {
+            let mut stat_after = [0u32; 7];
+            if anyos_std::fs::stat(&current, &mut stat_after) != 0 || stat_after[0] != 1 {
+                return false;
+            }
+        }
+    }
+    saw_component
 }
 
 fn cache_file_name(url_key: &str) -> String {
@@ -903,18 +1003,21 @@ fn cache_file_name(url_key: &str) -> String {
 }
 
 fn disk_cache_is_fresh(body_path: &str, headers: &str) -> bool {
+    let mut stat = [0u32; 7];
+    if anyos_std::fs::stat(body_path, &mut stat) != 0 {
+        return false;
+    }
+    cache_stored_response_is_fresh(stat[6], headers)
+}
+
+fn cache_stored_response_is_fresh(stored_secs: u32, headers: &str) -> bool {
     let max_age = match cache_max_age_secs(headers) {
         Some(age) => age,
         None if headers_cacheable(headers) => DISK_CACHE_DEFAULT_MAX_AGE_SECS,
         None => return false,
     };
-    let mut stat = [0u32; 7];
-    if anyos_std::fs::stat(body_path, &mut stat) != 0 {
-        return false;
-    }
-    let mtime = stat[6];
     let now = current_unix_secs();
-    now == 0 || mtime == 0 || now <= mtime || now.saturating_sub(mtime) <= max_age
+    now == 0 || stored_secs == 0 || now <= stored_secs || now.saturating_sub(stored_secs) <= max_age
 }
 
 fn headers_cacheable(headers: &str) -> bool {
@@ -1460,6 +1563,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     headers: headers_string,
                     parsed,
                     timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                    from_cache: true,
                     generation,
                 });
                 return;
@@ -1485,6 +1589,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         headers: resp.headers,
                         parsed,
                         timing: Some(resp.timing),
+                        from_cache: false,
                         generation,
                     });
                 }
@@ -1502,6 +1607,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         headers: resp.headers,
                         parsed: None,
                         timing: Some(resp.timing),
+                        from_cache: false,
                         generation,
                     });
                 }
@@ -1515,6 +1621,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         headers: String::new(),
                         parsed: None,
                         timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                        from_cache: false,
                         generation,
                     });
                 }
@@ -1559,6 +1666,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     priority,
                     from_deferred,
                     timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                    from_cache: true,
                     generation,
                 });
                 return;
@@ -1590,6 +1698,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         priority,
                         from_deferred,
                         timing: Some(resp.timing),
+                        from_cache: false,
                         generation,
                     });
                 }
@@ -1612,6 +1721,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         priority,
                         from_deferred,
                         timing: Some(resp.timing),
+                        from_cache: false,
                         generation,
                     });
                 }
@@ -1628,6 +1738,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         priority,
                         from_deferred,
                         timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                        from_cache: false,
                         generation,
                     });
                 }
@@ -1660,6 +1771,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     body,
                     display,
                     timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                    from_cache: true,
                     generation,
                 });
                 return;
@@ -1678,6 +1790,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         body: resp.body,
                         display,
                         timing: Some(resp.timing),
+                        from_cache: false,
                         generation,
                     });
                 }
@@ -1698,6 +1811,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         body: Vec::new(),
                         display,
                         timing: Some(resp.timing),
+                        from_cache: false,
                         generation,
                     });
                 }
@@ -1712,6 +1826,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         body: Vec::new(),
                         display,
                         timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                        from_cache: false,
                         generation,
                     });
                 }
@@ -1740,6 +1855,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     body: body.to_vec(),
                     headers: String::from(headers),
                     timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                    from_cache: true,
                     generation,
                 });
                 return;
@@ -1764,6 +1880,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         body: resp.body,
                         headers: resp.headers,
                         timing: Some(resp.timing),
+                        from_cache: false,
                         generation,
                     });
                 }
@@ -1783,6 +1900,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         body: Vec::new(),
                         headers: resp.headers,
                         timing: Some(resp.timing),
+                        from_cache: false,
                         generation,
                     });
                 }
@@ -1797,6 +1915,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         body: Vec::new(),
                         headers: String::new(),
                         timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                        from_cache: false,
                         generation,
                     });
                 }
@@ -1824,6 +1943,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     body: body.to_vec(),
                     headers: String::from(headers),
                     timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                    from_cache: true,
                     generation,
                 });
                 return;
@@ -1841,6 +1961,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         body: resp.body,
                         headers: resp.headers,
                         timing: Some(resp.timing),
+                        from_cache: false,
                         generation,
                     });
                 }
@@ -1859,6 +1980,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         body: Vec::new(),
                         headers: resp.headers,
                         timing: Some(resp.timing),
+                        from_cache: false,
                         generation,
                     });
                 }
@@ -1875,6 +1997,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         body: Vec::new(),
                         headers: String::new(),
                         timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                        from_cache: false,
                         generation,
                     });
                 }
