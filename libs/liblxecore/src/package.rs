@@ -305,6 +305,8 @@ pub(crate) fn resolve_install_plan(
             return None;
         }
     }
+    println!("lxe apt: Building dependency tree... Done");
+    println!("lxe apt: {} packages in dependency plan", plan.len());
     Some(plan)
 }
 
@@ -317,15 +319,23 @@ pub(crate) fn prefetch_install_plan(
         return true;
     }
 
-    let missing = missing_cached_packages(config, plan);
+    let missing = missing_cached_packages(config, plan, progress);
     if missing.is_empty() {
-        progress.phase("deb prefetch", "all packages already cached");
+        progress.phase("apt fetch", "0 B of archives needed");
+        println!("lxe apt: Need to get 0 B of archives.");
         return true;
     }
 
+    let needed = total_package_size(&missing);
+    progress.phase(
+        "apt fetch",
+        &alloc::format!("{} of archives needed", format_bytes(needed)),
+    );
+    println!("lxe apt: Need to get {} of archives.", format_bytes(needed));
+
     if !path_exists(&config.wget) || config.download_jobs <= 1 || missing.len() == 1 {
         progress.phase(
-            "deb prefetch",
+            "apt fetch",
             &alloc::format!("serial cache fill for {} packages", missing.len()),
         );
         for info in &missing {
@@ -366,10 +376,22 @@ pub(crate) fn install_resolved_plan(
             progress.phase("deb cache", &info.package);
         }
 
-        progress.phase("deb extract", &info.package);
+        println!(
+            "lxe apt: Selecting previously unselected package {}.",
+            info.package
+        );
+        println!(
+            "lxe apt: Preparing to unpack {} ...",
+            deb_basename(&info.filename)
+        );
+        progress.phase("apt unpack", &info.package);
         if !install_deb(config, &deb_path, rootfs, Some(info), progress) {
             return false;
         }
+        println!(
+            "lxe apt: Setting up {} ({}) ...",
+            info.package, info.version
+        );
     }
     true
 }
@@ -498,7 +520,7 @@ struct PackageLookup {
 
 impl PackageLookup {
     fn load(config: &LxeConfig, progress: &mut InstallProgress) -> Option<Self> {
-        progress.phase("apt index parse", "building package lookup");
+        progress.phase("apt", "Reading package lists");
         let packages_txt = config.package_index_txt();
         let index = match fs::read_to_vec(&packages_txt) {
             Ok(data) => data,
@@ -512,7 +534,7 @@ impl PackageLookup {
         };
         let lookup = package_lookup_from_bytes(config, &index);
         println!(
-            "lxe apt: package lookup ready ({} packages, {} virtual names)",
+            "lxe apt: Reading package lists... Done ({} packages, {} virtual names)",
             lookup.packages.len(),
             lookup.providers.len()
         );
@@ -702,9 +724,30 @@ fn plan_contains(plan: &[PackageInfo], pkg: &str) -> bool {
     plan.iter().any(|info| info.package == pkg)
 }
 
-fn missing_cached_packages(config: &LxeConfig, plan: &[PackageInfo]) -> Vec<PackageInfo> {
+fn missing_cached_packages(
+    config: &LxeConfig,
+    plan: &[PackageInfo],
+    progress: &mut InstallProgress,
+) -> Vec<PackageInfo> {
+    progress.phase(
+        "apt cache",
+        &alloc::format!("checking {} package archives", plan.len()),
+    );
+    println!("lxe apt: Checking package cache...");
     let mut missing = Vec::new();
+    let mut checked = 0usize;
+    let mut last_status_ms = sys::uptime_ms();
     for info in plan {
+        checked += 1;
+        let now = sys::uptime_ms();
+        if checked == 1 || checked == plan.len() || now.wrapping_sub(last_status_ms) >= 1500 {
+            println!(
+                "lxe apt: Checking package cache... {}/{}",
+                checked,
+                plan.len()
+            );
+            last_status_ms = now;
+        }
         let deb_path = package_deb_path(config, info);
         if fs::stat(&deb_path, &mut [0u32; 7]) == 0 && verify_package_file(info, &deb_path) {
             continue;
@@ -712,7 +755,30 @@ fn missing_cached_packages(config: &LxeConfig, plan: &[PackageInfo]) -> Vec<Pack
         let _ = fs::unlink(&deb_path);
         missing.push(info.clone());
     }
+    println!(
+        "lxe apt: Checking package cache... Done ({} cached, {} missing)",
+        plan.len().saturating_sub(missing.len()),
+        missing.len()
+    );
     missing
+}
+
+fn total_package_size(packages: &[PackageInfo]) -> usize {
+    packages
+        .iter()
+        .fold(0usize, |total, info| total.saturating_add(info.size))
+}
+
+fn format_bytes(bytes: usize) -> String {
+    if bytes >= 1024 * 1024 {
+        let mib10 = bytes.saturating_mul(10) / (1024 * 1024);
+        return alloc::format!("{}.{} MiB", mib10 / 10, mib10 % 10);
+    }
+    if bytes >= 1024 {
+        let kib10 = bytes.saturating_mul(10) / 1024;
+        return alloc::format!("{}.{} KiB", kib10 / 10, kib10 % 10);
+    }
+    alloc::format!("{} B", bytes)
 }
 
 struct PrefetchJob {
@@ -742,7 +808,7 @@ fn prefetch_packages_with_wget(
         }
     };
     progress.phase(
-        "deb prefetch",
+        "apt fetch",
         &alloc::format!(
             "{} packages with up to {} parallel downloads",
             packages.len(),
@@ -754,6 +820,9 @@ fn prefetch_packages_with_wget(
     let mut next = 0usize;
     let mut done = 0usize;
     let mut failed = false;
+    let mut fetched_bytes = 0usize;
+    let total_bytes = total_package_size(packages);
+    let mut last_status_ms = sys::uptime_ms();
 
     while done < packages.len() {
         while !failed && active.len() < max_jobs && next < packages.len() {
@@ -780,10 +849,17 @@ fn prefetch_packages_with_wget(
 
             let mut job = active.remove(i);
             if finish_prefetch_job(&job, status) {
+                fetched_bytes = fetched_bytes.saturating_add(job.info.size);
                 done += 1;
                 progress.phase(
-                    "deb prefetch",
-                    &alloc::format!("{}/{} cached", done, packages.len()),
+                    "apt fetch",
+                    &alloc::format!(
+                        "{}/{} cached, {} / {}",
+                        done,
+                        packages.len(),
+                        format_bytes(fetched_bytes),
+                        format_bytes(total_bytes)
+                    ),
                 );
                 continue;
             }
@@ -808,6 +884,17 @@ fn prefetch_packages_with_wget(
         if failed {
             break;
         }
+        let now = sys::uptime_ms();
+        if now.wrapping_sub(last_status_ms) >= 2000 {
+            println!(
+                "lxe apt: Fetching archives... {}/{} complete, {} active",
+                done,
+                packages.len(),
+                active.len()
+            );
+            print_active_prefetch_jobs(&active);
+            last_status_ms = now;
+        }
         process::sleep(20);
     }
 
@@ -820,14 +907,29 @@ fn prefetch_packages_with_wget(
     !failed && done == packages.len()
 }
 
+fn print_active_prefetch_jobs(active: &[PrefetchJob]) {
+    let mut printed = 0usize;
+    for job in active {
+        if printed >= 4 {
+            break;
+        }
+        println!("lxe apt:   Get: {} {}", job.info.package, job.info.version);
+        printed += 1;
+    }
+}
+
 fn start_prefetch_job(config: &LxeConfig, info: PackageInfo, attempt: u8) -> Option<PrefetchJob> {
     let dest = package_deb_path(config, &info);
     let temp = alloc::format!("{}.part-{}", dest, attempt);
     let url = alloc::format!("{}/{}", config.apt_base, info.filename);
     let _ = fs::unlink(&temp);
     println!(
-        "lxe apt: prefetch {} {} attempt {}/{}",
-        info.package, info.version, attempt, config.download_attempts
+        "lxe apt: Get: {} {} [{}] (attempt {}/{})",
+        info.package,
+        info.version,
+        format_bytes(info.size),
+        attempt,
+        config.download_attempts
     );
     let args = alloc::format!("wget -q -O {} {}", temp, url);
     let tid = process::spawn(&config.wget, &args);
@@ -895,7 +997,7 @@ fn download_verified_package(
     for attempt in 1..=config.download_attempts {
         let _ = fs::unlink(dest);
         progress.phase(
-            "deb download",
+            "apt fetch",
             &alloc::format!(
                 "{} {} attempt {}/{}",
                 info.package,
@@ -906,8 +1008,12 @@ fn download_verified_package(
         );
         if progress.verbose() {
             println!(
-                "lxe apt: downloading {} {} (attempt {}/{})",
-                info.package, info.version, attempt, config.download_attempts
+                "lxe apt: Get: {} {} [{}] (attempt {}/{})",
+                info.package,
+                info.version,
+                format_bytes(info.size),
+                attempt,
+                config.download_attempts
             );
         }
         progress.finish();
