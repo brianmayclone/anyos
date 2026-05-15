@@ -53,20 +53,21 @@ pub(super) fn linux_read(fd: u32, buf_ptr: u64, len: u64) -> u64 {
     if len > u32::MAX as u64 {
         return linux_err(EINVAL);
     }
-    if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
-        match entry.kind {
-            crate::fs::fd_table::FdKind::LinuxProc {
-                file,
-                pid,
-                position,
-            } => {
-                return linux_read_proc_file(fd, file, pid, position, buf_ptr, len as u32);
-            }
-            crate::fs::fd_table::FdKind::LinuxSocket { .. } => {
-                return socket_read(fd, buf_ptr, len);
-            }
-            _ => {}
+    let Some(entry) = crate::task::scheduler::current_fd_get(fd) else {
+        return linux_err(EBADF);
+    };
+    match entry.kind {
+        crate::fs::fd_table::FdKind::LinuxProc {
+            file,
+            pid,
+            position,
+        } => {
+            return linux_read_proc_file(fd, file, pid, position, buf_ptr, len as u32);
         }
+        crate::fs::fd_table::FdKind::LinuxSocket { .. } => {
+            return socket_read(fd, buf_ptr, len);
+        }
+        _ => {}
     }
     anyos_u32_ret(handlers::sys_read(fd, buf_ptr, len as u32))
 }
@@ -75,10 +76,11 @@ pub(super) fn linux_write(fd: u32, buf_ptr: u64, len: u64) -> u64 {
     if len > u32::MAX as u64 {
         return linux_err(EINVAL);
     }
-    if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
-        if let crate::fs::fd_table::FdKind::LinuxSocket { .. } = entry.kind {
-            return socket_write(fd, buf_ptr, len);
-        }
+    let Some(entry) = crate::task::scheduler::current_fd_get(fd) else {
+        return linux_err(EBADF);
+    };
+    if let crate::fs::fd_table::FdKind::LinuxSocket { .. } = entry.kind {
+        return socket_write(fd, buf_ptr, len);
     }
     anyos_u32_ret(handlers::sys_write(fd, buf_ptr, len as u32))
 }
@@ -608,20 +610,9 @@ fn linux_select_once(
             continue;
         }
 
-        let entry = if fd < 3 {
-            None
-        } else {
-            crate::task::scheduler::current_fd_get(fd as u32)
-        };
         let requested =
             (if want_read { 0x0001 } else { 0 }) | (if want_write { 0x0004 } else { 0 });
-        let revents = if fd < 3 {
-            requested
-        } else if let Some(entry) = entry {
-            linux_fd_poll_revents(entry.kind, requested)
-        } else {
-            0
-        };
+        let revents = linux_fd_poll_revents_for_fd(fd as u32, requested, false);
 
         if want_read && revents & 0x0001 != 0 {
             ready += 1;
@@ -716,13 +707,7 @@ fn linux_poll_once(fds_ptr: u64, nfds: u64) -> u64 {
         let events = unsafe { *((base + 4) as *const i16) };
         let mut revents = 0i16;
         if fd >= 0 {
-            if fd < 3 {
-                revents = events & 0x0005; // POLLIN | POLLOUT
-            } else if let Some(entry) = crate::task::scheduler::current_fd_get(fd as u32) {
-                revents = linux_fd_poll_revents(entry.kind, events);
-            } else {
-                revents = 0x0020; // POLLNVAL
-            }
+            revents = linux_fd_poll_revents_for_fd(fd as u32, events, true);
             if revents != 0 {
                 ready += 1;
             }
@@ -732,6 +717,20 @@ fn linux_poll_once(fds_ptr: u64, nfds: u64) -> u64 {
         }
     }
     ready
+}
+
+fn linux_fd_poll_revents_for_fd(fd: u32, events: i16, report_nval: bool) -> i16 {
+    const POLLNVAL: i16 = 0x0020;
+
+    if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
+        return linux_fd_poll_revents(entry.kind, events);
+    }
+
+    if report_nval {
+        POLLNVAL
+    } else {
+        0
+    }
 }
 
 fn linux_fd_poll_revents(kind: crate::fs::fd_table::FdKind, events: i16) -> i16 {
