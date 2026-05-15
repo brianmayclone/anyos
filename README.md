@@ -378,40 +378,31 @@ rustup install nightly
 </details>
 
 <details>
-<summary><b>Windows</b> (x86_64 via WSL2)</summary>
+<summary><b>Windows</b> (native x86_64, no WSL required)</summary>
 
-Building on Windows requires **WSL2** with an Ubuntu (or Debian) distribution. All build steps run inside the WSL2 shell — no native Windows toolchain needed.
-
-```bash
-# 1. Install WSL2 (if not already installed)
-#    In PowerShell (Admin):
-#    wsl --install -d Ubuntu
-
-# 2. Inside WSL2, install the same prerequisites as Linux:
-sudo apt install nasm qemu-system-x86 cmake ninja-build
-
-# Rust nightly toolchain
-rustup install nightly
-
-# Cross-compiler for libc (run once)
-./scripts/setup_toolchain.sh
-
-# Build everything
-mkdir -p build && cd build
-cmake .. -G Ninja
-ninja
-```
-
-To run in QEMU, install QEMU for Windows and use the PowerShell helper:
+Building on Windows is supported natively through PowerShell. The setup script
+installs Rust nightly, NASM, CMake, Ninja, QEMU, and MSYS2 packages for
+`clang`, `llvm-ar`, GNU `make`, and the Unix utilities used by the C/C++
+sub-builds.
 
 ```powershell
-# From PowerShell (outside WSL):
+# Set up the native Windows toolchain
+powershell -ExecutionPolicy Bypass -File .\scripts\setup_toolchain.ps1
+
+# Build everything
+.\scripts\build.ps1
+```
+
+To run in QEMU, use the PowerShell helper:
+
+```powershell
 .\scripts\run.ps1           # Bochs VGA (default)
 .\scripts\run.ps1 -Vmware   # VMware SVGA II
 .\scripts\run.ps1 -Kvm      # WHPX hardware virtualization
 ```
 
-Or run QEMU directly inside WSL2 (requires an X server like WSLg or VcXsrv).
+The current x86_64 build no longer requires the old `i686-elf-gcc` toolchain.
+For legacy 32-bit libc/TCC work, run setup with `-InstallLegacyI686`.
 
 </details>
 
