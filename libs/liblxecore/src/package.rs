@@ -307,6 +307,7 @@ pub(crate) fn resolve_install_plan(
     }
     println!("lxe apt: Building dependency tree... Done");
     println!("lxe apt: {} packages in dependency plan", plan.len());
+    println!("lxe apt: Checking package cache before download...");
     Some(plan)
 }
 
@@ -319,6 +320,7 @@ pub(crate) fn prefetch_install_plan(
         return true;
     }
 
+    println!("lxe apt: Scanning package cache...");
     let missing = missing_cached_packages(config, plan, progress);
     if missing.is_empty() {
         progress.phase("apt fetch", "0 B of archives needed");
@@ -749,7 +751,7 @@ fn missing_cached_packages(
             last_status_ms = now;
         }
         let deb_path = package_deb_path(config, info);
-        if fs::stat(&deb_path, &mut [0u32; 7]) == 0 && verify_package_file(info, &deb_path) {
+        if cached_package_quick_ok(info, &deb_path) {
             continue;
         }
         let _ = fs::unlink(&deb_path);
@@ -761,6 +763,18 @@ fn missing_cached_packages(
         missing.len()
     );
     missing
+}
+
+fn cached_package_quick_ok(info: &PackageInfo, path: &str) -> bool {
+    let actual_size = file_size(path) as usize;
+    if actual_size == 0 {
+        return false;
+    }
+    if info.size > 0 && actual_size != info.size {
+        return false;
+    }
+    let prefix = read_prefix(path);
+    prefix.starts_with(b"!<arch>\n")
 }
 
 fn total_package_size(packages: &[PackageInfo]) -> usize {
