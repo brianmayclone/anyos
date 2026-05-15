@@ -5,8 +5,7 @@
  * Keep both in sync!
  *
  * Used by libc (32-bit) and libc64 (64-bit) via symlink:
- *   libs/libc/include/sys/syscall.h   -> ../../../include/sys/syscall.h
- *   libs/libc64/include/sys/syscall.h -> ../../../include/sys/syscall.h
+ *   libs/libc64/include/sys/syscall.h -> ../../../../include/sys/syscall.h
  */
 
 #ifndef _SYS_SYSCALL_H

@@ -36,9 +36,7 @@ impl Renderer {
 
         // 1. Invalidate tile cache (layout has changed).
         self.tile_cache.invalidate_all();
-        for tc in self.tile_canvases.drain(..) {
-            ui::Control::from_id(tc.canvas.id()).remove();
-        }
+        self.deactivate_all_tile_canvases();
 
         // 4. Compute visible tile rows.
         let render_y_start = (scroll_y - BUFFER_ZONE).max(0);
@@ -165,9 +163,7 @@ impl Renderer {
         self.last_scroll_y = scroll_y;
 
         self.tile_cache.invalidate_all();
-        for tc in self.tile_canvases.drain(..) {
-            ui::Control::from_id(tc.canvas.id()).remove();
-        }
+        self.deactivate_all_tile_canvases();
 
         let (visible_first_row, visible_last_row) =
             Self::visible_tile_row_range(scroll_y, viewport_h, doc_h);
@@ -246,14 +242,29 @@ impl Renderer {
     ) -> bool {
         let w = doc_w.max(1);
         let clear_color = if bg_color != 0 { bg_color } else { 0xFFFFFFFF };
+        let previous_scroll_y = self.last_scroll_y;
 
         self.doc_w = w;
         self.doc_h = doc_h;
         self.last_scroll_y = scroll_y;
 
-        let buffer_zone = if scrolling { 0 } else { BUFFER_ZONE };
-        let render_y_start = (scroll_y - buffer_zone).max(0);
-        let render_y_end = (scroll_y + viewport_h as i32 + buffer_zone).min(doc_h as i32);
+        let (prefetch_above, prefetch_below) = if scrolling {
+            let delta = scroll_y - previous_scroll_y;
+            let directional = (TILE_HEIGHT as i32 * 2).max(512);
+            let trailing = (TILE_HEIGHT as i32 / 2).max(128);
+            if delta > 0 {
+                (trailing, directional)
+            } else if delta < 0 {
+                (directional, trailing)
+            } else {
+                (TILE_HEIGHT as i32, TILE_HEIGHT as i32)
+            }
+        } else {
+            (BUFFER_ZONE, BUFFER_ZONE)
+        };
+        let render_y_start = (scroll_y - prefetch_above).max(0);
+        let render_y_end =
+            (scroll_y + viewport_h as i32 + prefetch_below).min(doc_h as i32);
         let first_row = render_y_start as u32 / TILE_HEIGHT;
         let last_row = if render_y_end > 0 {
             ((render_y_end - 1) as u32) / TILE_HEIGHT
@@ -262,6 +273,7 @@ impl Renderer {
         };
         let prioritized_rows =
             Self::prioritized_tile_rows(first_row, last_row, scroll_y, viewport_h);
+        let mut pending = false;
 
         if !self.display_list_complete {
             let (band_y_start, band_y_end) = if scrolling {
@@ -278,7 +290,16 @@ impl Renderer {
                 }
                 None => true,
             };
-            if needs_band_expand {
+            let defer_display_list_expand = needs_band_expand && scrolling;
+            if defer_display_list_expand {
+                // Building a visible display list still walks a large part of
+                // the layout tree. Doing that inside a scroll-input frame is
+                // the kind of synchronous work users feel immediately. Keep
+                // attaching cached tiles below, but leave missing tile work
+                // pending for the idle viewport tick.
+                pending = true;
+            }
+            if needs_band_expand && !defer_display_list_expand {
                 crate::debug_surf!(
                     "[render] expanding visible display list for scroll range [{}..{})",
                     band_y_start,
@@ -311,14 +332,29 @@ impl Renderer {
         }
 
         let mut rasterized = 0usize;
-        let mut pending = false;
+        let mut created_canvases = 0usize;
         let max_tiles = if scrolling {
             MAX_TILES_PER_SCROLL_TICK
         } else {
             MAX_TILES_PER_IDLE_TICK
         };
+        let max_canvas_creates = if scrolling {
+            MAX_TILE_CANVAS_CREATES_PER_SCROLL_TICK
+        } else {
+            MAX_TILE_CANVAS_CREATES_PER_IDLE_TICK
+        };
+
+        let keep_first = first_row.saturating_sub(4);
+        let keep_last = (last_row + 4).min(if doc_h > 0 {
+            (doc_h - 1) / TILE_HEIGHT
+        } else {
+            0
+        });
+        self.deactivate_distant_tile_canvases(keep_first, keep_last);
+
         for row in prioritized_rows {
-            if self.tile_canvases.iter().any(|tc| tc.row == row) {
+            if self.tile_canvases.iter().any(|tc| tc.active && tc.row == row) {
+                self.tile_cache.touch(row);
                 continue;
             }
 
@@ -332,11 +368,24 @@ impl Renderer {
                 rasterized += 1;
             }
 
-            self.create_tile_canvas(row, w, doc_h, parent);
+            if created_canvases >= max_canvas_creates {
+                pending = true;
+                continue;
+            }
+            if self.tile_canvases.len() >= MAX_TILE_CANVASES
+                && !self.tile_canvases.iter().any(|tc| !tc.active)
+            {
+                self.deactivate_farthest_active_tile_canvas(scroll_y, viewport_h);
+            }
+            if self.create_tile_canvas(row, w, doc_h, parent) {
+                created_canvases += 1;
+            } else {
+                pending = true;
+            }
         }
 
         // Bring form controls in front of newly added tile canvases.
-        if rasterized > 0 {
+        if created_canvases > 0 {
             for fc in &self.form_controls {
                 if fc.control_id != 0 && fc.seen {
                     ui::Control::from_id(fc.control_id).bring_to_front();
@@ -344,39 +393,10 @@ impl Renderer {
             }
         }
 
-        // Evict distant tile canvases.
-        let keep_first = first_row.saturating_sub(4);
-        let keep_last = (last_row + 4).min(if doc_h > 0 {
-            (doc_h - 1) / TILE_HEIGHT
-        } else {
-            0
-        });
-        self.tile_canvases.retain(|tc| {
-            if tc.row < keep_first || tc.row > keep_last {
-                ui::Control::from_id(tc.canvas.id()).remove();
-                false
-            } else {
-                true
+        while self.active_tile_canvas_count() > MAX_TILE_CANVASES {
+            if !self.deactivate_farthest_active_tile_canvas(scroll_y, viewport_h) {
+                break;
             }
-        });
-
-        while self.tile_canvases.len() > MAX_TILE_CANVASES {
-            let vp_center_row = ((scroll_y + viewport_h as i32 / 2).max(0) as u32) / TILE_HEIGHT;
-            let farthest_idx = self
-                .tile_canvases
-                .iter()
-                .enumerate()
-                .max_by_key(|(_, tc)| {
-                    if tc.row > vp_center_row {
-                        tc.row - vp_center_row
-                    } else {
-                        vp_center_row - tc.row
-                    }
-                })
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-            let tc = self.tile_canvases.swap_remove(farthest_idx);
-            ui::Control::from_id(tc.canvas.id()).remove();
         }
 
         pending

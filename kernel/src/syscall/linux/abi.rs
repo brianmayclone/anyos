@@ -43,6 +43,76 @@ pub(super) fn write_linux_stat(
     }
 }
 
+pub(super) fn write_linux_statx(
+    statx_ptr: u64,
+    dev: u64,
+    ino: u64,
+    anyos_type: u32,
+    size: u64,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    mtime: u32,
+) {
+    const STATX_TYPE: u32 = 0x0001;
+    const STATX_MODE: u32 = 0x0002;
+    const STATX_NLINK: u32 = 0x0004;
+    const STATX_UID: u32 = 0x0008;
+    const STATX_GID: u32 = 0x0010;
+    const STATX_ATIME: u32 = 0x0020;
+    const STATX_MTIME: u32 = 0x0040;
+    const STATX_CTIME: u32 = 0x0080;
+    const STATX_INO: u32 = 0x0100;
+    const STATX_SIZE: u32 = 0x0200;
+    const STATX_BLOCKS: u32 = 0x0400;
+    const STATX_BASIC_STATS: u32 = STATX_TYPE
+        | STATX_MODE
+        | STATX_NLINK
+        | STATX_UID
+        | STATX_GID
+        | STATX_ATIME
+        | STATX_MTIME
+        | STATX_CTIME
+        | STATX_INO
+        | STATX_SIZE
+        | STATX_BLOCKS;
+
+    let file_type_bits = match anyos_type {
+        1 => 0o040000,
+        2 => 0o020000,
+        3 => 0o120000,
+        _ => 0o100000,
+    };
+    let full_mode = file_type_bits | (mode & 0o7777);
+    let blocks = (size + 511) / 512;
+
+    unsafe {
+        core::ptr::write_bytes(statx_ptr as *mut u8, 0, 256);
+        write_u32(statx_ptr, 0, STATX_BASIC_STATS);
+        write_u32(statx_ptr, 4, 4096);
+        write_u64(statx_ptr, 8, 0);
+        write_u32(statx_ptr, 16, 1);
+        write_u32(statx_ptr, 20, uid);
+        write_u32(statx_ptr, 24, gid);
+        write_u16(statx_ptr, 28, full_mode as u16);
+        write_u64(statx_ptr, 32, ino.max(1));
+        write_u64(statx_ptr, 40, size);
+        write_u64(statx_ptr, 48, blocks);
+        write_u64(statx_ptr, 56, 0);
+        write_linux_statx_timestamp(statx_ptr + 64, mtime);
+        write_linux_statx_timestamp(statx_ptr + 96, mtime);
+        write_linux_statx_timestamp(statx_ptr + 112, mtime);
+        write_u32(statx_ptr, 136, (dev >> 32) as u32);
+        write_u32(statx_ptr, 140, dev as u32);
+    }
+}
+
+unsafe fn write_linux_statx_timestamp(ptr: u64, sec: u32) {
+    write_u64(ptr, 0, sec as u64);
+    write_u32(ptr, 8, 0);
+    write_u32(ptr, 12, 0);
+}
+
 pub(super) fn anyos_file_type(file_type: crate::fs::file::FileType) -> u32 {
     match file_type {
         crate::fs::file::FileType::Regular => 0,

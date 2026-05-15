@@ -290,6 +290,35 @@ pub(super) fn linux_write_proc_stat(stat_ptr: u64, file: u16, pid: u32) -> u64 {
     0
 }
 
+pub(super) fn linux_write_proc_statx(statx_ptr: u64, file: u16, pid: u32) -> u64 {
+    let is_dir = linux_proc_is_dir(file);
+    let is_link = file == LINUX_PROC_PID_FD_ENTRY;
+    write_linux_statx(
+        statx_ptr,
+        PROCFS_DEV,
+        proc_inode(file, pid),
+        if is_dir {
+            1
+        } else if is_link {
+            3
+        } else {
+            0
+        },
+        linux_proc_content_len(file, pid),
+        handlers::sys_getuid(),
+        handlers::sys_getgid(),
+        if is_dir {
+            0o555
+        } else if is_link {
+            0o777
+        } else {
+            0o444
+        },
+        0,
+    );
+    0
+}
+
 pub(super) fn linux_getdents64_proc(
     fd: u32,
     file: u16,

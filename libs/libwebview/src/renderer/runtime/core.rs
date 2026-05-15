@@ -98,7 +98,7 @@ impl Renderer {
 
     pub fn tile_hit_coords(&self, ctrl_id: u32) -> Option<(i32, i32)> {
         for tc in &self.tile_canvases {
-            if tc.canvas.id() == ctrl_id {
+            if tc.active && tc.canvas.id() == ctrl_id {
                 let (mx, my, _) = tc.canvas.get_mouse();
                 let doc_y = my + (tc.row * TILE_HEIGHT) as i32;
                 return Some((mx, doc_y));
@@ -114,6 +114,7 @@ impl Renderer {
     pub fn tile_canvas_ids(&self) -> Vec<u32> {
         self.tile_canvases
             .iter()
+            .filter(|tc| tc.active)
             .map(|tc| tc.canvas.id())
             .collect()
     }
@@ -123,9 +124,7 @@ impl Renderer {
         self.hit_regions.clear();
         self.link_map.clear();
         self.tile_cache.invalidate_all();
-        for tc in self.tile_canvases.drain(..) {
-            ui::Control::from_id(tc.canvas.id()).remove();
-        }
+        self.deactivate_all_tile_canvases();
         for fc in &mut self.form_controls {
             fc.seen = false;
         }

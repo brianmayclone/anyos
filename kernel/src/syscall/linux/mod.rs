@@ -46,7 +46,9 @@ const EINTR: i32 = 4;
 const E2BIG: i32 = 7;
 const ENOEXEC: i32 = 8;
 const ECHILD: i32 = 10;
+const EIO: i32 = 5;
 const EBUSY: i32 = 16;
+const EEXIST: i32 = 17;
 const ELOOP: i32 = 40;
 const ENOMSG: i32 = 42;
 const ENODATA: i32 = 61;
@@ -141,6 +143,7 @@ const LINUX_SYS_RENAME: u64 = 82;
 const LINUX_SYS_MKDIR: u64 = 83;
 const LINUX_SYS_RMDIR: u64 = 84;
 const LINUX_SYS_CREAT: u64 = 85;
+const LINUX_SYS_LINK: u64 = 86;
 const LINUX_SYS_UNLINK: u64 = 87;
 const LINUX_SYS_SYMLINK: u64 = 88;
 const LINUX_SYS_READLINK: u64 = 89;
@@ -181,8 +184,11 @@ const LINUX_SYS_CAPGET: u64 = 125;
 const LINUX_SYS_CAPSET: u64 = 126;
 const LINUX_SYS_RT_SIGSUSPEND: u64 = 130;
 const LINUX_SYS_SIGALTSTACK: u64 = 131;
+const LINUX_SYS_UTIME: u64 = 132;
 const LINUX_SYS_STATFS: u64 = 137;
 const LINUX_SYS_FSTATFS: u64 = 138;
+const LINUX_SYS_GETPRIORITY: u64 = 140;
+const LINUX_SYS_SETPRIORITY: u64 = 141;
 const LINUX_SYS_PRCTL: u64 = 157;
 const LINUX_SYS_ARCH_PRCTL: u64 = 158;
 const LINUX_SYS_SETRLIMIT: u64 = 160;
@@ -207,15 +213,19 @@ const LINUX_SYS_SET_TID_ADDRESS: u64 = 218;
 const LINUX_SYS_FADVISE64: u64 = 221;
 const LINUX_SYS_GETDENTS64: u64 = 217;
 const LINUX_SYS_CLOCK_GETTIME: u64 = 228;
+const LINUX_SYS_CLOCK_GETRES: u64 = 229;
 const LINUX_SYS_CLOCK_NANOSLEEP: u64 = 230;
 const LINUX_SYS_EXIT_GROUP: u64 = 231;
 const LINUX_SYS_TGKILL: u64 = 234;
+const LINUX_SYS_UTIMES: u64 = 235;
 const LINUX_SYS_OPENAT: u64 = 257;
 const LINUX_SYS_MKDIRAT: u64 = 258;
 const LINUX_SYS_FCHOWNAT: u64 = 260;
+const LINUX_SYS_FUTIMESAT: u64 = 261;
 const LINUX_SYS_NEWFSTATAT: u64 = 262;
 const LINUX_SYS_UNLINKAT: u64 = 263;
 const LINUX_SYS_RENAMEAT: u64 = 264;
+const LINUX_SYS_LINKAT: u64 = 265;
 const LINUX_SYS_SYMLINKAT: u64 = 266;
 const LINUX_SYS_READLINKAT: u64 = 267;
 const LINUX_SYS_FCHMODAT: u64 = 268;
@@ -230,6 +240,7 @@ const LINUX_SYS_SENDMMSG: u64 = 307;
 const LINUX_SYS_RENAMEAT2: u64 = 316;
 const LINUX_SYS_GETRANDOM: u64 = 318;
 const LINUX_SYS_COPY_FILE_RANGE: u64 = 326;
+const LINUX_SYS_STATX: u64 = 332;
 const LINUX_SYS_RSEQ: u64 = 334;
 const LINUX_SYS_FACCESSAT2: u64 = 439;
 
@@ -385,6 +396,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_MKDIR => linux_mkdir(a1, a2),
         LINUX_SYS_RMDIR => linux_unlink_path(a1),
         LINUX_SYS_CREAT => linux_creat(a1),
+        LINUX_SYS_LINK => linux_link(a1, a2),
         LINUX_SYS_UNLINK => linux_unlink_path(a1),
         LINUX_SYS_SYMLINK => linux_symlink(a1, a2),
         LINUX_SYS_READLINK => linux_readlink(a1, a2, a3),
@@ -446,8 +458,11 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_CAPSET => linux_capset(a1, a2),
         LINUX_SYS_RT_SIGSUSPEND => linux_rt_sigsuspend(a1, a2),
         LINUX_SYS_SIGALTSTACK => linux_sigaltstack(a1, a2),
+        LINUX_SYS_UTIME => linux_utime(a1, a2),
         LINUX_SYS_STATFS => linux_statfs(a1, a2),
         LINUX_SYS_FSTATFS => linux_fstatfs(a1 as u32, a2),
+        LINUX_SYS_GETPRIORITY => linux_getpriority(a1, linux_i32_arg(a2)),
+        LINUX_SYS_SETPRIORITY => linux_setpriority(a1, linux_i32_arg(a2), linux_i32_arg(a3)),
         LINUX_SYS_PRCTL => linux_prctl(a1, a2),
         LINUX_SYS_SETRLIMIT => linux_setrlimit(a1, a2),
         LINUX_SYS_GETTID => crate::task::scheduler::current_tid() as u64,
@@ -460,23 +475,27 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_SET_TID_ADDRESS => linux_set_tid_address(a1),
         LINUX_SYS_FADVISE64 => 0,
         LINUX_SYS_CLOCK_GETTIME => linux_clock_gettime(a1, a2),
+        LINUX_SYS_CLOCK_GETRES => linux_clock_getres(a1, a2),
         LINUX_SYS_CLOCK_NANOSLEEP => linux_clock_nanosleep(a1, a2, a3, a4),
         LINUX_SYS_EXIT | LINUX_SYS_EXIT_GROUP => handlers::sys_exit(a1 as u32) as u64,
         LINUX_SYS_TGKILL => linux_tgkill(linux_i32_arg(a1), linux_i32_arg(a2), a3),
+        LINUX_SYS_UTIMES => linux_futimesat(LINUX_AT_FDCWD, a1, a2),
         LINUX_SYS_MKDIRAT => linux_mkdirat(linux_i32_arg(a1), a2, a3),
         LINUX_SYS_FCHOWNAT => {
             linux_fchownat(linux_i32_arg(a1), a2, linux_u32_arg(a3), linux_u32_arg(a4))
         }
+        LINUX_SYS_FUTIMESAT => linux_futimesat(linux_i32_arg(a1), a2, a3),
         LINUX_SYS_NEWFSTATAT => linux_newfstatat(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_UNLINKAT => linux_unlinkat(linux_i32_arg(a1), a2, a3),
         LINUX_SYS_RENAMEAT => linux_renameat(linux_i32_arg(a1), a2, linux_i32_arg(a3), a4),
+        LINUX_SYS_LINKAT => linux_linkat(linux_i32_arg(a1), a2, linux_i32_arg(a3), a4, a5),
         LINUX_SYS_SYMLINKAT => linux_symlinkat(a1, linux_i32_arg(a2), a3),
         LINUX_SYS_READLINKAT => linux_readlinkat(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_FCHMODAT => linux_fchmodat(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_FACCESSAT => linux_faccessat(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_FACCESSAT2 => linux_faccessat2(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_SET_ROBUST_LIST => 0,
-        LINUX_SYS_UTIMENSAT => 0,
+        LINUX_SYS_UTIMENSAT => linux_utimensat(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_PRLIMIT64 => linux_prlimit64(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_RENAMEAT2 => {
             if a5 == 0 {
@@ -487,6 +506,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         }
         LINUX_SYS_GETRANDOM => linux_getrandom(a1, a2),
         LINUX_SYS_COPY_FILE_RANGE => linux_copy_file_range(a1 as u32, a2, a3 as u32, a4, a5, a6),
+        LINUX_SYS_STATX => linux_statx(linux_i32_arg(a1), a2, a3, a4, a5),
         LINUX_SYS_RSEQ => linux_err(ENOSYS),
         _ => linux_unsupported_syscall(regs, a1, a2, a3, a4, a5, a6),
     }
@@ -531,6 +551,7 @@ pub(crate) fn syscall_name(num: u32) -> &'static str {
         LINUX_SYS_SENDMSG => "sendmsg",
         LINUX_SYS_RECVMSG => "recvmsg",
         LINUX_SYS_CLONE => "clone",
+        LINUX_SYS_LINK => "link",
         LINUX_SYS_FORK => "fork",
         LINUX_SYS_VFORK => "vfork",
         LINUX_SYS_EXECVE => "execve",
@@ -553,6 +574,8 @@ pub(crate) fn syscall_name(num: u32) -> &'static str {
         LINUX_SYS_SETGROUPS => "setgroups",
         LINUX_SYS_SETRESUID => "setresuid",
         LINUX_SYS_SETRESGID => "setresgid",
+        LINUX_SYS_GETPRIORITY => "getpriority",
+        LINUX_SYS_SETPRIORITY => "setpriority",
         LINUX_SYS_GETPPID => "getppid",
         LINUX_SYS_ARCH_PRCTL => "arch_prctl",
         LINUX_SYS_GETTID => "gettid",
@@ -561,13 +584,18 @@ pub(crate) fn syscall_name(num: u32) -> &'static str {
         LINUX_SYS_SCHED_GETAFFINITY => "sched_getaffinity",
         LINUX_SYS_GETDENTS64 => "getdents64",
         LINUX_SYS_CLOCK_GETTIME => "clock_gettime",
+        LINUX_SYS_CLOCK_GETRES => "clock_getres",
         LINUX_SYS_EXIT_GROUP => "exit_group",
+        LINUX_SYS_UTIMES => "utimes",
         LINUX_SYS_OPENAT => "openat",
+        LINUX_SYS_FUTIMESAT => "futimesat",
         LINUX_SYS_NEWFSTATAT => "newfstatat",
+        LINUX_SYS_LINKAT => "linkat",
         LINUX_SYS_PSELECT6 => "pselect6",
         LINUX_SYS_DUP3 => "dup3",
         LINUX_SYS_PIPE2 => "pipe2",
         LINUX_SYS_GETRANDOM => "getrandom",
+        LINUX_SYS_STATX => "statx",
         _ => "unknown-linux",
     }
 }

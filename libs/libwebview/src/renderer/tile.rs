@@ -8,10 +8,12 @@ use libanyui_client as ui;
 
 pub(super) const TILE_HEIGHT: u32 = 256;
 const MAX_CACHED_TILES: usize = 160;
-pub(super) const BUFFER_ZONE: i32 = 768;
+pub(super) const BUFFER_ZONE: i32 = 1536;
 pub(super) const MAX_TILE_CANVASES: usize = 48;
-pub(super) const MAX_TILES_PER_SCROLL_TICK: usize = 1;
-pub(super) const MAX_TILES_PER_IDLE_TICK: usize = 8;
+pub(super) const MAX_TILE_CANVAS_CREATES_PER_IDLE_TICK: usize = 8;
+pub(super) const MAX_TILE_CANVAS_CREATES_PER_SCROLL_TICK: usize = 1;
+pub(super) const MAX_TILES_PER_IDLE_TICK: usize = 12;
+pub(super) const MAX_TILES_PER_SCROLL_TICK: usize = 0;
 pub(super) const INITIAL_VISIBLE_EXTRA_ROWS: u32 = 1;
 
 struct CachedTile {
@@ -41,6 +43,22 @@ impl TileCache {
             .iter()
             .find(|t| t.row == row)
             .map(|t| t.pixels.as_slice())
+    }
+
+    pub(super) fn touch(&mut self, row: u32) {
+        if let Some(tile) = self.tiles.iter_mut().find(|t| t.row == row) {
+            self.generation += 1;
+            tile.generation = self.generation;
+        }
+    }
+
+    pub(super) fn invalidate_row(&mut self, row: u32) {
+        if let Some(idx) = self.tiles.iter().position(|t| t.row == row) {
+            let tile = self.tiles.swap_remove(idx);
+            if self.free_bufs.len() < 32 {
+                self.free_bufs.push(tile.pixels);
+            }
+        }
     }
 
     pub(super) fn insert(&mut self, row: u32, pixels: Vec<u32>) {
@@ -110,4 +128,7 @@ impl TileCache {
 pub(super) struct TileCanvas {
     pub(super) row: u32,
     pub(super) canvas: ui::Canvas,
+    pub(super) active: bool,
+    pub(super) w: u32,
+    pub(super) h: u32,
 }

@@ -240,10 +240,14 @@ pub(super) fn linux_stat_translated(path: &str, stat_ptr: u64, nofollow: bool) -
     };
     match ret {
         Ok(st) => {
-            let type_val = match st.file_type {
-                crate::fs::file::FileType::Directory => 1,
-                crate::fs::file::FileType::Device => 2,
-                _ => 0,
+            let type_val = if st.is_symlink {
+                3
+            } else {
+                match st.file_type {
+                    crate::fs::file::FileType::Directory => 1,
+                    crate::fs::file::FileType::Device => 2,
+                    _ => 0,
+                }
             };
             let uid = if st.uid == 0 {
                 handlers::sys_getuid()
@@ -311,6 +315,154 @@ pub(super) fn linux_fstat(fd: u32, stat_ptr: u64) -> u64 {
             0
         }
         None => linux_err(EBADF),
+    }
+}
+
+pub(super) fn linux_statx(
+    dirfd: i32,
+    path_ptr: u64,
+    flags: u64,
+    _mask: u64,
+    statx_ptr: u64,
+) -> u64 {
+    const AT_NO_AUTOMOUNT: u64 = 0x800;
+    const AT_STATX_SYNC_TYPE: u64 = 0x6000;
+    const ALLOWED_FLAGS: u64 =
+        LINUX_AT_SYMLINK_NOFOLLOW | LINUX_AT_EMPTY_PATH | AT_NO_AUTOMOUNT | AT_STATX_SYNC_TYPE;
+
+    if statx_ptr == 0 || !super::handlers::helpers::is_user_range_accessible(statx_ptr, 256) {
+        return linux_err(EFAULT);
+    }
+    if (flags & !ALLOWED_FLAGS) != 0 {
+        return linux_err(EINVAL);
+    }
+
+    let raw_path = if path_ptr == 0 {
+        ""
+    } else {
+        match super::handlers::helpers::read_user_str_safe(path_ptr) {
+            Some(path) => path,
+            None => return linux_err(EFAULT),
+        }
+    };
+
+    if raw_path.is_empty() {
+        if (flags & LINUX_AT_EMPTY_PATH) == 0 {
+            return linux_err(ENOENT);
+        }
+        if dirfd == LINUX_AT_FDCWD {
+            return linux_err(ENOENT);
+        }
+        return linux_fstatx(dirfd as u32, statx_ptr);
+    }
+
+    if raw_path.starts_with('/') || dirfd == LINUX_AT_FDCWD {
+        let abs = linux_absolute_path(&raw_path);
+        if let Some((file, pid)) = linux_proc_node(&abs) {
+            return linux_write_proc_statx(statx_ptr, file, pid);
+        }
+    } else if let Some(result) = linux_proc_at_path(dirfd, &raw_path) {
+        match result {
+            Ok(abs) => {
+                if let Some((file, pid)) = linux_proc_node(&abs) {
+                    return linux_write_proc_statx(statx_ptr, file, pid);
+                }
+                return linux_err(ENOENT);
+            }
+            Err(errno) => return linux_err(errno),
+        }
+    }
+
+    let path = match linux_translate_at_path(dirfd, path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    linux_statx_translated(&path, statx_ptr, (flags & LINUX_AT_SYMLINK_NOFOLLOW) != 0)
+}
+
+fn linux_fstatx(fd: u32, statx_ptr: u64) -> u64 {
+    use crate::fs::fd_table::FdKind;
+    match crate::task::scheduler::current_fd_get(fd) {
+        Some(entry) => match entry.kind {
+            FdKind::File { global_id } => match crate::fs::vfs::fstat(global_id) {
+                Ok((file_type, size, _position, mtime)) => {
+                    let (dev, ino) = linux_fd_identity(global_id);
+                    write_linux_statx(
+                        statx_ptr,
+                        dev,
+                        ino,
+                        anyos_file_type(file_type),
+                        size as u64,
+                        handlers::sys_getuid(),
+                        handlers::sys_getgid(),
+                        0o777,
+                        mtime,
+                    );
+                    0
+                }
+                Err(_) => linux_err(EBADF),
+            },
+            FdKind::PipeRead { .. }
+            | FdKind::PipeWrite { .. }
+            | FdKind::Tty
+            | FdKind::PtySlave { .. }
+            | FdKind::LinuxSocket { .. } => {
+                write_linux_statx(statx_ptr, 0, 2, 2, 0, 0, 0, 0o666, 0);
+                0
+            }
+            FdKind::LinuxProc { file, pid, .. } => linux_write_proc_statx(statx_ptr, file, pid),
+            FdKind::None => linux_err(EBADF),
+        },
+        None if fd < 3 => {
+            write_linux_statx(statx_ptr, 0, 2, 2, 0, 0, 0, 0o666, 0);
+            0
+        }
+        None => linux_err(EBADF),
+    }
+}
+
+fn linux_statx_translated(path: &str, statx_ptr: u64, nofollow: bool) -> u64 {
+    let path = match linux_resolve_translated_path(path, !nofollow, false) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    let ret = if nofollow {
+        crate::fs::vfs::lstat(&path)
+    } else {
+        crate::fs::vfs::stat(&path)
+    };
+    match ret {
+        Ok(st) => {
+            let type_val = if st.is_symlink {
+                3
+            } else {
+                match st.file_type {
+                    crate::fs::file::FileType::Directory => 1,
+                    crate::fs::file::FileType::Device => 2,
+                    _ => 0,
+                }
+            };
+            let uid = if st.uid == 0 {
+                handlers::sys_getuid()
+            } else {
+                st.uid as u32
+            };
+            let (dev, ino) = linux_stat_identity(&path);
+            write_linux_statx(
+                statx_ptr,
+                dev,
+                ino,
+                type_val,
+                st.size as u64,
+                uid,
+                st.gid as u32,
+                st.mode as u32,
+                st.mtime,
+            );
+            0
+        }
+        Err(crate::fs::vfs::FsError::NotFound) => linux_err(ENOENT),
+        Err(e) => linux_fs_err(e),
     }
 }
 
@@ -477,6 +629,143 @@ pub(super) fn linux_renameat(old_dirfd: i32, old_ptr: u64, new_dirfd: i32, new_p
         Ok(()) => 0,
         Err(e) => linux_fs_err(e),
     }
+}
+
+pub(super) fn linux_link(old_ptr: u64, new_ptr: u64) -> u64 {
+    let old_path = match linux_translate_user_path(old_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    let new_path = match linux_translate_user_path(new_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    linux_link_translated(&old_path, &new_path, false)
+}
+
+pub(super) fn linux_linkat(
+    old_dirfd: i32,
+    old_ptr: u64,
+    new_dirfd: i32,
+    new_ptr: u64,
+    flags: u64,
+) -> u64 {
+    const AT_SYMLINK_FOLLOW: u64 = 0x400;
+    if (flags & !AT_SYMLINK_FOLLOW) != 0 {
+        return linux_err(EINVAL);
+    }
+    let old_path = match linux_translate_at_path(old_dirfd, old_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    let new_path = match linux_translate_at_path(new_dirfd, new_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    linux_link_translated(&old_path, &new_path, (flags & AT_SYMLINK_FOLLOW) == 0)
+}
+
+fn linux_link_translated(old_path: &str, new_path: &str, nofollow: bool) -> u64 {
+    let old_resolved = match linux_resolve_translated_path(old_path, !nofollow, false) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    let new_resolved = match linux_resolve_translated_path(new_path, true, true) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    if crate::fs::vfs::stat(&new_resolved).is_ok() || crate::fs::vfs::lstat(&new_resolved).is_ok() {
+        return linux_err(EEXIST);
+    }
+
+    let st = match if nofollow {
+        crate::fs::vfs::lstat(&old_resolved)
+    } else {
+        crate::fs::vfs::stat(&old_resolved)
+    } {
+        Ok(st) => st,
+        Err(e) => return linux_fs_err(e),
+    };
+    if st.file_type == crate::fs::file::FileType::Directory {
+        return linux_err(EPERM);
+    }
+    if st.is_symlink {
+        let target = match crate::fs::vfs::readlink(&old_resolved) {
+            Ok(target) => target,
+            Err(e) => return linux_fs_err(e),
+        };
+        return match crate::fs::vfs::create_symlink(&new_resolved, &target) {
+            Ok(()) => 0,
+            Err(e) => linux_fs_err(e),
+        };
+    }
+
+    linux_copy_regular_file(&old_resolved, &new_resolved, st.mode, st.uid, st.gid)
+}
+
+fn linux_copy_regular_file(old_path: &str, new_path: &str, mode: u16, uid: u16, gid: u16) -> u64 {
+    let read_flags = crate::fs::file::FileFlags {
+        read: true,
+        write: false,
+        append: false,
+        create: false,
+        truncate: false,
+        sync: false,
+    };
+    let write_flags = crate::fs::file::FileFlags {
+        read: false,
+        write: true,
+        append: false,
+        create: true,
+        truncate: true,
+        sync: false,
+    };
+    let src = match crate::fs::vfs::open(old_path, read_flags) {
+        Ok(fd) => fd,
+        Err(e) => return linux_fs_err(e),
+    };
+    let dst = match crate::fs::vfs::open(new_path, write_flags) {
+        Ok(fd) => fd,
+        Err(e) => {
+            let _ = crate::fs::vfs::close(src);
+            return linux_fs_err(e);
+        }
+    };
+
+    let mut buf = [0u8; 4096];
+    let mut result = 0;
+    loop {
+        let n = match crate::fs::vfs::read(src, &mut buf) {
+            Ok(n) => n,
+            Err(e) => {
+                result = linux_fs_err(e);
+                break;
+            }
+        };
+        if n == 0 {
+            break;
+        }
+        match crate::fs::vfs::write(dst, &buf[..n]) {
+            Ok(written) if written == n => {}
+            Ok(_) => {
+                result = linux_err(EIO);
+                break;
+            }
+            Err(e) => {
+                result = linux_fs_err(e);
+                break;
+            }
+        }
+    }
+    let _ = crate::fs::vfs::close(src);
+    let _ = crate::fs::vfs::close(dst);
+    if result == 0 {
+        let _ = crate::fs::vfs::set_mode(new_path, mode);
+        let _ = crate::fs::vfs::set_owner(new_path, uid, gid);
+    } else {
+        let _ = crate::fs::vfs::delete(new_path);
+    }
+    result
 }
 
 pub(super) fn linux_symlink(target_ptr: u64, link_path_ptr: u64) -> u64 {
@@ -702,6 +991,83 @@ pub(super) fn linux_faccessat(dirfd: i32, path_ptr: u64, mode: u64, flags: u64) 
 
 pub(super) fn linux_faccessat2(dirfd: i32, path_ptr: u64, mode: u64, flags: u64) -> u64 {
     linux_faccessat_impl(dirfd, path_ptr, mode, flags)
+}
+
+pub(super) fn linux_utime(path_ptr: u64, times_ptr: u64) -> u64 {
+    if times_ptr != 0 && !super::handlers::helpers::is_user_range_accessible(times_ptr, 16) {
+        return linux_err(EFAULT);
+    }
+    let path = match linux_translate_user_path(path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    match crate::fs::vfs::stat(&path) {
+        Ok(_) => 0,
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+pub(super) fn linux_futimesat(dirfd: i32, path_ptr: u64, times_ptr: u64) -> u64 {
+    if times_ptr != 0 {
+        if !super::handlers::helpers::is_user_range_accessible(times_ptr, 32) {
+            return linux_err(EFAULT);
+        }
+        for idx in 0..2 {
+            let base = times_ptr + idx * 16;
+            let sec = unsafe { read_u64(base, 0) as i64 };
+            let usec = unsafe { read_u64(base, 8) as i64 };
+            if sec < 0 || !(0..1_000_000).contains(&usec) {
+                return linux_err(EINVAL);
+            }
+        }
+    }
+    let path = match linux_translate_at_path(dirfd, path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    match crate::fs::vfs::stat(&path) {
+        Ok(_) => 0,
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+pub(super) fn linux_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u64) -> u64 {
+    const AT_SYMLINK_NOFOLLOW: u64 = LINUX_AT_SYMLINK_NOFOLLOW;
+    const UTIME_NOW: i64 = 1_073_741_823;
+    const UTIME_OMIT: i64 = 1_073_741_822;
+
+    if (flags & !AT_SYMLINK_NOFOLLOW) != 0 {
+        return linux_err(EINVAL);
+    }
+    if times_ptr != 0 {
+        if !super::handlers::helpers::is_user_range_accessible(times_ptr, 32) {
+            return linux_err(EFAULT);
+        }
+        for idx in 0..2 {
+            let base = times_ptr + idx * 16;
+            let sec = unsafe { read_u64(base, 0) as i64 };
+            let nsec = unsafe { read_u64(base, 8) as i64 };
+            if sec < 0 && nsec != UTIME_NOW && nsec != UTIME_OMIT {
+                return linux_err(EINVAL);
+            }
+            if !(0..1_000_000_000).contains(&nsec) && nsec != UTIME_NOW && nsec != UTIME_OMIT {
+                return linux_err(EINVAL);
+            }
+        }
+    }
+    let path = match linux_translate_at_path(dirfd, path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    let ret = if (flags & AT_SYMLINK_NOFOLLOW) != 0 {
+        crate::fs::vfs::lstat(&path)
+    } else {
+        crate::fs::vfs::stat(&path)
+    };
+    match ret {
+        Ok(_) => 0,
+        Err(e) => linux_fs_err(e),
+    }
 }
 
 fn linux_faccessat_impl(dirfd: i32, path_ptr: u64, mode: u64, flags: u64) -> u64 {

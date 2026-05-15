@@ -107,6 +107,8 @@ const PAGE_USER: u64 = 1 << 2;
 /// Page table entry flag: Page-level Write-Through.
 /// With PAT1 reprogrammed to WC, PWT=1 selects Write-Combining.
 const PAGE_PWT: u64 = 1 << 3;
+/// Page directory/table flag: leaf entry maps a huge page.
+const PAGE_HUGE: u64 = 1 << 7;
 
 /// OS-available PTE bit 9: VRAM page — do NOT free_frame on process exit.
 /// Used for pages mapped from the GPU's framebuffer into user processes.
@@ -150,6 +152,10 @@ const ENTRIES_PER_TABLE: usize = 512;
 
 /// Mask to extract the physical address from a page table entry (bits 12..51).
 const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+/// Mask to extract the physical base from a 2 MiB PDE leaf.
+const ADDR_MASK_2M: u64 = 0x000F_FFFF_FFE0_0000;
+/// Mask to extract the physical base from a 1 GiB PDPTE leaf.
+const ADDR_MASK_1G: u64 = 0x000F_FFFF_C000_0000;
 
 /// Kernel higher-half virtual base (must match link.ld).
 const KERNEL_VIRT_BASE: u64 = 0xFFFF_FFFF_8000_0000;
@@ -763,11 +769,17 @@ pub fn is_page_mapped(virt: VirtAddr) -> bool {
         if pdpte & PAGE_PRESENT == 0 {
             return false;
         }
+        if pdpte & PAGE_HUGE != 0 {
+            return true;
+        }
 
         let pd_ptr = recursive_pd_base(virt) as *const u64;
         let pde = pd_ptr.add(pdi).read_volatile();
         if pde & PAGE_PRESENT == 0 {
             return false;
+        }
+        if pde & PAGE_HUGE != 0 {
+            return true;
         }
 
         let pt_ptr = recursive_pt_base(virt) as *const u64;
@@ -790,12 +802,20 @@ pub fn read_pte(virt: VirtAddr) -> u64 {
             return 0;
         }
         let pdpt_ptr = recursive_pdpt_base(virt) as *const u64;
-        if pdpt_ptr.add(pdpti).read_volatile() & PAGE_PRESENT == 0 {
+        let pdpte = pdpt_ptr.add(pdpti).read_volatile();
+        if pdpte & PAGE_PRESENT == 0 {
             return 0;
         }
+        if pdpte & PAGE_HUGE != 0 {
+            return pdpte;
+        }
         let pd_ptr = recursive_pd_base(virt) as *const u64;
-        if pd_ptr.add(pdi).read_volatile() & PAGE_PRESENT == 0 {
+        let pde = pd_ptr.add(pdi).read_volatile();
+        if pde & PAGE_PRESENT == 0 {
             return 0;
+        }
+        if pde & PAGE_HUGE != 0 {
+            return pde;
         }
         let pt_ptr = recursive_pt_base(virt) as *const u64;
         pt_ptr.add(pti).read_volatile()
@@ -810,11 +830,43 @@ pub fn read_pte(virt: VirtAddr) -> u64 {
 ///
 /// The page offset is preserved: `phys = (pte & ADDR_MASK) | (virt & 0xFFF)`.
 pub fn virt_to_phys(virt: VirtAddr) -> Option<u64> {
-    let pte = read_pte(virt);
-    if pte & PAGE_PRESENT == 0 {
-        return None;
+    let pml4i = virt.pml4_index();
+    let pdpti = virt.pdpt_index();
+    let pdi = virt.pd_index();
+    let pti = virt.pt_index();
+    let v = virt.as_u64();
+
+    unsafe {
+        let pml4_ptr = RECURSIVE_PML4_BASE as *const u64;
+        if pml4_ptr.add(pml4i).read_volatile() & PAGE_PRESENT == 0 {
+            return None;
+        }
+
+        let pdpt_ptr = recursive_pdpt_base(virt) as *const u64;
+        let pdpte = pdpt_ptr.add(pdpti).read_volatile();
+        if pdpte & PAGE_PRESENT == 0 {
+            return None;
+        }
+        if pdpte & PAGE_HUGE != 0 {
+            return Some((pdpte & ADDR_MASK_1G) | (v & 0x3FFF_FFFF));
+        }
+
+        let pd_ptr = recursive_pd_base(virt) as *const u64;
+        let pde = pd_ptr.add(pdi).read_volatile();
+        if pde & PAGE_PRESENT == 0 {
+            return None;
+        }
+        if pde & PAGE_HUGE != 0 {
+            return Some((pde & ADDR_MASK_2M) | (v & 0x1F_FFFF));
+        }
+
+        let pt_ptr = recursive_pt_base(virt) as *const u64;
+        let pte = pt_ptr.add(pti).read_volatile();
+        if pte & PAGE_PRESENT == 0 {
+            return None;
+        }
+        Some((pte & ADDR_MASK) | (v & 0xFFF))
     }
-    Some((pte & ADDR_MASK) | (virt.as_u64() & 0xFFF))
 }
 
 /// Mark a kernel heap page as a guard page (not-present, access causes #PF).

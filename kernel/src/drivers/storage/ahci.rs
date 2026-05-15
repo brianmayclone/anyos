@@ -64,6 +64,9 @@ const AHCI_POLL_YIELD_EVERY: usize = 256;
 
 const MAX_PRDT: usize = 128;
 const PRDT_MAX_BYTES: u32 = 4 * 1024 * 1024;
+const LEGACY_LOW_DMA_CUTOFF: u64 = 0x20_0000;
+const VGA_LOWMEM_START: u64 = 0x0A_0000;
+const VGA_LOWMEM_END: u64 = 0x0C_0000;
 
 // ── HBA Data Structures (all DMA-accessible) ────────
 
@@ -94,6 +97,21 @@ struct PrdtSpec {
 }
 
 const EMPTY_PRDT_SPEC: PrdtSpec = PrdtSpec { phys: 0, len: 0 };
+
+fn direct_dma_target_ok(phys: u64, len: usize) -> bool {
+    let end = match phys.checked_add(len as u64) {
+        Some(end) => end,
+        None => return false,
+    };
+    if phys < LEGACY_LOW_DMA_CUTOFF {
+        return false;
+    }
+    if phys < VGA_LOWMEM_END && end > VGA_LOWMEM_START {
+        return false;
+    }
+    let physmap_limit = physmap::limit();
+    physmap_limit == 0 || end <= physmap_limit
+}
 
 /// Command Table (128-byte header + PRDT entries).
 #[repr(C)]
@@ -264,6 +282,9 @@ fn build_prdt_from_virt(
         let phys = virtual_mem::virt_to_phys(VirtAddr::new(virt as u64))?;
         let page_left = 4096 - (virt & 0xFFF);
         let chunk = page_left.min(len - done).min(PRDT_MAX_BYTES as usize);
+        if !direct_dma_target_ok(phys, chunk) {
+            return None;
+        }
 
         if used > 0 {
             let prev = &mut out[used - 1];

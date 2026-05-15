@@ -548,6 +548,43 @@ pub(super) fn linux_sched_setaffinity(pid: i32, cpusetsize: u64, mask_ptr: u64) 
     0
 }
 
+pub(super) fn linux_getpriority(which: u64, who: i32) -> u64 {
+    const PRIO_PROCESS: u64 = 0;
+    const PRIO_PGRP: u64 = 1;
+    const PRIO_USER: u64 = 2;
+
+    match which {
+        PRIO_PROCESS => {
+            if who > 0 && !crate::task::scheduler::thread_exists(who as u32) {
+                return linux_err(ESRCH);
+            }
+        }
+        PRIO_PGRP | PRIO_USER => {}
+        _ => return linux_err(EINVAL),
+    }
+    0
+}
+
+pub(super) fn linux_setpriority(which: u64, who: i32, prio: i32) -> u64 {
+    const PRIO_PROCESS: u64 = 0;
+    const PRIO_PGRP: u64 = 1;
+    const PRIO_USER: u64 = 2;
+
+    if !(-20..=19).contains(&prio) {
+        return linux_err(EINVAL);
+    }
+    match which {
+        PRIO_PROCESS => {
+            if who > 0 && !crate::task::scheduler::thread_exists(who as u32) {
+                return linux_err(ESRCH);
+            }
+        }
+        PRIO_PGRP | PRIO_USER => {}
+        _ => return linux_err(EINVAL),
+    }
+    0
+}
+
 pub(super) fn linux_getrusage(_who: u64, usage_ptr: u64) -> u64 {
     if usage_ptr == 0 {
         return linux_err(EFAULT);
@@ -786,6 +823,44 @@ pub(super) fn linux_clock_gettime(clock_id: u64, ts_ptr: u64) -> u64 {
     unsafe {
         write_u64(ts_ptr, 0, sec);
         write_u64(ts_ptr, 8, nsec);
+    }
+    0
+}
+
+pub(super) fn linux_clock_getres(clock_id: u64, ts_ptr: u64) -> u64 {
+    const CLOCK_REALTIME: u64 = 0;
+    const CLOCK_MONOTONIC: u64 = 1;
+    const CLOCK_PROCESS_CPUTIME_ID: u64 = 2;
+    const CLOCK_THREAD_CPUTIME_ID: u64 = 3;
+    const CLOCK_MONOTONIC_RAW: u64 = 4;
+    const CLOCK_REALTIME_COARSE: u64 = 5;
+    const CLOCK_MONOTONIC_COARSE: u64 = 6;
+    const CLOCK_BOOTTIME: u64 = 7;
+
+    match clock_id {
+        CLOCK_REALTIME
+        | CLOCK_MONOTONIC
+        | CLOCK_PROCESS_CPUTIME_ID
+        | CLOCK_THREAD_CPUTIME_ID
+        | CLOCK_MONOTONIC_RAW
+        | CLOCK_REALTIME_COARSE
+        | CLOCK_MONOTONIC_COARSE
+        | CLOCK_BOOTTIME => {}
+        _ => return linux_err(EINVAL),
+    }
+    if ts_ptr != 0 {
+        if !handlers::helpers::is_user_range_accessible(ts_ptr, 16) {
+            return linux_err(EFAULT);
+        }
+        let nsec = if clock_id == CLOCK_REALTIME_COARSE || clock_id == CLOCK_MONOTONIC_COARSE {
+            1_000_000
+        } else {
+            1_000_000_000 / crate::arch::hal::timer_frequency_hz().max(1)
+        };
+        unsafe {
+            write_u64(ts_ptr, 0, 0);
+            write_u64(ts_ptr, 8, nsec.max(1));
+        }
     }
     0
 }

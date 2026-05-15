@@ -3308,6 +3308,12 @@ impl WebView {
                 }
                 js::DomMutation::SetAttribute { name, .. }
                 | js::DomMutation::RemoveAttribute { name, .. } => {
+                    if self.mutation_is_form_state_attribute(m) {
+                        if impact == MutationImpact::None {
+                            impact = MutationImpact::Paint;
+                        }
+                        continue;
+                    }
                     impact = if Self::attribute_change_requires_style_recalc(name) {
                         MutationImpact::LayoutRestyle
                     } else {
@@ -3322,6 +3328,31 @@ impl WebView {
             }
         }
         impact
+    }
+
+    fn mutation_is_form_state_attribute(&self, mutation: &js::DomMutation) -> bool {
+        let Some(dom) = self.dom_val.as_ref() else {
+            return false;
+        };
+        let (node_id, name) = match mutation {
+            js::DomMutation::SetAttribute { node_id, name, .. }
+            | js::DomMutation::RemoveAttribute { node_id, name } => (*node_id, name.as_str()),
+            _ => return false,
+        };
+        let Ok(node_id) = usize::try_from(node_id) else {
+            return false;
+        };
+        if node_id >= dom.nodes.len() {
+            return false;
+        }
+
+        let attr = name.trim().to_ascii_lowercase();
+        match attr.as_str() {
+            "value" => matches!(dom.tag(node_id), Some(dom::Tag::Input | dom::Tag::Textarea)),
+            "checked" => dom.tag(node_id) == Some(dom::Tag::Input),
+            "selected" => dom.tag(node_id) == Some(dom::Tag::Option),
+            _ => false,
+        }
     }
 
     fn attribute_change_requires_style_recalc(name: &str) -> bool {
@@ -3556,6 +3587,230 @@ impl WebView {
     fn apply_paint_only_mutations_to_layout(mutations: &[js::DomMutation], root: &mut LayoutBox) {
         for mutation in mutations {
             Self::apply_paint_only_mutation_to_layout(mutation, root);
+        }
+    }
+
+    fn select_node_for_option(dom: &dom::Dom, option_id: usize) -> Option<usize> {
+        let parent = dom.get(option_id).parent?;
+        if dom.tag(parent) == Some(dom::Tag::Select) {
+            return Some(parent);
+        }
+        if dom.tag(parent) == Some(dom::Tag::Optgroup) {
+            let grandparent = dom.get(parent).parent?;
+            if dom.tag(grandparent) == Some(dom::Tag::Select) {
+                return Some(grandparent);
+            }
+        }
+        None
+    }
+
+    fn selected_index_for_select(dom: &dom::Dom, select_id: usize) -> i32 {
+        let mut selected_idx = -1;
+        let mut opt_count = 0i32;
+        let mut first_enabled_idx = -1;
+        let children = dom.get(select_id).children.clone();
+        for cid in children {
+            if dom.tag(cid) == Some(dom::Tag::Optgroup) {
+                opt_count += 1;
+                let group_children = dom.get(cid).children.clone();
+                for gcid in group_children {
+                    if dom.tag(gcid) != Some(dom::Tag::Option) {
+                        continue;
+                    }
+                    if dom.attr(gcid, "disabled").is_none() && first_enabled_idx < 0 {
+                        first_enabled_idx = opt_count;
+                    }
+                    if dom.attr(gcid, "selected").is_some() && selected_idx < 0 {
+                        selected_idx = opt_count;
+                    }
+                    opt_count += 1;
+                }
+            } else if dom.tag(cid) == Some(dom::Tag::Option) {
+                if dom.attr(cid, "disabled").is_none() && first_enabled_idx < 0 {
+                    first_enabled_idx = opt_count;
+                }
+                if dom.attr(cid, "selected").is_some() && selected_idx < 0 {
+                    selected_idx = opt_count;
+                }
+                opt_count += 1;
+            }
+        }
+        if selected_idx >= 0 {
+            selected_idx
+        } else if first_enabled_idx >= 0 {
+            first_enabled_idx
+        } else {
+            0
+        }
+    }
+
+    fn apply_form_state_mutation_to_layout(
+        dom: &dom::Dom,
+        mutation: &js::DomMutation,
+        root: &mut LayoutBox,
+    ) {
+        let (node_id, name) = match mutation {
+            js::DomMutation::SetAttribute { node_id, name, .. }
+            | js::DomMutation::RemoveAttribute { node_id, name } => (*node_id, name.as_str()),
+            _ => return,
+        };
+        let Ok(node_id) = usize::try_from(node_id) else {
+            return;
+        };
+        if node_id >= dom.nodes.len() {
+            return;
+        }
+
+        let attr = name.trim().to_ascii_lowercase();
+        let select_update = if attr == "selected" && dom.tag(node_id) == Some(dom::Tag::Option) {
+            Self::select_node_for_option(dom, node_id)
+                .map(|select_id| (select_id, Self::selected_index_for_select(dom, select_id)))
+        } else {
+            None
+        };
+        Self::apply_form_state_to_layout_box(dom, node_id, attr.as_str(), select_update, root);
+    }
+
+    fn apply_form_state_to_layout_box(
+        dom: &dom::Dom,
+        node_id: usize,
+        attr: &str,
+        select_update: Option<(usize, i32)>,
+        bx: &mut LayoutBox,
+    ) {
+        if bx.node_id == Some(node_id) {
+            match attr {
+                "value" => {
+                    bx.form_value = dom.attr(node_id, "value").map(String::from);
+                    if matches!(
+                        bx.form_field,
+                        Some(
+                            FormFieldKind::TextInput
+                                | FormFieldKind::Password
+                                | FormFieldKind::Number
+                                | FormFieldKind::File
+                        )
+                    ) {
+                        bx.text = bx.form_value.clone();
+                    }
+                }
+                "checked" => {
+                    if matches!(
+                        bx.form_field,
+                        Some(FormFieldKind::Checkbox | FormFieldKind::Radio)
+                    ) {
+                        bx.form_checked = dom.attr(node_id, "checked").is_some();
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let Some((select_id, selected_idx)) = select_update {
+            if bx.node_id == Some(select_id) && bx.form_field == Some(FormFieldKind::Select) {
+                bx.form_selected_index = selected_idx;
+                if let Some(options) = bx.form_options.as_ref() {
+                    bx.text = options
+                        .split('|')
+                        .nth(selected_idx.max(0) as usize)
+                        .map(String::from);
+                }
+            }
+        }
+
+        for child in &mut bx.children {
+            Self::apply_form_state_to_layout_box(dom, node_id, attr, select_update, child);
+        }
+    }
+
+    fn apply_form_state_mutations_to_layout(
+        dom: &dom::Dom,
+        mutations: &[js::DomMutation],
+        root: &mut LayoutBox,
+    ) {
+        for mutation in mutations {
+            Self::apply_form_state_mutation_to_layout(dom, mutation, root);
+        }
+    }
+
+    fn form_state_visual_node_id(dom: &dom::Dom, mutation: &js::DomMutation) -> Option<usize> {
+        match mutation {
+            js::DomMutation::SetAttribute { node_id, name, .. }
+            | js::DomMutation::RemoveAttribute { node_id, name } => {
+                let node_id = usize::try_from(*node_id).ok()?;
+                if node_id >= dom.nodes.len() {
+                    return None;
+                }
+                if name.eq_ignore_ascii_case("selected")
+                    && dom.tag(node_id) == Some(dom::Tag::Option)
+                {
+                    Self::select_node_for_option(dom, node_id).or(Some(node_id))
+                } else {
+                    Some(node_id)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn paint_mutation_visual_node_id(dom: &dom::Dom, mutation: &js::DomMutation) -> Option<usize> {
+        match mutation {
+            js::DomMutation::SetScrollTop { node_id, .. }
+            | js::DomMutation::SetScrollLeft { node_id, .. } => Some(*node_id),
+            js::DomMutation::SetStyleProperty { node_id, .. } => usize::try_from(*node_id).ok(),
+            js::DomMutation::SetAttribute { .. } | js::DomMutation::RemoveAttribute { .. } => {
+                Self::form_state_visual_node_id(dom, mutation)
+            }
+            _ => None,
+        }
+    }
+
+    fn y_range_intersects_viewport(&self, y: i32, h: i32) -> bool {
+        let viewport_top = self.scroll_view.get_state() as i32;
+        let viewport_bottom = viewport_top + self.viewport_height.max(1) as i32;
+        let margin = (self.viewport_height.max(1) as i32 / 4).clamp(96, 384);
+        let y0 = y;
+        let y1 = y.saturating_add(h.max(1));
+        y0 < viewport_bottom + margin && y1 > viewport_top - margin
+    }
+
+    fn paint_mutations_intersect_viewport(
+        &self,
+        dom: &dom::Dom,
+        mutations: &[js::DomMutation],
+    ) -> bool {
+        for mutation in mutations {
+            let Some(node_id) = Self::paint_mutation_visual_node_id(dom, mutation) else {
+                return true;
+            };
+            let Some((_, y, _, h)) = self.node_bounds(node_id) else {
+                return true;
+            };
+            if self.y_range_intersects_viewport(y, h) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn invalidate_offscreen_paint_mutation_tiles(
+        &mut self,
+        dom: &dom::Dom,
+        mutations: &[js::DomMutation],
+    ) {
+        let mut invalidated = 0usize;
+        for mutation in mutations {
+            let Some(node_id) = Self::paint_mutation_visual_node_id(dom, mutation) else {
+                return;
+            };
+            let Some((_, y, _, h)) = self.node_bounds(node_id) else {
+                return;
+            };
+            self.renderer.invalidate_y_range(y, h);
+            invalidated += 1;
+        }
+        if invalidated > 0 {
+            self.pending_tiles = true;
         }
     }
 
@@ -4436,8 +4691,14 @@ impl WebView {
                 if let Some(root) = self.layout_root.as_mut() {
                     Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, root);
                     Self::apply_paint_only_mutations_to_layout(&pending_mutations, root);
+                    Self::apply_form_state_mutations_to_layout(dom, &pending_mutations, root);
                 }
-                self.repaint_from_cached_layout();
+                if self.paint_mutations_intersect_viewport(dom, &pending_mutations) {
+                    self.repaint_from_cached_layout();
+                } else {
+                    self.invalidate_offscreen_paint_mutation_tiles(dom, &pending_mutations);
+                    return MutationImpact::None;
+                }
             }
             MutationImpact::None => {}
         }
@@ -4451,7 +4712,10 @@ impl WebView {
         mutations: &[js::DomMutation],
         id_map: &alloc::collections::BTreeMap<i64, usize>,
     ) {
-        fn resolve_id(id: i64, id_map: &alloc::collections::BTreeMap<i64, usize>) -> Option<usize> {
+        fn resolve_id(
+            id: i64,
+            id_map: &alloc::collections::BTreeMap<i64, usize>,
+        ) -> Option<usize> {
             if id >= 0 {
                 Some(id as usize)
             } else {
@@ -4460,7 +4724,7 @@ impl WebView {
         }
 
         for mutation in mutations {
-            let (node_id, value) = match mutation {
+            match mutation {
                 js::DomMutation::SetAttribute {
                     node_id,
                     name,
@@ -4469,7 +4733,20 @@ impl WebView {
                     let Some(real_id) = resolve_id(*node_id, id_map) else {
                         continue;
                     };
-                    (real_id, value.as_str())
+                    for fc in &self.renderer.form_controls {
+                        if fc.node_id != real_id || fc.control_id == 0 {
+                            continue;
+                        }
+                        if matches!(
+                            fc.kind,
+                            FormFieldKind::TextInput
+                                | FormFieldKind::Password
+                                | FormFieldKind::Number
+                                | FormFieldKind::Textarea
+                        ) {
+                            ui::Control::from_id(fc.control_id).set_text(value);
+                        }
+                    }
                 }
                 js::DomMutation::SetTextContent { node_id, text } => {
                     let Some(real_id) = resolve_id(*node_id, id_map) else {
@@ -4478,24 +4755,55 @@ impl WebView {
                     if !matches!(dom.tag(real_id), Some(dom::Tag::Textarea)) {
                         continue;
                     }
-                    (real_id, text.as_str())
+                    for fc in &self.renderer.form_controls {
+                        if fc.node_id != real_id || fc.control_id == 0 {
+                            continue;
+                        }
+                        if matches!(fc.kind, FormFieldKind::Textarea) {
+                            ui::Control::from_id(fc.control_id).set_text(text);
+                        }
+                    }
                 }
-                _ => continue,
-            };
-
-            for fc in &self.renderer.form_controls {
-                if fc.node_id != node_id || fc.control_id == 0 {
-                    continue;
+                js::DomMutation::SetAttribute { node_id, name, .. }
+                | js::DomMutation::RemoveAttribute { node_id, name }
+                    if name.eq_ignore_ascii_case("checked") =>
+                {
+                    let Some(real_id) = resolve_id(*node_id, id_map) else {
+                        continue;
+                    };
+                    let checked = dom.attr(real_id, "checked").is_some();
+                    for fc in &self.renderer.form_controls {
+                        if fc.node_id != real_id || fc.control_id == 0 {
+                            continue;
+                        }
+                        if matches!(fc.kind, FormFieldKind::Checkbox | FormFieldKind::Radio) {
+                            ui::Control::from_id(fc.control_id)
+                                .set_state(if checked { 1 } else { 0 });
+                        }
+                    }
                 }
-                if matches!(
-                    fc.kind,
-                    FormFieldKind::TextInput
-                        | FormFieldKind::Password
-                        | FormFieldKind::Number
-                        | FormFieldKind::Textarea
-                ) {
-                    ui::Control::from_id(fc.control_id).set_text(value);
+                js::DomMutation::SetAttribute { node_id, name, .. }
+                | js::DomMutation::RemoveAttribute { node_id, name }
+                    if name.eq_ignore_ascii_case("selected") =>
+                {
+                    let Some(option_id) = resolve_id(*node_id, id_map) else {
+                        continue;
+                    };
+                    let Some(select_id) = Self::select_node_for_option(dom, option_id) else {
+                        continue;
+                    };
+                    let selected_idx =
+                        Self::selected_index_for_select(dom, select_id).max(0) as u32;
+                    for fc in &self.renderer.form_controls {
+                        if fc.node_id == select_id
+                            && fc.kind == FormFieldKind::Select
+                            && fc.control_id != 0
+                        {
+                            ui::Control::from_id(fc.control_id).set_state(selected_idx);
+                        }
+                    }
                 }
+                _ => {}
             }
         }
     }

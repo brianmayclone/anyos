@@ -815,19 +815,33 @@ pub extern "C" fn anyui_set_position(id: ControlId, x: i32, y: i32) {
 #[no_mangle]
 pub extern "C" fn anyui_set_size(id: ControlId, w: u32, h: u32) {
     let st = state();
+    let mut changed = false;
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        ctrl.set_size(w, h);
+        let (old_w, old_h) = ctrl.size();
+        if old_w != w || old_h != h {
+            ctrl.set_size(w, h);
+            changed = true;
+        }
     }
-    mark_needs_layout();
+    if changed {
+        mark_needs_layout();
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn anyui_set_visible(id: ControlId, visible: u32) {
     let st = state();
+    let visible = visible != 0;
+    let mut changed = false;
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        ctrl.set_visible(visible != 0);
+        if ctrl.visible() != visible {
+            ctrl.set_visible(visible);
+            changed = true;
+        }
     }
-    mark_needs_layout();
+    if changed {
+        mark_needs_layout();
+    }
 }
 
 #[no_mangle]
