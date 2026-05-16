@@ -3914,6 +3914,11 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
         Fat(FileReadPlan),
         ExFat(ExFatReadPlan),
         Ntfs(NtfsReadPlan),
+        CoreFs {
+            driver: Arc<crate::fs::corefs::CoreFsDriver>,
+            inode: u32,
+            size: u32,
+        },
     }
 
     // Device files are streaming — can't read to vec
@@ -4007,20 +4012,17 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
             }
             ReadPlan::Fat(fat.get_file_read_plan(cluster, size))
         } else if let Some(driver) = state.corefs_driver.as_ref() {
-            let driver = driver.as_ref();
-            // CoreFS root path: dispatch via the Filesystem trait.  CoreFS
-            // already streams through its own block cache so we don't need
-            // a deferred read plan like the cluster-based filesystems —
-            // a single Filesystem::read call services the whole file.
+            let driver = Arc::clone(driver);
             let q = if path.is_empty() { "/" } else { path };
-            let (inode, file_type, size) = Filesystem::lookup(driver, q)?;
+            let (inode, file_type, size) = Filesystem::lookup(driver.as_ref(), q)?;
             if file_type == FileType::Directory {
                 return Err(FsError::IsADirectory);
             }
-            let mut buf = alloc::vec![0u8; size as usize];
-            let n = Filesystem::read(driver, inode, 0, &mut buf)?;
-            buf.truncate(n);
-            return Ok(buf);
+            ReadPlan::CoreFs {
+                driver,
+                inode,
+                size,
+            }
         } else if let Some(ref iso) = state.iso9660_fs {
             return iso.read_file_to_vec(path);
         } else {
@@ -4033,6 +4035,16 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
         ReadPlan::Fat(p) => p.execute(),
         ReadPlan::ExFat(p) => p.execute(),
         ReadPlan::Ntfs(p) => p.execute(),
+        ReadPlan::CoreFs {
+            driver,
+            inode,
+            size,
+        } => {
+            let mut buf = alloc::vec![0u8; size as usize];
+            let n = Filesystem::read(driver.as_ref(), inode, 0, &mut buf)?;
+            buf.truncate(n);
+            Ok(buf)
+        }
     };
     result
 }

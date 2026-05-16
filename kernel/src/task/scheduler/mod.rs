@@ -2051,11 +2051,9 @@ fn schedule_inner(from_timer: bool) {
             }
         }
 
-        if from_timer {
-            let current_tick = crate::arch::hal::timer_current_ticks();
-            if sleeper_deadline_due(current_tick) {
-                sched.wake_expired_sleepers(current_tick);
-            }
+        let current_tick = crate::arch::hal::timer_current_ticks();
+        if sleeper_deadline_due(current_tick) {
+            sched.wake_expired_sleepers(current_tick);
         }
 
         // --- Cache commonly-used indices (eliminates 10+ redundant find_idx calls) ---

@@ -38,6 +38,52 @@ pub(super) fn linux_open_proc_file(abs: &str, file: u16, pid: u32, linux_flags: 
     fd as u64
 }
 
+pub(super) fn linux_open_proc_fd_entry(
+    abs: &str,
+    file: u16,
+    packed: u32,
+    linux_flags: u64,
+) -> Option<u64> {
+    if file != LINUX_PROC_PID_FD_ENTRY {
+        return None;
+    }
+
+    let flags = map_open_flags(linux_flags);
+    if (flags & 4) != 0 || (flags & 8) != 0 {
+        return Some(linux_err(EACCES));
+    }
+
+    let (target_pid, target_fd) = unpack_proc_fd(packed);
+    let entry = match crate::task::scheduler::thread_fd_get(target_pid, target_fd) {
+        Some(entry) if !matches!(entry.kind, crate::fs::fd_table::FdKind::None) => entry,
+        _ => return Some(linux_err(ENOENT)),
+    };
+
+    procfd_incref_kind(entry.kind);
+    let fd = match crate::task::scheduler::current_fd_alloc(entry.kind) {
+        Some(fd) => fd,
+        None => {
+            procfd_decref_kind(entry.kind);
+            return Some(linux_err(EBADF));
+        }
+    };
+    if (flags & 0x10) != 0 {
+        crate::task::scheduler::current_fd_set_cloexec(fd, true);
+    }
+    if entry.flags.nonblock {
+        crate::task::scheduler::current_fd_set_nonblock(fd, true);
+    }
+
+    crate::serial_verbose_println!(
+        "lxe linux open-proc-fd: ok linux='{}' target_pid={} target_fd={} fd={}",
+        abs,
+        target_pid,
+        target_fd,
+        fd
+    );
+    Some(fd as u64)
+}
+
 pub(super) fn linux_read_proc_file(
     fd: u32,
     file: u16,
@@ -822,6 +868,38 @@ fn pack_proc_fd(pid: u32, fd: u32) -> Option<u32> {
 
 fn unpack_proc_fd(packed: u32) -> (u32, u32) {
     (packed >> PROC_FD_PACK_SHIFT, packed & PROC_FD_PACK_MASK)
+}
+
+fn procfd_incref_kind(kind: crate::fs::fd_table::FdKind) {
+    match kind {
+        crate::fs::fd_table::FdKind::File { global_id } => crate::fs::vfs::incref(global_id),
+        crate::fs::fd_table::FdKind::PipeRead { pipe_id } => {
+            crate::ipc::anon_pipe::incref_read(pipe_id)
+        }
+        crate::fs::fd_table::FdKind::PipeWrite { pipe_id } => {
+            crate::ipc::anon_pipe::incref_write(pipe_id)
+        }
+        crate::fs::fd_table::FdKind::LinuxSocket { socket_id } => {
+            crate::syscall::linux::socket_incref(socket_id)
+        }
+        _ => {}
+    }
+}
+
+fn procfd_decref_kind(kind: crate::fs::fd_table::FdKind) {
+    match kind {
+        crate::fs::fd_table::FdKind::File { global_id } => crate::fs::vfs::decref(global_id),
+        crate::fs::fd_table::FdKind::PipeRead { pipe_id } => {
+            crate::ipc::anon_pipe::decref_read(pipe_id)
+        }
+        crate::fs::fd_table::FdKind::PipeWrite { pipe_id } => {
+            crate::ipc::anon_pipe::decref_write(pipe_id)
+        }
+        crate::fs::fd_table::FdKind::LinuxSocket { socket_id } => {
+            crate::syscall::linux::socket_decref(socket_id)
+        }
+        _ => {}
+    }
 }
 
 fn linux_proc_fd_link_target(packed: u32) -> Option<String> {

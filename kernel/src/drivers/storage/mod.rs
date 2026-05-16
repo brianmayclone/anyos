@@ -84,6 +84,7 @@ static IO_LOCK_HOLD_LOGS: AtomicU32 = AtomicU32::new(0);
 const IO_LOCK_WAIT_WARN_MS: u32 = 50;
 const IO_LOCK_HOLD_WARN_MS: u32 = 250;
 const IO_LOCK_LOG_LIMIT: u32 = 64;
+const MAX_LOCKED_IO_SECTORS: u32 = 64;
 const IO_OP_UNKNOWN: u32 = 0;
 const IO_OP_READ: u32 = 1;
 const IO_OP_READAHEAD: u32 = 2;
@@ -435,6 +436,60 @@ fn io_lock_release() {
     }
 }
 
+#[inline]
+fn schedule_between_io_chunks() {
+    if crate::task::scheduler::current_tid() > 0 {
+        crate::task::scheduler::schedule();
+    }
+}
+
+fn read_sectors_raw_chunked(
+    disk_id: u8,
+    lba: u32,
+    count: u32,
+    buf: &mut [u8],
+    op_kind: u32,
+) -> bool {
+    let mut done = 0u32;
+    while done < count {
+        let batch = (count - done).min(MAX_LOCKED_IO_SECTORS);
+        let offset = done as usize * 512;
+        let len = batch as usize * 512;
+        io_lock_acquire(IoLockOp::new(op_kind, disk_id, lba + done, batch));
+        let ok =
+            read_sectors_raw_for_disk(disk_id, lba + done, batch, &mut buf[offset..offset + len]);
+        io_lock_release();
+        if !ok {
+            return false;
+        }
+        done += batch;
+        if done < count {
+            schedule_between_io_chunks();
+        }
+    }
+    true
+}
+
+fn write_sectors_raw_chunked(disk_id: u8, lba: u32, count: u32, buf: &[u8], op_kind: u32) -> bool {
+    let mut done = 0u32;
+    while done < count {
+        let batch = (count - done).min(MAX_LOCKED_IO_SECTORS);
+        let offset = done as usize * 512;
+        let len = batch as usize * 512;
+        io_lock_acquire(IoLockOp::new(op_kind, disk_id, lba + done, batch));
+        let ok = write_sectors_raw_for_disk(disk_id, lba + done, batch, &buf[offset..offset + len]);
+        io_lock_release();
+        if !ok {
+            return false;
+        }
+        done += batch;
+        if done < count {
+            schedule_between_io_chunks();
+        }
+    }
+    true
+}
+
 /// Switch the active storage backend to AHCI (called after AHCI init succeeds).
 pub fn set_backend_ahci() {
     unsafe {
@@ -551,14 +606,8 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
     let result = if readahead > 0 {
         if let Some(lease) = acquire_readahead_slot() {
             let big_buf = readahead_slot_bytes(&lease, fetch_bytes);
-            io_lock_acquire(IoLockOp::new(
-                IO_OP_READAHEAD,
-                disk_id,
-                miss_lba,
-                total_fetch,
-            ));
-            let ok = read_sectors_raw_for_disk(disk_id, miss_lba, total_fetch, big_buf);
-            io_lock_release();
+            let ok =
+                read_sectors_raw_chunked(disk_id, miss_lba, total_fetch, big_buf, IO_OP_READAHEAD);
             if ok {
                 crate::fs::blockcache::overlay_cached(disk_id, miss_lba, total_fetch, big_buf);
                 let needed = miss_count as usize * 512;
@@ -578,14 +627,13 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
             }
         } else {
             let mut big_buf = alloc::vec![0u8; fetch_bytes];
-            io_lock_acquire(IoLockOp::new(
-                IO_OP_READAHEAD,
+            let ok = read_sectors_raw_chunked(
                 disk_id,
                 miss_lba,
                 total_fetch,
-            ));
-            let ok = read_sectors_raw_for_disk(disk_id, miss_lba, total_fetch, &mut big_buf);
-            io_lock_release();
+                &mut big_buf,
+                IO_OP_READAHEAD,
+            );
             if ok {
                 crate::fs::blockcache::overlay_cached(disk_id, miss_lba, total_fetch, &mut big_buf);
                 let needed = miss_count as usize * 512;
@@ -601,9 +649,13 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
         }
     } else {
         // No readahead: read directly into caller buffer
-        io_lock_acquire(IoLockOp::new(IO_OP_READ, disk_id, miss_lba, miss_count));
-        let ok = read_sectors_raw_for_disk(disk_id, miss_lba, miss_count, &mut buf[miss_offset..]);
-        io_lock_release();
+        let ok = read_sectors_raw_chunked(
+            disk_id,
+            miss_lba,
+            miss_count,
+            &mut buf[miss_offset..],
+            IO_OP_READ,
+        );
         if ok && cache_active {
             let fetched_bytes = miss_count as usize * 512;
             if buf.len() >= miss_offset + fetched_bytes {
@@ -719,9 +771,7 @@ pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> b
     }
 
     // Large write or no cache: go directly to disk
-    io_lock_acquire(IoLockOp::new(IO_OP_WRITE, disk_id, lba, count));
-    let result = write_sectors_raw_for_disk(disk_id, lba, count, buf);
-    io_lock_release();
+    let result = write_sectors_raw_chunked(disk_id, lba, count, buf, IO_OP_WRITE);
     if result && cache_active {
         // Direct/bulk writes already reached the backend. Keeping a clean copy
         // of every streamed sector in the read cache turns large writes into
@@ -797,9 +847,7 @@ pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8
         );
         return false;
     }
-    io_lock_acquire(IoLockOp::new(IO_OP_WRITEBACK, disk_id, lba, count));
-    let result = write_sectors_raw_for_disk(disk_id, lba, count, buf);
-    io_lock_release();
+    let result = write_sectors_raw_chunked(disk_id, lba, count, buf, IO_OP_WRITEBACK);
     result
 }
 

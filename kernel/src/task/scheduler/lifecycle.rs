@@ -12,6 +12,12 @@ use crate::task::context::CpuContext;
 use crate::task::thread::ThreadState;
 use core::sync::atomic::Ordering;
 
+#[derive(Clone, Copy)]
+struct TerminatedChildCleanup {
+    tid: u32,
+    pd_to_destroy: Option<PhysAddr>,
+}
+
 #[inline]
 fn safe_cpu_id(cpu_id: usize) -> usize {
     if cpu_id < super::MAX_CPUS {
@@ -167,7 +173,7 @@ fn collect_and_terminate_children(
     sched: &mut super::Scheduler,
     parent_tid: u32,
     tick: u32,
-) -> alloc::vec::Vec<u32> {
+) -> alloc::vec::Vec<TerminatedChildCleanup> {
     use alloc::vec::Vec;
 
     // BFS: find all direct and transitive children
@@ -193,13 +199,13 @@ fn collect_and_terminate_children(
         }
     }
 
-    // Terminate all collected children
+    // Terminate all collected children first.  We collect address spaces in a
+    // second pass so sibling checks see every cascade-killed child as dead.
     for &child_tid in &to_kill {
         if let Some(idx) = sched.find_idx(child_tid) {
             sched.threads[idx].state = ThreadState::Terminated;
             sched.threads[idx].exit_code = Some(9); // SIGKILL
             sched.threads[idx].terminated_at_tick = Some(tick);
-            sched.threads[idx].page_directory = None; // Parent owns PD
             sched.remove_from_all_queues(child_tid);
 
             // Wake anyone waiting for this child
@@ -209,34 +215,62 @@ fn collect_and_terminate_children(
         }
     }
 
-    to_kill
+    let mut cleanup = Vec::new();
+    let mut queued_pds = Vec::new();
+    for &child_tid in &to_kill {
+        let mut pd_to_destroy = None;
+        if let Some(idx) = sched.find_idx(child_tid) {
+            if let Some(pd) = sched.threads[idx].page_directory {
+                if !sched.threads[idx].pd_shared {
+                    let has_live_siblings = sched.threads.iter().any(|t| {
+                        t.tid != child_tid
+                            && t.page_directory == Some(pd)
+                            && t.state != ThreadState::Terminated
+                    });
+                    if !has_live_siblings && !queued_pds.iter().any(|queued| *queued == pd) {
+                        pd_to_destroy = Some(pd);
+                        queued_pds.push(pd);
+                    }
+                }
+                sched.threads[idx].page_directory = None;
+            }
+        }
+        cleanup.push(TerminatedChildCleanup {
+            tid: child_tid,
+            pd_to_destroy,
+        });
+    }
+
+    cleanup
+}
+
+fn cleanup_thread_resources(tid: u32) {
+    use crate::fs::fd_table::FdKind;
+
+    let closed = close_all_fds_for_thread(tid);
+    for kind in closed.iter() {
+        match kind {
+            FdKind::File { global_id } => crate::fs::vfs::decref(*global_id),
+            FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::decref_read(*pipe_id),
+            FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::decref_write(*pipe_id),
+            FdKind::LinuxSocket { socket_id } => crate::syscall::linux::socket_decref(*socket_id),
+            FdKind::Tty | FdKind::PtySlave { .. } | FdKind::LinuxProc { .. } | FdKind::None => {}
+        }
+    }
+    crate::net::tcp::cleanup_for_thread(tid);
+    crate::net::udp::cleanup_for_thread(tid);
+    crate::drivers::audio::mixer::close_channels_for_pid(tid);
 }
 
 /// Clean up resources for a list of killed child TIDs.
 /// Must be called WITHOUT the scheduler lock held.
-fn cleanup_killed_children(children: &[u32]) {
-    use crate::fs::fd_table::FdKind;
-
-    for &child_tid in children {
-        // Close all file descriptors
-        let closed = close_all_fds_for_thread(child_tid);
-        for kind in closed.iter() {
-            match kind {
-                FdKind::File { global_id } => crate::fs::vfs::decref(*global_id),
-                FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::decref_read(*pipe_id),
-                FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::decref_write(*pipe_id),
-                FdKind::LinuxSocket { socket_id } => {
-                    crate::syscall::linux::socket_decref(*socket_id)
-                }
-                FdKind::Tty | FdKind::PtySlave { .. } | FdKind::LinuxProc { .. } | FdKind::None => {
-                }
-            }
+fn cleanup_killed_children(children: &[TerminatedChildCleanup]) {
+    for child in children {
+        cleanup_thread_resources(child.tid);
+        if let Some(pd) = child.pd_to_destroy {
+            crate::task::env::cleanup(pd.as_u64());
+            DEFERRED_PD_DESTROY.lock().push(pd, child.tid);
         }
-        // Clean up network state
-        crate::net::tcp::cleanup_for_thread(child_tid);
-        crate::net::udp::cleanup_for_thread(child_tid);
-        // Clean up audio mixer channels
-        crate::drivers::audio::mixer::close_channels_for_pid(child_tid);
     }
 }
 
@@ -284,9 +318,9 @@ fn defer_fault_pd_destroy(pd: PhysAddr, tid: u32) {
 /// once no live threads remain in the address space.
 pub fn exit_current(code: u32) {
     let my_cpu = safe_cpu_id(get_cpu_id());
-    let mut tid = 0u32;
+    let tid: u32;
     let mut pd_to_destroy: Option<PhysAddr> = None;
-    let mut killed_children: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+    let killed_children: alloc::vec::Vec<TerminatedChildCleanup>;
     let mut wake_kick_cpu: Option<usize> = None;
     crate::sched_diag::set(my_cpu, crate::sched_diag::PHASE_EXIT_CURRENT);
 
@@ -372,10 +406,16 @@ pub fn exit_current(code: u32) {
     // ── Resource cleanup for killed children (outside lock) ───────
     cleanup_killed_children(&killed_children);
 
+    // Resource cleanup for the exiting thread itself.  Reaping only drops the
+    // ThreadBox; kernel resources referenced by its FD table must be released
+    // while the TID is still known.
+    cleanup_thread_resources(tid);
+
     if let Some(pd) = pd_to_destroy {
+        crate::task::env::cleanup(pd.as_u64());
         let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
         crate::arch::hal::switch_page_table(kernel_cr3);
-        DEFERRED_PD_DESTROY.lock().push(pd, 0);
+        DEFERRED_PD_DESTROY.lock().push(pd, tid);
     }
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
         crate::ipc::event_bus::EVT_PROCESS_EXITED,
@@ -397,9 +437,10 @@ pub fn exit_current(code: u32) {
 /// generic scheduler; instead it switches directly to the per-CPU idle thread.
 pub fn try_exit_current(code: u32) -> bool {
     let my_cpu = safe_cpu_id(get_cpu_id());
-    let mut tid = 0u32;
-    let mut idle_stack_top: u64 = 0;
-    let mut idle_ctx: Option<*const CpuContext> = None;
+    let tid: u32;
+    let mut pd_to_destroy: Option<PhysAddr> = None;
+    let idle_stack_top: u64;
+    let idle_ctx: Option<*const CpuContext>;
     crate::sched_diag::set(my_cpu, crate::sched_diag::PHASE_TRY_EXIT_CURRENT);
     try_exit_diag_mark(b'A');
 
@@ -435,11 +476,21 @@ pub fn try_exit_current(code: u32) -> bool {
         let tick = crate::arch::hal::timer_current_ticks();
         try_exit_diag_mark(b'H');
 
-        // Fault-exit must stay extremely small and non-blocking. Avoid child
-        // scans, waiter wakeups, SIGCHLD delivery, and page-directory sibling
-        // checks here: after a corrupted userspace fault, those traversals were
-        // a recurring source of secondary deadlocks and re-entrant faults while
-        // still holding the scheduler lock. A small leak is acceptable here.
+        // Fault-exit must stay small and non-blocking.  We still preserve the
+        // dying address space for deferred teardown; otherwise a faulting LXE
+        // process can leak its entire userspace mapping.
+        if let Some(pd) = sched.threads[idx].page_directory {
+            if !sched.threads[idx].pd_shared {
+                let has_live_siblings = sched.threads.iter().any(|t| {
+                    t.tid != current_tid
+                        && t.page_directory == Some(pd)
+                        && t.state != ThreadState::Terminated
+                });
+                if !has_live_siblings {
+                    pd_to_destroy = Some(pd);
+                }
+            }
+        }
         sched.remove_from_all_queues(current_tid);
         try_exit_diag_mark(b'I');
         sched.threads[idx].state = ThreadState::Terminated;
@@ -480,6 +531,10 @@ pub fn try_exit_current(code: u32) -> bool {
     crate::arch::hal::switch_page_table(kernel_cr3);
     try_exit_diag_mark(b'Q');
     defer_fault_exit_cleanup(tid, code, &[]);
+    if let Some(pd) = pd_to_destroy {
+        crate::task::env::cleanup(pd.as_u64());
+        defer_fault_pd_destroy(pd, tid);
+    }
     try_exit_diag_mark(b'R');
     crate::sched_diag::set(my_cpu, crate::sched_diag::PHASE_IDLE);
     enter_idle_recovery(my_cpu, idle_stack_top, idle_ctx);
@@ -552,6 +607,7 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
 /// on its idle stack, even if per-CPU current TID metadata has already drifted.
 pub fn fault_kill_tid_and_idle(tid: u32, signal: u32) -> ! {
     let cpu_id = safe_cpu_id(crate::arch::hal::cpu_id());
+    let mut pd_to_destroy: Option<PhysAddr> = None;
     crate::serial_verbose_println!(
         "  FALLBACK: manual kill TID={} signal={} on CPU {}",
         tid,
@@ -582,6 +638,18 @@ pub fn fault_kill_tid_and_idle(tid: u32, signal: u32) -> ! {
         if let Some(idx) = sched.find_idx(tid) {
             if !sched.threads[idx].is_idle && !sched.is_idle_tid(tid) {
                 let tick = crate::arch::hal::timer_current_ticks();
+                if let Some(pd) = sched.threads[idx].page_directory {
+                    if !sched.threads[idx].pd_shared {
+                        let has_live_siblings = sched.threads.iter().any(|t| {
+                            t.tid != tid
+                                && t.page_directory == Some(pd)
+                                && t.state != ThreadState::Terminated
+                        });
+                        if !has_live_siblings {
+                            pd_to_destroy = Some(pd);
+                        }
+                    }
+                }
                 sched.remove_from_all_queues(tid);
                 sched.threads[idx].state = ThreadState::Terminated;
                 sched.threads[idx].exit_code = Some(signal);
@@ -598,6 +666,10 @@ pub fn fault_kill_tid_and_idle(tid: u32, signal: u32) -> ! {
     let kcr3 = crate::memory::virtual_mem::kernel_cr3();
     crate::arch::hal::switch_page_table(kcr3);
     defer_fault_exit_cleanup(tid, signal, &[]);
+    if let Some(pd) = pd_to_destroy {
+        crate::task::env::cleanup(pd.as_u64());
+        defer_fault_pd_destroy(pd, tid);
+    }
     enter_idle_recovery(cpu_id, idle_stack_top, idle_ctx);
 }
 
@@ -611,7 +683,7 @@ pub fn kill_thread(tid: u32) -> u32 {
     let mut pd_to_destroy: Option<PhysAddr> = None;
     let is_current;
     let running_on_other_cpu;
-    let mut killed_children: alloc::vec::Vec<u32>;
+    let killed_children: alloc::vec::Vec<TerminatedChildCleanup>;
     let mut wake_kick_cpu: Option<usize> = None;
 
     crate::sched_diag::set(
@@ -695,29 +767,8 @@ pub fn kill_thread(tid: u32) -> u32 {
     // ── Resource cleanup for killed children ──────────────────────
     cleanup_killed_children(&killed_children);
 
-    // Resource cleanup for the target thread itself (FDs, shared memory, TCP, env).
-    {
-        use crate::fs::fd_table::FdKind;
-        let closed = close_all_fds_for_thread(tid);
-        for kind in closed.iter() {
-            match kind {
-                FdKind::File { global_id } => {
-                    crate::fs::vfs::decref(*global_id);
-                }
-                FdKind::PipeRead { pipe_id } => {
-                    crate::ipc::anon_pipe::decref_read(*pipe_id);
-                }
-                FdKind::PipeWrite { pipe_id } => {
-                    crate::ipc::anon_pipe::decref_write(*pipe_id);
-                }
-                FdKind::LinuxSocket { socket_id } => {
-                    crate::syscall::linux::socket_decref(*socket_id);
-                }
-                FdKind::Tty | FdKind::PtySlave { .. } | FdKind::LinuxProc { .. } | FdKind::None => {
-                }
-            }
-        }
-    }
+    // Resource cleanup for the target thread itself (FDs, TCP/UDP, audio).
+    cleanup_thread_resources(tid);
     if let Some(pd) = pd_to_destroy {
         if is_current {
             crate::ipc::shared_memory::cleanup_process(tid);
@@ -732,10 +783,6 @@ pub fn kill_thread(tid: u32) -> u32 {
             }
         }
     }
-    crate::net::tcp::cleanup_for_thread(tid);
-    crate::net::udp::cleanup_for_thread(tid);
-    // Clean up audio mixer channels
-    crate::drivers::audio::mixer::close_channels_for_pid(tid);
     if let Some(pd) = pd_to_destroy {
         crate::task::env::cleanup(pd.as_u64());
     }

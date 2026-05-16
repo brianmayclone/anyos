@@ -122,8 +122,25 @@ pub(super) fn linux_resolve_translated_path(
     result
 }
 
-pub(super) fn linux_resolve_cache_invalidate() {
-    LXE_RESOLVE_CACHE.lock().clear();
+pub(super) fn linux_resolve_cache_invalidate_path(path: &str) {
+    let rootfs = current_linux_rootfs();
+    let normalized = crate::fs::path::normalize(path);
+    let mut cache = LXE_RESOLVE_CACHE.lock();
+    cache.retain(|entry| {
+        if entry.rootfs != rootfs {
+            return true;
+        }
+        !linux_cache_path_affected(&entry.path, &normalized)
+    });
+}
+
+fn linux_cache_path_affected(cached: &str, changed: &str) -> bool {
+    cached == changed
+        || (cached.starts_with(changed)
+            && cached
+                .as_bytes()
+                .get(changed.len())
+                .map_or(false, |b| *b == b'/'))
 }
 
 fn linux_resolve_cache_get(

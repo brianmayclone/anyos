@@ -136,6 +136,9 @@ pub(super) fn linux_open_linux_path(path: &str, linux_flags: u64) -> u64 {
         return fd as u64;
     }
     if let Some((proc_file, pid)) = linux_proc_node(&abs) {
+        if let Some(ret) = linux_open_proc_fd_entry(&abs, proc_file, pid, linux_flags) {
+            return ret;
+        }
         return linux_open_proc_file(&abs, proc_file, pid, linux_flags);
     }
     let translated = linux_translate_absolute_path(&abs);
@@ -170,7 +173,7 @@ pub(super) fn linux_open_translated(path: &str, linux_flags: u64, linux_path: &s
         }
     };
     if file_flags.create {
-        linux_resolve_cache_invalidate();
+        linux_resolve_cache_invalidate_path(&resolved_path);
     }
     let local_fd =
         match crate::task::scheduler::current_fd_alloc(crate::fs::fd_table::FdKind::File {
@@ -615,7 +618,8 @@ pub(super) fn linux_rename(old_ptr: u64, new_ptr: u64) -> u64 {
     };
     match crate::fs::vfs::rename(&old_path, &new_path) {
         Ok(()) => {
-            linux_resolve_cache_invalidate();
+            linux_resolve_cache_invalidate_path(&old_path);
+            linux_resolve_cache_invalidate_path(&new_path);
             0
         }
         Err(e) => linux_fs_err(e),
@@ -633,7 +637,8 @@ pub(super) fn linux_renameat(old_dirfd: i32, old_ptr: u64, new_dirfd: i32, new_p
     };
     match crate::fs::vfs::rename(&old_path, &new_path) {
         Ok(()) => {
-            linux_resolve_cache_invalidate();
+            linux_resolve_cache_invalidate_path(&old_path);
+            linux_resolve_cache_invalidate_path(&new_path);
             0
         }
         Err(e) => linux_fs_err(e),
@@ -705,7 +710,7 @@ fn linux_link_translated(old_path: &str, new_path: &str, nofollow: bool) -> u64 
         };
         return match crate::fs::vfs::create_symlink(&new_resolved, &target) {
             Ok(()) => {
-                linux_resolve_cache_invalidate();
+                linux_resolve_cache_invalidate_path(&new_resolved);
                 0
             }
             Err(e) => linux_fs_err(e),
@@ -714,7 +719,7 @@ fn linux_link_translated(old_path: &str, new_path: &str, nofollow: bool) -> u64 
 
     let result = linux_copy_regular_file(&old_resolved, &new_resolved, st.mode, st.uid, st.gid);
     if result == 0 {
-        linux_resolve_cache_invalidate();
+        linux_resolve_cache_invalidate_path(&new_resolved);
     }
     result
 }
@@ -808,7 +813,7 @@ fn linux_symlink_translated(target_ptr: u64, link_path: &str) -> u64 {
     };
     match crate::fs::vfs::create_symlink(link_path, target) {
         Ok(()) => {
-            linux_resolve_cache_invalidate();
+            linux_resolve_cache_invalidate_path(link_path);
             0
         }
         Err(e) => linux_fs_err(e),
@@ -822,7 +827,7 @@ pub(super) fn linux_mkdir(path_ptr: u64, _mode: u64) -> u64 {
     };
     match crate::fs::vfs::mkdir(&path) {
         Ok(()) => {
-            linux_resolve_cache_invalidate();
+            linux_resolve_cache_invalidate_path(&path);
             0
         }
         Err(e) => linux_fs_err(e),
@@ -836,7 +841,7 @@ pub(super) fn linux_mkdirat(dirfd: i32, path_ptr: u64, _mode: u64) -> u64 {
     };
     match crate::fs::vfs::mkdir(&path) {
         Ok(()) => {
-            linux_resolve_cache_invalidate();
+            linux_resolve_cache_invalidate_path(&path);
             0
         }
         Err(e) => linux_fs_err(e),
@@ -872,7 +877,7 @@ pub(super) fn linux_unlink_translated(path: &str) -> u64 {
     }
     match crate::fs::vfs::delete(path) {
         Ok(()) => {
-            linux_resolve_cache_invalidate();
+            linux_resolve_cache_invalidate_path(path);
             0
         }
         Err(e) => linux_fs_err(e),
