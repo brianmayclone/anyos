@@ -4,12 +4,25 @@ use super::{clamp_priority, get_cpu_id, SCHEDULER};
 
 /// Set the priority of a thread by TID (clamped to 0–127).
 pub fn set_thread_priority(tid: u32, priority: u8) {
-    let priority = clamp_priority(priority, "set_thread_priority");
+    let mut priority = clamp_priority(priority, "set_thread_priority");
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_PRIORITY);
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
         if let Some(idx) = sched.find_idx(tid) {
+            if sched.threads[idx].abi == crate::task::abi::AbiPersonality::LinuxX86_64
+                && priority > crate::task::abi::LINUX_MAX_USER_PRIORITY
+            {
+                priority = crate::task::abi::LINUX_MAX_USER_PRIORITY;
+            }
             sched.threads[idx].priority = priority;
+            if sched.threads[idx].state == crate::task::thread::ThreadState::Ready {
+                let cpu = (sched.threads[idx].affinity_cpu as usize)
+                    .min(sched.per_cpu.len().saturating_sub(1));
+                for per_cpu in sched.per_cpu.iter_mut() {
+                    per_cpu.run_queue.remove(tid);
+                }
+                sched.per_cpu[cpu].run_queue.enqueue(tid, priority);
+            }
         }
     }
 }

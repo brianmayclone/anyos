@@ -4,6 +4,8 @@
 //! userspace ABI. Native anyOS programs keep the existing syscall numbering and
 //! register convention; lxe processes use the Linux x86_64 syscall ABI.
 
+pub const LINUX_MAX_USER_PRIORITY: u8 = 100;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AbiPersonality {
     AnyOs,

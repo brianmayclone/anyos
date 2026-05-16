@@ -59,10 +59,7 @@ pub fn launch_app(shm_id: u32) -> u32 {
         }
     };
     let args = core::str::from_utf8(args_bytes).unwrap_or("");
-    anyos_std::println!(
-        "[sessionhost/launch] spawn path='{}' args='{}'",
-        path, args
-    );
+    anyos_std::println!("[sessionhost/launch] spawn path='{}' args='{}'", path, args);
 
     // Try to spawn
     let tid = process::spawn_piped(path, args, 0);

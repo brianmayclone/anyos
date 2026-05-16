@@ -35,18 +35,17 @@ pub struct CrashReport {
     pub valid: bool,
 }
 
-pub fn launch_crash_dialog(tid: u32, exit_code: u32) {
+pub fn launch_crash_dialog(tid: u32) {
     let mut buf = [0u8; core::mem::size_of::<CrashReport>()];
     let bytes = anyos_std::sys::get_crash_info(tid, &mut buf);
 
-    if bytes > 0 {
-        let report = unsafe { &*(buf.as_ptr() as *const CrashReport) };
-        let name_len = report.name.iter().position(|&b| b == 0).unwrap_or(32);
-        let name = core::str::from_utf8(&report.name[..name_len]).unwrap_or("unknown");
-        let args = format!("{} {} {:x} {}", tid, report.signal, report.rip, name);
-        anyos_std::process::spawn(CRASH_DIALOG_PATH, &args);
-    } else {
-        let args = format!("{} {} 0 unknown", tid, exit_code);
-        anyos_std::process::spawn(CRASH_DIALOG_PATH, &args);
+    if bytes == 0 {
+        return;
     }
+
+    let report = unsafe { &*(buf.as_ptr() as *const CrashReport) };
+    let name_len = report.name.iter().position(|&b| b == 0).unwrap_or(32);
+    let name = core::str::from_utf8(&report.name[..name_len]).unwrap_or("unknown");
+    let args = format!("{} {} {:x} {}", tid, report.signal, report.rip, name);
+    anyos_std::process::spawn(CRASH_DIALOG_PATH, &args);
 }

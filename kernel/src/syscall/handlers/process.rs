@@ -1035,7 +1035,12 @@ pub fn sys_fork_with_child_tidptr(
     let parent_name = core::str::from_utf8(&snap.name[..name_len]).unwrap_or("?");
 
     // 4. Spawn child thread in Blocked state (prevents SMP race)
-    let child_tid = scheduler::spawn_blocked(fork_child_trampoline, snap.priority, parent_name);
+    let child_priority = if snap.abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
+        snap.priority.min(crate::task::abi::LINUX_MAX_USER_PRIORITY)
+    } else {
+        snap.priority
+    };
+    let child_tid = scheduler::spawn_blocked(fork_child_trampoline, child_priority, parent_name);
     if child_tid == 0 {
         crate::memory::virtual_mem::destroy_user_page_directory(child_pd);
         crate::memory::vma::destroy_process(child_pd);
@@ -1231,7 +1236,12 @@ pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
         .unwrap_or(snap.name.len());
     let parent_name = core::str::from_utf8(&snap.name[..name_len]).unwrap_or("?");
 
-    let child_tid = scheduler::spawn_blocked(fork_child_trampoline, snap.priority, parent_name);
+    let child_priority = if snap.abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
+        snap.priority.min(crate::task::abi::LINUX_MAX_USER_PRIORITY)
+    } else {
+        snap.priority
+    };
+    let child_tid = scheduler::spawn_blocked(fork_child_trampoline, child_priority, parent_name);
     if child_tid == 0 {
         crate::memory::virtual_mem::destroy_user_page_directory(child_pd);
         crate::memory::vma::destroy_process(child_pd);

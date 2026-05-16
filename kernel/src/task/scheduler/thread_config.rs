@@ -51,6 +51,17 @@ pub fn set_thread_abi(tid: u32, abi: AbiPersonality) {
     };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.abi = abi;
+        if abi == AbiPersonality::LinuxX86_64
+            && thread.priority > crate::task::abi::LINUX_MAX_USER_PRIORITY
+        {
+            crate::serial_verbose_println!(
+                "lxe priority: clamp tid={} {} -> {}",
+                tid,
+                thread.priority,
+                crate::task::abi::LINUX_MAX_USER_PRIORITY
+            );
+            thread.priority = crate::task::abi::LINUX_MAX_USER_PRIORITY;
+        }
     }
 }
 

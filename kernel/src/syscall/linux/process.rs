@@ -575,9 +575,17 @@ pub(super) fn linux_setpriority(which: u64, who: i32, prio: i32) -> u64 {
     }
     match which {
         PRIO_PROCESS => {
-            if who > 0 && !crate::task::scheduler::thread_exists(who as u32) {
+            let tid = if who > 0 {
+                who as u32
+            } else {
+                crate::task::scheduler::current_tid()
+            };
+            if !crate::task::scheduler::thread_exists(tid) {
                 return linux_err(ESRCH);
             }
+            let priority =
+                (80 - prio).clamp(1, crate::task::abi::LINUX_MAX_USER_PRIORITY as i32) as u8;
+            crate::task::scheduler::set_thread_priority(tid, priority);
         }
         PRIO_PGRP | PRIO_USER => {}
         _ => return linux_err(EINVAL),

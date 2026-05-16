@@ -1,4 +1,18 @@
 use super::*;
+use crate::sync::spinlock::Spinlock;
+
+const LXE_RESOLVE_CACHE_MAX: usize = 256;
+
+#[derive(Clone)]
+struct LxeResolveCacheEntry {
+    rootfs: String,
+    path: String,
+    follow_last: bool,
+    allow_missing_final: bool,
+    result: Result<String, i32>,
+}
+
+static LXE_RESOLVE_CACHE: Spinlock<Vec<LxeResolveCacheEntry>> = Spinlock::new(Vec::new());
 
 pub(super) fn linux_translate_user_path(path_ptr: u64) -> Result<String, i32> {
     let path = super::handlers::helpers::read_user_str_safe(path_ptr).ok_or(EFAULT)?;
@@ -86,7 +100,77 @@ pub(super) fn linux_resolve_translated_path(
     if !linux_path_under_rootfs(&rootfs, &normalized) {
         return Ok(normalized);
     }
-    linux_resolve_translated_path_inner(&rootfs, &normalized, follow_last, allow_missing_final, 0)
+    if let Some(result) =
+        linux_resolve_cache_get(&rootfs, &normalized, follow_last, allow_missing_final)
+    {
+        return result;
+    }
+    let result = linux_resolve_translated_path_inner(
+        &rootfs,
+        &normalized,
+        follow_last,
+        allow_missing_final,
+        0,
+    );
+    linux_resolve_cache_put(
+        rootfs,
+        normalized,
+        follow_last,
+        allow_missing_final,
+        result.clone(),
+    );
+    result
+}
+
+pub(super) fn linux_resolve_cache_invalidate() {
+    LXE_RESOLVE_CACHE.lock().clear();
+}
+
+fn linux_resolve_cache_get(
+    rootfs: &str,
+    path: &str,
+    follow_last: bool,
+    allow_missing_final: bool,
+) -> Option<Result<String, i32>> {
+    let cache = LXE_RESOLVE_CACHE.lock();
+    cache
+        .iter()
+        .find(|entry| {
+            entry.rootfs == rootfs
+                && entry.path == path
+                && entry.follow_last == follow_last
+                && entry.allow_missing_final == allow_missing_final
+        })
+        .map(|entry| entry.result.clone())
+}
+
+fn linux_resolve_cache_put(
+    rootfs: String,
+    path: String,
+    follow_last: bool,
+    allow_missing_final: bool,
+    result: Result<String, i32>,
+) {
+    let mut cache = LXE_RESOLVE_CACHE.lock();
+    if let Some(entry) = cache.iter_mut().find(|entry| {
+        entry.rootfs == rootfs
+            && entry.path == path
+            && entry.follow_last == follow_last
+            && entry.allow_missing_final == allow_missing_final
+    }) {
+        entry.result = result;
+        return;
+    }
+    if cache.len() >= LXE_RESOLVE_CACHE_MAX {
+        cache.remove(0);
+    }
+    cache.push(LxeResolveCacheEntry {
+        rootfs,
+        path,
+        follow_last,
+        allow_missing_final,
+        result,
+    });
 }
 
 pub(super) fn linux_resolve_translated_path_inner(
