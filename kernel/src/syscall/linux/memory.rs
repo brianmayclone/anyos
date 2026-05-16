@@ -322,13 +322,16 @@ pub(super) fn linux_read_fd_at(
         crate::fs::fd_table::FdKind::File { global_id } => global_id,
         _ => return Err(EBADF),
     };
+    let out = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
+    match crate::fs::vfs::read_at(global_id, offset as u32, out) {
+        Ok(n) => return Ok(n),
+        Err(crate::fs::vfs::FsError::NotSupported) => {}
+        Err(e) => return Err(fs_errno(e)),
+    }
     let (_file_type, _size, old_pos, _mtime) =
         crate::fs::vfs::fstat(global_id).map_err(fs_errno)?;
     crate::fs::vfs::lseek(global_id, offset as i32, 0).map_err(fs_errno)?;
-    let read_result = unsafe {
-        let out = core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len);
-        crate::fs::vfs::read(global_id, out).map_err(fs_errno)
-    };
+    let read_result = crate::fs::vfs::read(global_id, out).map_err(fs_errno);
     let _ = crate::fs::vfs::lseek(global_id, old_pos as i32, 0);
     read_result
 }

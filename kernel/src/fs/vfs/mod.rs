@@ -500,6 +500,22 @@ enum DetachedStatBackend {
     ExFat(Arc<ExFatFsDriver>),
 }
 
+struct DetachedStat {
+    backend: DetachedStatBackend,
+    path: String,
+    follow_last: bool,
+}
+
+enum DetachedReadlinkBackend {
+    CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
+    ExFat(Arc<ExFatFsDriver>),
+}
+
+struct DetachedReadlink {
+    backend: DetachedReadlinkBackend,
+    path: String,
+}
+
 enum DetachedDeleteBackend {
     CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
     ExFat(Arc<ExFatFsDriver>),
@@ -1238,23 +1254,145 @@ fn execute_detached_mkdir(plan: DetachedMkdir) -> Result<(), FsError> {
     }
 }
 
-fn detached_stat(backend: &DetachedStatBackend, path: &str) -> Result<StatResult, FsError> {
-    match backend {
-        DetachedStatBackend::CoreFs(driver) => Filesystem::stat(driver.as_ref(), path),
-        DetachedStatBackend::ExFat(driver) => Filesystem::stat(driver.as_ref(), path),
+fn execute_detached_stat(plan: &DetachedStat) -> Result<StatResult, FsError> {
+    match &plan.backend {
+        DetachedStatBackend::CoreFs(driver) => Filesystem::stat(driver.as_ref(), &plan.path),
+        DetachedStatBackend::ExFat(driver) => {
+            let fs = driver.lock_inner();
+            let entry = resolve_exfat_path(&fs, &plan.path, plan.follow_last)?;
+            Ok(StatResult {
+                file_type: entry.file_type,
+                size: entry.size,
+                is_symlink: entry.is_symlink,
+                uid: entry.uid,
+                gid: entry.gid,
+                mode: entry.mode,
+                mtime: entry.mtime,
+            })
+        }
     }
 }
 
-fn prepare_detached_root_stat(path: &str, follow_last: bool) -> Option<DetachedStatBackend> {
-    if !follow_last || is_dev_path(path) {
+fn prepare_detached_stat(path: &str, follow_last: bool) -> Option<DetachedStat> {
+    if is_dev_path(path) {
         return None;
     }
     let vfs = vfs_lock();
     let state = vfs.as_ref()?;
-    if find_submount(path, &state.mount_points).is_some() {
+
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points)
+    {
+        let q = if relative_path.is_empty() {
+            String::from("/")
+        } else {
+            String::from(relative_path)
+        };
+        return match mnt_fs_type {
+            FsType::CoreFs => state
+                .mounted_corefs
+                .iter()
+                .find(|(p, _)| p == mount_path)
+                .map(|(_, driver)| DetachedStat {
+                    backend: DetachedStatBackend::CoreFs(Arc::clone(driver)),
+                    path: q,
+                    follow_last,
+                }),
+            FsType::ExFat => {
+                let mount_path_owned = String::from(mount_path);
+                state
+                    .mounted_exfat
+                    .iter()
+                    .find(|(p, _)| *p == mount_path_owned)
+                    .map(|(_, driver)| DetachedStat {
+                        backend: DetachedStatBackend::ExFat(Arc::clone(driver)),
+                        path: q,
+                        follow_last,
+                    })
+            }
+            _ => None,
+        };
+    }
+
+    let q = if path.is_empty() { "/" } else { path };
+    root_stat_backend(state).map(|backend| DetachedStat {
+        backend,
+        path: String::from(q),
+        follow_last,
+    })
+}
+
+fn prepare_detached_readlink(path: &str) -> Option<DetachedReadlink> {
+    if is_dev_path(path) {
         return None;
     }
-    root_stat_backend(state)
+    let vfs = vfs_lock();
+    let state = vfs.as_ref()?;
+
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points)
+    {
+        let q = if relative_path.is_empty() {
+            String::from("/")
+        } else {
+            String::from(relative_path)
+        };
+        return match mnt_fs_type {
+            FsType::CoreFs => state
+                .mounted_corefs
+                .iter()
+                .find(|(p, _)| p == mount_path)
+                .map(|(_, driver)| DetachedReadlink {
+                    backend: DetachedReadlinkBackend::CoreFs(Arc::clone(driver)),
+                    path: q,
+                }),
+            FsType::ExFat => {
+                let mount_path_owned = String::from(mount_path);
+                state
+                    .mounted_exfat
+                    .iter()
+                    .find(|(p, _)| *p == mount_path_owned)
+                    .map(|(_, driver)| DetachedReadlink {
+                        backend: DetachedReadlinkBackend::ExFat(Arc::clone(driver)),
+                        path: q,
+                    })
+            }
+            _ => None,
+        };
+    }
+
+    if state.root_fs_type == Some(FsType::CoreFs) {
+        return state.corefs_driver.as_ref().map(|driver| DetachedReadlink {
+            backend: DetachedReadlinkBackend::CoreFs(Arc::clone(driver)),
+            path: String::from(if path.is_empty() { "/" } else { path }),
+        });
+    }
+    if state.root_fs_type == Some(FsType::ExFat) {
+        return state.exfat_fs.as_ref().map(|driver| DetachedReadlink {
+            backend: DetachedReadlinkBackend::ExFat(Arc::clone(driver)),
+            path: String::from(if path.is_empty() { "/" } else { path }),
+        });
+    }
+    None
+}
+
+fn execute_detached_readlink(plan: DetachedReadlink) -> Result<String, FsError> {
+    match plan.backend {
+        DetachedReadlinkBackend::CoreFs(driver) => {
+            let st = Filesystem::stat(driver.as_ref(), &plan.path)?;
+            if !st.is_symlink {
+                return Err(FsError::InvalidPath);
+            }
+            let (inode, _, _) = Filesystem::lookup(driver.as_ref(), &plan.path)?;
+            Filesystem::readlink(driver.as_ref(), inode)
+        }
+        DetachedReadlinkBackend::ExFat(driver) => {
+            let fs = driver.lock_inner();
+            let r = resolve_exfat_path(&fs, &plan.path, false)?;
+            if !r.is_symlink {
+                return Err(FsError::InvalidPath);
+            }
+            fs.readlink(r.inode, r.size)
+        }
+    }
 }
 
 impl VfsState {
@@ -2593,6 +2731,64 @@ fn prepare_detached_read(slot_id: FileDescriptor, len: usize) -> Result<Detached
     }))
 }
 
+fn prepare_detached_read_at(
+    slot_id: FileDescriptor,
+    offset: u32,
+    len: usize,
+) -> Result<DetachedReadPrep, FsError> {
+    if len == 0 {
+        return Ok(DetachedReadPrep::Eof);
+    }
+
+    let vfs = vfs_lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+    let (fs_id, path, size, inode) = {
+        let file = state
+            .open_files
+            .get(slot_id as usize)
+            .and_then(|e| e.as_ref())
+            .ok_or(FsError::BadFd)?;
+        (file.fs_id, file.path.clone(), file.size, file.inode)
+    };
+
+    let backend = match fs_id {
+        3 => {
+            let driver = state
+                .exfat_fs
+                .as_ref()
+                .map(Arc::clone)
+                .ok_or(FsError::IoError)?;
+            DetachedReadBackend::ExFat(driver)
+        }
+        6 => {
+            let driver = state
+                .mounted_exfat_handle_for_path(&path)
+                .ok_or(FsError::IoError)?;
+            DetachedReadBackend::ExFat(driver)
+        }
+        8 => {
+            let driver = state
+                .corefs_handle_for_path(&path)
+                .ok_or(FsError::IoError)?;
+            DetachedReadBackend::CoreFs(driver)
+        }
+        _ => return Ok(DetachedReadPrep::Unsupported),
+    };
+
+    if offset >= size {
+        return Ok(DetachedReadPrep::Eof);
+    }
+
+    Ok(DetachedReadPrep::Ready(DetachedRead {
+        backend,
+        inode,
+        position: offset,
+        size,
+        reserved: len.min((size - offset) as usize),
+        path,
+    }))
+}
+
 fn finish_detached_read(
     slot_id: FileDescriptor,
     plan: &DetachedRead,
@@ -3137,6 +3333,15 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
 
     file.position += bytes_read as u32;
     Ok(bytes_read)
+}
+
+/// Read bytes from an open file at a fixed offset without changing its seek position.
+pub fn read_at(slot_id: FileDescriptor, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+    match prepare_detached_read_at(slot_id, offset, buf.len())? {
+        DetachedReadPrep::Eof => Ok(0),
+        DetachedReadPrep::Ready(plan) => execute_detached_read(&plan, buf),
+        DetachedReadPrep::Unsupported => Err(FsError::NotSupported),
+    }
 }
 
 /// Write bytes from `buf` to an open file. `slot_id` is the global open_files index.
@@ -4210,9 +4415,8 @@ pub fn lstat(path: &str) -> Result<StatResult, FsError> {
 }
 
 fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
-    if let Some(backend) = prepare_detached_root_stat(path, follow_last) {
-        let q = if path.is_empty() { "/" } else { path };
-        return detached_stat(&backend, q);
+    if let Some(plan) = prepare_detached_stat(path, follow_last) {
+        return execute_detached_stat(&plan);
     }
 
     let mut vfs = vfs_lock();
@@ -5032,6 +5236,9 @@ pub fn readlink(path: &str) -> Result<String, FsError> {
     if is_dev_path(path) {
         return Err(FsError::InvalidPath);
     }
+    if let Some(plan) = prepare_detached_readlink(path) {
+        return execute_detached_readlink(plan);
+    }
     let vfs = vfs_lock();
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
 
@@ -5124,17 +5331,12 @@ pub fn get_permissions(path: &str) -> Result<(u16, u16, u16), FsError> {
     // All three now derive from `stat(path)`, which carries uid/gid/mode
     // when the driver populates them (ExFat: dirent, CoreFS: inode
     // metadata; FAT/NTFS return the trait's `0o777` default).
-    let q = if path.is_empty() { "/" } else { path };
-    let backend = {
-        let vfs = vfs_lock();
-        let state = vfs.as_ref().ok_or(FsError::NotFound)?;
-        root_stat_backend(state)
-    };
-    if let Some(backend) = backend {
-        if let Ok(st) = detached_stat(&backend, q) {
+    if let Some(plan) = prepare_detached_stat(path, true) {
+        if let Ok(st) = execute_detached_stat(&plan) {
             return Ok((st.uid, st.gid, st.mode));
         }
     } else {
+        let q = if path.is_empty() { "/" } else { path };
         let vfs = vfs_lock();
         let state = vfs.as_ref().ok_or(FsError::NotFound)?;
         if let Some(driver) = state.root_fs() {
