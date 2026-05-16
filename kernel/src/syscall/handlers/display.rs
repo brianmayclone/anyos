@@ -994,10 +994,15 @@ pub fn sys_boot_ready() -> u32 {
 /// Returns: 0 on success, 1 = no GPU, 2 = buffer too small.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_capture_screen(buf_ptr: u64, buf_size: u32, info_ptr: u64) -> u32 {
-    let (width, height, pitch, fb_phys) = match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
+    let (width, height, pitch, _fb_phys) = match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
         Some(m) => m,
         None => return 1,
     };
+    let pages_vec: alloc::vec::Vec<u64> =
+        match crate::drivers::gpu::with_gpu(|g| g.framebuffer_pages()) {
+            Some(v) => v,
+            None => return 1,
+        };
 
     // Always write dimensions + pitch to info struct (even if buffer too small),
     // so callers can probe the resolution without a full-size buffer.
@@ -1017,20 +1022,19 @@ pub fn sys_capture_screen(buf_ptr: u64, buf_size: u32, info_ptr: u64) -> u32 {
     }
 
     // Map framebuffer physical pages into the current process at 0x30000000
-    // (read-only user access: PAGE_PRESENT | PAGE_USER).
-    // Skip re-mapping if already mapped (check first page's PTE).
+    // (read-only user access: PAGE_PRESENT | PAGE_USER). Re-map every time:
+    // the active framebuffer may have changed from contiguous to scatter-gather.
     let fb_map_base: u64 = 0x3000_0000;
     let fb_total_bytes = height as usize * pitch as usize;
     let fb_pages = (fb_total_bytes + 0xFFF) / 0x1000;
+    if fb_pages > pages_vec.len() {
+        return 1;
+    }
 
-    let first_virt = crate::memory::address::VirtAddr::new(fb_map_base);
-    let already_mapped = crate::memory::virtual_mem::read_pte(first_virt) & 0x01 != 0;
-    if !already_mapped {
-        for i in 0..fb_pages {
-            let phys = crate::memory::address::PhysAddr::new(fb_phys as u64 + (i * 0x1000) as u64);
-            let virt = crate::memory::address::VirtAddr::new(fb_map_base + (i * 0x1000) as u64);
-            crate::memory::virtual_mem::map_page(virt, phys, 0x05);
-        }
+    for i in 0..fb_pages {
+        let phys = crate::memory::address::PhysAddr::new(pages_vec[i]);
+        let virt = crate::memory::address::VirtAddr::new(fb_map_base + (i * 0x1000) as u64);
+        crate::memory::virtual_mem::map_page(virt, phys, 0x05);
     }
 
     // Copy pixels row by row (pitch may differ from width*4)
@@ -1114,11 +1118,21 @@ pub fn sys_vram_map(target_tid: u32, vram_offset: u32, num_bytes: u32) -> u32 {
         return 0;
     }
 
-    // Get framebuffer physical base from GPU
-    let fb_phys = match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
-        Some((_, _, _, phys)) => phys as u64,
+    let (_, height, pitch, fb_phys) = match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
+        Some(mode) => mode,
         None => return 0,
     };
+    let pages_vec: alloc::vec::Vec<u64> =
+        match crate::drivers::gpu::with_gpu(|g| g.framebuffer_pages()) {
+            Some(v) => v,
+            None => return 0,
+        };
+    let fb_total_bytes = (height as usize).saturating_mul(pitch as usize);
+    let map_offset = vram_offset as usize;
+    let map_bytes = ((num_bytes as usize) + 4095) & !4095usize;
+    if map_offset >= fb_total_bytes || map_offset.saturating_add(map_bytes) > fb_total_bytes {
+        return 0;
+    }
 
     // Get target thread's page directory
     let pd_phys = match crate::task::scheduler::thread_page_directory(target_tid) {
@@ -1130,15 +1144,18 @@ pub fn sys_vram_map(target_tid: u32, vram_offset: u32, num_bytes: u32) -> u32 {
     };
 
     let user_va_base: u64 = 0x1800_0000;
-    let pages = ((num_bytes as usize + 4095) / 4096) as usize;
+    let start_page = map_offset / 4096;
+    let pages = map_bytes / 4096;
+    if start_page.saturating_add(pages) > pages_vec.len() {
+        return 0;
+    }
 
     // Map VRAM pages into the target's address space
     // Flags: Present + Writable + User + Write-Through + PTE_VRAM
     let flags: u64 = 0x0F | crate::memory::virtual_mem::PTE_VRAM; // 0x20F
 
     for i in 0..pages {
-        let phys =
-            crate::memory::address::PhysAddr::new(fb_phys + vram_offset as u64 + (i * 4096) as u64);
+        let phys = crate::memory::address::PhysAddr::new(pages_vec[start_page + i]);
         let virt = crate::memory::address::VirtAddr::new(user_va_base + (i * 4096) as u64);
         crate::memory::virtual_mem::map_page_in_pd(pd_phys, virt, phys, flags);
     }
@@ -1991,10 +2008,20 @@ pub fn sys_display_map_fb(output_id: u32, out_info_ptr: u64) -> u32 {
         return u32::MAX;
     }
     let pages = (fb_total_bytes + crate::memory::FRAME_SIZE - 1) / crate::memory::FRAME_SIZE;
+    let primary_pages: Option<alloc::vec::Vec<u64>> = if output_id == 0 {
+        match crate::drivers::gpu::with_gpu(|g| g.framebuffer_pages()) {
+            Some(v) if v.len() >= pages => Some(v),
+            _ => return u32::MAX,
+        }
+    } else {
+        None
+    };
     for i in 0..pages {
-        let phys_addr = crate::memory::address::PhysAddr::new(
-            fb_phys as u64 + (i * crate::memory::FRAME_SIZE) as u64,
-        );
+        let phys = primary_pages
+            .as_ref()
+            .map(|v| v[i])
+            .unwrap_or(fb_phys as u64 + (i * crate::memory::FRAME_SIZE) as u64);
+        let phys_addr = crate::memory::address::PhysAddr::new(phys);
         let virt_addr = crate::memory::address::VirtAddr::new(
             fb_user_base + (i * crate::memory::FRAME_SIZE) as u64,
         );

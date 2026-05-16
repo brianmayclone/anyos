@@ -55,7 +55,9 @@ pub fn unregister_device_io(disk_id: u8) {
 pub fn read_via_override(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bool {
     let overrides = IO_OVERRIDES.lock();
     if let Some(handler) = overrides.iter().find(|h| h.disk_id == disk_id) {
-        return (handler.read_fn)(disk_id, lba, count, buf);
+        let f = handler.read_fn;
+        drop(overrides);
+        return f(disk_id, lba, count, buf);
     }
     false
 }
@@ -339,6 +341,7 @@ fn io_lock_acquire_slow(
     op: IoLockOp,
 ) {
     let can_yield = crate::task::scheduler::current_tid() > 0;
+    let mut attempts = 0u32;
     loop {
         // Brief spin (8 iterations) before yielding — handles very short holds
         for _ in 0..8 {
@@ -359,9 +362,9 @@ fn io_lock_acquire_slow(
             }
             core::hint::spin_loop();
         }
-        // Yield CPU time slice so other threads can run (only if scheduler is active)
+        // Back off so IO_LOCK storms don't turn into hot scheduler loops.
         if can_yield {
-            crate::task::scheduler::schedule();
+            crate::task::scheduler::contention_backoff(&mut attempts);
         }
     }
 }
@@ -914,13 +917,11 @@ pub fn flush() {
 /// Flush a specific disk's hardware write cache to persistent media when the
 /// active backend supports it.
 pub fn flush_disk(disk_id: u8) {
-    io_lock_acquire(IoLockOp::new(IO_OP_FLUSH, disk_id, 0, 0));
-    match unsafe { BACKEND } {
-        StorageBackend::Ahci => {
-            let _ = ahci::flush_disk(disk_id);
-        }
-        _ => {} // ATA/NVMe/SCSI: no explicit flush needed or not supported
+    if !matches!(unsafe { BACKEND }, StorageBackend::Ahci) {
+        return;
     }
+    io_lock_acquire(IoLockOp::new(IO_OP_FLUSH, disk_id, 0, 0));
+    let _ = ahci::flush_disk(disk_id);
     io_lock_release();
 }
 

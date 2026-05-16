@@ -11,10 +11,14 @@ use super::GpuDriver;
 use crate::drivers::pci::PciDevice;
 use crate::drivers::virtio::virtqueue::VirtQueue;
 use crate::drivers::virtio::{self, VirtioDevice, VIRTIO_F_VERSION_1};
-use crate::memory::physical;
+use crate::memory::address::{PhysAddr, VirtAddr};
+use crate::memory::{physical, physmap, virtual_mem};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
+
+const PRIMARY_FB_VMAP_BASE: u64 = 0xFFFF_FFFF_C000_0000;
+const PRIMARY_FB_VMAP_MAX_BYTES: usize = 128 * 1024 * 1024;
 
 // ──────────────────────────────────────────────
 // VirtIO GPU Command Types
@@ -425,6 +429,7 @@ pub struct VirtioGpu {
     fb_phys: u64,
     fb_pages: usize,
     fb_page_list: alloc::vec::Vec<u64>,
+    fb_kernel_virt: u64,
     /// Byte offset inside the scanout resource's attached backing where
     /// pixel 0 starts. Normally 0 for the driver's own framebuffer pages;
     /// non-zero when the compositor registers a Vec-backed DMA buffer that
@@ -493,6 +498,69 @@ pub struct VirtioGpu {
 unsafe impl Send for VirtioGpu {}
 
 impl VirtioGpu {
+    fn free_page_list(pages: &[u64]) {
+        for &p in pages {
+            physical::free_frame(PhysAddr::new(p));
+        }
+    }
+
+    fn zero_page_list(pages: &[u64]) {
+        for &p in pages {
+            let ptr = physmap::phys_to_virt_or_identity(PhysAddr::new(p));
+            unsafe {
+                core::ptr::write_bytes(ptr, 0, crate::memory::FRAME_SIZE);
+            }
+        }
+    }
+
+    fn map_primary_fb_pages(pages: &[u64]) -> Option<u64> {
+        if pages.is_empty() {
+            return None;
+        }
+        let bytes = pages.len().checked_mul(crate::memory::FRAME_SIZE)?;
+        if bytes > PRIMARY_FB_VMAP_MAX_BYTES {
+            return None;
+        }
+
+        for (i, &phys) in pages.iter().enumerate() {
+            let virt = VirtAddr::new(PRIMARY_FB_VMAP_BASE + (i * crate::memory::FRAME_SIZE) as u64);
+            if !virtual_mem::map_page(virt, PhysAddr::new(phys), 0x03) {
+                for j in 0..i {
+                    virtual_mem::unmap_page(VirtAddr::new(
+                        PRIMARY_FB_VMAP_BASE + (j * crate::memory::FRAME_SIZE) as u64,
+                    ));
+                }
+                return None;
+            }
+        }
+
+        Some(PRIMARY_FB_VMAP_BASE)
+    }
+
+    fn unmap_primary_fb_pages(count: usize) {
+        let count = count.min(PRIMARY_FB_VMAP_MAX_BYTES / crate::memory::FRAME_SIZE);
+        for i in 0..count {
+            virtual_mem::unmap_page(VirtAddr::new(
+                PRIMARY_FB_VMAP_BASE + (i * crate::memory::FRAME_SIZE) as u64,
+            ));
+        }
+    }
+
+    fn alloc_scatter_gather_fb(num_pages: usize) -> Option<alloc::vec::Vec<u64>> {
+        let mut pages = alloc::vec::Vec::with_capacity(num_pages);
+        for _ in 0..num_pages {
+            let frame = match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
+                Some(frame) => frame.as_u64(),
+                None => {
+                    Self::free_page_list(&pages);
+                    return None;
+                }
+            };
+            pages.push(frame);
+        }
+        Some(pages)
+    }
+
     pub fn last_command_types() -> (u32, u32) {
         (
             LAST_CTRL_CMD_TYPE.load(Ordering::Relaxed),
@@ -1036,6 +1104,7 @@ impl VirtioGpu {
 
         self.fb_phys = fb_phys;
         self.fb_pages = num_pages;
+        self.fb_kernel_virt = fb_phys;
         self.scanout_backing_offset = 0;
         self.scanout_uses_dma_backbuffer = false;
 
@@ -1638,24 +1707,49 @@ impl GpuDriver for VirtioGpu {
         // those APIs lets CPU writes run into unrelated physical pages.
         let fb_size = (width as usize) * (height as usize) * 4;
         let num_pages = (fb_size + 4095) / 4096;
-        let new_fb_phys = match physical::alloc_contiguous(num_pages) {
-            Some(p) => p.as_u64(),
+        let mut new_fb_page_list = alloc::vec::Vec::new();
+        let (new_fb_phys, new_fb_kernel_virt) = match physical::alloc_contiguous(num_pages) {
+            Some(p) => {
+                let phys = p.as_u64();
+                unsafe {
+                    core::ptr::write_bytes(phys as *mut u8, 0, num_pages * 4096);
+                }
+                (phys, phys)
+            }
             None => {
                 crate::serial_verbose_println!(
-                    "  VirtIO GPU: contiguous fb alloc failed ({} pages, current {}x{} stays active)",
+                    "  VirtIO GPU: contiguous fb alloc failed ({} pages, trying scatter-gather; current {}x{} stays active)",
                     num_pages,
                     self.width,
                     self.height
                 );
-                return None;
+                let pages = match Self::alloc_scatter_gather_fb(num_pages) {
+                    Some(pages) => pages,
+                    None => {
+                        crate::serial_verbose_println!(
+                            "  VirtIO GPU: scatter-gather fb alloc failed ({} pages)",
+                            num_pages
+                        );
+                        return None;
+                    }
+                };
+                Self::zero_page_list(&pages);
+                let kernel_virt = match Self::map_primary_fb_pages(&pages) {
+                    Some(v) => v,
+                    None => {
+                        crate::serial_verbose_println!(
+                            "  VirtIO GPU: failed to map scatter-gather fb ({} pages)",
+                            num_pages
+                        );
+                        Self::free_page_list(&pages);
+                        return None;
+                    }
+                };
+                let first = pages[0];
+                new_fb_page_list = pages;
+                (first, kernel_virt)
             }
         };
-
-        // Zero the new framebuffer so the freshly-attached resource does
-        // not show whatever the previous owner left there.
-        unsafe {
-            core::ptr::write_bytes(new_fb_phys as *mut u8, 0, num_pages * 4096);
-        }
 
         // Allocation succeeded — now safely tear down the old scanout.
         if self.scanout_resource_id != 0 {
@@ -1667,27 +1761,32 @@ impl GpuDriver for VirtioGpu {
             // Free the old per-page list (if scatter-gather) or the old
             // contiguous range (if boot-time setup).
             if !self.fb_page_list.is_empty() {
+                if self.fb_kernel_virt == PRIMARY_FB_VMAP_BASE {
+                    Self::unmap_primary_fb_pages(self.fb_page_list.len());
+                }
                 for &p in &self.fb_page_list {
-                    physical::free_frame(crate::memory::address::PhysAddr::new(p));
+                    physical::free_frame(PhysAddr::new(p));
                 }
                 self.fb_page_list.clear();
             } else if self.fb_phys != 0 {
                 for i in 0..self.fb_pages {
-                    physical::free_frame(crate::memory::address::PhysAddr::new(
-                        self.fb_phys + (i as u64) * 4096,
-                    ));
+                    physical::free_frame(PhysAddr::new(self.fb_phys + (i as u64) * 4096));
                 }
             }
             self.fb_phys = 0;
             self.fb_pages = 0;
+            self.fb_kernel_virt = 0;
         }
 
-        // Commit new framebuffer state. fb_page_list stays empty for a
-        // contiguous allocation; framebuffer_pages() will synthesize the
-        // page list from fb_phys + i*4096 for callers that need it.
+        // Commit new framebuffer state. For contiguous low-memory allocations
+        // `fb_page_list` stays empty and callers synthesize the page list from
+        // fb_phys. For large/fragmented modes, fb_page_list carries the exact
+        // scatter-gather backing and fb_kernel_virt is a linear kernel vmap for
+        // CPU fallback drawing.
         self.fb_phys = new_fb_phys;
         self.fb_pages = num_pages;
-        self.fb_page_list.clear();
+        self.fb_page_list = new_fb_page_list;
+        self.fb_kernel_virt = new_fb_kernel_virt;
         self.scanout_backing_offset = 0;
         self.scanout_uses_dma_backbuffer = false;
         self.width = width;
@@ -1703,7 +1802,13 @@ impl GpuDriver for VirtioGpu {
             ok = false;
         }
         if ok {
-            if !self.cmd_attach_backing(res_id, self.fb_phys, self.fb_pages) {
+            let attached = if self.fb_page_list.is_empty() {
+                self.cmd_attach_backing(res_id, self.fb_phys, self.fb_pages)
+            } else {
+                let pages = self.fb_page_list.clone();
+                self.cmd_attach_backing_pages(res_id, &pages)
+            };
+            if !attached {
                 crate::serial_verbose_println!("  VirtIO GPU: RESOURCE_ATTACH_BACKING failed");
                 self.cmd_resource_unref(res_id);
                 ok = false;
@@ -1737,28 +1842,33 @@ impl GpuDriver for VirtioGpu {
             // we just allocated; we have no working scanout, but at
             // least we don't leak. Caller sees None and can decide what
             // to do.
-            if self.fb_phys != 0 {
+            if !self.fb_page_list.is_empty() {
+                if self.fb_kernel_virt == PRIMARY_FB_VMAP_BASE {
+                    Self::unmap_primary_fb_pages(self.fb_page_list.len());
+                }
+                Self::free_page_list(&self.fb_page_list);
+            } else if self.fb_phys != 0 {
                 for i in 0..self.fb_pages {
-                    physical::free_frame(crate::memory::address::PhysAddr::new(
-                        self.fb_phys + (i as u64) * 4096,
-                    ));
+                    physical::free_frame(PhysAddr::new(self.fb_phys + (i as u64) * 4096));
                 }
             }
             self.fb_page_list.clear();
             self.fb_phys = 0;
             self.fb_pages = 0;
+            self.fb_kernel_virt = 0;
             return None;
         }
 
         self.scanout_resource_id = res_id;
 
         crate::serial_verbose_println!(
-            "  VirtIO GPU: display {}x{} resource={} fb={:#x} ({} pages, contiguous)",
+            "  VirtIO GPU: display {}x{} resource={} fb={:#x} ({} pages, {})",
             width,
             height,
             res_id,
             self.fb_phys,
-            num_pages
+            num_pages,
+            if self.fb_page_list.is_empty() { "contiguous" } else { "scatter-gather" }
         );
 
         // The transfer already happened before SET_SCANOUT; now expose the
@@ -1794,6 +1904,14 @@ impl GpuDriver for VirtioGpu {
 
     fn get_mode(&self) -> (u32, u32, u32, u32) {
         (self.width, self.height, self.pitch, self.fb_phys as u32)
+    }
+
+    fn framebuffer_kernel_addr(&self) -> u64 {
+        if self.fb_kernel_virt != 0 {
+            self.fb_kernel_virt
+        } else {
+            self.fb_phys
+        }
     }
 
     fn supported_modes(&self) -> &[(u32, u32)] {
@@ -1869,7 +1987,7 @@ impl GpuDriver for VirtioGpu {
             return false;
         }
 
-        let fb = self.fb_phys as *mut u32;
+        let fb = self.framebuffer_kernel_addr() as *mut u32;
         let pitch_u32 = (self.pitch / 4) as usize;
         for row in y..(y + h) {
             let offset = (row as usize) * pitch_u32 + (x as usize);
@@ -1888,7 +2006,7 @@ impl GpuDriver for VirtioGpu {
             return false;
         }
 
-        let fb = self.fb_phys as *mut u32;
+        let fb = self.framebuffer_kernel_addr() as *mut u32;
         let pitch_u32 = (self.pitch / 4) as usize;
 
         // Copy bottom-to-top if destination is below source (avoid overwriting)
@@ -2817,6 +2935,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         fb_phys: 0,
         fb_pages: 0,
         fb_page_list: alloc::vec::Vec::new(),
+        fb_kernel_virt: 0,
         scanout_backing_offset: 0,
         scanout_uses_dma_backbuffer: false,
         extra_scanouts,

@@ -349,10 +349,11 @@ fn active_slot_mask(ahci: &AhciController) -> u32 {
 
 fn acquire_primary_slot(ahci: &AhciController) -> usize {
     let usable = active_slot_mask(ahci);
+    let mut attempts = 0u32;
     loop {
         while AHCI_RECOVERY.load(Ordering::Acquire) {
             if crate::task::scheduler::current_tid() > 0 {
-                crate::task::scheduler::schedule();
+                crate::task::scheduler::contention_backoff(&mut attempts);
             } else {
                 core::hint::spin_loop();
             }
@@ -372,7 +373,7 @@ fn acquire_primary_slot(ahci: &AhciController) -> usize {
                 return slot;
             }
         } else if crate::task::scheduler::current_tid() > 0 {
-            crate::task::scheduler::schedule();
+            crate::task::scheduler::contention_backoff(&mut attempts);
         } else {
             core::hint::spin_loop();
         }
@@ -393,6 +394,7 @@ fn wait_until_recovery_owns_port(slot: usize) {
     let bit = 1u32 << slot;
     let hz = crate::arch::hal::timer_frequency_hz() as u32;
     let start = crate::arch::hal::timer_current_ticks();
+    let mut attempts = 0u32;
     let timeout_ticks = if hz > 0 {
         (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1)
     } else {
@@ -414,7 +416,7 @@ fn wait_until_recovery_owns_port(slot: usize) {
             return;
         }
         if crate::task::scheduler::current_tid() > 0 {
-            crate::task::scheduler::schedule();
+            crate::task::scheduler::contention_backoff(&mut attempts);
         } else {
             core::hint::spin_loop();
         }
@@ -1088,6 +1090,7 @@ unsafe fn poll_completion(ahci: &AhciController, slot: usize) -> bool {
         let timeout_ticks = (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1);
         let start = crate::arch::hal::timer_current_ticks();
         let mut spins = 0usize;
+        let mut backoff_attempts = 0u32;
         loop {
             let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
             if ci & slot_bit == 0 {
@@ -1114,7 +1117,7 @@ unsafe fn poll_completion(ahci: &AhciController, slot: usize) -> bool {
 
             spins = spins.wrapping_add(1);
             if spins % AHCI_POLL_YIELD_EVERY == 0 && crate::task::scheduler::current_tid() > 0 {
-                crate::task::scheduler::schedule();
+                crate::task::scheduler::contention_backoff(&mut backoff_attempts);
             } else {
                 core::hint::spin_loop();
             }

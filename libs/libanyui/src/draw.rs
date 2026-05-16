@@ -949,13 +949,21 @@ pub fn blit_argb(s: &Surface, x: i32, y: i32, w: u32, h: u32, src: &[u32]) {
         if src_off + skip + count > src.len() {
             continue;
         }
+        let src_row = &src[src_off + skip..src_off + skip + count];
+        let dst_idx = dy as usize * s.width as usize + x0 as usize;
+        if src_row.iter().all(|px| (*px >> 24) == 255) {
+            unsafe {
+                core::ptr::copy_nonoverlapping(src_row.as_ptr(), s.pixels.add(dst_idx), count);
+            }
+            continue;
+        }
         for col in 0..count {
-            let src_px = src[src_off + skip + col];
+            let src_px = src_row[col];
             let alpha = (src_px >> 24) & 0xFF;
             if alpha == 0 {
                 continue;
             }
-            let dst_idx = dy as usize * s.width as usize + (x0 as usize + col);
+            let dst_idx = dst_idx + col;
             if alpha == 255 {
                 unsafe {
                     *s.pixels.add(dst_idx) = src_px;

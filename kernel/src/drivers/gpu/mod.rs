@@ -126,6 +126,15 @@ pub trait GpuDriver: Send {
     /// contiguous allocation reach. Use [`framebuffer_pages`] instead.
     fn get_mode(&self) -> (u32, u32, u32, u32);
 
+    /// Kernel-virtual address where CPU fallback drawing can access the
+    /// active primary framebuffer linearly. For legacy physically-contiguous
+    /// framebuffers this is the same numeric address as `get_mode().fb_phys`;
+    /// scatter-gather drivers can return a permanent kernel vmap instead.
+    fn framebuffer_kernel_addr(&self) -> u64 {
+        let (_, _, _, fb_phys) = self.get_mode();
+        fb_phys as u64
+    }
+
     /// Per-page physical addresses of the active primary framebuffer,
     /// in scanline order. Length == ceil(height * pitch / FRAME_SIZE).
     /// Default returns a single-entry list synthesised from `get_mode`

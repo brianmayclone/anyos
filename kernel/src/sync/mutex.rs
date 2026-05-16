@@ -3,10 +3,10 @@
 //! keep running while the caller waits.
 //!
 //! Internally a brief [`Spinlock`] protects the `locked` flag.  When the
-//! mutex is contended the thread does a voluntary `schedule()` (yield)
-//! which puts it back in the ready queue.  The timer will reschedule it,
-//! and it retries the lock.  This avoids the lost-wakeup race inherent
-//! in block/wake designs and requires zero heap allocation.
+//! mutex is contended the thread briefly yields, then backs off to a one-tick
+//! scheduler sleep if contention persists.  This avoids the lost-wakeup race
+//! inherent in block/wake designs and requires zero heap allocation, while
+//! preventing hot yield loops when no runnable thread can make progress.
 //!
 //! **Must NOT be used from interrupt handlers** — only from preemptible
 //! kernel context (syscalls, kernel threads).
@@ -47,6 +47,7 @@ impl<T> Mutex<T> {
 
     /// Acquire the mutex, yielding the current time slice if contended.
     pub fn lock(&self) -> MutexGuard<T> {
+        let mut attempts = 0u32;
         loop {
             {
                 let mut locked = self.inner.lock();
@@ -56,9 +57,7 @@ impl<T> Mutex<T> {
                 }
             } // Spinlock released — interrupts re-enabled
 
-            // Yield our time slice so other threads (including the lock
-            // holder) can run.  We stay Ready and will be rescheduled.
-            crate::task::scheduler::schedule();
+            crate::task::scheduler::contention_backoff(&mut attempts);
         }
     }
 

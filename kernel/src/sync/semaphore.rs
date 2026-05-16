@@ -1,8 +1,8 @@
 //! Counting semaphore with yield-based waiting.
 //!
-//! When the count is zero, [`wait`] yields the current time slice and
-//! retries, keeping interrupts enabled between attempts.  No heap
-//! allocation is needed.
+//! When the count is zero, [`wait`] briefly yields and then backs off to a
+//! one-tick scheduler sleep under persistent contention.  No heap allocation
+//! is needed.
 //!
 //! **Must NOT be used from interrupt handlers** — only from preemptible
 //! kernel context (syscalls, kernel threads).
@@ -24,6 +24,7 @@ impl Semaphore {
 
     /// Decrement (wait/P operation). Yields if count <= 0.
     pub fn wait(&self) {
+        let mut attempts = 0u32;
         loop {
             {
                 let mut count = self.inner.lock();
@@ -32,7 +33,7 @@ impl Semaphore {
                     return;
                 }
             }
-            crate::task::scheduler::schedule();
+            crate::task::scheduler::contention_backoff(&mut attempts);
         }
     }
 

@@ -1,7 +1,9 @@
 //! Waiting / sleeping: waitpid, sleep_until, block_current_thread.
 
-use super::{get_cpu_id, schedule, SCHEDULER};
+use super::{get_cpu_id, schedule, PER_CPU_HAS_THREAD, SCHEDULER};
+use crate::arch::hal::MAX_CPUS;
 use crate::task::thread::ThreadState;
+use core::sync::atomic::Ordering;
 
 #[derive(Clone, Copy)]
 struct WaitThreadSnapshot {
@@ -419,6 +421,30 @@ pub fn sleep_until(wake_at: u32) {
         }
     }
     schedule();
+}
+
+/// Back off while waiting for a lock or resource without burning a core.
+///
+/// `schedule()` is a pure yield: the caller remains runnable and can be picked
+/// again immediately when no better candidate exists. That is correct for
+/// `SYS_YIELD`, but it is too hot for lock contention loops. This helper yields
+/// briefly for low latency, then sleeps until the next timer tick so the CPU can
+/// enter the idle path if everyone is just waiting.
+pub fn contention_backoff(attempts: &mut u32) {
+    *attempts = (*attempts).saturating_add(1);
+    if *attempts <= 3 {
+        schedule();
+        return;
+    }
+
+    let cpu_id = get_cpu_id();
+    let has_non_idle_thread = cpu_id < MAX_CPUS && PER_CPU_HAS_THREAD[cpu_id].load(Ordering::Relaxed);
+    if has_non_idle_thread {
+        let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
+        sleep_until(wake_at);
+    } else {
+        schedule();
+    }
 }
 
 /// Block the current thread unconditionally (no wake condition).

@@ -9,7 +9,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// Number of cached sectors. 16384 × 512 = 8 MiB cache.
 const CACHE_SECTORS: usize = 16384;
@@ -50,7 +50,42 @@ static DIRTY_ESTIMATE: [AtomicU32; MAX_DISKS] = {
     const INIT: AtomicU32 = AtomicU32::new(0);
     [INIT; MAX_DISKS]
 };
+static WRITEBACK_IN_PROGRESS: [AtomicBool; MAX_DISKS] = {
+    const INIT: AtomicBool = AtomicBool::new(false);
+    [INIT; MAX_DISKS]
+};
 static CORRUPT_CACHE_LOGS: AtomicU32 = AtomicU32::new(0);
+
+struct WritebackGuard {
+    disk_id: usize,
+}
+
+impl Drop for WritebackGuard {
+    fn drop(&mut self) {
+        WRITEBACK_IN_PROGRESS[self.disk_id].store(false, Ordering::Release);
+    }
+}
+
+fn enter_writeback(disk_id: u8) -> Option<WritebackGuard> {
+    let idx = disk_id as usize;
+    if idx >= MAX_DISKS {
+        return None;
+    }
+    let mut attempts = 0u32;
+    loop {
+        if WRITEBACK_IN_PROGRESS[idx]
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Some(WritebackGuard { disk_id: idx });
+        }
+        if crate::task::scheduler::current_tid() > 0 {
+            crate::task::scheduler::contention_backoff(&mut attempts);
+        } else {
+            core::hint::spin_loop();
+        }
+    }
+}
 
 /// A cached sector entry.
 struct CacheEntry {
@@ -657,7 +692,6 @@ impl BlockCache {
 // ── Global instance ─────────────────────────────────────────────────────────
 
 use crate::sync::spinlock::Spinlock;
-use core::sync::atomic::AtomicBool;
 
 /// Fast check — avoids touching the Spinlock before the cache is ready.
 static CACHE_READY: AtomicBool = AtomicBool::new(false);
@@ -842,6 +876,10 @@ pub fn writeback_flush(disk_id: u8) -> u32 {
     if !CACHE_READY.load(Ordering::Acquire) {
         return 0;
     }
+    let _writeback_guard = match enter_writeback(disk_id) {
+        Some(guard) => guard,
+        None => return 0,
+    };
 
     // Snapshot dirty blocks as (lba, 512-byte data) pairs under a single lock.
     //

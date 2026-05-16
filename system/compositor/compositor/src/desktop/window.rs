@@ -2345,9 +2345,22 @@ impl Desktop {
             }
         }
 
-        self.compositor.mark_layer_dirty(layer_id);
+        // A partial present already gives us the exact damage rectangle. Do not
+        // mark the whole layer dirty here: collect_dirty_damage() expands dirty
+        // layers to their full bounds, which defeats present_rect and makes
+        // scrolling large windows recompose the entire browser surface.
+        if dirty_rect.is_none() {
+            self.compositor.mark_layer_dirty(layer_id);
+        } else if self
+            .compositor
+            .get_layer(layer_id)
+            .map(|layer| !layer.blur_behind)
+            .unwrap_or(false)
+        {
+            self.compositor.blur_generation = self.compositor.blur_generation.wrapping_add(1);
+        }
 
-        // Damage only the dirty region (offset by layer position + content_y)
+        // Damage only the dirty region (offset by layer position + content_y).
         if let Some(ref dr) = dirty_rect {
             if let Some(layer) = self.compositor.get_layer(layer_id) {
                 let lx = layer.x;
