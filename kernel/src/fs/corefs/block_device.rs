@@ -96,7 +96,7 @@ impl SectorIo for AnyOsSectorIo {
         // sind, und CoreFS-Journal-/Commit-Record-Ordering würde auf einem
         // unzuverlässigen `device.sync()` aufsetzen.
         crate::fs::blockcache::writeback_flush(disk_id);
-        crate::drivers::storage::flush();
+        crate::drivers::storage::flush_disk(disk_id);
     }
 }
 

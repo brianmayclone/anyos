@@ -8,7 +8,7 @@ use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::physmap;
 use crate::memory::{physical, virtual_mem};
 use alloc::boxed::Box;
-use core::sync::atomic::{compiler_fence, fence, Ordering};
+use core::sync::atomic::{compiler_fence, fence, AtomicBool, AtomicU32, Ordering};
 
 // AHCI MMIO virtual base — after E1000 (0xD000_0000) and VMware SVGA FIFO (0xD002_0000)
 const AHCI_MMIO_VIRT: u64 = 0xFFFF_FFFF_D006_0000;
@@ -35,6 +35,7 @@ const PORT_TFD: u64 = 0x20;
 const PORT_SIG: u64 = 0x24;
 const PORT_SSTS: u64 = 0x28;
 const PORT_SERR: u64 = 0x30;
+const PORT_SACT: u64 = 0x34;
 const PORT_CI: u64 = 0x38;
 
 const CMD_ST: u32 = 1 << 0;
@@ -45,6 +46,8 @@ const CMD_CR: u32 = 1 << 15;
 // ── ATA Commands ────────────────────────────────────
 const ATA_CMD_READ_DMA_EXT: u8 = 0x25;
 const ATA_CMD_WRITE_DMA_EXT: u8 = 0x35;
+const ATA_CMD_READ_FPDMA_QUEUED: u8 = 0x60;
+const ATA_CMD_WRITE_FPDMA_QUEUED: u8 = 0x61;
 const ATA_CMD_FLUSH_EXT: u8 = 0xEA;
 const ATA_CMD_IDENTIFY: u8 = 0xEC;
 
@@ -61,6 +64,8 @@ const BOUNCE_BUF_SIZE: usize = BOUNCE_BUF_SECTORS as usize * 512;
 const BOUNCE_BUF_FRAMES: usize = BOUNCE_BUF_SIZE / 4096; // 128
 const AHCI_FAST_SPIN_ITERS: usize = 512;
 const AHCI_POLL_YIELD_EVERY: usize = 256;
+const AHCI_MAX_COMMAND_SLOTS: usize = 8;
+const AHCI_ENABLE_NCQ: bool = false;
 
 const MAX_PRDT: usize = 128;
 const PRDT_MAX_BYTES: u32 = 4 * 1024 * 1024;
@@ -152,6 +157,8 @@ struct PortDma {
     clb_phys: u64,
     fb_phys: u64,
     ctba_phys: u64,
+    bounce_phys: u64,
+    bounce_virt: u64,
     total_sectors: u64,
 }
 
@@ -164,8 +171,13 @@ struct AhciController {
     clb_phys: u64,
     fb_phys: u64,
     ctba_phys: u64,
+    ctba_phys_slots: [u64; AHCI_MAX_COMMAND_SLOTS],
     bounce_phys: u64,
     bounce_virt: u64,
+    bounce_phys_slots: [u64; AHCI_MAX_COMMAND_SLOTS],
+    bounce_virt_slots: [u64; AHCI_MAX_COMMAND_SLOTS],
+    slot_count: u8,
+    ncq_supported: bool,
     total_sectors: u64,
     irq: u8,
     interrupt_driven: bool,
@@ -179,6 +191,8 @@ struct AhciController {
     atapi_clb_phys: u64,
     atapi_fb_phys: u64,
     atapi_ctba_phys: u64,
+    atapi_bounce_phys: u64,
+    atapi_bounce_virt: u64,
 }
 
 static mut AHCI: Option<AhciController> = None;
@@ -208,11 +222,11 @@ static mut SECONDARY_AHCI_COUNT: usize = 0;
 /// Each secondary gets 8 pages (32 KiB).
 const AHCI_SECONDARY_MMIO_VIRT: u64 = 0xFFFF_FFFF_D006_8000;
 
-/// TID of the thread currently waiting for AHCI I/O completion.
-/// 0 means no thread is waiting.
-static AHCI_WAITER: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-/// Set to true by the IRQ handler when the command completes.
-static AHCI_IRQ_FIRED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static AHCI_SLOT_IN_USE: AtomicU32 = AtomicU32::new(0);
+static AHCI_SLOT_IRQ_FIRED: AtomicU32 = AtomicU32::new(0);
+static AHCI_SLOT_WAITERS: [AtomicU32; AHCI_MAX_COMMAND_SLOTS] =
+    [const { AtomicU32::new(0) }; AHCI_MAX_COMMAND_SLOTS];
+static AHCI_RECOVERY: AtomicBool = AtomicBool::new(false);
 
 // ── MMIO Helpers ────────────────────────────────────
 
@@ -325,6 +339,91 @@ fn dma_acquire_after_command() {
     // explicit across the AHCI MMIO completion boundary.
     fence(Ordering::SeqCst);
     compiler_fence(Ordering::SeqCst);
+}
+
+#[inline]
+fn active_slot_mask(ahci: &AhciController) -> u32 {
+    let count = (ahci.slot_count as usize).clamp(1, AHCI_MAX_COMMAND_SLOTS);
+    (1u32 << count) - 1
+}
+
+fn acquire_primary_slot(ahci: &AhciController) -> usize {
+    let usable = active_slot_mask(ahci);
+    loop {
+        while AHCI_RECOVERY.load(Ordering::Acquire) {
+            if crate::task::scheduler::current_tid() > 0 {
+                crate::task::scheduler::schedule();
+            } else {
+                core::hint::spin_loop();
+            }
+        }
+
+        let in_use = AHCI_SLOT_IN_USE.load(Ordering::Acquire);
+        let free = (!in_use) & usable;
+        if free != 0 {
+            let slot = free.trailing_zeros() as usize;
+            let bit = 1u32 << slot;
+            if AHCI_SLOT_IN_USE
+                .compare_exchange_weak(in_use, in_use | bit, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                AHCI_SLOT_IRQ_FIRED.fetch_and(!bit, Ordering::AcqRel);
+                AHCI_SLOT_WAITERS[slot].store(0, Ordering::Release);
+                return slot;
+            }
+        } else if crate::task::scheduler::current_tid() > 0 {
+            crate::task::scheduler::schedule();
+        } else {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+fn release_primary_slot(slot: usize) {
+    if slot >= AHCI_MAX_COMMAND_SLOTS {
+        return;
+    }
+    let bit = 1u32 << slot;
+    AHCI_SLOT_WAITERS[slot].store(0, Ordering::Release);
+    AHCI_SLOT_IRQ_FIRED.fetch_and(!bit, Ordering::AcqRel);
+    AHCI_SLOT_IN_USE.fetch_and(!bit, Ordering::AcqRel);
+}
+
+fn wait_until_recovery_owns_port(slot: usize) {
+    let bit = 1u32 << slot;
+    let hz = crate::arch::hal::timer_frequency_hz() as u32;
+    let start = crate::arch::hal::timer_current_ticks();
+    let timeout_ticks = if hz > 0 {
+        (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1)
+    } else {
+        0
+    };
+
+    loop {
+        let in_use = AHCI_SLOT_IN_USE.load(Ordering::Acquire);
+        if in_use & !bit == 0 {
+            return;
+        }
+        if hz > 0
+            && crate::arch::hal::timer_current_ticks().wrapping_sub(start) >= timeout_ticks
+        {
+            crate::serial_println!(
+                "AHCI: recovery timed out waiting for other slots, in_use={:#x}",
+                in_use
+            );
+            return;
+        }
+        if crate::task::scheduler::current_tid() > 0 {
+            crate::task::scheduler::schedule();
+        } else {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+#[inline]
+fn is_ncq_command(command: u8) -> bool {
+    command == ATA_CMD_READ_FPDMA_QUEUED || command == ATA_CMD_WRITE_FPDMA_QUEUED
 }
 
 // ── Port Start / Stop ───────────────────────────────
@@ -450,22 +549,30 @@ fn ahci_irq_handler(_irq: u8) {
         // Clear HBA global interrupt status
         mmio_write32(ahci.mmio_base, REG_IS, hba_is);
 
-        // Only signal completion when the command is actually done (CI bit 0 clear)
+        // Signal every completed primary-port command slot. Older code only
+        // watched bit 0, which meant all AHCI traffic had to serialize through
+        // slot 0 even though the HBA command list supports many slots.
         let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
-        if ci & 1 != 0 {
-            return; // Command still in progress — mid-transfer interrupt, ignore
+        let completed = AHCI_SLOT_IN_USE.load(Ordering::Acquire) & active_slot_mask(ahci) & !ci;
+        if completed == 0 {
+            return; // Command(s) still in progress — mid-transfer interrupt
         }
-    }
 
-    // Command complete — signal and wake
-    AHCI_IRQ_FIRED.store(true, Ordering::Release);
+        AHCI_SLOT_IRQ_FIRED.fetch_or(completed, Ordering::Release);
 
-    let tid = AHCI_WAITER.load(Ordering::Acquire);
-    if tid != 0 {
-        // Non-blocking: try_wake avoids spinning on SCHEDULER lock in IRQ context.
-        // If contended, deferred_wake queues the TID for the next timer tick.
-        if !crate::task::scheduler::try_wake_thread(tid) {
-            crate::task::scheduler::deferred_wake(tid);
+        for slot in 0..AHCI_MAX_COMMAND_SLOTS {
+            let bit = 1u32 << slot;
+            if completed & bit == 0 {
+                continue;
+            }
+            let tid = AHCI_SLOT_WAITERS[slot].load(Ordering::Acquire);
+            if tid != 0 {
+                // Non-blocking: try_wake avoids spinning on SCHEDULER lock in IRQ context.
+                // If contended, deferred_wake queues the TID for the next timer tick.
+                if !crate::task::scheduler::try_wake_thread(tid) {
+                    crate::task::scheduler::deferred_wake(tid);
+                }
+            }
         }
     }
 }
@@ -566,7 +673,7 @@ unsafe fn identify_disk_on_port(ahci: &AhciController, port: u32) -> u64 {
     word60 as u64
 }
 
-// ── Command Issue (IRQ-driven, slot 0 only) ─────────
+// ── Command Issue (IRQ-driven, multi-slot on the primary port) ─────────
 
 /// Timeout for AHCI commands: ~5 seconds expressed in timer ticks.
 /// Computed from the HAL timer frequency at call time.
@@ -579,23 +686,28 @@ const AHCI_MAX_RETRIES: u32 = 1;
 /// Returns true if the command completed successfully. Does NOT retry.
 unsafe fn issue_command_once(
     ahci: &AhciController,
+    slot: usize,
     command: u8,
     lba: u64,
     count: u16,
     prdt: &[PrdtSpec],
     write: bool,
 ) -> bool {
-    // Set up command header (slot 0)
-    let cmd_header = dma_ptr::<CmdHeader>(ahci.clb_phys);
+    let slot_bit = 1u32 << slot;
+    let ctba_phys = ahci.ctba_phys_slots[slot];
+
+    // Set up command header for this slot.
+    let cmd_header = dma_ptr::<CmdHeader>(ahci.clb_phys).add(slot);
     let cfl: u16 = 5; // 5 DWORDs for Register H2D FIS
     let w_bit: u16 = if write { 1 << 6 } else { 0 };
     (*cmd_header).flags = cfl | w_bit;
     (*cmd_header).prdtl = prdt.len() as u16;
     (*cmd_header).prdbc = 0;
-    // ctba/ctbau already set during init
+    (*cmd_header).ctba = ctba_phys as u32;
+    (*cmd_header).ctbau = (ctba_phys >> 32) as u32;
 
     // Set up command table
-    let cmd_table = dma_ptr::<CmdTable>(ahci.ctba_phys);
+    let cmd_table = dma_ptr::<CmdTable>(ctba_phys);
 
     // Zero CFIS + ACMD
     core::ptr::write_bytes((*cmd_table).cfis.as_mut_ptr(), 0, 64);
@@ -613,10 +725,19 @@ unsafe fn issue_command_once(
     (*fis).lba3 = ((lba >> 24) & 0xFF) as u8;
     (*fis).lba4 = ((lba >> 32) & 0xFF) as u8;
     (*fis).lba5 = ((lba >> 40) & 0xFF) as u8;
-    (*fis).count_lo = (count & 0xFF) as u8;
-    (*fis).count_hi = ((count >> 8) & 0xFF) as u8;
-    (*fis).features_lo = 0;
-    (*fis).features_hi = 0;
+    if is_ncq_command(command) {
+        // FPDMA QUEUED encodes transfer count in Features and the NCQ tag in
+        // Sector Count bits 7:3. The tag must match the AHCI command slot.
+        (*fis).features_lo = (count & 0xFF) as u8;
+        (*fis).features_hi = ((count >> 8) & 0xFF) as u8;
+        (*fis).count_lo = (slot as u8) << 3;
+        (*fis).count_hi = 0;
+    } else {
+        (*fis).count_lo = (count & 0xFF) as u8;
+        (*fis).count_hi = ((count >> 8) & 0xFF) as u8;
+        (*fis).features_lo = 0;
+        (*fis).features_hi = 0;
+    }
 
     for entry in (*cmd_table).prdt.iter_mut() {
         entry.dba = 0;
@@ -632,43 +753,45 @@ unsafe fn issue_command_once(
         (*cmd_table).prdt[i].dbc = (spec.len - 1) | interrupt_on_completion;
     }
 
-    // Clear port interrupt status
-    port_write(ahci.mmio_base, ahci.active_port, PORT_IS, 0xFFFF_FFFF);
-
     // Reset IRQ completion flag and publish the waiter before issuing the
     // command. Otherwise a very fast MSI can arrive between the fast poll path
     // and the blocking path, leaving the thread asleep until the timer fallback.
-    AHCI_IRQ_FIRED.store(false, core::sync::atomic::Ordering::Release);
+    AHCI_SLOT_IRQ_FIRED.fetch_and(!slot_bit, Ordering::AcqRel);
     let waiter_tid = if ahci.interrupt_driven {
         crate::task::scheduler::current_tid()
     } else {
         0
     };
     if waiter_tid > 0 {
-        AHCI_WAITER.store(waiter_tid, core::sync::atomic::Ordering::Release);
+        AHCI_SLOT_WAITERS[slot].store(waiter_tid, Ordering::Release);
     }
 
     dma_publish_before_command();
 
-    // Issue command (slot 0)
-    port_write(ahci.mmio_base, ahci.active_port, PORT_CI, 1);
+    if is_ncq_command(command) {
+        let sact = port_read(ahci.mmio_base, ahci.active_port, PORT_SACT);
+        port_write(ahci.mmio_base, ahci.active_port, PORT_SACT, sact | slot_bit);
+    }
+
+    // Issue command on this slot.
+    port_write(ahci.mmio_base, ahci.active_port, PORT_CI, slot_bit);
 
     // Fast path: catch commands that complete immediately. Keep this short:
     // sustained readback issues many DMA commands and a long busy-spin here
     // starves render/input threads even though the I/O can sleep on IRQs.
     for _ in 0..AHCI_FAST_SPIN_ITERS {
         let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
-        if ci & 1 == 0 {
+        if ci & slot_bit == 0 {
             let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
             if tfd & 0x01 != 0 {
                 if waiter_tid > 0 {
-                    AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
+                    AHCI_SLOT_WAITERS[slot].store(0, Ordering::Release);
                 }
                 crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
                 return false;
             }
             if waiter_tid > 0 {
-                AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
+                AHCI_SLOT_WAITERS[slot].store(0, Ordering::Release);
             }
             dma_acquire_after_command();
             return true;
@@ -677,17 +800,23 @@ unsafe fn issue_command_once(
     }
 
     if waiter_tid > 0 {
-        return wait_for_interrupt_completion(ahci, command, lba);
+        return wait_for_interrupt_completion(ahci, slot, command, lba);
     }
 
-    poll_completion(ahci)
+    poll_completion(ahci, slot)
 }
 
-unsafe fn wait_for_interrupt_completion(ahci: &AhciController, command: u8, lba: u64) -> bool {
+unsafe fn wait_for_interrupt_completion(
+    ahci: &AhciController,
+    slot: usize,
+    command: u8,
+    lba: u64,
+) -> bool {
+    let slot_bit = 1u32 << slot;
     let hz = crate::arch::hal::timer_frequency_hz() as u32;
     if hz == 0 {
-        AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
-        return poll_completion(ahci);
+        AHCI_SLOT_WAITERS[slot].store(0, Ordering::Release);
+        return poll_completion(ahci, slot);
     }
 
     let timeout_ticks = (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1);
@@ -696,8 +825,8 @@ unsafe fn wait_for_interrupt_completion(ahci: &AhciController, command: u8, lba:
 
     loop {
         let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
-        if ci & 1 == 0 {
-            AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
+        if ci & slot_bit == 0 {
+            AHCI_SLOT_WAITERS[slot].store(0, Ordering::Release);
             let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
             if tfd & 0x01 != 0 {
                 crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
@@ -709,23 +838,24 @@ unsafe fn wait_for_interrupt_completion(ahci: &AhciController, command: u8, lba:
 
         let is = port_read(ahci.mmio_base, ahci.active_port, PORT_IS);
         if is & (1 << 30) != 0 {
-            AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
+            AHCI_SLOT_WAITERS[slot].store(0, Ordering::Release);
             crate::serial_verbose_println!("AHCI: task file error in interrupt wait, IS={:#x}", is);
             return false;
         }
 
         let now = crate::arch::hal::timer_current_ticks();
         if now.wrapping_sub(start) >= timeout_ticks {
-            AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
+            AHCI_SLOT_WAITERS[slot].store(0, Ordering::Release);
             crate::serial_println!(
-                "AHCI: command timeout (cmd={:#x}, lba={}, interrupt wait)",
+                "AHCI: command timeout (slot={}, cmd={:#x}, lba={}, interrupt wait)",
+                slot,
                 command,
                 lba
             );
             return false;
         }
 
-        if AHCI_IRQ_FIRED.load(core::sync::atomic::Ordering::Acquire) {
+        if AHCI_SLOT_IRQ_FIRED.load(Ordering::Acquire) & slot_bit != 0 {
             core::hint::spin_loop();
         } else {
             crate::task::scheduler::sleep_until(now.wrapping_add(sleep_interval));
@@ -741,10 +871,36 @@ unsafe fn issue_command_prdt(
     prdt: &[PrdtSpec],
     write: bool,
 ) -> bool {
+    let slot = acquire_primary_slot(ahci);
+    let serialized = !is_ncq_command(command);
+    if serialized {
+        AHCI_RECOVERY.store(true, Ordering::Release);
+        wait_until_recovery_owns_port(slot);
+    }
+    let ok = issue_command_prdt_on_acquired_slot(ahci, slot, command, lba, count, prdt, write);
+    if serialized {
+        AHCI_RECOVERY.store(false, Ordering::Release);
+    }
+    release_primary_slot(slot);
+    ok
+}
+
+unsafe fn issue_command_prdt_on_acquired_slot(
+    ahci: &AhciController,
+    slot: usize,
+    command: u8,
+    lba: u64,
+    count: u16,
+    prdt: &[PrdtSpec],
+    write: bool,
+) -> bool {
     // First attempt
-    if issue_command_once(ahci, command, lba, count, prdt, write) {
+    if issue_command_once(ahci, slot, command, lba, count, prdt, write) {
         return true;
     }
+
+    let started_recovery = !AHCI_RECOVERY.swap(true, Ordering::AcqRel);
+    wait_until_recovery_owns_port(slot);
 
     // On failure, retry once after resetting the port
     for retry in 0..AHCI_MAX_RETRIES {
@@ -763,9 +919,16 @@ unsafe fn issue_command_prdt(
         port_write(ahci.mmio_base, ahci.active_port, PORT_IS, 0xFFFF_FFFF);
         start_port(ahci.mmio_base, ahci.active_port);
 
-        if issue_command_once(ahci, command, lba, count, prdt, write) {
+        if issue_command_once(ahci, slot, command, lba, count, prdt, write) {
+            if started_recovery {
+                AHCI_RECOVERY.store(false, Ordering::Release);
+            }
             return true;
         }
+    }
+
+    if started_recovery {
+        AHCI_RECOVERY.store(false, Ordering::Release);
     }
 
     crate::serial_println!(
@@ -916,7 +1079,8 @@ unsafe fn issue_command_on_port(
 
 /// Polled completion check with timeout (used during boot or as IRQ timeout fallback).
 /// Uses tick-based timing when available, falls back to iteration count during early boot.
-unsafe fn poll_completion(ahci: &AhciController) -> bool {
+unsafe fn poll_completion(ahci: &AhciController, slot: usize) -> bool {
+    let slot_bit = 1u32 << slot;
     let hz = crate::arch::hal::timer_frequency_hz() as u32;
 
     if hz > 0 {
@@ -926,7 +1090,7 @@ unsafe fn poll_completion(ahci: &AhciController) -> bool {
         let mut spins = 0usize;
         loop {
             let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
-            if ci & 1 == 0 {
+            if ci & slot_bit == 0 {
                 let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
                 if tfd & 0x01 != 0 {
                     crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
@@ -944,7 +1108,7 @@ unsafe fn poll_completion(ahci: &AhciController) -> bool {
 
             let now = crate::arch::hal::timer_current_ticks();
             if now.wrapping_sub(start) >= timeout_ticks {
-                crate::serial_println!("AHCI: poll_completion timeout");
+                crate::serial_println!("AHCI: poll_completion timeout (slot={})", slot);
                 return false;
             }
 
@@ -959,7 +1123,7 @@ unsafe fn poll_completion(ahci: &AhciController) -> bool {
         // Early boot fallback — iteration count (no timer yet)
         for _ in 0..10_000_000 {
             let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
-            if ci & 1 == 0 {
+            if ci & slot_bit == 0 {
                 let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
                 if tfd & 0x01 != 0 {
                     crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
@@ -995,6 +1159,11 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
     let mut offset = 0usize;
     let mut remaining = count;
     let mut cur_lba = lba as u64;
+    let command = if ahci.ncq_supported && ahci.slot_count > 1 {
+        ATA_CMD_READ_FPDMA_QUEUED
+    } else {
+        ATA_CMD_READ_DMA_EXT
+    };
 
     while remaining > 0 {
         let batch = remaining.min(BOUNCE_BUF_SECTORS);
@@ -1008,7 +1177,7 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
             unsafe {
                 issue_command_prdt(
                     ahci,
-                    ATA_CMD_READ_DMA_EXT,
+                    command,
                     cur_lba,
                     batch as u16,
                     &prdt[..prdt_len],
@@ -1016,22 +1185,30 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
                 )
             }
         } else {
+            let slot = acquire_primary_slot(ahci);
+            let bounce_phys = ahci.bounce_phys_slots[slot];
+            let bounce_virt = ahci.bounce_virt_slots[slot];
+            let specs = [PrdtSpec {
+                phys: bounce_phys,
+                len: byte_count as u32,
+            }];
             let ok = unsafe {
-                issue_command(
+                issue_command_prdt_on_acquired_slot(
                     ahci,
-                    ATA_CMD_READ_DMA_EXT,
+                    slot,
+                    command,
                     cur_lba,
                     batch as u16,
-                    ahci.bounce_phys,
-                    byte_count as u32,
+                    &specs,
                     false,
                 )
             };
             if ok {
                 unsafe {
-                    core::ptr::copy_nonoverlapping(ahci.bounce_virt as *const u8, dst, byte_count);
+                    core::ptr::copy_nonoverlapping(bounce_virt as *const u8, dst, byte_count);
                 }
             }
+            release_primary_slot(slot);
             ok
         };
 
@@ -1057,6 +1234,11 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
     let mut offset = 0usize;
     let mut remaining = count;
     let mut cur_lba = lba as u64;
+    let command = if ahci.ncq_supported && ahci.slot_count > 1 {
+        ATA_CMD_WRITE_FPDMA_QUEUED
+    } else {
+        ATA_CMD_WRITE_DMA_EXT
+    };
 
     while remaining > 0 {
         let batch = remaining.min(BOUNCE_BUF_SECTORS);
@@ -1068,7 +1250,7 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
             unsafe {
                 issue_command_prdt(
                     ahci,
-                    ATA_CMD_WRITE_DMA_EXT,
+                    command,
                     cur_lba,
                     batch as u16,
                     &prdt[..prdt_len],
@@ -1076,18 +1258,29 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
                 )
             }
         } else {
+            let slot = acquire_primary_slot(ahci);
+            let bounce_phys = ahci.bounce_phys_slots[slot];
+            let bounce_virt = ahci.bounce_virt_slots[slot];
             unsafe {
-                core::ptr::copy_nonoverlapping(src, ahci.bounce_virt as *mut u8, byte_count);
-                issue_command(
+                core::ptr::copy_nonoverlapping(src, bounce_virt as *mut u8, byte_count);
+            }
+            let specs = [PrdtSpec {
+                phys: bounce_phys,
+                len: byte_count as u32,
+            }];
+            let ok = unsafe {
+                issue_command_prdt_on_acquired_slot(
                     ahci,
-                    ATA_CMD_WRITE_DMA_EXT,
+                    slot,
+                    command,
                     cur_lba,
                     batch as u16,
-                    ahci.bounce_phys,
-                    byte_count as u32,
+                    &specs,
                     true,
                 )
-            }
+            };
+            release_primary_slot(slot);
+            ok
         };
 
         if !ok {
@@ -1109,6 +1302,60 @@ pub fn flush() -> bool {
         None => return false,
     };
     unsafe { issue_command(ahci, ATA_CMD_FLUSH_EXT, 0, 0, 0, 0, false) }
+}
+
+/// Flush the write cache for a specific AHCI-backed disk.
+pub fn flush_disk(disk_id: u8) -> bool {
+    if disk_id == 0 {
+        return flush();
+    }
+
+    if let Some(ahci) = unsafe { AHCI.as_ref() } {
+        if let Some(port_dma) = ahci.extra_disks.iter().flatten().find(|d| unsafe {
+            EXTRA_DISK_MAP
+                .iter()
+                .any(|&(did, p, _)| did == disk_id && p == d.port)
+        }) {
+            return unsafe {
+                issue_command_on_port(
+                    ahci.mmio_base,
+                    port_dma.port,
+                    port_dma.clb_phys,
+                    port_dma.ctba_phys,
+                    0,
+                    ATA_CMD_FLUSH_EXT,
+                    0,
+                    0,
+                    0,
+                    false,
+                )
+            };
+        }
+    }
+
+    if let Some(sec) = unsafe {
+        SECONDARY_AHCI
+            .iter()
+            .flatten()
+            .find(|s| s.disk_id == disk_id)
+    } {
+        return unsafe {
+            issue_command_on_port(
+                sec.mmio_base,
+                sec.port,
+                sec.clb_phys,
+                sec.ctba_phys,
+                0,
+                ATA_CMD_FLUSH_EXT,
+                0,
+                0,
+                0,
+                false,
+            )
+        };
+    }
+
+    false
 }
 
 // ── Initialization ──────────────────────────────────
@@ -1281,12 +1528,40 @@ pub fn init_and_register(pci: &PciDevice) {
             }
         };
 
+        let cap_slots = (((cap >> 8) & 0x1F) + 1) as usize;
+        let wanted_slots = cap_slots.min(AHCI_MAX_COMMAND_SLOTS);
+        let mut ctba_phys_slots = [0u64; AHCI_MAX_COMMAND_SLOTS];
+        let mut bounce_phys_slots = [0u64; AHCI_MAX_COMMAND_SLOTS];
+        let mut bounce_virt_slots = [0u64; AHCI_MAX_COMMAND_SLOTS];
+        ctba_phys_slots[0] = ctba_phys;
+        bounce_phys_slots[0] = bounce_phys;
+        bounce_virt_slots[0] = dma_ptr::<u8>(bounce_phys) as u64;
+        let mut configured_slots = 1usize;
+        for slot in 1..wanted_slots {
+            let slot_ct = match physical::alloc_frame() {
+                Some(f) => f.as_u64(),
+                None => break,
+            };
+            let slot_bounce = match physical::alloc_contiguous(BOUNCE_BUF_FRAMES) {
+                Some(f) => f.as_u64(),
+                None => break,
+            };
+            dma_zero(slot_ct, 4096);
+            dma_zero(slot_bounce, BOUNCE_BUF_SIZE);
+            ctba_phys_slots[slot] = slot_ct;
+            bounce_phys_slots[slot] = slot_bounce;
+            bounce_virt_slots[slot] = dma_ptr::<u8>(slot_bounce) as u64;
+            configured_slots += 1;
+        }
+
         crate::serial_println!(
-            "  AHCI: DMA alloc: CLB={:#x} FB={:#x} CT={:#x} bounce={:#x}",
+            "  AHCI: DMA alloc: CLB={:#x} FB={:#x} CT={:#x} bounce={:#x} slots={}/{}",
             clb_phys,
             fb_phys,
             ctba_phys,
-            bounce_phys
+            bounce_phys,
+            configured_slots,
+            cap_slots
         );
 
         // Zero all DMA structures
@@ -1295,10 +1570,13 @@ pub fn init_and_register(pci: &PciDevice) {
         dma_zero(ctba_phys, 4096);
         dma_zero(bounce_phys, BOUNCE_BUF_SIZE);
 
-        // Pre-configure CmdHeader[0] to point to our command table
-        let cmd_header = dma_ptr::<CmdHeader>(clb_phys);
-        (*cmd_header).ctba = ctba_phys as u32;
-        (*cmd_header).ctbau = (ctba_phys >> 32) as u32;
+        // Pre-configure command headers to point to their per-slot tables.
+        let cmd_headers = dma_ptr::<CmdHeader>(clb_phys);
+        for slot in 0..configured_slots {
+            let cmd_header = cmd_headers.add(slot);
+            (*cmd_header).ctba = ctba_phys_slots[slot] as u32;
+            (*cmd_header).ctbau = (ctba_phys_slots[slot] >> 32) as u32;
+        }
 
         // Configure port DMA addresses
         port_write(mmio_base, active_port, PORT_CLB, clb_phys as u32);
@@ -1320,21 +1598,25 @@ pub fn init_and_register(pci: &PciDevice) {
         let mut atapi_clb_phys = 0u64;
         let mut atapi_fb_phys = 0u64;
         let mut atapi_ctba_phys = 0u64;
+        let mut atapi_bounce_phys = 0u64;
 
         if let Some(atapi_port) = found_atapi {
             // Each AHCI port needs its own CLB, FB, and CT
-            if let (Some(clb), Some(fb), Some(ct)) = (
+            if let (Some(clb), Some(fb), Some(ct), Some(bounce)) = (
                 physical::alloc_frame(),
                 physical::alloc_frame(),
                 physical::alloc_frame(),
+                physical::alloc_contiguous(BOUNCE_BUF_FRAMES),
             ) {
                 atapi_clb_phys = clb.as_u64();
                 atapi_fb_phys = fb.as_u64();
                 atapi_ctba_phys = ct.as_u64();
+                atapi_bounce_phys = bounce.as_u64();
 
                 dma_zero(atapi_clb_phys, 4096);
                 dma_zero(atapi_fb_phys, 4096);
                 dma_zero(atapi_ctba_phys, 4096);
+                dma_zero(atapi_bounce_phys, BOUNCE_BUF_SIZE);
 
                 // Pre-configure CmdHeader[0] for ATAPI port
                 let cmd_header = dma_ptr::<CmdHeader>(atapi_clb_phys);
@@ -1374,8 +1656,13 @@ pub fn init_and_register(pci: &PciDevice) {
             clb_phys,
             fb_phys,
             ctba_phys,
+            ctba_phys_slots,
             bounce_phys,
             bounce_virt: dma_ptr::<u8>(bounce_phys) as u64,
+            bounce_phys_slots,
+            bounce_virt_slots,
+            slot_count: configured_slots as u8,
+            ncq_supported: false,
             total_sectors: 0,
             irq,
             interrupt_driven: false,
@@ -1390,6 +1677,12 @@ pub fn init_and_register(pci: &PciDevice) {
             atapi_clb_phys,
             atapi_fb_phys,
             atapi_ctba_phys,
+            atapi_bounce_phys,
+            atapi_bounce_virt: if atapi_bounce_phys != 0 {
+                dma_ptr::<u8>(atapi_bounce_phys) as u64
+            } else {
+                0
+            },
         });
 
         // Issue IDENTIFY DEVICE (polled — scheduler not yet running)
@@ -1425,18 +1718,33 @@ pub fn init_and_register(pci: &PciDevice) {
             if total_sectors == 0 {
                 total_sectors = (*identify.add(60) as u64) | ((*identify.add(61) as u64) << 16);
             }
+            let sata_caps = *identify.add(76);
+            let ncq_supported = (sata_caps & (1 << 8)) != 0;
+            let queue_depth = ((*identify.add(75) & 0x1F) + 1) as u8;
 
             if let Some(ahci) = AHCI.as_mut() {
                 ahci.total_sectors = total_sectors;
                 ahci.model = model;
+                ahci.ncq_supported =
+                    AHCI_ENABLE_NCQ && ncq_supported && queue_depth > 1 && ahci.slot_count > 1;
+                if ahci.ncq_supported {
+                    ahci.slot_count = ahci.slot_count.min(queue_depth);
+                } else {
+                    // Non-NCQ ATA DMA commands are not queueable. Keep the
+                    // extra tables allocated for diagnostics/future use, but
+                    // expose only one active slot until NCQ is available.
+                    ahci.slot_count = 1;
+                }
             }
 
             let model_str = core::str::from_utf8(&model).unwrap_or("???").trim();
             crate::serial_verbose_println!(
-                "  AHCI: '{}', {} sectors ({} MiB)",
+                "  AHCI: '{}', {} sectors ({} MiB), NCQ={} slots={}",
                 model_str,
                 total_sectors,
-                total_sectors / 2048
+                total_sectors / 2048,
+                ncq_supported as u8,
+                AHCI.as_ref().map_or(1, |a| a.slot_count)
             );
         } else {
             crate::serial_verbose_println!("  AHCI: IDENTIFY DEVICE failed");
@@ -1510,12 +1818,15 @@ pub fn init_and_register(pci: &PciDevice) {
             };
 
             // Allocate DMA structures for this port
-            let (e_clb, e_fb, e_ct) = match (
+            let (e_clb, e_fb, e_ct, e_bounce) = match (
                 physical::alloc_frame(),
                 physical::alloc_frame(),
                 physical::alloc_frame(),
+                physical::alloc_contiguous(BOUNCE_BUF_FRAMES),
             ) {
-                (Some(clb), Some(fb), Some(ct)) => (clb.as_u64(), fb.as_u64(), ct.as_u64()),
+                (Some(clb), Some(fb), Some(ct), Some(bounce)) => {
+                    (clb.as_u64(), fb.as_u64(), ct.as_u64(), bounce.as_u64())
+                }
                 _ => {
                     crate::serial_verbose_println!(
                         "  AHCI: Failed to allocate DMA for port {}",
@@ -1528,6 +1839,7 @@ pub fn init_and_register(pci: &PciDevice) {
             dma_zero(e_clb, 4096);
             dma_zero(e_fb, 4096);
             dma_zero(e_ct, 4096);
+            dma_zero(e_bounce, BOUNCE_BUF_SIZE);
 
             // Point CmdHeader[0] to command table
             let cmd_header = dma_ptr::<CmdHeader>(e_clb);
@@ -1551,7 +1863,9 @@ pub fn init_and_register(pci: &PciDevice) {
                 extra_port,
                 e_clb,
                 e_ct,
-                bounce_phys, // shared bounce buffer (only one port active at a time due to IO_LOCK)
+                // Each extra disk now owns a bounce buffer. This keeps primary
+                // multi-slot I/O from racing with secondary-port DMA fallback.
+                e_bounce,
                 ATA_CMD_IDENTIFY,
                 0,
                 1,
@@ -1559,7 +1873,7 @@ pub fn init_and_register(pci: &PciDevice) {
                 false,
             );
             if id_ok {
-                let identify = dma_ptr::<u16>(bounce_phys) as *const u16;
+                let identify = dma_ptr::<u16>(e_bounce) as *const u16;
                 let lo = *identify.add(100) as u64 | ((*identify.add(101) as u64) << 16);
                 let hi = *identify.add(102) as u64 | ((*identify.add(103) as u64) << 16);
                 extra_total_sectors = lo | (hi << 32);
@@ -1588,6 +1902,8 @@ pub fn init_and_register(pci: &PciDevice) {
                         clb_phys: e_clb,
                         fb_phys: e_fb,
                         ctba_phys: e_ct,
+                        bounce_phys: e_bounce,
+                        bounce_virt: dma_ptr::<u8>(e_bounce) as u64,
                         total_sectors: extra_total_sectors,
                     });
                     ahci.extra_disk_count += 1;
@@ -1944,7 +2260,7 @@ fn extra_disk_read(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bool {
                 port_dma.port,
                 port_dma.clb_phys,
                 port_dma.ctba_phys,
-                ahci.bounce_phys,
+                port_dma.bounce_phys,
                 ATA_CMD_READ_DMA_EXT,
                 cur_lba,
                 batch as u16,
@@ -1958,7 +2274,7 @@ fn extra_disk_read(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bool {
 
         unsafe {
             core::ptr::copy_nonoverlapping(
-                ahci.bounce_virt as *const u8,
+                port_dma.bounce_virt as *const u8,
                 buf.as_mut_ptr().add(offset),
                 byte_count,
             );
@@ -1995,7 +2311,7 @@ fn extra_disk_write(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
         unsafe {
             core::ptr::copy_nonoverlapping(
                 buf.as_ptr().add(offset),
-                ahci.bounce_virt as *mut u8,
+                port_dma.bounce_virt as *mut u8,
                 byte_count,
             );
         }
@@ -2006,7 +2322,7 @@ fn extra_disk_write(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
                 port_dma.port,
                 port_dma.clb_phys,
                 port_dma.ctba_phys,
-                ahci.bounce_phys,
+                port_dma.bounce_phys,
                 ATA_CMD_WRITE_DMA_EXT,
                 cur_lba,
                 batch as u16,
@@ -2035,6 +2351,18 @@ pub fn atapi_is_present() -> bool {
 /// Return the total number of 512-byte sectors on the SATA disk (0 if not initialized).
 pub fn disk_total_sectors() -> u64 {
     unsafe { AHCI.as_ref().map_or(0, |a| a.total_sectors) }
+}
+
+/// True when the primary AHCI disk can accept multiple outstanding commands.
+///
+/// AHCI command lists have many slots, but plain ATA READ/WRITE DMA EXT is
+/// not queueable. We only let the storage layer bypass its legacy I/O lock
+/// when IDENTIFY reports NCQ and the driver has at least two command slots.
+pub fn supports_parallel_io() -> bool {
+    unsafe {
+        AHCI.as_ref()
+            .map_or(false, |a| a.ncq_supported && a.slot_count > 1)
+    }
 }
 
 /// Return the model string of the primary SATA disk.
@@ -2073,7 +2401,7 @@ pub fn read_cd_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
 
         unsafe {
             core::ptr::copy_nonoverlapping(
-                ahci.bounce_virt as *const u8,
+                ahci.atapi_bounce_virt as *const u8,
                 buf.as_mut_ptr().add(offset),
                 byte_count,
             );
@@ -2134,9 +2462,9 @@ unsafe fn issue_atapi_read(
     *acmd.add(8) = (count & 0xFF) as u8; // Transfer length LSB
     *acmd.add(9) = 0x00; // Control
 
-    // Fill PRDT[0]: data goes into shared bounce buffer
-    (*cmd_table).prdt[0].dba = ahci.bounce_phys as u32;
-    (*cmd_table).prdt[0].dbau = (ahci.bounce_phys >> 32) as u32;
+    // Fill PRDT[0]: data goes into the ATAPI port's own bounce buffer.
+    (*cmd_table).prdt[0].dba = ahci.atapi_bounce_phys as u32;
+    (*cmd_table).prdt[0].dbau = (ahci.atapi_bounce_phys >> 32) as u32;
     (*cmd_table).prdt[0]._reserved = 0;
     (*cmd_table).prdt[0].dbc = (byte_count - 1) | (1 << 31); // IOC + byte count
 

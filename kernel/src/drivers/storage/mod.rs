@@ -85,6 +85,7 @@ const IO_LOCK_WAIT_WARN_MS: u32 = 50;
 const IO_LOCK_HOLD_WARN_MS: u32 = 250;
 const IO_LOCK_LOG_LIMIT: u32 = 64;
 const MAX_LOCKED_IO_SECTORS: u32 = 64;
+const MAX_UNLOCKED_AHCI_IO_SECTORS: u32 = 512;
 const IO_OP_UNKNOWN: u32 = 0;
 const IO_OP_READ: u32 = 1;
 const IO_OP_READAHEAD: u32 = 2;
@@ -436,6 +437,22 @@ fn io_lock_release() {
     }
 }
 
+fn io_lock_required(disk_id: u8, op_kind: u32) -> bool {
+    if disk_id != 0 {
+        return true;
+    }
+    if !matches!(
+        op_kind,
+        IO_OP_READ | IO_OP_READAHEAD | IO_OP_WRITE | IO_OP_WRITEBACK
+    ) {
+        return true;
+    }
+    match unsafe { BACKEND } {
+        StorageBackend::Ahci => !ahci::supports_parallel_io(),
+        _ => true,
+    }
+}
+
 #[inline]
 fn schedule_between_io_chunks() {
     if crate::task::scheduler::current_tid() > 0 {
@@ -451,14 +468,29 @@ fn read_sectors_raw_chunked(
     op_kind: u32,
 ) -> bool {
     let mut done = 0u32;
+    let use_lock = io_lock_required(disk_id, op_kind);
+    let max_batch = if use_lock {
+        MAX_LOCKED_IO_SECTORS
+    } else {
+        MAX_UNLOCKED_AHCI_IO_SECTORS
+    };
     while done < count {
-        let batch = (count - done).min(MAX_LOCKED_IO_SECTORS);
+        let batch = (count - done).min(max_batch);
         let offset = done as usize * 512;
         let len = batch as usize * 512;
-        io_lock_acquire(IoLockOp::new(op_kind, disk_id, lba + done, batch));
-        let ok =
-            read_sectors_raw_for_disk(disk_id, lba + done, batch, &mut buf[offset..offset + len]);
-        io_lock_release();
+        let ok = if use_lock {
+            io_lock_acquire(IoLockOp::new(op_kind, disk_id, lba + done, batch));
+            let ok = read_sectors_raw_for_disk(
+                disk_id,
+                lba + done,
+                batch,
+                &mut buf[offset..offset + len],
+            );
+            io_lock_release();
+            ok
+        } else {
+            read_sectors_raw_for_disk(disk_id, lba + done, batch, &mut buf[offset..offset + len])
+        };
         if !ok {
             return false;
         }
@@ -472,13 +504,25 @@ fn read_sectors_raw_chunked(
 
 fn write_sectors_raw_chunked(disk_id: u8, lba: u32, count: u32, buf: &[u8], op_kind: u32) -> bool {
     let mut done = 0u32;
+    let use_lock = io_lock_required(disk_id, op_kind);
+    let max_batch = if use_lock {
+        MAX_LOCKED_IO_SECTORS
+    } else {
+        MAX_UNLOCKED_AHCI_IO_SECTORS
+    };
     while done < count {
-        let batch = (count - done).min(MAX_LOCKED_IO_SECTORS);
+        let batch = (count - done).min(max_batch);
         let offset = done as usize * 512;
         let len = batch as usize * 512;
-        io_lock_acquire(IoLockOp::new(op_kind, disk_id, lba + done, batch));
-        let ok = write_sectors_raw_for_disk(disk_id, lba + done, batch, &buf[offset..offset + len]);
-        io_lock_release();
+        let ok = if use_lock {
+            io_lock_acquire(IoLockOp::new(op_kind, disk_id, lba + done, batch));
+            let ok =
+                write_sectors_raw_for_disk(disk_id, lba + done, batch, &buf[offset..offset + len]);
+            io_lock_release();
+            ok
+        } else {
+            write_sectors_raw_for_disk(disk_id, lba + done, batch, &buf[offset..offset + len])
+        };
         if !ok {
             return false;
         }
@@ -853,10 +897,16 @@ pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8
 
 /// Flush storage write cache to persistent media.
 pub fn flush() {
-    io_lock_acquire(IoLockOp::new(IO_OP_FLUSH, 0, 0, 0));
+    flush_disk(0);
+}
+
+/// Flush a specific disk's hardware write cache to persistent media when the
+/// active backend supports it.
+pub fn flush_disk(disk_id: u8) {
+    io_lock_acquire(IoLockOp::new(IO_OP_FLUSH, disk_id, 0, 0));
     match unsafe { BACKEND } {
         StorageBackend::Ahci => {
-            ahci::flush();
+            let _ = ahci::flush_disk(disk_id);
         }
         _ => {} // ATA/NVMe/SCSI: no explicit flush needed or not supported
     }

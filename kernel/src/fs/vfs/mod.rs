@@ -66,6 +66,16 @@ fn flush_blockcache_for_disks(disks: &[u8]) {
     }
 }
 
+fn flush_hardware_for_disks(disks: &[u8]) {
+    if disks.is_empty() {
+        crate::drivers::storage::flush();
+        return;
+    }
+    for &disk_id in disks {
+        crate::drivers::storage::flush_disk(disk_id);
+    }
+}
+
 struct DetachedExFatCommit {
     driver: Arc<ExFatFsDriver>,
     filename: String,
@@ -3069,7 +3079,7 @@ fn finish_detached_exfat_write(
 
     if plan.sync_write {
         flush_blockcache_for_disks(&disks_to_flush);
-        crate::drivers::storage::flush();
+        flush_hardware_for_disks(&disks_to_flush);
     } else {
         maybe_flush_exfat_metadata_periodic();
     }
@@ -3445,7 +3455,7 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
             }
             drop(vfs);
             flush_blockcache_for_disks(&disks_to_flush);
-            crate::drivers::storage::flush();
+            flush_hardware_for_disks(&disks_to_flush);
             return Ok(buf.len());
         }
         return Ok(buf.len());
@@ -3588,7 +3598,7 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
             }
             drop(vfs);
             flush_blockcache_for_disks(&disks_to_flush);
-            crate::drivers::storage::flush();
+            flush_hardware_for_disks(&disks_to_flush);
             return Ok(buf.len());
         }
     } else {
@@ -4999,7 +5009,7 @@ fn sync_file(slot_id: FileDescriptor, flush_hardware: bool) -> Result<(), FsErro
     // Flush write-back block cache, then storage hardware cache
     flush_blockcache_for_disks(&disks_to_flush);
     if flush_hardware {
-        crate::drivers::storage::flush();
+        flush_hardware_for_disks(&disks_to_flush);
     }
     Ok(())
 }
@@ -5062,7 +5072,7 @@ pub fn sync_all() {
     // Flush write-back block cache to disk (coalesced writes)
     flush_blockcache_for_disks(&disks_to_flush);
     // Then flush the drive's hardware write cache to persistent media
-    crate::drivers::storage::flush();
+    flush_hardware_for_disks(&disks_to_flush);
 }
 
 pub fn umount_fs(mount_path: &str) -> Result<(), FsError> {

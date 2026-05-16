@@ -23,8 +23,17 @@ const HASH_SIZE: usize = 32768;
 /// Sentinel value for empty hash slots.
 const EMPTY: u16 = 0xFFFF;
 
-/// Maximum linear probes before falling back.
-const MAX_PROBES: usize = 8;
+/// Sentinel value for deleted hash slots.
+///
+/// Cache slot indices are `0..CACHE_SECTORS` (currently 16K), so `0xFFFE`
+/// is safely outside the valid slot range. Keeping tombstones means removing
+/// one colliding entry no longer breaks lookup for later entries in that probe
+/// chain, and ordinary misses can stop at the first never-used slot instead of
+/// scanning the whole cache.
+const TOMBSTONE: u16 = 0xFFFE;
+
+/// Maximum linear probes before falling back to a rare full-table/slot scan.
+const MAX_PROBES: usize = 32;
 
 const MAX_DISKS: usize = 16;
 const KEY_SEAL: u64 = 0xB10C_CACE_D15C_5AFE;
@@ -182,6 +191,10 @@ impl BlockCache {
             let idx = (h + probe) & (HASH_SIZE - 1);
             let slot_idx = self.hash_table[idx];
             if slot_idx == EMPTY {
+                self.misses += 1;
+                return false;
+            }
+            if slot_idx == TOMBSTONE {
                 continue;
             }
             let si = slot_idx as usize;
@@ -295,13 +308,21 @@ impl BlockCache {
 
         // Check if already cached — update in place
         let h = Self::hash(key);
-        let mut first_empty = EMPTY;
+        let mut first_reusable: Option<usize> = None;
+        let mut hit_never_used = false;
         for probe in 0..MAX_PROBES {
             let idx = (h + probe) & (HASH_SIZE - 1);
             let slot_idx = self.hash_table[idx];
             if slot_idx == EMPTY {
-                if first_empty == EMPTY {
-                    first_empty = idx as u16;
+                if first_reusable.is_none() {
+                    first_reusable = Some(idx);
+                }
+                hit_never_used = true;
+                break;
+            }
+            if slot_idx == TOMBSTONE {
+                if first_reusable.is_none() {
+                    first_reusable = Some(idx);
                 }
                 continue;
             }
@@ -317,7 +338,7 @@ impl BlockCache {
         // Only fall back to a full duplicate scan when the normal probe window
         // was packed. On the common miss path this avoids scanning all 16K cache
         // slots for every sector of a streaming write.
-        if first_empty == EMPTY {
+        if !hit_never_used && first_reusable.is_none() {
             for i in 0..self.slots.len() {
                 self.quarantine_slot(i, "insert-scan");
                 if self.slots[i].key == key && self.slot_key_valid(i) {
@@ -386,8 +407,8 @@ impl BlockCache {
         self.slots[victim].tick = self.tick;
 
         // Insert into hash table
-        if first_empty != EMPTY {
-            self.hash_table[first_empty as usize] = victim as u16;
+        if let Some(idx) = first_reusable {
+            self.hash_table[idx] = victim as u16;
         } else {
             self.insert_hash(key, victim as u16);
         }
@@ -416,6 +437,9 @@ impl BlockCache {
             let idx = (h + probe) & (HASH_SIZE - 1);
             let slot_idx = self.hash_table[idx];
             if slot_idx == EMPTY {
+                break;
+            }
+            if slot_idx == TOMBSTONE {
                 continue;
             }
             let si = slot_idx as usize;
@@ -445,13 +469,16 @@ impl BlockCache {
             let idx = (h + probe) & (HASH_SIZE - 1);
             let slot_idx = self.hash_table[idx];
             if slot_idx == EMPTY {
+                return;
+            }
+            if slot_idx == TOMBSTONE {
                 continue;
             }
             let si = slot_idx as usize;
             if si < self.slots.len() && self.slots[si].key == key && self.slot_key_valid(si) {
                 self.set_slot_key(si, 0);
                 self.slots[si].dirty = false;
-                self.hash_table[idx] = EMPTY;
+                self.hash_table[idx] = TOMBSTONE;
                 return;
             }
         }
@@ -551,6 +578,9 @@ impl BlockCache {
             let idx = (h + probe) & (HASH_SIZE - 1);
             let slot_idx = self.hash_table[idx];
             if slot_idx == EMPTY {
+                return;
+            }
+            if slot_idx == TOMBSTONE {
                 continue;
             }
             let si = slot_idx as usize;
@@ -573,24 +603,51 @@ impl BlockCache {
 
     fn insert_hash(&mut self, key: u64, slot: u16) {
         let h = Self::hash(key);
+        let mut first_tombstone = EMPTY;
         for probe in 0..MAX_PROBES {
             let idx = (h + probe) & (HASH_SIZE - 1);
             if self.hash_table[idx] == EMPTY {
+                let target = if first_tombstone != EMPTY {
+                    first_tombstone as usize
+                } else {
+                    idx
+                };
+                self.hash_table[target] = slot;
+                return;
+            }
+            if self.hash_table[idx] == TOMBSTONE && first_tombstone == EMPTY {
+                first_tombstone = idx as u16;
+            }
+        }
+        if first_tombstone != EMPTY {
+            self.hash_table[first_tombstone as usize] = slot;
+            return;
+        }
+
+        // Rare pathological collision case: keep correctness by scanning the
+        // hash table for reusable space instead of overwriting a live mapping.
+        for idx in 0..self.hash_table.len() {
+            if self.hash_table[idx] == EMPTY || self.hash_table[idx] == TOMBSTONE {
                 self.hash_table[idx] = slot;
                 return;
             }
         }
-        // All probe slots full — overwrite the first one (degrades but doesn't break)
-        let idx = h & (HASH_SIZE - 1);
-        self.hash_table[idx] = slot;
+
+        crate::serial_println!(
+            "[blockcache] hash table full; dropping cache mapping for key={:#x}",
+            key
+        );
     }
 
     fn remove_from_hash(&mut self, key: u64, slot_idx: usize) {
         let h = Self::hash(key);
         for probe in 0..MAX_PROBES {
             let idx = (h + probe) & (HASH_SIZE - 1);
+            if self.hash_table[idx] == EMPTY {
+                return;
+            }
             if self.hash_table[idx] == slot_idx as u16 {
-                self.hash_table[idx] = EMPTY;
+                self.hash_table[idx] = TOMBSTONE;
                 return;
             }
         }
