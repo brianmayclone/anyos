@@ -4,6 +4,7 @@
 //! scrolling, color attributes, cursor positioning, and `fmt::Write` output.
 
 use core::fmt;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Physical address of the VGA text mode framebuffer.
 const VGA_BUFFER: u32 = 0xB8000;
@@ -42,10 +43,13 @@ fn color_code(fg: Color, bg: Color) -> u8 {
 static mut COL: usize = 0;
 static mut ROW: usize = 0;
 static mut ATTR: u8 = 0x0F; // White on black
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Initialize the VGA text console by clearing the screen.
 pub fn init() {
-    clear();
+    if !INITIALIZED.swap(true, Ordering::AcqRel) {
+        clear_raw();
+    }
 }
 
 /// Set the foreground and background color for subsequent text output.
@@ -57,6 +61,11 @@ pub fn set_color(fg: Color, bg: Color) {
 
 /// Clear the entire VGA text screen and reset cursor to top-left.
 pub fn clear() {
+    clear_raw();
+    INITIALIZED.store(true, Ordering::Release);
+}
+
+fn clear_raw() {
     let buffer = VGA_BUFFER as *mut u16;
     let blank = 0x0F00 | b' ' as u16; // White on black, space
     for i in 0..(VGA_WIDTH * VGA_HEIGHT) {
@@ -67,6 +76,13 @@ pub fn clear() {
     unsafe {
         COL = 0;
         ROW = 0;
+    }
+}
+
+#[inline]
+fn ensure_initialized() {
+    if !INITIALIZED.load(Ordering::Acquire) {
+        init();
     }
 }
 
@@ -97,6 +113,7 @@ fn scroll() {
 
 /// Write a single character to the VGA console, handling newlines, tabs, and scrolling.
 pub fn put_char(c: u8) {
+    ensure_initialized();
     unsafe {
         match c {
             b'\n' => {
@@ -132,6 +149,7 @@ pub fn put_char(c: u8) {
 
 /// Erase the character before the cursor position.
 pub fn backspace() {
+    ensure_initialized();
     unsafe {
         if COL > 0 {
             COL -= 1;
@@ -145,6 +163,7 @@ pub fn backspace() {
 
 /// Clear from the current cursor position to the end of the line.
 pub fn clear_to_eol() {
+    ensure_initialized();
     unsafe {
         let blank = (ATTR as u16) << 8 | b' ' as u16;
         let buffer = VGA_BUFFER as *mut u16;

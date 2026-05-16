@@ -9,7 +9,6 @@ pub(super) fn early_output() {
     let version = option_env!("ANYOS_VERSION").unwrap_or("dev");
     serial_println!("");
     serial_println!("  .anyOS Kernel (x86_64) v{}", version);
-    crate::drivers::vga_text::init();
 }
 
 pub(super) fn read_boot_info(boot_info_addr: u64) -> &'static BootInfo {

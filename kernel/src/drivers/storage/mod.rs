@@ -3,9 +3,10 @@
 //! Routes read/write requests to the active storage backend (ATA PIO or AHCI DMA).
 //! The backend is selected at boot based on hardware detection.
 //!
-//! All I/O is serialized via `IO_LOCK` — a yielding lock that gives up the CPU
-//! time slice instead of busy-spinning when contended.  Reads are accelerated
-//! by the global block cache (`fs::blockcache`).
+//! I/O backends that cannot safely overlap requests are serialized via
+//! `IO_LOCK` — a yielding lock that gives up the CPU time slice instead of
+//! busy-spinning when contended. Reads are accelerated by the global block
+//! cache (`fs::blockcache`).
 
 pub mod ahci;
 pub mod ata;
@@ -85,6 +86,7 @@ const IO_LOCK_WAIT_WARN_MS: u32 = 50;
 const IO_LOCK_HOLD_WARN_MS: u32 = 250;
 const IO_LOCK_LOG_LIMIT: u32 = 64;
 const MAX_LOCKED_IO_SECTORS: u32 = 64;
+const MAX_LOCKED_WRITEBACK_SECTORS: u32 = 16;
 const MAX_UNLOCKED_AHCI_IO_SECTORS: u32 = 512;
 const IO_OP_UNKNOWN: u32 = 0;
 const IO_OP_READ: u32 = 1;
@@ -454,6 +456,15 @@ fn io_lock_required(disk_id: u8, op_kind: u32) -> bool {
 }
 
 #[inline]
+fn locked_io_batch_sectors(op_kind: u32) -> u32 {
+    if op_kind == IO_OP_WRITEBACK {
+        MAX_LOCKED_WRITEBACK_SECTORS
+    } else {
+        MAX_LOCKED_IO_SECTORS
+    }
+}
+
+#[inline]
 fn schedule_between_io_chunks() {
     if crate::task::scheduler::current_tid() > 0 {
         crate::task::scheduler::schedule();
@@ -470,7 +481,7 @@ fn read_sectors_raw_chunked(
     let mut done = 0u32;
     let use_lock = io_lock_required(disk_id, op_kind);
     let max_batch = if use_lock {
-        MAX_LOCKED_IO_SECTORS
+        locked_io_batch_sectors(op_kind)
     } else {
         MAX_UNLOCKED_AHCI_IO_SECTORS
     };
@@ -506,7 +517,7 @@ fn write_sectors_raw_chunked(disk_id: u8, lba: u32, count: u32, buf: &[u8], op_k
     let mut done = 0u32;
     let use_lock = io_lock_required(disk_id, op_kind);
     let max_batch = if use_lock {
-        MAX_LOCKED_IO_SECTORS
+        locked_io_batch_sectors(op_kind)
     } else {
         MAX_UNLOCKED_AHCI_IO_SECTORS
     };

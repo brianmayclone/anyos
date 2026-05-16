@@ -1006,6 +1006,9 @@ pub fn writeback_flush(disk_id: u8) -> u32 {
         }
 
         i += run_len;
+        if i < snapshot.len() && crate::task::scheduler::current_tid() > 0 {
+            crate::task::scheduler::schedule();
+        }
     }
 
     if (disk_id as usize) < MAX_DISKS && flushed > 0 {
