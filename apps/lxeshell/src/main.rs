@@ -144,12 +144,16 @@ fn start_lxe_shell() {
         return;
     }
 
-    let tid =
-        process::spawn_piped_full("/System/bin/lxe", "shell --stdio", stdout_pipe, stdin_pipe);
+    let tid = process::spawn_piped_full(
+        "/System/bin/lxe",
+        "lxe shell --pty-bridge",
+        stdout_pipe,
+        stdin_pipe,
+    );
     if tid == u32::MAX {
         ipc::pipe_close(stdout_pipe);
         ipc::pipe_close(stdin_pipe);
-        push_line("Failed to start /System/bin/lxe shell --stdio.", ERROR);
+        push_line("Failed to start /System/bin/lxe shell --pty-bridge.", ERROR);
         return;
     }
 

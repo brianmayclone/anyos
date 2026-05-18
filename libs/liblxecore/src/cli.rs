@@ -77,7 +77,7 @@ fn usage() {
     println!("  lxe [--verbose] init");
     println!("  lxe [--verbose] repair");
     println!("  lxe [--verbose] run <linux-elf64> [args...]");
-    println!("  lxe [--verbose] shell [--stdio] [bash-args...]");
+    println!("  lxe [--verbose] shell [bash-args...]");
     println!("  lxe [--verbose] pkg install <file.deb>");
     println!("  lxe [--verbose] apt install <package> [package...]");
 }
@@ -127,8 +127,8 @@ fn run(config: &mut LxeConfig, args: &[&str]) {
 }
 
 fn shell(config: &mut LxeConfig, args: &[&str]) {
-    let stdio = args.first().copied() == Some("--stdio");
-    if !stdio {
+    let pty_bridge = args.first().copied() == Some("--pty-bridge");
+    if !pty_bridge {
         open_shell_app(config);
         return;
     }
@@ -174,7 +174,7 @@ fn open_shell_app(config: &LxeConfig) {
     let tid = process::launch_app("/Applications/Management/LXE Shell.app/LXE Shell", "");
     if tid == u32::MAX {
         log_fatal!("lxe shell: failed to open LXE Shell.app");
-        log_warn!("lxe shell: raw fallback for diagnostics: lxe shell --stdio");
+        log_warn!("lxe shell: internal fallback for diagnostics: lxe shell --pty-bridge");
     }
 }
 
