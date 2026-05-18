@@ -4526,7 +4526,6 @@ pub extern "C" fn anyui_get_position(id: ControlId, out_x: *mut i32, out_y: *mut
     }
 }
 
-
 /// Get the absolute position of a control in window coordinates. This mirrors
 /// hit-testing offsets, including ScrollView scroll positions.
 #[no_mangle]
@@ -4774,6 +4773,29 @@ pub extern "C" fn anyui_tabbar_show_plus(id: ControlId, show: u32) {
         if let Some(tb) = as_tabbar(ctrl) {
             tb.show_plus = show != 0;
             tb.text_base.base.mark_dirty();
+        }
+    }
+}
+
+/// Set or clear a per-tab ARGB icon on a TabBar.
+#[no_mangle]
+pub extern "C" fn anyui_tabbar_set_tab_icon(
+    id: ControlId,
+    index: u32,
+    data: *const u32,
+    w: u32,
+    h: u32,
+) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tb) = as_tabbar(ctrl) {
+            if data.is_null() || w == 0 || h == 0 {
+                tb.set_tab_icon(index as usize, None, 0, 0);
+            } else {
+                let len = (w as usize).saturating_mul(h as usize);
+                let slice = unsafe { core::slice::from_raw_parts(data, len) };
+                tb.set_tab_icon(index as usize, Some(slice), w, h);
+            }
         }
     }
 }

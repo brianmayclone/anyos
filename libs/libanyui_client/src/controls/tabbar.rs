@@ -35,6 +35,20 @@ impl TabBar {
         (lib().tabbar_show_plus)(self.container.ctrl.id, if show { 1 } else { 0 });
     }
 
+    /// Set an ARGB icon for a tab. Pass a 16x16 favicon for browser-style tabs.
+    pub fn set_tab_icon(&self, index: u32, pixels: &[u32], w: u32, h: u32) {
+        if pixels.is_empty() || w == 0 || h == 0 {
+            (lib().tabbar_set_tab_icon)(self.container.ctrl.id, index, core::ptr::null(), 0, 0);
+            return;
+        }
+        (lib().tabbar_set_tab_icon)(self.container.ctrl.id, index, pixels.as_ptr(), w, h);
+    }
+
+    /// Clear the icon for a tab.
+    pub fn clear_tab_icon(&self, index: u32) {
+        (lib().tabbar_set_tab_icon)(self.container.ctrl.id, index, core::ptr::null(), 0, 0);
+    }
+
     /// Set one visual style property. Keys are `STYLE_*` constants.
     pub fn set_style(&self, key: u32, value: u32) {
         self.container.ctrl.set_style(key, value);

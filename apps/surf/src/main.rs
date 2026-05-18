@@ -454,6 +454,15 @@ pub(crate) fn start_anim_timer() {
         let st = state();
         if st.scroll_render_pending {
             if scroll_interaction_hot() {
+                let active_tab = st.active_tab;
+                if active_tab < st.tabs.len() {
+                    let scroll_y = st.tabs[active_tab].webview.scroll_view().get_state() as i32;
+                    st.scroll_render_pending =
+                        st.tabs[active_tab].webview.render_scroll_frame_at(scroll_y);
+                }
+                unsafe {
+                    IDLE_TICKS = 0;
+                }
                 return;
             }
             st.scroll_render_pending = false;
@@ -1809,6 +1818,7 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
             let needs_layout = handle_image_done(
                 tab_index,
                 src,
+                url,
                 encoded_len,
                 body,
                 headers,
@@ -2150,6 +2160,10 @@ fn handle_nav_done(
     st.tabs[tab_idx].deferred_images.clear();
     st.tabs[tab_idx].requested_image_urls.clear();
     st.tabs[tab_idx].deferred_images_inflight = 0;
+    st.tabs[tab_idx].favicon_pixels.clear();
+    st.tabs[tab_idx].favicon_w = 0;
+    st.tabs[tab_idx].favicon_h = 0;
+    st.tabs[tab_idx].requested_favicon_url.clear();
     st.tabs[tab_idx].css_background_scan_pending = false;
     st.tabs[tab_idx].inline_svg_cache.clear();
 
@@ -2242,6 +2256,7 @@ fn handle_nav_done(
     // Match surf-host more closely: queue stylesheets first, but do not let
     // hundreds of images block external scripts in the single network worker.
     let pending_stylesheet_count = if let Some(dom) = st.tabs[tab_idx].webview.dom() {
+        resources::queue_favicon(dom, &base_url, tab_idx);
         let css_count = resources::queue_stylesheets(dom, &base_url, tab_idx);
         css_count
     } else {
@@ -2600,6 +2615,7 @@ fn handle_font_done(
 fn handle_image_done(
     tab_index: usize,
     src: String,
+    url: http::Url,
     encoded_len: usize,
     _body: Vec<u8>,
     headers: String,
@@ -2623,6 +2639,32 @@ fn handle_image_done(
         image_priority_name(priority),
         generation
     );
+
+    if resources::is_favicon_src(&src) {
+        if let Some(decoded_raster) = decoded_raster {
+            if let Some((pixels, w, h)) = resources::scale_icon_pixels(
+                &decoded_raster.pixels,
+                decoded_raster.width,
+                decoded_raster.height,
+            ) {
+                st.tabs[tab_index].favicon_pixels = pixels;
+                st.tabs[tab_index].favicon_w = w;
+                st.tabs[tab_index].favicon_h = h;
+                st.tabs[tab_index].requested_favicon_url = ui::format_url(&url);
+                ui::update_tab_labels();
+                crate::surf_log!(
+                    "[surf] favicon loaded: tab={} url={} size={}x{}",
+                    tab_index,
+                    st.tabs[tab_index].requested_favicon_url,
+                    w,
+                    h
+                );
+            }
+        } else if !src.ends_with("/favicon.ico") {
+            let _ = resources::queue_favicon_fallback(tab_index);
+        }
+        return false;
+    }
 
     let _ = headers;
     let mut needs_layout = false;

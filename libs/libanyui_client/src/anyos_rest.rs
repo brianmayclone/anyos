@@ -408,6 +408,7 @@ struct AnyuiLib {
     on_menu_item_fn: extern "C" fn(u32, Callback, u64),
     // TabBar extensions
     pub(crate) tabbar_show_plus: extern "C" fn(u32, u32),
+    pub(crate) tabbar_set_tab_icon: extern "C" fn(u32, u32, *const u32, u32, u32),
 }
 
 static mut LIB: Option<AnyuiLib> = None;
@@ -748,6 +749,7 @@ pub fn init() -> bool {
             update_menu_item_fn: resolve(&handle, "anyui_update_menu_item"),
             on_menu_item_fn: resolve(&handle, "anyui_on_menu_item"),
             tabbar_show_plus: resolve(&handle, "anyui_tabbar_show_plus"),
+            tabbar_set_tab_icon: resolve(&handle, "anyui_tabbar_set_tab_icon"),
             _handle: handle,
         };
         (lib.init)();
@@ -1751,11 +1753,7 @@ impl Screen {
     pub fn at(vx: i32, vy: i32) -> Option<Screen> {
         let screens = Screen::list();
         for s in &screens {
-            if vx >= s.virtual_x
-                && vy >= s.virtual_y
-                && vx < s.right()
-                && vy < s.bottom()
-            {
+            if vx >= s.virtual_x && vy >= s.virtual_y && vx < s.right() && vy < s.bottom() {
                 return Some(*s);
             }
         }

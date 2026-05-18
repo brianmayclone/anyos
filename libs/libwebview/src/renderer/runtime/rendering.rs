@@ -54,8 +54,8 @@ impl Renderer {
         let immediate_rows =
             Self::prioritized_tile_rows(visible_first_row, visible_last_row, scroll_y, viewport_h);
 
-        let fast_initial_display_list = doc_h > viewport_h.saturating_mul(3)
-            || root.subtree_bottom > viewport_h as i32 * 3;
+        let fast_initial_display_list =
+            doc_h > viewport_h.saturating_mul(3) || root.subtree_bottom > viewport_h as i32 * 3;
         let (initial_visible_y_start, initial_visible_y_end) =
             Self::progressive_band_range(scroll_y, viewport_h, doc_h);
 
@@ -289,8 +289,7 @@ impl Renderer {
             (BUFFER_ZONE, BUFFER_ZONE)
         };
         let render_y_start = (scroll_y - prefetch_above).max(0);
-        let render_y_end =
-            (scroll_y + viewport_h as i32 + prefetch_below).min(doc_h as i32);
+        let render_y_end = (scroll_y + viewport_h as i32 + prefetch_below).min(doc_h as i32);
         let first_row = render_y_start as u32 / TILE_HEIGHT;
         let last_row = if render_y_end > 0 {
             ((render_y_end - 1) as u32) / TILE_HEIGHT
@@ -321,7 +320,10 @@ impl Renderer {
             let defer_display_list_expand = needs_band_expand && scrolling;
             let visible_tile_missing = defer_display_list_expand
                 && (visible_first_row..=visible_last_row).any(|row| {
-                    !self.tile_canvases.iter().any(|tc| tc.active && tc.row == row)
+                    !self
+                        .tile_canvases
+                        .iter()
+                        .any(|tc| tc.active && tc.row == row)
                         && self.tile_cache.get(row).is_none()
                 });
             if defer_display_list_expand && !visible_tile_missing {
@@ -335,8 +337,7 @@ impl Renderer {
             if needs_band_expand && (!defer_display_list_expand || visible_tile_missing) {
                 let (build_y_start, build_y_end) = if visible_tile_missing {
                     let start = (scroll_y - TILE_HEIGHT as i32).max(0);
-                    let end =
-                        (scroll_y + viewport_h as i32 + TILE_HEIGHT as i32).min(doc_h as i32);
+                    let end = (scroll_y + viewport_h as i32 + TILE_HEIGHT as i32).min(doc_h as i32);
                     (start, end.max(start + 1))
                 } else {
                     (band_y_start, band_y_end)
@@ -377,13 +378,14 @@ impl Renderer {
 
         let mut rasterized = 0usize;
         let mut created_canvases = 0usize;
+        let visible_row_budget = visible_last_row.saturating_sub(visible_first_row) as usize + 1;
         let max_tiles = if scrolling {
-            MAX_TILES_PER_SCROLL_TICK
+            MAX_TILES_PER_SCROLL_TICK.max(visible_row_budget)
         } else {
             MAX_TILES_PER_IDLE_TICK
         };
         let max_canvas_creates = if scrolling {
-            MAX_TILE_CANVAS_CREATES_PER_SCROLL_TICK
+            MAX_TILE_CANVAS_CREATES_PER_SCROLL_TICK.max(visible_row_budget)
         } else {
             MAX_TILE_CANVAS_CREATES_PER_IDLE_TICK
         };
@@ -398,7 +400,11 @@ impl Renderer {
         self.deactivate_distant_tile_canvases(keep_first, keep_last);
 
         for row in prioritized_rows {
-            if self.tile_canvases.iter().any(|tc| tc.active && tc.row == row) {
+            if self
+                .tile_canvases
+                .iter()
+                .any(|tc| tc.active && tc.row == row)
+            {
                 self.tile_cache.touch(row);
                 continue;
             }
@@ -464,5 +470,4 @@ impl Renderer {
     // ─────────────────────────────────────────────────────────────────────
     // Internal helpers
     // ─────────────────────────────────────────────────────────────────────
-
 }

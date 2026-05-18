@@ -228,6 +228,12 @@ pub(crate) struct TabState {
     pub(crate) current_url: Option<crate::http::Url>,
     /// `<title>` extracted from the last loaded page.
     pub(crate) page_title: String,
+    /// Current tab favicon pixels (ARGB8888), normally 16x16.
+    pub(crate) favicon_pixels: Vec<u32>,
+    pub(crate) favicon_w: u32,
+    pub(crate) favicon_h: u32,
+    /// Absolute favicon URL already requested for this navigation.
+    pub(crate) requested_favicon_url: String,
     /// Navigation history stack (fully-qualified URL strings).
     pub(crate) history: Vec<String>,
     /// Current position within `history` (0 = oldest entry).
@@ -281,6 +287,10 @@ impl TabState {
             url_text: String::new(),
             current_url: None,
             page_title: String::new(),
+            favicon_pixels: Vec::new(),
+            favicon_w: 0,
+            favicon_h: 0,
+            requested_favicon_url: String::new(),
             history: Vec::new(),
             history_pos: 0,
             status_text: String::from("Ready"),
@@ -368,6 +378,10 @@ pub(crate) fn navigate(url_str: &str) {
     st.tabs[st.active_tab]
         .load_state
         .begin_navigation(generation);
+    st.tabs[st.active_tab].favicon_pixels.clear();
+    st.tabs[st.active_tab].favicon_w = 0;
+    st.tabs[st.active_tab].favicon_h = 0;
+    st.tabs[st.active_tab].requested_favicon_url.clear();
     if st.active_tab < st.js_timer_quiet_ticks.len() {
         st.js_timer_quiet_ticks[st.active_tab] = 0;
     }
@@ -416,6 +430,10 @@ pub(crate) fn navigate_post(url_str: &str, body: &str) {
     st.tabs[st.active_tab]
         .load_state
         .begin_navigation(generation);
+    st.tabs[st.active_tab].favicon_pixels.clear();
+    st.tabs[st.active_tab].favicon_w = 0;
+    st.tabs[st.active_tab].favicon_h = 0;
+    st.tabs[st.active_tab].requested_favicon_url.clear();
     if st.active_tab < st.js_timer_quiet_ticks.len() {
         st.js_timer_quiet_ticks[st.active_tab] = 0;
     }
@@ -450,6 +468,10 @@ fn navigate_file(path: &str) {
 
     let generation = crate::net_worker::new_generation();
     st.tabs[tab_idx].load_state.begin_navigation(generation);
+    st.tabs[tab_idx].favicon_pixels.clear();
+    st.tabs[tab_idx].favicon_w = 0;
+    st.tabs[tab_idx].favicon_h = 0;
+    st.tabs[tab_idx].requested_favicon_url.clear();
     if tab_idx < st.js_timer_quiet_ticks.len() {
         st.js_timer_quiet_ticks[tab_idx] = 0;
     }

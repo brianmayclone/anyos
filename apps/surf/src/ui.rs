@@ -80,17 +80,60 @@ pub(crate) fn update_tab_labels() {
         if i > 0 {
             labels.push('|');
         }
-        let label = tab.tab_label();
-        // Truncate overly long tab labels to keep the tab bar readable.
-        if label.len() > 24 {
-            labels.push_str(&label[..24]);
-            labels.push_str("...");
-        } else {
-            labels.push_str(&label);
-        }
+        labels.push_str(&tab_bar_label(tab));
     }
     st.tab_bar_view.set_text(&labels);
+    for (i, tab) in st.tabs.iter().enumerate() {
+        if !tab.favicon_pixels.is_empty() && tab.favicon_w > 0 && tab.favicon_h > 0 {
+            st.tab_bar_view.set_tab_icon(
+                i as u32,
+                &tab.favicon_pixels,
+                tab.favicon_w,
+                tab.favicon_h,
+            );
+        } else {
+            st.tab_bar_view.clear_tab_icon(i as u32);
+        }
+    }
     st.tab_bar_view.set_state(st.active_tab as u32);
+}
+
+fn tab_bar_label(tab: &crate::tab::TabState) -> String {
+    const MAX_CHARS: usize = 24;
+
+    let raw = tab.tab_label();
+    let mut out = String::new();
+    let mut chars = 0usize;
+    let mut truncated = false;
+    let mut last_space = false;
+
+    for ch in raw.chars() {
+        if chars >= MAX_CHARS {
+            truncated = true;
+            break;
+        }
+        let mapped = match ch {
+            '|' => '-',
+            '\n' | '\r' | '\t' => ' ',
+            c if c.is_control() => ' ',
+            c => c,
+        };
+        if mapped == ' ' {
+            if last_space {
+                continue;
+            }
+            last_space = true;
+        } else {
+            last_space = false;
+        }
+        out.push(mapped);
+        chars += 1;
+    }
+
+    if truncated {
+        out.push_str("...");
+    }
+    out
 }
 
 /// Apply the current theme palette to Surf's chrome controls.

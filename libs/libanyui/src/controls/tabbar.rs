@@ -13,10 +13,18 @@ const MIN_TAB_WIDTH: i32 = 80;
 /// Size of the navigation / "+" buttons on the right side.
 const NAV_BTN_SIZE: i32 = 24;
 
+struct TabIcon {
+    pixels: Vec<u32>,
+    w: u32,
+    h: u32,
+}
+
 pub struct TabBar {
     pub(crate) text_base: TextControlBase,
     /// Cached tab labels parsed from pipe-separated text.
     labels: Vec<Vec<u8>>,
+    /// Optional ARGB icons aligned with `labels`.
+    icons: Vec<Option<TabIcon>>,
     /// Which tab is hovered (-1 = none).
     hover_tab: i32,
     /// Whether the close button on the hovered tab is hovered.
@@ -34,6 +42,7 @@ impl TabBar {
         let mut tb = Self {
             text_base,
             labels: Vec::new(),
+            icons: Vec::new(),
             hover_tab: -1,
             close_hovered: false,
             scroll_offset: 0,
@@ -48,6 +57,7 @@ impl TabBar {
     fn parse_labels(&mut self) {
         self.labels.clear();
         if self.text_base.text.is_empty() {
+            self.icons.clear();
             return;
         }
         let text = &self.text_base.text;
@@ -59,10 +69,51 @@ impl TabBar {
             }
         }
         self.labels.push(text[start..].to_vec());
+        if self.icons.len() > self.labels.len() {
+            self.icons.truncate(self.labels.len());
+        }
+        while self.icons.len() < self.labels.len() {
+            self.icons.push(None);
+        }
         // Clamp scroll offset
         if self.scroll_offset >= self.labels.len() {
             self.scroll_offset = 0;
         }
+    }
+
+    pub fn set_tab_icon(&mut self, index: usize, data: Option<&[u32]>, w: u32, h: u32) {
+        if index >= self.labels.len() {
+            return;
+        }
+        while self.icons.len() < self.labels.len() {
+            self.icons.push(None);
+        }
+        let icon = if let Some(data) = data {
+            let expected = (w as usize).saturating_mul(h as usize);
+            if w == 0 || h == 0 || expected == 0 || data.len() < expected {
+                None
+            } else {
+                Some(TabIcon {
+                    pixels: data[..expected].to_vec(),
+                    w,
+                    h,
+                })
+            }
+        } else {
+            None
+        };
+        let unchanged = match (&self.icons[index], &icon) {
+            (None, None) => true,
+            (Some(old), Some(new_icon)) => {
+                old.w == new_icon.w && old.h == new_icon.h && old.pixels == new_icon.pixels
+            }
+            _ => false,
+        };
+        if unchanged {
+            return;
+        }
+        self.icons[index] = icon;
+        self.text_base.base.mark_dirty();
     }
 
     /// Compute overflow layout info (unscaled logical coords).
@@ -415,12 +466,30 @@ impl Control for TabBar {
             let show_close = is_active || is_hovered;
 
             // Text area
-            let text_area_left = tab_x + tab_pad_x;
+            let mut text_area_left = tab_x + tab_pad_x;
             let text_area_right = if show_close {
                 close_x - close_btn_pad
             } else {
                 tab_x + tab_w - tab_pad_x
             };
+            if let Some(Some(icon)) = self.icons.get(i) {
+                let icon_w = icon.w as i32;
+                let icon_h = icon.h as i32;
+                if icon_w > 0 && icon_h > 0 && text_area_right - text_area_left >= icon_w {
+                    let icon_x = text_area_left;
+                    let icon_y = tab_y + (tab_h as i32 - icon_h) / 2;
+                    super::icon_button::blit_alpha_opacity(
+                        surface,
+                        icon_x,
+                        icon_y,
+                        icon.w,
+                        icon.h,
+                        &icon.pixels,
+                        if is_active { 255 } else { 210 },
+                    );
+                    text_area_left += icon_w + crate::theme::scale_i32(6);
+                }
+            }
             let text_area_w = (text_area_right - text_area_left).max(0);
 
             let (full_tw, _) = crate::draw::text_size_at(label, tab_font);

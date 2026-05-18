@@ -13,6 +13,9 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+pub(crate) const FAVICON_SRC_PREFIX: &str = "surf-internal:favicon:";
+const FAVICON_SIZE: u32 = 16;
+
 fn fnv1a64(data: &str) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for &b in data.as_bytes() {
@@ -20,6 +23,28 @@ fn fnv1a64(data: &str) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash ^ ((data.len() as u64) << 32)
+}
+
+pub(crate) fn is_favicon_src(src: &str) -> bool {
+    src.starts_with(FAVICON_SRC_PREFIX)
+}
+
+pub(crate) fn scale_icon_pixels(src: &[u32], sw: u32, sh: u32) -> Option<(Vec<u32>, u32, u32)> {
+    if src.is_empty() || sw == 0 || sh == 0 {
+        return None;
+    }
+    if sw == FAVICON_SIZE && sh == FAVICON_SIZE {
+        return Some((Vec::from(src), sw, sh));
+    }
+    let mut dst = vec![0u32; (FAVICON_SIZE * FAVICON_SIZE) as usize];
+    for y in 0..FAVICON_SIZE {
+        let sy = (y * sh / FAVICON_SIZE).min(sh - 1);
+        for x in 0..FAVICON_SIZE {
+            let sx = (x * sw / FAVICON_SIZE).min(sw - 1);
+            dst[(y * FAVICON_SIZE + x) as usize] = src[(sy * sw + sx) as usize];
+        }
+    }
+    Some((dst, FAVICON_SIZE, FAVICON_SIZE))
 }
 
 fn image_already_queued_or_decoded(tab_index: usize, src: &str) -> bool {
@@ -442,6 +467,125 @@ pub(crate) fn queue_stylesheets(
     }
 
     count as usize
+}
+
+pub(crate) fn queue_favicon(
+    dom: &libwebview::dom::Dom,
+    base_url: &crate::http::Url,
+    tab_index: usize,
+) -> bool {
+    if base_url.host.is_empty() || (base_url.scheme != "http" && base_url.scheme != "https") {
+        return false;
+    }
+
+    let mut best_href: Option<&str> = None;
+    let mut best_score = 0u8;
+    for (i, node) in dom.nodes.iter().enumerate() {
+        if let libwebview::dom::NodeType::Element {
+            tag: libwebview::dom::Tag::Link,
+            ..
+        } = &node.node_type
+        {
+            let rel = dom.attr(i, "rel").unwrap_or("");
+            let score = favicon_rel_score(rel);
+            if score == 0 || score < best_score {
+                continue;
+            }
+            let Some(href) = dom.attr(i, "href") else {
+                continue;
+            };
+            if href.is_empty() || href.starts_with("data:") {
+                continue;
+            }
+            best_href = Some(href);
+            best_score = score;
+            if score >= 3 {
+                break;
+            }
+        }
+    }
+
+    let icon_url = if let Some(href) = best_href {
+        crate::http::resolve_url(base_url, href)
+    } else {
+        favicon_fallback_url(base_url)
+    };
+    submit_favicon_url(tab_index, icon_url)
+}
+
+pub(crate) fn queue_favicon_fallback(tab_index: usize) -> bool {
+    let base_url = {
+        let st = crate::state();
+        if tab_index >= st.tabs.len() {
+            return false;
+        }
+        let Some(url) = &st.tabs[tab_index].current_url else {
+            return false;
+        };
+        url.clone()
+    };
+    if base_url.host.is_empty() || (base_url.scheme != "http" && base_url.scheme != "https") {
+        return false;
+    }
+    submit_favicon_url(tab_index, favicon_fallback_url(&base_url))
+}
+
+fn favicon_fallback_url(base_url: &crate::http::Url) -> crate::http::Url {
+    let mut url = base_url.clone();
+    url.path = String::from("/favicon.ico");
+    url
+}
+
+fn favicon_rel_score(rel: &str) -> u8 {
+    let mut score = 0u8;
+    for token in rel.split_ascii_whitespace() {
+        if token.eq_ignore_ascii_case("icon") {
+            score = score.max(3);
+        } else if token.eq_ignore_ascii_case("apple-touch-icon")
+            || token.eq_ignore_ascii_case("apple-touch-icon-precomposed")
+        {
+            score = score.max(2);
+        } else if token.eq_ignore_ascii_case("shortcut") {
+            score = score.max(1);
+        }
+    }
+    score
+}
+
+fn submit_favicon_url(tab_index: usize, icon_url: crate::http::Url) -> bool {
+    let generation = {
+        let st = crate::state();
+        if tab_index >= st.tabs.len() {
+            return false;
+        }
+        st.tabs[tab_index].load_state.generation
+    };
+    let url_text = crate::ui::format_url(&icon_url);
+    {
+        let st = crate::state();
+        if tab_index >= st.tabs.len() {
+            return false;
+        }
+        if st.tabs[tab_index].requested_favicon_url == url_text {
+            return false;
+        }
+        st.tabs[tab_index].requested_favicon_url = url_text.clone();
+    }
+
+    let mut src = String::from(FAVICON_SRC_PREFIX);
+    src.push_str(&url_text);
+    crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
+        tab_index,
+        src,
+        url: icon_url,
+        target_width: Some(FAVICON_SIZE),
+        target_height: Some(FAVICON_SIZE),
+        priority: crate::net_worker::ImagePriority::Viewport,
+        from_deferred: false,
+        generation,
+    });
+    crate::ensure_net_poll_timer();
+    true
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2422,7 +2566,16 @@ pub(crate) fn decode_raster_to_image(
     target_w: Option<u32>,
     target_h: Option<u32>,
 ) -> Result<DecodedRasterImage, libimage_client::ImageError> {
-    let info = libimage_client::probe(data).ok_or(libimage_client::ImageError::InvalidData)?;
+    let preferred_icon_size = target_w.or(target_h).unwrap_or(FAVICON_SIZE).max(1);
+    let is_ico = data.len() >= 4 && data[0] == 0 && data[1] == 0 && data[2] == 1 && data[3] == 0;
+    let info = if is_ico {
+        libimage_client::probe_ico_size(data, preferred_icon_size)
+            .or_else(|| libimage_client::probe(data))
+    } else {
+        libimage_client::probe(data)
+            .or_else(|| libimage_client::probe_ico_size(data, preferred_icon_size))
+    }
+    .ok_or(libimage_client::ImageError::InvalidData)?;
     let w = info.width;
     let h = info.height;
     if w == 0 || h == 0 || w > 16384 || h > 16384 || (w as u64 * h as u64) > 67_108_864 {
@@ -2430,7 +2583,11 @@ pub(crate) fn decode_raster_to_image(
     }
     let mut pixels = vec![0u32; (w * h) as usize];
     let mut scratch = vec![0u8; info.scratch_needed as usize];
-    libimage_client::decode(data, &mut pixels, &mut scratch)?;
+    if info.format == libimage_client::FMT_ICO {
+        libimage_client::decode_ico_size(data, preferred_icon_size, &mut pixels, &mut scratch)?;
+    } else {
+        libimage_client::decode(data, &mut pixels, &mut scratch)?;
+    }
     let (final_w, final_h) = compute_decode_size(w, h, target_w, target_h);
     let pixels = if final_w != w || final_h != h {
         let mut scaled = vec![0u32; (final_w * final_h) as usize];
