@@ -327,10 +327,10 @@ pub fn sys_close(fd: u32) -> u32 {
     use crate::fs::fd_table::FdKind;
     // Close the local FD entry — returns the old FdKind for resource cleanup
     match crate::task::scheduler::current_fd_close(fd) {
-        Some(FdKind::File { global_id }) => {
-            crate::fs::vfs::decref(global_id);
-            0
-        }
+        Some(FdKind::File { global_id }) => match crate::fs::vfs::close(global_id) {
+            Ok(()) => 0,
+            Err(e) => fs_err(e),
+        },
         Some(FdKind::PipeRead { pipe_id }) => {
             crate::ipc::anon_pipe::decref_read(pipe_id);
             0

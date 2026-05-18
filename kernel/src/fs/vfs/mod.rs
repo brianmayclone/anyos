@@ -78,6 +78,7 @@ fn flush_hardware_for_disks(disks: &[u8]) {
 
 struct DetachedExFatCommit {
     driver: Arc<ExFatFsDriver>,
+    path: String,
     filename: String,
     parent_cluster: u32,
     inode: u32,
@@ -111,6 +112,7 @@ fn snapshot_open_exfat_commit(
 
     Ok(Some(DetachedExFatCommit {
         driver,
+        path: file.path.clone(),
         filename: String::from(filename),
         parent_cluster: file.parent_cluster,
         inode: file.inode,
@@ -123,12 +125,34 @@ fn snapshot_open_exfat_commit(
 fn finish_detached_exfat_commit(commit: &DetachedExFatCommit) -> Result<u8, FsError> {
     let mut exfat = commit.driver.lock_inner();
     if commit.entry_dirty {
-        exfat.update_entry(
+        let primary = exfat.update_entry(
             commit.parent_cluster,
             &commit.filename,
             commit.size,
             commit.inode,
-        )?;
+        );
+        if let Err(primary_err) = primary {
+            let (parent_path, filename) = split_parent_name(&commit.path)?;
+            let parent = match resolve_exfat_path(&exfat, parent_path, true) {
+                Ok(parent) => parent,
+                Err(FsError::NotFound) => return Ok(exfat.device_id as u8),
+                Err(err) => return Err(err),
+            };
+            let (parent_cluster, _) = crate::fs::exfat::decode_inode(parent.inode);
+            match exfat.update_entry(parent_cluster, filename, commit.size, commit.inode) {
+                Ok(()) => {
+                    crate::serial_verbose_println!(
+                        "[vfs] exfat commit retry path={} old_parent={} new_parent={} err={:?}",
+                        commit.path,
+                        commit.parent_cluster,
+                        parent_cluster,
+                        primary_err
+                    );
+                }
+                Err(FsError::NotFound) => return Ok(exfat.device_id as u8),
+                Err(err) => return Err(err),
+            }
+        }
     }
     if commit.durable && exfat.metadata_dirty {
         exfat.flush_metadata()?;
@@ -455,6 +479,7 @@ enum DetachedReadBackend {
 
 struct DetachedRead {
     backend: DetachedReadBackend,
+    exfat_plan: Option<crate::fs::exfat::ExFatReadPlan>,
     inode: u32,
     position: u32,
     size: u32,
@@ -475,6 +500,7 @@ enum DetachedWriteBackend {
 
 struct DetachedWrite {
     backend: DetachedWriteBackend,
+    exfat_overwrite_plan: Option<crate::fs::exfat::ExFatReadPlan>,
     fs_id: u32,
     inode: u32,
     old_inode: u32,
@@ -559,6 +585,11 @@ enum DetachedReadDirBackend {
     ExFat(Arc<ExFatFsDriver>),
 }
 
+enum DetachedSymlinkBackend {
+    CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
+    ExFat(Arc<ExFatFsDriver>),
+}
+
 enum DetachedRenameBackend {
     CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
     ExFat(Arc<ExFatFsDriver>),
@@ -580,6 +611,12 @@ struct DetachedReadDir {
     path: String,
     add_dev: bool,
     add_mnt: bool,
+}
+
+struct DetachedSymlink {
+    backend: DetachedSymlinkBackend,
+    path: String,
+    target: String,
 }
 
 struct DetachedRename {
@@ -2489,6 +2526,7 @@ pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
     let mut exfat_commit: Option<DetachedExFatCommit> = None;
     let mut corefs_to_flush: Option<Arc<crate::fs::corefs::CoreFsDriver>> = None;
     let mut fuse_release: Option<(Arc<crate::fs::fuse::FuseSession>, fuse_proto::Request)> = None;
+    let mut free_after_commit = false;
     {
         let mut vfs = vfs_lock();
         let state = vfs.as_mut().ok_or(FsError::IoError)?;
@@ -2540,13 +2578,18 @@ pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
                     }
                 }
             }
-            state.free_slot(slot_id);
+            free_after_commit = true;
         }
     } // VFS lock released
 
     if let Some(commit) = exfat_commit {
         let disk_id = finish_detached_exfat_commit(&commit)?;
         queue_disk_flush(&mut disks_to_flush, disk_id);
+    }
+    if free_after_commit {
+        let mut vfs = vfs_lock();
+        let state = vfs.as_mut().ok_or(FsError::IoError)?;
+        state.free_slot(slot_id);
     }
     if let Some((session, req)) = fuse_release {
         let _ = crate::fs::fuse::fuse_call(&session, &req);
@@ -2601,6 +2644,7 @@ pub fn decref(slot_id: u32) {
     let mut exfat_commit: Option<DetachedExFatCommit> = None;
     let mut corefs_to_flush: Option<Arc<crate::fs::corefs::CoreFsDriver>> = None;
     let mut fuse_release: Option<(Arc<crate::fs::fuse::FuseSession>, fuse_proto::Request)> = None;
+    let mut free_after_commit = false;
     let mut vfs = vfs_lock();
     if let Some(state) = vfs.as_mut() {
         let snapshot = state
@@ -2647,14 +2691,27 @@ pub fn decref(slot_id: u32) {
                         }
                     }
                 }
-                state.free_slot(slot_id);
+                free_after_commit = true;
             }
         }
     }
     drop(vfs);
     if let Some(commit) = exfat_commit {
-        if let Ok(disk_id) = finish_detached_exfat_commit(&commit) {
-            queue_disk_flush(&mut disks_to_flush, disk_id);
+        match finish_detached_exfat_commit(&commit) {
+            Ok(disk_id) => queue_disk_flush(&mut disks_to_flush, disk_id),
+            Err(err) => {
+                crate::serial_println!(
+                    "[vfs] exfat close commit failed path={} err={:?}",
+                    commit.path,
+                    err
+                );
+            }
+        }
+    }
+    if free_after_commit {
+        let mut vfs = vfs_lock();
+        if let Some(state) = vfs.as_mut() {
+            state.free_slot(slot_id);
         }
     }
     if let Some((session, req)) = fuse_release {
@@ -2673,45 +2730,40 @@ fn prepare_detached_read(slot_id: FileDescriptor, len: usize) -> Result<Detached
         return Ok(DetachedReadPrep::Eof);
     }
 
-    let mut vfs = vfs_lock();
-    let state = vfs.as_mut().ok_or(FsError::IoError)?;
-    let (fs_id, path, position, size, inode) = {
+    let (fs_id, path, position, size, inode, backend) = {
+        let vfs = vfs_lock();
+        let state = vfs.as_ref().ok_or(FsError::IoError)?;
         let file = state
             .open_files
             .get(slot_id as usize)
             .and_then(|e| e.as_ref())
             .ok_or(FsError::BadFd)?;
-        (
-            file.fs_id,
-            file.path.clone(),
-            file.position,
-            file.size,
-            file.inode,
-        )
-    };
-
-    let backend = match fs_id {
-        3 => {
-            let driver = state
-                .exfat_fs
-                .as_ref()
-                .map(Arc::clone)
-                .ok_or(FsError::IoError)?;
-            DetachedReadBackend::ExFat(driver)
-        }
-        6 => {
-            let driver = state
-                .mounted_exfat_handle_for_path(&path)
-                .ok_or(FsError::IoError)?;
-            DetachedReadBackend::ExFat(driver)
-        }
-        8 => {
-            let driver = state
-                .corefs_handle_for_path(&path)
-                .ok_or(FsError::IoError)?;
-            DetachedReadBackend::CoreFs(driver)
-        }
-        _ => return Ok(DetachedReadPrep::Unsupported),
+        let fs_id = file.fs_id;
+        let path = file.path.clone();
+        let backend = match fs_id {
+            3 => {
+                let driver = state
+                    .exfat_fs
+                    .as_ref()
+                    .map(Arc::clone)
+                    .ok_or(FsError::IoError)?;
+                DetachedReadBackend::ExFat(driver)
+            }
+            6 => {
+                let driver = state
+                    .mounted_exfat_handle_for_path(&path)
+                    .ok_or(FsError::IoError)?;
+                DetachedReadBackend::ExFat(driver)
+            }
+            8 => {
+                let driver = state
+                    .corefs_handle_for_path(&path)
+                    .ok_or(FsError::IoError)?;
+                DetachedReadBackend::CoreFs(driver)
+            }
+            _ => return Ok(DetachedReadPrep::Unsupported),
+        };
+        (fs_id, path, file.position, file.size, file.inode, backend)
     };
 
     if position >= size {
@@ -2720,19 +2772,36 @@ fn prepare_detached_read(slot_id: FileDescriptor, len: usize) -> Result<Detached
 
     let remaining = (size - position) as usize;
     let reserved = len.min(remaining);
-    let file = state
-        .open_files
-        .get_mut(slot_id as usize)
-        .and_then(|e| e.as_mut())
-        .ok_or(FsError::BadFd)?;
-    if file.fs_id != fs_id || file.inode != inode || file.path != path || file.position != position
+    let exfat_plan = match &backend {
+        DetachedReadBackend::ExFat(driver) => {
+            let exfat = driver.lock_inner();
+            Some(exfat.get_file_read_plan(inode, size))
+        }
+        DetachedReadBackend::CoreFs(_) => None,
+    };
+
     {
-        return Err(FsError::BadFd);
+        let mut vfs = vfs_lock();
+        let state = vfs.as_mut().ok_or(FsError::IoError)?;
+        let file = state
+            .open_files
+            .get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
+            .ok_or(FsError::BadFd)?;
+        if file.fs_id != fs_id
+            || file.inode != inode
+            || file.path != path
+            || file.position != position
+            || file.size != size
+        {
+            return Err(FsError::BadFd);
+        }
+        file.position = position.saturating_add(reserved as u32);
     }
-    file.position = position.saturating_add(reserved as u32);
 
     Ok(DetachedReadPrep::Ready(DetachedRead {
         backend,
+        exfat_plan,
         inode,
         position,
         size,
@@ -2750,51 +2819,61 @@ fn prepare_detached_read_at(
         return Ok(DetachedReadPrep::Eof);
     }
 
-    let vfs = vfs_lock();
-    let state = vfs.as_ref().ok_or(FsError::IoError)?;
-    let (fs_id, path, size, inode) = {
+    let (path, size, inode, backend) = {
+        let vfs = vfs_lock();
+        let state = vfs.as_ref().ok_or(FsError::IoError)?;
         let file = state
             .open_files
             .get(slot_id as usize)
             .and_then(|e| e.as_ref())
             .ok_or(FsError::BadFd)?;
-        (file.fs_id, file.path.clone(), file.size, file.inode)
-    };
-
-    let backend = match fs_id {
-        3 => {
-            let driver = state
-                .exfat_fs
-                .as_ref()
-                .map(Arc::clone)
-                .ok_or(FsError::IoError)?;
-            DetachedReadBackend::ExFat(driver)
-        }
-        6 => {
-            let driver = state
-                .mounted_exfat_handle_for_path(&path)
-                .ok_or(FsError::IoError)?;
-            DetachedReadBackend::ExFat(driver)
-        }
-        8 => {
-            let driver = state
-                .corefs_handle_for_path(&path)
-                .ok_or(FsError::IoError)?;
-            DetachedReadBackend::CoreFs(driver)
-        }
-        _ => return Ok(DetachedReadPrep::Unsupported),
+        let path = file.path.clone();
+        let backend = match file.fs_id {
+            3 => {
+                let driver = state
+                    .exfat_fs
+                    .as_ref()
+                    .map(Arc::clone)
+                    .ok_or(FsError::IoError)?;
+                DetachedReadBackend::ExFat(driver)
+            }
+            6 => {
+                let driver = state
+                    .mounted_exfat_handle_for_path(&path)
+                    .ok_or(FsError::IoError)?;
+                DetachedReadBackend::ExFat(driver)
+            }
+            8 => {
+                let driver = state
+                    .corefs_handle_for_path(&path)
+                    .ok_or(FsError::IoError)?;
+                DetachedReadBackend::CoreFs(driver)
+            }
+            _ => return Ok(DetachedReadPrep::Unsupported),
+        };
+        (path, file.size, file.inode, backend)
     };
 
     if offset >= size {
         return Ok(DetachedReadPrep::Eof);
     }
 
+    let reserved = len.min((size - offset) as usize);
+    let exfat_plan = match &backend {
+        DetachedReadBackend::ExFat(driver) => {
+            let exfat = driver.lock_inner();
+            Some(exfat.get_file_read_plan(inode, size))
+        }
+        DetachedReadBackend::CoreFs(_) => None,
+    };
+
     Ok(DetachedReadPrep::Ready(DetachedRead {
         backend,
+        exfat_plan,
         inode,
         position: offset,
         size,
-        reserved: len.min((size - offset) as usize),
+        reserved,
         path,
     }))
 }
@@ -2825,6 +2904,10 @@ fn finish_detached_read(
 }
 
 fn execute_detached_read(plan: &DetachedRead, buf: &mut [u8]) -> Result<usize, FsError> {
+    if let Some(exfat_plan) = &plan.exfat_plan {
+        return exfat_plan.execute_range(plan.position as u64, &mut buf[..plan.reserved]);
+    }
+
     let mut total = 0usize;
     while total < plan.reserved {
         let offset = plan.position.saturating_add(total as u32);
@@ -2956,9 +3039,25 @@ fn prepare_detached_write(
     } else {
         None
     };
+    let exfat_overwrite_plan = if matches!(&backend, DetachedWriteBackend::ExFat(_))
+        && position % 512 == 0
+        && len % 512 == 0
+        && position.saturating_add(len as u32) <= size
+    {
+        match &backend {
+            DetachedWriteBackend::ExFat(driver) => {
+                let exfat = driver.lock_inner();
+                Some(exfat.get_file_read_plan(inode, size))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
 
     Ok(DetachedWritePrep::Ready(DetachedWrite {
         backend,
+        exfat_overwrite_plan,
         fs_id,
         inode,
         old_inode: inode,
@@ -2982,6 +3081,17 @@ fn execute_detached_write(
             Ok(DetachedWriteResult::CoreFs { bytes_written })
         }
         DetachedWriteBackend::ExFat(driver) => {
+            if let Some(write_plan) = &plan.exfat_overwrite_plan {
+                let bytes_written = write_plan.execute_write_range(plan.position as u64, buf)?;
+                let exfat = driver.lock_inner();
+                exfat.invalidate_file_range(plan.old_inode, plan.position, bytes_written);
+                return Ok(DetachedWriteResult::ExFat(DetachedExFatWriteResult {
+                    new_cluster: plan.old_inode,
+                    new_size: plan.old_size,
+                    hint_offset: plan.seek_hint.map(|h| h.0).unwrap_or(0),
+                    hint_cluster: plan.seek_hint.map(|h| h.1).unwrap_or(0),
+                }));
+            }
             let mut exfat = driver.lock_inner();
             let (new_cluster, new_size, hint_offset, hint_cluster) = exfat.write_file_with_hint(
                 plan.old_inode,
@@ -3052,6 +3162,7 @@ fn finish_detached_exfat_write(
     result: DetachedExFatWriteResult,
 ) -> Result<usize, FsError> {
     let mut disks_to_flush = Vec::new();
+    let mut exfat_commit: Option<DetachedExFatCommit> = None;
     {
         let mut vfs = vfs_lock();
         let state = vfs.as_mut().ok_or(FsError::IoError)?;
@@ -3071,13 +3182,19 @@ fn finish_detached_exfat_write(
             file.entry_dirty = true;
         }
         if plan.sync_write {
-            if let Some(disk_id) = commit_open_exfat_entry(state, slot_id as usize, true)? {
-                queue_disk_flush(&mut disks_to_flush, disk_id);
-            }
+            exfat_commit = snapshot_open_exfat_commit(state, slot_id as usize, true)?;
         }
     }
 
     if plan.sync_write {
+        if let Some(commit) = exfat_commit {
+            let disk_id = finish_detached_exfat_commit(&commit)?;
+            queue_disk_flush(&mut disks_to_flush, disk_id);
+            let mut vfs = vfs_lock();
+            if let Some(state) = vfs.as_mut() {
+                mark_detached_exfat_commit_clean(state, slot_id as usize, &commit);
+            }
+        }
         flush_blockcache_for_disks(&disks_to_flush);
         flush_hardware_for_disks(&disks_to_flush);
     } else {
@@ -5252,6 +5369,9 @@ pub fn create_symlink(link_path: &str, target: &str) -> Result<(), FsError> {
     if is_dev_path(link_path) {
         return Err(FsError::PermissionDenied);
     }
+    if let Some(plan) = prepare_detached_symlink(link_path, target)? {
+        return execute_detached_symlink(&plan);
+    }
     let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
@@ -5340,6 +5460,114 @@ pub fn create_symlink(link_path: &str, target: &str) -> Result<(), FsError> {
         .root_fs()
         .ok_or(FsError::PermissionDenied)?
         .create_symlink(link_path, target)
+}
+
+fn prepare_detached_symlink(
+    link_path: &str,
+    target: &str,
+) -> Result<Option<DetachedSymlink>, FsError> {
+    let vfs = vfs_lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+
+    if let Some((mount_path, relative_path, mnt_fs_type)) =
+        find_submount(link_path, &state.mount_points)
+    {
+        let path = if relative_path.is_empty() {
+            String::from("/")
+        } else {
+            String::from(relative_path)
+        };
+        return match mnt_fs_type {
+            FsType::ExFat => {
+                let mount_path_owned = String::from(mount_path);
+                let driver = state
+                    .mounted_exfat
+                    .iter()
+                    .find(|(p, _)| *p == mount_path_owned)
+                    .map(|(_, fs)| Arc::clone(fs))
+                    .ok_or(FsError::IoError)?;
+                Ok(Some(DetachedSymlink {
+                    backend: DetachedSymlinkBackend::ExFat(driver),
+                    path,
+                    target: String::from(target),
+                }))
+            }
+            FsType::CoreFs => {
+                let driver = state
+                    .mounted_corefs
+                    .iter()
+                    .find(|(p, _)| p == mount_path)
+                    .map(|(_, fs)| Arc::clone(fs))
+                    .ok_or(FsError::NotFound)?;
+                Ok(Some(DetachedSymlink {
+                    backend: DetachedSymlinkBackend::CoreFs(driver),
+                    path,
+                    target: String::from(target),
+                }))
+            }
+            _ => Ok(None),
+        };
+    }
+
+    if state.root_fs_type == Some(FsType::ExFat) {
+        let driver = state
+            .exfat_fs
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or(FsError::IoError)?;
+        return Ok(Some(DetachedSymlink {
+            backend: DetachedSymlinkBackend::ExFat(driver),
+            path: String::from(link_path),
+            target: String::from(target),
+        }));
+    }
+    if state.root_fs_type == Some(FsType::CoreFs) {
+        let driver = state
+            .corefs_driver
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or(FsError::IoError)?;
+        return Ok(Some(DetachedSymlink {
+            backend: DetachedSymlinkBackend::CoreFs(driver),
+            path: String::from(link_path),
+            target: String::from(target),
+        }));
+    }
+
+    Ok(None)
+}
+
+fn execute_detached_symlink(plan: &DetachedSymlink) -> Result<(), FsError> {
+    let rel = plan.path.trim_end_matches('/');
+    let (parent, name) = match rel.rfind('/') {
+        Some(0) => ("/", &rel[1..]),
+        Some(pos) => (&rel[..pos], &rel[pos + 1..]),
+        None => ("/", rel),
+    };
+    if name.is_empty() {
+        return Err(FsError::InvalidPath);
+    }
+
+    match &plan.backend {
+        DetachedSymlinkBackend::ExFat(driver) => {
+            let mut exfat = driver.lock_inner();
+            let pr = resolve_exfat_path(&exfat, parent, true)?;
+            if pr.file_type != FileType::Directory {
+                return Err(FsError::NotADirectory);
+            }
+            let (parent_cluster, _) = crate::fs::exfat::decode_inode(pr.inode);
+            exfat.create_symlink(parent_cluster, name, &plan.target)
+        }
+        DetachedSymlinkBackend::CoreFs(driver) => {
+            let (parent_inode, parent_type, _) = Filesystem::lookup(driver.as_ref(), parent)?;
+            if parent_type != FileType::Directory {
+                return Err(FsError::NotADirectory);
+            }
+            driver
+                .create_symlink(parent_inode, name, &plan.target)
+                .map(|_| ())
+        }
+    }
 }
 
 /// Read the target of a symbolic link WITHOUT following it.

@@ -695,9 +695,31 @@ unsafe fn identify_disk_on_port(ahci: &AhciController, port: u32) -> u64 {
 /// Timeout for AHCI commands: ~5 seconds expressed in timer ticks.
 /// Computed from the HAL timer frequency at call time.
 const AHCI_TIMEOUT_MS: u64 = 5000;
+/// Flush-cache commands should normally complete immediately.  In QEMU some
+/// AHCI setups never complete 0xEA, and a full data-command timeout would
+/// freeze all filesystem I/O behind the storage lock.
+const AHCI_FLUSH_TIMEOUT_MS: u64 = 250;
 
 /// Number of retries after a timeout before giving up.
 const AHCI_MAX_RETRIES: u32 = 1;
+
+#[inline]
+fn command_timeout_ms(command: u8) -> u64 {
+    if command == ATA_CMD_FLUSH_EXT {
+        AHCI_FLUSH_TIMEOUT_MS
+    } else {
+        AHCI_TIMEOUT_MS
+    }
+}
+
+#[inline]
+fn command_max_retries(command: u8) -> u32 {
+    if command == ATA_CMD_FLUSH_EXT {
+        0
+    } else {
+        AHCI_MAX_RETRIES
+    }
+}
 
 /// Set up the command table and FIS for a single AHCI command, then issue it.
 /// Returns true if the command completed successfully. Does NOT retry.
@@ -825,7 +847,7 @@ unsafe fn issue_command_once(
         return wait_for_interrupt_completion(ahci, slot, command, lba);
     }
 
-    poll_completion(ahci, slot)
+    poll_completion(ahci, slot, command)
 }
 
 unsafe fn wait_for_interrupt_completion(
@@ -838,10 +860,11 @@ unsafe fn wait_for_interrupt_completion(
     let hz = crate::arch::hal::timer_frequency_hz() as u32;
     if hz == 0 {
         AHCI_SLOT_WAITERS[slot].store(0, Ordering::Release);
-        return poll_completion(ahci, slot);
+        return poll_completion(ahci, slot, command);
     }
 
-    let timeout_ticks = (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1);
+    let timeout_ms = command_timeout_ms(command) as u32;
+    let timeout_ticks = (timeout_ms * hz / 1000).max(1);
     let start = crate::arch::hal::timer_current_ticks();
     let sleep_interval = (hz / 1000).max(1);
 
@@ -943,13 +966,14 @@ unsafe fn issue_command_prdt_on_acquired_slot(
     }
 
     // On failure, retry once after resetting the port
-    for retry in 0..AHCI_MAX_RETRIES {
+    let max_retries = command_max_retries(command);
+    for retry in 0..max_retries {
         crate::serial_println!(
             "AHCI: retrying command (cmd={:#x}, lba={}, attempt {}/{})",
             command,
             lba,
             retry + 1,
-            AHCI_MAX_RETRIES
+            max_retries
         );
 
         // Reset the port to clear any stuck state
@@ -1015,7 +1039,8 @@ unsafe fn issue_command_on_port(
     dma_size: u32,
     write: bool,
 ) -> bool {
-    for attempt in 0..2u32 {
+    let attempts = command_max_retries(command) + 1;
+    for attempt in 0..attempts {
         if attempt > 0 {
             crate::serial_println!(
                 "AHCI: retrying port {} command (cmd={:#x}, lba={}, attempt {})",
@@ -1072,7 +1097,8 @@ unsafe fn issue_command_on_port(
         // to a bounded iteration count.
         let hz = crate::arch::hal::timer_frequency_hz() as u32;
         if hz > 0 {
-            let timeout_ticks = (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1);
+            let timeout_ms = command_timeout_ms(command) as u32;
+            let timeout_ticks = (timeout_ms * hz / 1000).max(1);
             let start = crate::arch::hal::timer_current_ticks();
             loop {
                 let ci = port_read(mmio_base, port, PORT_CI);
@@ -1119,13 +1145,14 @@ unsafe fn issue_command_on_port(
 
 /// Polled completion check with timeout (used during boot or as IRQ timeout fallback).
 /// Uses tick-based timing when available, falls back to iteration count during early boot.
-unsafe fn poll_completion(ahci: &AhciController, slot: usize) -> bool {
+unsafe fn poll_completion(ahci: &AhciController, slot: usize, command: u8) -> bool {
     let slot_bit = 1u32 << slot;
     let hz = crate::arch::hal::timer_frequency_hz() as u32;
 
     if hz > 0 {
         // Tick-based timeout (~5 seconds)
-        let timeout_ticks = (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1);
+        let timeout_ms = command_timeout_ms(command) as u32;
+        let timeout_ticks = (timeout_ms * hz / 1000).max(1);
         let start = crate::arch::hal::timer_current_ticks();
         let mut spins = 0usize;
         let mut backoff_attempts = 0u32;

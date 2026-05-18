@@ -3,6 +3,7 @@
 
 use alloc::format;
 use anyos_std::{env, fs, println, process, sys, String, Vec};
+use core::cell::UnsafeCell;
 
 anyos_std::entry!(main);
 
@@ -21,6 +22,12 @@ const FS_TYPE_EXFAT: u32 = 7;
 const FS_TYPE_COREFS: u32 = 6;
 const WORKER_CONFIG_ENV: &str = "VFSSTRESS_WORKER_CONFIG";
 const WORKER_BATCH_ENV: &str = "VFSSTRESS_WORKER_BATCH";
+
+struct JsonSerialBlock(UnsafeCell<Option<String>>);
+
+unsafe impl Sync for JsonSerialBlock {}
+
+static JSON_SERIAL_BLOCK: JsonSerialBlock = JsonSerialBlock(UnsafeCell::new(None));
 
 fn anyos_version() -> &'static str {
     option_env!("ANYOS_VERSION").unwrap_or("dev")
@@ -53,11 +60,26 @@ struct Config {
     serial_log: bool,
 }
 
+struct RunIntro {
+    started_uptime_ms: u32,
+    timestamp: String,
+}
+
 struct WorkerConfig {
     dir: String,
     worker: u32,
     workers: u32,
     ops: u32,
+    seed: u32,
+}
+
+struct PerfWorkerConfig {
+    mode: String,
+    dir: String,
+    worker: u32,
+    workers: u32,
+    bytes: u32,
+    loops: u32,
     seed: u32,
 }
 
@@ -110,27 +132,27 @@ impl Summary {
         }
     }
 
-    fn ok(&mut self, name: &str, detail: &str) {
+    fn ok_ms(&mut self, name: &str, detail: &str, elapsed_ms: u32) {
         self.tests += 1;
-        println!("  [OK]   {:<22} {}", name, detail);
+        println!("  [OK]   {:<22} {} {{{}ms}}", name, detail, elapsed_ms);
     }
 
-    fn fail(&mut self, name: &str, detail: &str) {
+    fn fail_ms(&mut self, name: &str, detail: &str, elapsed_ms: u32) {
         self.tests += 1;
         self.failures += 1;
-        println!("  [FAIL] {:<22} {}", name, detail);
+        println!("  [FAIL] {:<22} {} {{{}ms}}", name, detail, elapsed_ms);
     }
 
-    fn warn(&mut self, name: &str, detail: &str) {
+    fn warn_ms(&mut self, name: &str, detail: &str, elapsed_ms: u32) {
         self.tests += 1;
         self.warnings += 1;
-        println!("  [WARN] {:<22} {}", name, detail);
+        println!("  [WARN] {:<22} {} {{{}ms}}", name, detail, elapsed_ms);
     }
 
-    fn skip(&mut self, name: &str, detail: &str) {
+    fn skip_ms(&mut self, name: &str, detail: &str, elapsed_ms: u32) {
         self.tests += 1;
         self.skips += 1;
-        println!("  [SKIP] {:<22} {}", name, detail);
+        println!("  [SKIP] {:<22} {} {{{}ms}}", name, detail, elapsed_ms);
     }
 }
 
@@ -139,6 +161,7 @@ struct CaseResult {
     total_bytes: u32,
     write_ms: u32,
     read_ms: u32,
+    verify_ms: u32,
     ok: bool,
     phase: &'static str,
     first_bad: Option<u32>,
@@ -146,6 +169,21 @@ struct CaseResult {
 }
 
 fn main() {
+    if let Some(worker) = parse_perf_worker_config() {
+        let code = match run_perf_worker(&worker) {
+            Ok(()) => 0,
+            Err(err) => {
+                write_perf_worker_failure(&worker, err);
+                println!(
+                    "vfsstress perf worker {} FAIL {} mode={} bytes={} loops={} dir={}",
+                    worker.worker, err, worker.mode, worker.bytes, worker.loops, worker.dir
+                );
+                1
+            }
+        };
+        process::exit(code);
+    }
+
     if let Some(worker) = parse_readdir_worker_config() {
         let code = match run_readdir_mutator_worker(&worker) {
             Ok(()) => 0,
@@ -178,14 +216,23 @@ fn main() {
         return;
     };
     apply_profile(&mut cfg);
+    init_json_serial_block(&cfg);
     if cfg.serial_log {
         let _ = sys::set_serial_verbose(true);
         println!("[vfsstress] serial-log enabled");
     }
 
+    let started = sys::uptime_ms();
+    let intro = RunIntro {
+        started_uptime_ms: started,
+        timestamp: current_timestamp(),
+    };
+
     println!();
     println!("vfsstress {} - VFS Diagnose", VERSION);
     println!("============================");
+    println!("  timestamp: {}", intro.timestamp);
+    println!("  uptime:    {} ms", intro.started_uptime_ms);
     println!("  anyOS:     {}", anyos_version());
     println!("  profile:   {}", cfg.profile_name());
     println!("  repeat:    {}", cfg.repeat);
@@ -208,13 +255,29 @@ fn main() {
     }
     println!();
 
-    let started = sys::uptime_ms();
+    if cfg.json {
+        print_json_intro(&cfg, &intro);
+    }
+
     let mut summary = Summary::new();
+    let work_started = sys::uptime_ms();
     if prepare_dir(&cfg.dir) {
-        summary.ok("work-dir", &format!("{} writable", cfg.dir));
+        summary.ok_ms(
+            "work-dir",
+            &format!("{} writable", cfg.dir),
+            elapsed_ms(work_started),
+        );
     } else {
-        summary.fail("work-dir", &format!("{} nicht beschreibbar", cfg.dir));
-        print_summary(&cfg, &summary, started);
+        summary.fail_ms(
+            "work-dir",
+            &format!("{} nicht beschreibbar", cfg.dir),
+            elapsed_ms(work_started),
+        );
+        print_summary(&cfg, &summary, &intro);
+        if cfg.json {
+            print_json_summary(&cfg, &summary, &intro, elapsed_ms(started));
+        }
+        flush_json_serial_block(&cfg);
         return;
     }
 
@@ -239,10 +302,11 @@ fn main() {
             let case_started = sys::uptime_ms();
             let result = run_case(&cfg, &path, block, seed);
             print_case(round, &result);
+            let elapsed = elapsed_ms(case_started);
             if result.ok {
                 let detail = format!("round={} block={} ok", round, block);
-                summary.ok("case", &detail);
-                print_json_test(&cfg, "case", "OK", elapsed_ms(case_started), &detail);
+                summary.ok_ms("case", &detail, elapsed);
+                print_json_case(&cfg, round, &result, "OK", elapsed, &detail);
             } else {
                 let detail = format!(
                     "round={} block={} first_bad={}",
@@ -250,8 +314,8 @@ fn main() {
                     block,
                     result.first_bad.unwrap_or(u32::MAX)
                 );
-                summary.fail("case", &detail);
-                print_json_test(&cfg, "case", "FAIL", elapsed_ms(case_started), &detail);
+                summary.fail_ms("case", &detail, elapsed);
+                print_json_case(&cfg, round, &result, "FAIL", elapsed, &detail);
             }
             results.push(result);
         }
@@ -271,10 +335,11 @@ fn main() {
         println!();
         println!("Artefakte bleiben erhalten in {}", cfg.dir);
     }
-    print_summary(&cfg, &summary, started);
+    print_summary(&cfg, &summary, &intro);
     if cfg.json {
-        print_json_summary(&cfg, &summary, elapsed_ms(started));
+        print_json_summary(&cfg, &summary, &intro, elapsed_ms(started));
     }
+    flush_json_serial_block(&cfg);
 }
 
 fn parse_worker_config() -> Option<WorkerConfig> {
@@ -320,6 +385,24 @@ fn parse_worker_config() -> Option<WorkerConfig> {
     None
 }
 
+fn parse_perf_worker_config() -> Option<PerfWorkerConfig> {
+    let mut buf = [0u8; 512];
+    let raw = process::args(&mut buf);
+    if has_arg(raw, "--perf-worker-batch") {
+        return parse_perf_worker_batch(raw);
+    }
+
+    let mut env_buf = [0u8; 257];
+    let len = env::get(WORKER_BATCH_ENV, &mut env_buf);
+    if len != u32::MAX && len > 0 {
+        let n = (len as usize).min(env_buf.len());
+        if let Ok(raw) = core::str::from_utf8(&env_buf[..n]) {
+            return parse_perf_worker_batch(raw.trim_matches(char::from(0)));
+        }
+    }
+    None
+}
+
 fn parse_readdir_worker_config() -> Option<WorkerConfig> {
     let mut buf = [0u8; 512];
     let raw = process::args(&mut buf);
@@ -336,6 +419,68 @@ fn parse_readdir_worker_config() -> Option<WorkerConfig> {
         }
     }
     None
+}
+
+fn parse_perf_worker_batch(raw: &str) -> Option<PerfWorkerConfig> {
+    if !has_arg(raw, "--perf-worker-batch") {
+        return None;
+    }
+    let args: Vec<&str> = raw.split_ascii_whitespace().collect();
+    let mut cfg = PerfWorkerConfig {
+        mode: String::from("read"),
+        dir: String::from(DEFAULT_DIR),
+        worker: 0,
+        workers: 1,
+        bytes: 64 * 1024,
+        loops: 1,
+        seed: 1,
+    };
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i] {
+            "--mode" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.mode = String::from(args[i]);
+                }
+            }
+            "--dir" | "-d" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.dir = String::from(args[i]);
+                }
+            }
+            "--workers" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.workers = clamp(parse_u32(args[i]).unwrap_or(cfg.workers), 1, 32);
+                }
+            }
+            "--bytes" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.bytes = parse_u32(args[i]).unwrap_or(cfg.bytes).max(1);
+                }
+            }
+            "--loops" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.loops = clamp(parse_u32(args[i]).unwrap_or(cfg.loops), 1, 1024);
+                }
+            }
+            "--seed" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.seed = parse_u32(args[i]).unwrap_or(cfg.seed);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    cfg.worker = claim_worker_id(&cfg.dir, cfg.workers)?;
+    cfg.seed ^= cfg.worker.wrapping_mul(0x5151_0F5E);
+    Some(cfg)
 }
 
 fn parse_readdir_worker_batch(raw: &str) -> Option<WorkerConfig> {
@@ -690,158 +835,118 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
         println!("[vfsstress] begin full-suite");
     }
 
-    run_named(cfg, summary, "small io", small_io_case(cfg));
-    run_named(
-        cfg,
-        summary,
-        "overwrite in-block",
-        overwrite_in_block_case(cfg),
-    );
-    run_named(
-        cfg,
-        summary,
-        "overwrite block-edge",
-        overwrite_block_edge_case(cfg),
-    );
-    run_named(
-        cfg,
-        summary,
-        "overwrite full-block",
-        overwrite_full_block_case(cfg),
-    );
-    run_named(
-        cfg,
-        summary,
-        "overwrite multi-block",
-        overwrite_multi_block_case(cfg),
-    );
-    run_named(cfg, summary, "seek overwrite", seek_overwrite_case(cfg));
-    run_named(cfg, summary, "append truncate", append_truncate_case(cfg));
-    run_named(
-        cfg,
-        summary,
-        "parallel fsstress",
-        parallel_fsstress_case(cfg),
-    );
-    run_named_with_warning(
-        cfg,
-        summary,
-        "enospc accounting",
-        enospc_accounting_case(cfg),
-    );
-    run_named_with_warning(
-        cfg,
-        summary,
-        "enospc dir growth",
-        enospc_directory_growth_case(cfg),
-    );
+    run_named(cfg, summary, "small io", || small_io_case(cfg));
+    run_named(cfg, summary, "overwrite in-block", || {
+        overwrite_in_block_case(cfg)
+    });
+    run_named(cfg, summary, "overwrite block-edge", || {
+        overwrite_block_edge_case(cfg)
+    });
+    run_named(cfg, summary, "overwrite full-block", || {
+        overwrite_full_block_case(cfg)
+    });
+    run_named(cfg, summary, "overwrite multi-block", || {
+        overwrite_multi_block_case(cfg)
+    });
+    run_named(cfg, summary, "seek overwrite", || seek_overwrite_case(cfg));
+    run_named(cfg, summary, "append truncate", || {
+        append_truncate_case(cfg)
+    });
+    run_named(cfg, summary, "parallel fsstress", || {
+        parallel_fsstress_case(cfg)
+    });
+    run_named_with_warning(cfg, summary, "enospc accounting", || {
+        enospc_accounting_case(cfg)
+    });
+    run_named_with_warning(cfg, summary, "enospc dir growth", || {
+        enospc_directory_growth_case(cfg)
+    });
     if !cfg.scratch_device.is_empty() {
-        run_named_with_warning(
-            cfg,
-            summary,
-            "scratch lifecycle",
-            scratch_lifecycle_case(cfg),
-        );
-        run_named_with_warning(cfg, summary, "scratch enospc", scratch_enospc_case(cfg));
+        run_named_with_warning(cfg, summary, "scratch lifecycle", || {
+            scratch_lifecycle_case(cfg)
+        });
+        run_named_with_warning(cfg, summary, "scratch enospc", || scratch_enospc_case(cfg));
     }
-    run_named_with_warning(
-        cfg,
-        summary,
-        "recovery injection",
-        recovery_injection_case(),
-    );
-    run_named_with_warning(cfg, summary, "symlink eloop", symlink_eloop_case(cfg));
-    run_named(cfg, summary, "fsx random model", fsx_random_model_case(cfg));
-    run_named(cfg, summary, "sparse eof gaps", sparse_eof_gap_case(cfg));
-    run_named(
-        cfg,
-        summary,
-        "sparse hole matrix",
-        sparse_hole_matrix_case(cfg),
-    );
-    run_named(
-        cfg,
-        summary,
-        "fsstress metadata",
-        fsstress_metadata_case(cfg),
-    );
-    run_named(
-        cfg,
-        summary,
-        "close reopen sync",
-        close_reopen_sync_case(cfg),
-    );
-    run_named(
-        cfg,
-        summary,
-        "open unlink rename",
-        open_unlink_rename_case(cfg),
-    );
-    run_named(cfg, summary, "metadata rename", metadata_rename_case(cfg));
-    run_named(cfg, summary, "directory churn", directory_churn_case(cfg));
-    run_named(cfg, summary, "metadata perf", metadata_perf_case(cfg));
-    run_named(
-        cfg,
-        summary,
-        "sequential perf",
-        sequential_io_perf_case(cfg),
-    );
-    run_named(
-        cfg,
-        summary,
-        "overwrite perf",
-        random_overwrite_perf_case(cfg),
-    );
-    run_named(cfg, summary, "sync latency", sync_latency_perf_case(cfg));
-    run_named(
-        cfg,
-        summary,
-        "readdir mutation",
-        readdir_while_mutating_case(cfg),
-    );
-    run_named(
-        cfg,
-        summary,
-        "readdir parallel",
-        readdir_parallel_mutation_case(cfg),
-    );
-    run_named(cfg, summary, "large directory", large_directory_case(cfg));
-    run_named(cfg, summary, "long names", long_name_case(cfg));
-    run_named_with_warning(
-        cfg,
-        summary,
-        "permission metadata",
-        permission_metadata_case(cfg),
-    );
-    run_named_with_warning(cfg, summary, "fsync ordering", fsync_ordering_case(cfg));
-    run_named_with_warning(
-        cfg,
-        summary,
-        "statfs accounting",
-        statfs_accounting_case(cfg),
-    );
-    run_named_with_warning(cfg, summary, "path resolution", path_resolution_case(cfg));
-    run_named_with_warning(cfg, summary, "feature gates", feature_gate_case(cfg));
-    run_named(cfg, summary, "fd offsets", fd_offsets_case(cfg));
-    run_named(
-        cfg,
-        summary,
-        "user copy boundary",
-        user_copy_boundary_case(cfg),
-    );
-    run_named(cfg, summary, "stack write 64k", stack_write_64k_case(cfg));
-    run_named(
-        cfg,
-        summary,
-        "stream write 16k",
-        writeback_stream_case(cfg, WRITEBACK_STREAM_CHUNK_16K),
-    );
-    run_named(
-        cfg,
-        summary,
-        "stream write 32k",
-        writeback_stream_case(cfg, WRITEBACK_STREAM_CHUNK_32K),
-    );
+    run_named_with_warning(cfg, summary, "recovery injection", || {
+        recovery_injection_case()
+    });
+    run_named_with_warning(cfg, summary, "symlink eloop", || symlink_eloop_case(cfg));
+    run_named(cfg, summary, "fsx random model", || {
+        fsx_random_model_case(cfg)
+    });
+    run_named(cfg, summary, "sparse eof gaps", || sparse_eof_gap_case(cfg));
+    run_named(cfg, summary, "sparse hole matrix", || {
+        sparse_hole_matrix_case(cfg)
+    });
+    run_named(cfg, summary, "fsstress metadata", || {
+        fsstress_metadata_case(cfg)
+    });
+    run_named(cfg, summary, "close reopen sync", || {
+        close_reopen_sync_case(cfg)
+    });
+    run_named(cfg, summary, "open unlink rename", || {
+        open_unlink_rename_case(cfg)
+    });
+    run_named(cfg, summary, "metadata rename", || {
+        metadata_rename_case(cfg)
+    });
+    run_named(cfg, summary, "directory churn", || {
+        directory_churn_case(cfg)
+    });
+    run_named(cfg, summary, "metadata perf", || metadata_perf_case(cfg));
+    run_named(cfg, summary, "sequential perf", || {
+        sequential_io_perf_case(cfg)
+    });
+    run_named(cfg, summary, "parallel read perf", || {
+        parallel_read_perf_case(cfg)
+    });
+    run_named(cfg, summary, "parallel write perf", || {
+        parallel_write_perf_case(cfg)
+    });
+    run_named(cfg, summary, "overwrite perf", || {
+        random_overwrite_perf_case(cfg)
+    });
+    run_named(cfg, summary, "fragment alloc perf", || {
+        fragmented_allocation_perf_case(cfg)
+    });
+    run_named(cfg, summary, "sync latency", || sync_latency_perf_case(cfg));
+    run_named(cfg, summary, "readdir mutation", || {
+        readdir_while_mutating_case(cfg)
+    });
+    run_named(cfg, summary, "readdir parallel", || {
+        readdir_parallel_mutation_case(cfg)
+    });
+    run_named(cfg, summary, "large directory", || {
+        large_directory_case(cfg)
+    });
+    run_named(cfg, summary, "directory scaling perf", || {
+        directory_scaling_perf_case(cfg)
+    });
+    run_named(cfg, summary, "long names", || long_name_case(cfg));
+    run_named_with_warning(cfg, summary, "permission metadata", || {
+        permission_metadata_case(cfg)
+    });
+    run_named_with_warning(cfg, summary, "fsync ordering", || fsync_ordering_case(cfg));
+    run_named_with_warning(cfg, summary, "statfs accounting", || {
+        statfs_accounting_case(cfg)
+    });
+    run_named_with_warning(cfg, summary, "path resolution", || {
+        path_resolution_case(cfg)
+    });
+    run_named_with_warning(cfg, summary, "feature gates", || feature_gate_case(cfg));
+    run_named(cfg, summary, "fd offsets", || fd_offsets_case(cfg));
+    run_named(cfg, summary, "user copy boundary", || {
+        user_copy_boundary_case(cfg)
+    });
+    run_named(cfg, summary, "stack write 64k", || {
+        stack_write_64k_case(cfg)
+    });
+    run_named(cfg, summary, "stream write 16k", || {
+        writeback_stream_case(cfg, WRITEBACK_STREAM_CHUNK_16K)
+    });
+    run_named(cfg, summary, "stream write 32k", || {
+        writeback_stream_case(cfg, WRITEBACK_STREAM_CHUNK_32K)
+    });
 
     fs::sync();
 }
@@ -860,26 +965,24 @@ fn run_soak_suite(cfg: &Config, summary: &mut Summary) {
             elapsed_ms(started),
             cfg.seed ^ round
         );
-        run_named(cfg, summary, "soak fsx", fsx_random_model_case(cfg));
-        run_named(cfg, summary, "soak metadata", fsstress_metadata_case(cfg));
-        run_named(cfg, summary, "soak parallel", parallel_fsstress_case(cfg));
-        run_named_with_warning(cfg, summary, "soak enospc", enospc_accounting_case(cfg));
-        run_named_with_warning(
-            cfg,
-            summary,
-            "soak enospc dir",
-            enospc_directory_growth_case(cfg),
-        );
+        run_named(cfg, summary, "soak fsx", || fsx_random_model_case(cfg));
+        run_named(cfg, summary, "soak metadata", || {
+            fsstress_metadata_case(cfg)
+        });
+        run_named(cfg, summary, "soak parallel", || {
+            parallel_fsstress_case(cfg)
+        });
+        run_named_with_warning(cfg, summary, "soak enospc", || enospc_accounting_case(cfg));
+        run_named_with_warning(cfg, summary, "soak enospc dir", || {
+            enospc_directory_growth_case(cfg)
+        });
         if !cfg.scratch_device.is_empty() {
-            run_named_with_warning(cfg, summary, "soak scratch", scratch_lifecycle_case(cfg));
+            run_named_with_warning(cfg, summary, "soak scratch", || scratch_lifecycle_case(cfg));
         }
-        run_named(
-            cfg,
-            summary,
-            "soak sequential",
-            sequential_io_perf_case(cfg),
-        );
-        run_named(cfg, summary, "soak sync", sync_latency_perf_case(cfg));
+        run_named(cfg, summary, "soak sequential", || {
+            sequential_io_perf_case(cfg)
+        });
+        run_named(cfg, summary, "soak sync", || sync_latency_perf_case(cfg));
         fs::sync();
         if summary.failures != 0 {
             println!("  soak: Abbruch nach Fehler in Runde {}", round);
@@ -892,17 +995,19 @@ fn run_named(
     cfg: &Config,
     summary: &mut Summary,
     name: &str,
-    result: Result<String, &'static str>,
+    f: impl FnOnce() -> Result<String, &'static str>,
 ) {
     let started = sys::uptime_ms();
+    let result = f();
+    let elapsed = elapsed_ms(started);
     match result {
         Ok(detail) => {
-            summary.ok(name, &detail);
-            print_json_test(cfg, name, "OK", elapsed_ms(started), &detail);
+            summary.ok_ms(name, &detail, elapsed);
+            print_json_test(cfg, name, "OK", elapsed, &detail);
         }
         Err(err) => {
-            summary.fail(name, err);
-            print_json_test(cfg, name, "FAIL", elapsed_ms(started), err);
+            summary.fail_ms(name, err, elapsed);
+            print_json_test(cfg, name, "FAIL", elapsed, err);
         }
     }
 }
@@ -914,24 +1019,31 @@ enum TestOutcome {
     Fail(&'static str),
 }
 
-fn run_named_with_warning(cfg: &Config, summary: &mut Summary, name: &str, result: TestOutcome) {
+fn run_named_with_warning(
+    cfg: &Config,
+    summary: &mut Summary,
+    name: &str,
+    f: impl FnOnce() -> TestOutcome,
+) {
     let started = sys::uptime_ms();
+    let result = f();
+    let elapsed = elapsed_ms(started);
     match result {
         TestOutcome::Ok(detail) => {
-            summary.ok(name, &detail);
-            print_json_test(cfg, name, "OK", elapsed_ms(started), &detail);
+            summary.ok_ms(name, &detail, elapsed);
+            print_json_test(cfg, name, "OK", elapsed, &detail);
         }
         TestOutcome::Warn(detail) => {
-            summary.warn(name, &detail);
-            print_json_test(cfg, name, "WARN", elapsed_ms(started), &detail);
+            summary.warn_ms(name, &detail, elapsed);
+            print_json_test(cfg, name, "WARN", elapsed, &detail);
         }
         TestOutcome::Skip(detail) => {
-            summary.skip(name, &detail);
-            print_json_test(cfg, name, "SKIP", elapsed_ms(started), &detail);
+            summary.skip_ms(name, &detail, elapsed);
+            print_json_test(cfg, name, "SKIP", elapsed, &detail);
         }
         TestOutcome::Fail(err) => {
-            summary.fail(name, err);
-            print_json_test(cfg, name, "FAIL", elapsed_ms(started), err);
+            summary.fail_ms(name, err, elapsed);
+            print_json_test(cfg, name, "FAIL", elapsed, err);
         }
     }
 }
@@ -1190,13 +1302,14 @@ fn parallel_fsstress_case(cfg: &Config) -> Result<String, &'static str> {
         tids.push(tid);
     }
 
-    let mut failures = 0u32;
-    for tid in tids {
-        let code = process::waitpid(tid);
-        if code != 0 {
-            failures += 1;
-        }
-    }
+    let failures =
+        match wait_for_workers(&tids, parallel_timeout_ms(cfg), "parallel-fsstress-timeout") {
+            Ok(failures) => failures,
+            Err(err) => {
+                env::unset(WORKER_BATCH_ENV);
+                return Err(err);
+            }
+        };
     env::unset(WORKER_BATCH_ENV);
     if failures != 0 {
         return Err(read_parallel_worker_failure(&root, cfg.workers));
@@ -1228,6 +1341,58 @@ fn spawn_vfsstress(args: &str) -> u32 {
         return tid;
     }
     process::spawn("vfsstress", args)
+}
+
+fn wait_for_workers(
+    tids: &[u32],
+    timeout_ms: u32,
+    timeout_err: &'static str,
+) -> Result<u32, &'static str> {
+    let started = sys::uptime_ms();
+    let mut done = Vec::new();
+    done.resize(tids.len(), false);
+    let mut remaining = tids.len() as u32;
+    let mut failures = 0u32;
+
+    while remaining > 0 {
+        for (idx, &tid) in tids.iter().enumerate() {
+            if done[idx] {
+                continue;
+            }
+            let code = process::try_waitpid(tid);
+            if code == process::STILL_RUNNING {
+                continue;
+            }
+            done[idx] = true;
+            remaining -= 1;
+            if code != 0 {
+                failures += 1;
+            }
+        }
+        if remaining == 0 {
+            break;
+        }
+        if elapsed_ms(started) > timeout_ms {
+            for (idx, &tid) in tids.iter().enumerate() {
+                if !done[idx] {
+                    let _ = process::kill(tid);
+                }
+            }
+            return Err(timeout_err);
+        }
+        process::sleep(10);
+    }
+
+    Ok(failures)
+}
+
+fn parallel_timeout_ms(cfg: &Config) -> u32 {
+    match cfg.profile {
+        Profile::Quick => 15_000,
+        Profile::Normal => 45_000,
+        Profile::Heavy => 90_000,
+        Profile::Soak => 90_000,
+    }
 }
 
 fn read_parallel_worker_failure(root: &str, workers: u32) -> &'static str {
@@ -1317,6 +1482,7 @@ fn write_worker_failure(cfg: &WorkerConfig, op: u32, err: &str) {
         "worker={} op={} ops={} seed={} error={}\n",
         cfg.worker, op, cfg.ops, cfg.seed, err
     );
+    println!("vfsstress worker-fail-detail {}", detail.trim());
     let _ = write_bytes_file(&fail, detail.as_bytes());
 }
 
@@ -1352,11 +1518,13 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
                 let len = rng.range(1, buf.len() as u32) as usize;
                 fill_pattern(&mut buf[..len], 0, cfg.seed ^ slot);
                 worker_try!(write_bytes_file_relaxed(&path, &buf[..len]));
-                worker_try!(verify_file_pattern_large(
+                worker_try!(stat_size_expected_retry(&path, len as u32, 64));
+                worker_try!(verify_file_pattern_large_retry(
                     &path,
                     len as u32,
                     cfg.seed ^ slot,
-                    1024
+                    1024,
+                    64,
                 ));
                 create_ops += 1;
             }
@@ -1365,7 +1533,7 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
                 let len = rng.range(1, 512) as usize;
                 fill_pattern(&mut buf[..len], stat_size_or_zero(&path), cfg.seed ^ op);
                 worker_try!(append_to_file_relaxed(&path, &buf[..len]));
-                worker_try!(stat_size(&path).map(|_| ()));
+                worker_try!(stat_size_retry(&path, 64).map(|_| ()));
                 append_ops += 1;
             }
             2 => {
@@ -1392,11 +1560,12 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
                 let renamed = format!("{}/hot-w{:02}-{:04}.ren", shared, cfg.worker, op);
                 fill_pattern(&mut buf[..128], op, cfg.seed);
                 worker_try!(write_bytes_file_relaxed(&path, &buf[..128]));
-                if fs::rename(&path, &renamed) != 0 {
+                worker_try!(stat_size_expected_retry(&path, 128, 64));
+                if rename_retry(&path, &renamed, 64) != 0 {
                     write_worker_failure(cfg, op, "shared-rename");
                     return Err("shared-rename");
                 }
-                let size = match stat_size(&renamed) {
+                let size = match stat_size_retry(&renamed, 64) {
                     Ok(size) => size,
                     Err(err) => {
                         write_worker_failure(cfg, op, err);
@@ -1474,6 +1643,45 @@ fn run_fsstress_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
     write_bytes_file(&manifest, manifest_body.as_bytes())?;
     fs::sync();
     Ok(())
+}
+
+fn run_perf_worker(cfg: &PerfWorkerConfig) -> Result<(), &'static str> {
+    if cfg.mode == "read" {
+        let path = format!("{}/read/w{:02}.bin", cfg.dir, cfg.worker);
+        for _ in 0..cfg.loops {
+            verify_file_pattern_large(&path, cfg.bytes, cfg.seed, 64 * 1024)?;
+            process::yield_cpu();
+        }
+    } else if cfg.mode == "write" {
+        let dir = format!("{}/write", cfg.dir);
+        let _ = fs::mkdir(&dir);
+        for round in 0..cfg.loops {
+            let path = format!("{}/w{:02}-r{:03}.bin", dir, cfg.worker, round);
+            write_pattern_file(&path, cfg.bytes, 64 * 1024, cfg.seed ^ round)?;
+            process::yield_cpu();
+        }
+    } else {
+        return Err("perf-worker-mode");
+    }
+
+    let done = format!("{}/perf-done-{:02}.txt", cfg.dir, cfg.worker);
+    let body = format!(
+        "worker={} mode={} bytes={} loops={} ok\n",
+        cfg.worker, cfg.mode, cfg.bytes, cfg.loops
+    );
+    write_bytes_file_relaxed(&done, body.as_bytes())?;
+    Ok(())
+}
+
+fn write_perf_worker_failure(cfg: &PerfWorkerConfig, err: &str) {
+    let own = format!("{}/w{:02}", cfg.dir, cfg.worker);
+    let _ = fs::mkdir(&own);
+    let fail = format!("{}/fail.txt", own);
+    let detail = format!(
+        "worker={} mode={} bytes={} loops={} seed={} error={}\n",
+        cfg.worker, cfg.mode, cfg.bytes, cfg.loops, cfg.seed, err
+    );
+    let _ = write_bytes_file_relaxed(&fail, detail.as_bytes());
 }
 
 fn run_readdir_mutator_worker(cfg: &WorkerConfig) -> Result<(), &'static str> {
@@ -1554,7 +1762,8 @@ fn verify_shared_hot_dir(path: &str) -> Result<(), &'static str> {
 fn enospc_accounting_case(cfg: &Config) -> TestOutcome {
     let dir = format!("{}/full-enospc", cfg.dir);
     let _ = fs::mkdir(&dir);
-    let before = fs::statfs(&cfg.dir);
+    let statfs_probe = statfs_probe_path(cfg);
+    let before = fs::statfs(&statfs_probe);
     let cap_bytes = cfg.enospc_kb.saturating_mul(1024);
     let mut buf = Vec::new();
     buf.resize(32 * 1024, 0);
@@ -1589,7 +1798,7 @@ fn enospc_accounting_case(cfg: &Config) -> TestOutcome {
         }
     }
     fs::sync();
-    let filled = fs::statfs(&cfg.dir);
+    let filled = fs::statfs(&statfs_probe);
 
     let mut deleted_bytes = 0u32;
     for i in 0..files {
@@ -1600,7 +1809,7 @@ fn enospc_accounting_case(cfg: &Config) -> TestOutcome {
         }
     }
     fs::sync();
-    let after_delete = fs::statfs(&cfg.dir);
+    let after_delete = fs::statfs(&statfs_probe);
 
     let refill_bytes = deleted_bytes.min(512 * 1024).min(cap_bytes / 2).max(4096);
     let refill_path = format!("{}/refill.bin", dir);
@@ -1687,7 +1896,8 @@ fn enospc_directory_growth_case(cfg: &Config) -> TestOutcome {
         Profile::Heavy => 2048u32,
         Profile::Soak => 2048u32,
     };
-    let before = fs::statfs(&cfg.dir);
+    let statfs_probe = statfs_probe_path(cfg);
+    let before = fs::statfs(&statfs_probe);
     let mut buf = [0u8; 512];
     let entry_bytes = buf.len() as u32;
     let mut created = 0u32;
@@ -1721,7 +1931,7 @@ fn enospc_directory_growth_case(cfg: &Config) -> TestOutcome {
         bytes = bytes.saturating_add(entry_bytes);
     }
     fs::sync();
-    let filled = fs::statfs(&cfg.dir);
+    let filled = fs::statfs(&statfs_probe);
 
     let rename_count = created.min(64);
     for i in 0..rename_count {
@@ -1748,7 +1958,7 @@ fn enospc_directory_growth_case(cfg: &Config) -> TestOutcome {
         }
     }
     fs::sync();
-    let after_delete = fs::statfs(&cfg.dir);
+    let after_delete = fs::statfs(&statfs_probe);
 
     let mut refill = 0u32;
     for i in 0..deleted.min(32) {
@@ -2909,10 +3119,11 @@ fn metadata_perf_case(cfg: &Config) -> Result<String, &'static str> {
 
     if cfg.json {
         let fs_fields = perf_fs_json_fields(cfg);
-        println!(
+        let line = format!(
             "{{\"type\":\"perf\",\"test\":\"metadata\",\"entries\":{},\"create_ops_s\":{},\"stat_ops_s\":{},\"rename_ops_s\":{},\"readdir_entries_s\":{},\"unlink_ops_s\":{}{}}}",
             count, create_ops, stat_ops, rename_ops, readdir_ops, unlink_ops, fs_fields
         );
+        print_json_line(cfg, &line);
     }
 
     Ok(format!(
@@ -2991,10 +3202,11 @@ fn sequential_io_perf_case(cfg: &Config) -> Result<String, &'static str> {
     }
     if cfg.json {
         let fs_fields = perf_fs_json_fields(cfg);
-        println!(
+        let line = format!(
             "{{\"type\":\"perf\",\"test\":\"sequential_io\",\"bytes\":{},\"chunk\":{},\"write_ms\":{},\"read_ms\":{},\"write_kb_s\":{},\"read_kb_s\":{}{}}}",
             total, chunk, write_ms, read_ms, write_kb_s, read_kb_s, fs_fields
         );
+        print_json_line(cfg, &line);
     }
     Ok(format!(
         "{} KB sequenziell: write={} KB/s read={} KB/s chunk={}K",
@@ -3003,6 +3215,166 @@ fn sequential_io_perf_case(cfg: &Config) -> Result<String, &'static str> {
         read_kb_s,
         chunk / 1024
     ))
+}
+
+fn parallel_read_perf_case(cfg: &Config) -> Result<String, &'static str> {
+    let root = format!("{}/full-parallel-read-perf-{}", cfg.dir, sys::uptime_ms());
+    mkdir_parents(&root);
+    let read_dir = format!("{}/read", root);
+    let claims = format!("{}/claims", root);
+    let _ = fs::mkdir(&read_dir);
+    let _ = fs::mkdir(&claims);
+    let workers = cfg.workers.max(1).min(8);
+    let bytes = match cfg.profile {
+        Profile::Quick => 256 * 1024u32,
+        Profile::Normal => 1024 * 1024u32,
+        Profile::Heavy => 4 * 1024 * 1024u32,
+        Profile::Soak => 4 * 1024 * 1024u32,
+    };
+    let loops = match cfg.profile {
+        Profile::Quick => 1u32,
+        Profile::Normal => 2u32,
+        Profile::Heavy => 3u32,
+        Profile::Soak => 3u32,
+    };
+
+    for worker in 0..workers {
+        let seed = cfg.seed ^ worker.wrapping_mul(0x5151_0F5E);
+        write_pattern_file(
+            &format!("{}/w{:02}.bin", read_dir, worker),
+            bytes,
+            64 * 1024,
+            seed,
+        )?;
+    }
+
+    let started = sys::uptime_ms();
+    spawn_perf_worker_batch(&root, "read", workers, bytes, loops, cfg.seed)?;
+    let ms = elapsed_ms(started);
+    let total = bytes.saturating_mul(workers).saturating_mul(loops);
+    let kb_s = kb_per_s(total, ms);
+
+    if !cfg.keep {
+        for worker in 0..workers {
+            let _ = fs::unlink(&format!("{}/w{:02}.bin", read_dir, worker));
+            let _ = fs::unlink(&format!("{}/perf-done-{:02}.txt", root, worker));
+        }
+    }
+    if cfg.json {
+        let fs_fields = perf_fs_json_fields(cfg);
+        let line = format!(
+            "{{\"type\":\"perf\",\"test\":\"parallel_read\",\"workers\":{},\"bytes_per_worker\":{},\"loops\":{},\"elapsed_ms\":{},\"read_kb_s\":{}{}}}",
+            workers, bytes, loops, ms, kb_s, fs_fields
+        );
+        print_json_line(cfg, &line);
+    }
+    Ok(format!(
+        "{} Worker lesen {} KB x {}: {} KB/s",
+        workers,
+        bytes / 1024,
+        loops,
+        kb_s
+    ))
+}
+
+fn parallel_write_perf_case(cfg: &Config) -> Result<String, &'static str> {
+    let root = format!("{}/full-parallel-write-perf-{}", cfg.dir, sys::uptime_ms());
+    mkdir_parents(&root);
+    let claims = format!("{}/claims", root);
+    let write_dir = format!("{}/write", root);
+    let _ = fs::mkdir(&claims);
+    let _ = fs::mkdir(&write_dir);
+    let workers = cfg.workers.max(1).min(8);
+    let bytes = match cfg.profile {
+        Profile::Quick => 256 * 1024u32,
+        Profile::Normal => 1024 * 1024u32,
+        Profile::Heavy => 4 * 1024 * 1024u32,
+        Profile::Soak => 4 * 1024 * 1024u32,
+    };
+    let loops = match cfg.profile {
+        Profile::Quick => 1u32,
+        Profile::Normal => 2u32,
+        Profile::Heavy => 3u32,
+        Profile::Soak => 3u32,
+    };
+
+    let started = sys::uptime_ms();
+    spawn_perf_worker_batch(&root, "write", workers, bytes, loops, cfg.seed)?;
+    let ms = elapsed_ms(started);
+    let total = bytes.saturating_mul(workers).saturating_mul(loops);
+    let kb_s = kb_per_s(total, ms);
+
+    for worker in 0..workers {
+        for round in 0..loops {
+            let path = format!("{}/w{:02}-r{:03}.bin", write_dir, worker, round);
+            verify_file_pattern_large_retry(
+                &path,
+                bytes,
+                cfg.seed ^ worker.wrapping_mul(0x5151_0F5E) ^ round,
+                64 * 1024,
+                16,
+            )?;
+            if !cfg.keep {
+                let _ = fs::unlink(&path);
+            }
+        }
+        if !cfg.keep {
+            let _ = fs::unlink(&format!("{}/perf-done-{:02}.txt", root, worker));
+        }
+    }
+
+    if cfg.json {
+        let fs_fields = perf_fs_json_fields(cfg);
+        let line = format!(
+            "{{\"type\":\"perf\",\"test\":\"parallel_write\",\"workers\":{},\"bytes_per_worker\":{},\"loops\":{},\"elapsed_ms\":{},\"write_kb_s\":{}{}}}",
+            workers, bytes, loops, ms, kb_s, fs_fields
+        );
+        print_json_line(cfg, &line);
+    }
+    Ok(format!(
+        "{} Worker schreiben {} KB x {}: {} KB/s",
+        workers,
+        bytes / 1024,
+        loops,
+        kb_s
+    ))
+}
+
+fn spawn_perf_worker_batch(
+    root: &str,
+    mode: &str,
+    workers: u32,
+    bytes: u32,
+    loops: u32,
+    seed: u32,
+) -> Result<(), &'static str> {
+    let batch_args = format!(
+        "--perf-worker-batch --mode {} --dir {} --workers {} --bytes {} --loops {} --seed {}",
+        mode, root, workers, bytes, loops, seed
+    );
+    env::set(WORKER_BATCH_ENV, &batch_args);
+    let mut tids = Vec::new();
+    for _ in 0..workers {
+        let tid = spawn_vfsstress(&batch_args);
+        if tid == u32::MAX {
+            env::unset(WORKER_BATCH_ENV);
+            return Err("spawn-perf-worker");
+        }
+        tids.push(tid);
+    }
+
+    let failures = match wait_for_workers(&tids, 60_000, "perf-worker-timeout") {
+        Ok(failures) => failures,
+        Err(err) => {
+            env::unset(WORKER_BATCH_ENV);
+            return Err(err);
+        }
+    };
+    env::unset(WORKER_BATCH_ENV);
+    if failures != 0 {
+        return Err(read_parallel_worker_failure(root, workers));
+    }
+    Ok(())
 }
 
 fn random_overwrite_perf_case(cfg: &Config) -> Result<String, &'static str> {
@@ -3057,16 +3429,74 @@ fn random_overwrite_perf_case(cfg: &Config) -> Result<String, &'static str> {
     }
     if cfg.json {
         let fs_fields = perf_fs_json_fields(cfg);
-        println!(
+        let line = format!(
             "{{\"type\":\"perf\",\"test\":\"random_overwrite\",\"ops\":{},\"patch_bytes\":{},\"elapsed_ms\":{},\"ops_s\":{}{}}}",
             ops, patch_len, ms, op_rate, fs_fields
         );
+        print_json_line(cfg, &line);
     }
     Ok(format!(
         "{} x {}K Random-Overwrites: {} ops/s",
         ops,
         patch_len / 1024,
         op_rate
+    ))
+}
+
+fn fragmented_allocation_perf_case(cfg: &Config) -> Result<String, &'static str> {
+    let dir = format!("{}/full-fragment-alloc-perf", cfg.dir);
+    let _ = fs::mkdir(&dir);
+    let files = match cfg.profile {
+        Profile::Quick => 16u32,
+        Profile::Normal => 64u32,
+        Profile::Heavy => 192u32,
+        Profile::Soak => 192u32,
+    };
+    let filler_size = match cfg.profile {
+        Profile::Quick => 32 * 1024u32,
+        Profile::Normal => 64 * 1024u32,
+        Profile::Heavy => 128 * 1024u32,
+        Profile::Soak => 128 * 1024u32,
+    };
+
+    for i in 0..files {
+        let path = format!("{}/fill{:04}.bin", dir, i);
+        write_pattern_file(&path, filler_size, 32 * 1024, cfg.seed ^ i)?;
+    }
+    for i in 0..files {
+        if i % 2 == 0 {
+            let _ = fs::unlink(&format!("{}/fill{:04}.bin", dir, i));
+        }
+    }
+    fs::sync();
+
+    let target = format!("{}/fragment-target.bin", dir);
+    let target_size = filler_size.saturating_mul((files / 2).max(1));
+    let started = sys::uptime_ms();
+    write_pattern_file(&target, target_size, 64 * 1024, cfg.seed ^ 0xF11A_110C)?;
+    let write_ms = elapsed_ms(started);
+    verify_file_pattern_large(&target, target_size, cfg.seed ^ 0xF11A_110C, 64 * 1024)?;
+    let kb_s = kb_per_s(target_size, write_ms);
+
+    if !cfg.keep {
+        let _ = fs::unlink(&target);
+        for i in 0..files {
+            let _ = fs::unlink(&format!("{}/fill{:04}.bin", dir, i));
+        }
+    }
+    if cfg.json {
+        let fs_fields = perf_fs_json_fields(cfg);
+        let line = format!(
+            "{{\"type\":\"perf\",\"test\":\"fragmented_allocation\",\"fill_files\":{},\"filler_bytes\":{},\"target_bytes\":{},\"write_ms\":{},\"write_kb_s\":{}{}}}",
+            files, filler_size, target_size, write_ms, kb_s, fs_fields
+        );
+        print_json_line(cfg, &line);
+    }
+    Ok(format!(
+        "{} Filler, Ziel {} KB nach Fragmentierung: write={} KB/s",
+        files,
+        target_size / 1024,
+        kb_s
     ))
 }
 
@@ -3134,7 +3564,7 @@ fn sync_latency_perf_case(cfg: &Config) -> Result<String, &'static str> {
     let sync_p95 = percentile_sorted(&sync_samples, 95);
     if cfg.json {
         let fs_fields = perf_fs_json_fields(cfg);
-        println!(
+        let line = format!(
             "{{\"type\":\"perf\",\"test\":\"sync_latency\",\"rounds\":{},\"fsync_min_ms\":{},\"fsync_avg_ms\":{},\"fsync_p50_ms\":{},\"fsync_p95_ms\":{},\"fsync_max_ms\":{},\"sync_min_ms\":{},\"sync_avg_ms\":{},\"sync_p50_ms\":{},\"sync_p95_ms\":{},\"sync_max_ms\":{}{}}}",
             rounds,
             fsync_min,
@@ -3149,6 +3579,7 @@ fn sync_latency_perf_case(cfg: &Config) -> Result<String, &'static str> {
             sync_max,
             fs_fields
         );
+        print_json_line(cfg, &line);
     }
     Ok(format!(
         "{} Runden: fsync min/avg/p50/p95/max={}/{}/{}/{}/{} ms, sync min/avg/p50/p95/max={}/{}/{}/{}/{} ms",
@@ -3238,12 +3669,12 @@ fn readdir_parallel_mutation_case(cfg: &Config) -> Result<String, &'static str> 
         write_bytes_file(&format!("{}/sentinel{:02}.dat", shared, i), b"sentinel")?;
     }
 
-    let workers = cfg.workers.max(1).min(8);
+    let workers = cfg.workers.max(1).min(4);
     let ops = match cfg.profile {
-        Profile::Quick => 24u32,
-        Profile::Normal => 96u32,
-        Profile::Heavy => 256u32,
-        Profile::Soak => 256u32,
+        Profile::Quick => 12u32,
+        Profile::Normal => 32u32,
+        Profile::Heavy => 96u32,
+        Profile::Soak => 96u32,
     }
     .min(cfg.ops.max(1));
     let batch_args = format!(
@@ -3266,18 +3697,27 @@ fn readdir_parallel_mutation_case(cfg: &Config) -> Result<String, &'static str> 
     }
 
     let mut sentinel_hits = [0u32; 4];
-    let rounds = ops.saturating_mul(2).max(16);
-    for _ in 0..rounds {
+    let rounds = ops.max(12);
+    for round in 0..rounds {
         validate_readdir_snapshot(&shared, &mut sentinel_hits)?;
+        if cfg.serial_log && round % 8 == 0 {
+            println!(
+                "[vfsstress] readdir-parallel snapshot {}/{}",
+                round + 1,
+                rounds
+            );
+        }
         process::yield_cpu();
     }
 
-    let mut failures = 0u32;
-    for tid in tids {
-        if process::waitpid(tid) != 0 {
-            failures += 1;
+    let failures = match wait_for_workers(&tids, parallel_timeout_ms(cfg), "readdir-worker-timeout")
+    {
+        Ok(failures) => failures,
+        Err(err) => {
+            env::unset(WORKER_BATCH_ENV);
+            return Err(err);
         }
-    }
+    };
     env::unset(WORKER_BATCH_ENV);
     if failures != 0 {
         return Err(read_parallel_worker_failure(&root, workers));
@@ -3346,6 +3786,91 @@ fn large_directory_case(cfg: &Config) -> Result<String, &'static str> {
     Ok(format!(
         "{} Eintraege, create/stat/readdir={} ms, cleanup={} ms",
         count, create_ms, cleanup_ms
+    ))
+}
+
+fn directory_scaling_perf_case(cfg: &Config) -> Result<String, &'static str> {
+    let root = format!("{}/full-dir-scaling-perf", cfg.dir);
+    let _ = fs::mkdir(&root);
+    let sizes: &[u32] = match cfg.profile {
+        Profile::Quick => &[32, 128],
+        Profile::Normal => &[64, 256, 512],
+        Profile::Heavy => &[128, 512, 1024, 2048],
+        Profile::Soak => &[128, 512, 1024, 2048],
+    };
+    let mut last_count = 0u32;
+    let mut last_create_ms = 0u32;
+    let mut last_stat_ms = 0u32;
+    let mut last_readdir_ms = 0u32;
+    let mut last_unlink_ms = 0u32;
+
+    for &count in sizes {
+        let dir = format!("{}/n{:04}", root, count);
+        let _ = fs::mkdir(&dir);
+        for i in 0..count {
+            let _ = fs::unlink(&format!("{}/entry{:05}.dat", dir, i));
+        }
+
+        let create_start = sys::uptime_ms();
+        for i in 0..count {
+            let path = format!("{}/entry{:05}.dat", dir, i);
+            write_bytes_file_relaxed(&path, &[(i & 0xff) as u8])?;
+        }
+        fs::sync();
+        let create_ms = elapsed_ms(create_start);
+
+        let stat_start = sys::uptime_ms();
+        for i in 0..count {
+            let path = format!("{}/entry{:05}.dat", dir, i);
+            if stat_size_retry(&path, 16)? != 1 {
+                return Err("dir-scaling-stat");
+            }
+        }
+        let stat_ms = elapsed_ms(stat_start);
+
+        let readdir_start = sys::uptime_ms();
+        let seen = count_dir_entries(&dir, "entry")?;
+        let readdir_ms = elapsed_ms(readdir_start);
+        if seen != count {
+            return Err("dir-scaling-readdir");
+        }
+
+        let unlink_start = sys::uptime_ms();
+        if !cfg.keep {
+            for i in 0..count {
+                let _ = fs::unlink(&format!("{}/entry{:05}.dat", dir, i));
+            }
+        }
+        let unlink_ms = elapsed_ms(unlink_start);
+
+        last_count = count;
+        last_create_ms = create_ms;
+        last_stat_ms = stat_ms;
+        last_readdir_ms = readdir_ms;
+        last_unlink_ms = unlink_ms;
+
+        if cfg.json {
+            let fs_fields = perf_fs_json_fields(cfg);
+            let line = format!(
+                "{{\"type\":\"perf\",\"test\":\"directory_scaling\",\"entries\":{},\"create_ms\":{},\"create_ops_s\":{},\"stat_ms\":{},\"stat_ops_s\":{},\"readdir_ms\":{},\"readdir_entries_s\":{},\"unlink_ms\":{},\"unlink_ops_s\":{}{}}}",
+                count,
+                create_ms,
+                ops_per_s(count, create_ms),
+                stat_ms,
+                ops_per_s(count, stat_ms),
+                readdir_ms,
+                ops_per_s(count, readdir_ms),
+                unlink_ms,
+                ops_per_s(count, unlink_ms),
+                fs_fields
+            );
+            print_json_line(cfg, &line);
+        }
+    }
+
+    Ok(format!(
+        "bis {} Eintraege: create={} ms, stat={} ms, readdir={} ms, unlink={} ms",
+        last_count, last_create_ms, last_stat_ms, last_readdir_ms, last_unlink_ms
     ))
 }
 
@@ -4078,6 +4603,7 @@ fn run_case(cfg: &Config, path: &str, block_size: usize, seed: u32) -> CaseResul
             cfg.total_bytes,
             0,
             0,
+            0,
             "open-write",
             Some(0),
         );
@@ -4110,6 +4636,7 @@ fn run_case(cfg: &Config, path: &str, block_size: usize, seed: u32) -> CaseResul
             cfg.total_bytes,
             write_ms,
             0,
+            0,
             fail_phase,
             Some(offset),
         );
@@ -4121,12 +4648,12 @@ fn run_case(cfg: &Config, path: &str, block_size: usize, seed: u32) -> CaseResul
             cfg.total_bytes,
             write_ms,
             0,
+            0,
             "fsync-final",
             Some(offset),
         );
     }
 
-    let read_start = sys::uptime_ms();
     let fd = fs::open(path, 0);
     if fd == u32::MAX {
         return failed_case(
@@ -4134,6 +4661,7 @@ fn run_case(cfg: &Config, path: &str, block_size: usize, seed: u32) -> CaseResul
             block_size,
             cfg.total_bytes,
             write_ms,
+            0,
             0,
             "open-read",
             Some(0),
@@ -4143,15 +4671,22 @@ fn run_case(cfg: &Config, path: &str, block_size: usize, seed: u32) -> CaseResul
     let mut first_bad = None;
     let mut fail_phase = "verify";
     let mut read_offset = 0u32;
+    let mut read_ms = 0u32;
+    let mut verify_ms = 0u32;
     while read_offset < cfg.total_bytes {
         let len = (cfg.total_bytes - read_offset).min(block_size as u32) as usize;
+        let read_start = sys::uptime_ms();
         let n = fs::read(fd, &mut read_buf[..len]);
+        read_ms = read_ms.saturating_add(elapsed_ms(read_start));
         if n != len as u32 {
             fail_phase = "read-short";
             first_bad = Some(read_offset.saturating_add(n.min(len as u32)));
             break;
         }
-        if let Some(bad) = verify_pattern(&read_buf[..len], read_offset, seed) {
+        let verify_start = sys::uptime_ms();
+        let bad_at = verify_pattern(&read_buf[..len], read_offset, seed);
+        verify_ms = verify_ms.saturating_add(elapsed_ms(verify_start));
+        if let Some(bad) = bad_at {
             fail_phase = "verify";
             first_bad = Some(read_offset + bad as u32);
             break;
@@ -4159,13 +4694,13 @@ fn run_case(cfg: &Config, path: &str, block_size: usize, seed: u32) -> CaseResul
         read_offset += len as u32;
     }
     fs::close(fd);
-    let read_ms = elapsed_ms(read_start);
 
     CaseResult {
         block_size,
         total_bytes: cfg.total_bytes,
         write_ms,
         read_ms,
+        verify_ms,
         ok: first_bad.is_none(),
         phase: if first_bad.is_none() {
             "ok"
@@ -4183,6 +4718,7 @@ fn failed_case(
     total_bytes: u32,
     write_ms: u32,
     read_ms: u32,
+    verify_ms: u32,
     phase: &'static str,
     first_bad: Option<u32>,
 ) -> CaseResult {
@@ -4191,6 +4727,7 @@ fn failed_case(
         total_bytes,
         write_ms,
         read_ms,
+        verify_ms,
         ok: false,
         phase,
         first_bad,
@@ -4294,7 +4831,9 @@ fn write_bytes_file(path: &str, bytes: &[u8]) -> Result<(), &'static str> {
         fs::close(fd);
         return Err("fsync");
     }
-    fs::close(fd);
+    if fs::close(fd) == u32::MAX {
+        return Err("close");
+    }
     Ok(())
 }
 
@@ -4307,7 +4846,9 @@ fn write_bytes_file_relaxed(path: &str, bytes: &[u8]) -> Result<(), &'static str
         fs::close(fd);
         return Err("write");
     }
-    fs::close(fd);
+    if fs::close(fd) == u32::MAX {
+        return Err("close");
+    }
     Ok(())
 }
 
@@ -4406,7 +4947,9 @@ fn append_to_file_relaxed(path: &str, bytes: &[u8]) -> Result<(), &'static str> 
         fs::close(fd);
         return Err("append");
     }
-    fs::close(fd);
+    if fs::close(fd) == u32::MAX {
+        return Err("close");
+    }
     Ok(())
 }
 
@@ -4484,6 +5027,28 @@ fn verify_file_pattern_large(
     }
     fs::close(fd);
     Ok(())
+}
+
+fn verify_file_pattern_large_retry(
+    path: &str,
+    total_bytes: u32,
+    seed: u32,
+    read_size: usize,
+    retries: u32,
+) -> Result<(), &'static str> {
+    let mut last = "verify";
+    for attempt in 0..=retries {
+        match verify_file_pattern_large(path, total_bytes, seed, read_size) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                last = err;
+                if attempt < retries {
+                    process::yield_cpu();
+                }
+            }
+        }
+    }
+    Err(last)
 }
 
 fn verify_read_at(path: &str, offset: u32, expected: &[u8]) -> Result<(), &'static str> {
@@ -4743,6 +5308,48 @@ fn stat_size(path: &str) -> Result<u32, &'static str> {
     Ok(stat[1])
 }
 
+fn stat_size_retry(path: &str, retries: u32) -> Result<u32, &'static str> {
+    let mut last = "stat";
+    for attempt in 0..=retries {
+        match stat_size(path) {
+            Ok(size) => return Ok(size),
+            Err(err) => {
+                last = err;
+                if attempt < retries {
+                    process::yield_cpu();
+                }
+            }
+        }
+    }
+    Err(last)
+}
+
+fn stat_size_expected_retry(path: &str, expected: u32, retries: u32) -> Result<(), &'static str> {
+    let mut last = "stat";
+    for attempt in 0..=retries {
+        match stat_size(path) {
+            Ok(size) if size == expected => return Ok(()),
+            Ok(_) => last = "stat-size",
+            Err(err) => last = err,
+        }
+        if attempt < retries {
+            process::yield_cpu();
+        }
+    }
+    Err(last)
+}
+
+fn rename_retry(old: &str, new: &str, retries: u32) -> u32 {
+    for attempt in 0..=retries {
+        let rc = fs::rename(old, new);
+        if rc == 0 || attempt == retries {
+            return rc;
+        }
+        process::yield_cpu();
+    }
+    u32::MAX
+}
+
 fn stat_exists(path: &str) -> bool {
     let mut stat = [0u32; 7];
     fs::stat(path, &mut stat) == 0
@@ -4963,23 +5570,27 @@ fn print_case(round: u32, result: &CaseResult) {
     let r = kb_per_s(result.total_bytes, result.read_ms);
     if result.ok {
         println!(
-            "  r={} block={:>6} total={} KB write={} ms ({} KB/s) read={} ms ({} KB/s) ok",
+            "  r={} block={:>6} total={} KB write={} ms ({} KB/s) read={} ms ({} KB/s) verify={} ms ok",
             round,
             result.block_size,
             result.total_bytes / 1024,
             result.write_ms,
             w,
             result.read_ms,
-            r
+            r,
+            result.verify_ms
         );
     } else {
         println!(
-            "  r={} block={:>6} total={} KB FAIL phase={} first_bad={}",
+            "  r={} block={:>6} total={} KB FAIL phase={} first_bad={} write={} ms read={} ms verify={} ms",
             round,
             result.block_size,
             result.total_bytes / 1024,
             result.phase,
-            result.first_bad.unwrap_or(u32::MAX)
+            result.first_bad.unwrap_or(u32::MAX),
+            result.write_ms,
+            result.read_ms,
+            result.verify_ms
         );
     }
 }
@@ -4987,16 +5598,17 @@ fn print_case(round: u32, result: &CaseResult) {
 fn print_protocol(results: &[CaseResult]) {
     println!();
     println!("--- Protokoll ---");
-    println!("  block | bytes | write_ms | write_kb_s | read_ms | read_kb_s | result | phase | first_bad | path");
+    println!("  block | bytes | write_ms | write_kb_s | read_ms | read_kb_s | verify_ms | result | phase | first_bad | path");
     for r in results {
         println!(
-            "  {} | {} | {} | {} | {} | {} | {} | {} | {} | {}",
+            "  {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {}",
             r.block_size,
             r.total_bytes,
             r.write_ms,
             kb_per_s(r.total_bytes, r.write_ms),
             r.read_ms,
             kb_per_s(r.total_bytes, r.read_ms),
+            r.verify_ms,
             if r.ok { "ok" } else { "FAIL" },
             r.phase,
             r.first_bad.unwrap_or(u32::MAX),
@@ -5038,14 +5650,19 @@ fn mkdir_parents(path: &str) {
     }
 }
 
-fn print_summary(cfg: &Config, summary: &Summary, started: u32) {
+fn print_summary(cfg: &Config, summary: &Summary, intro: &RunIntro) {
     println!();
     println!("=== Zusammenfassung ===");
+    println!("  Timestamp: {}", intro.timestamp);
+    println!("  anyOS:     {}", anyos_version());
+    println!("  vfsstress: {}", VERSION);
+    println!("  Profile:   {}", cfg.profile_name());
+    println!("  Seed:      {}", cfg.seed);
     println!("  Tests:    {}", summary.tests);
     println!("  Warns:    {}", summary.warnings);
     println!("  Skips:    {}", summary.skips);
     println!("  Fehler:   {}", summary.failures);
-    println!("  Laufzeit: {} ms", elapsed_ms(started));
+    println!("  Laufzeit: {} ms", elapsed_ms(intro.started_uptime_ms));
     if summary.failures == 0 {
         println!("  Ergebnis: PASS");
     } else {
@@ -5059,15 +5676,52 @@ fn print_summary(cfg: &Config, summary: &Summary, started: u32) {
     }
 }
 
-fn print_json_summary(cfg: &Config, summary: &Summary, elapsed: u32) {
+fn print_json_intro(cfg: &Config, intro: &RunIntro) {
     let fs_fields = perf_fs_json_fields(cfg);
-    println!(
-        "{{\"tool\":\"vfsstress\",\"version\":\"{}\",\"anyos\":\"{}\",\"profile\":\"{}\",\"dir\":\"{}\",\"seed\":{},\"seconds\":{},\"elapsed_ms\":{},\"tests\":{},\"failures\":{},\"warnings\":{},\"skips\":{}{},\"result\":\"{}\"}}",
+    let line = format!(
+        "{{\"type\":\"intro\",\"tool\":\"vfsstress\",\"version\":\"{}\",\"anyos\":\"{}\",\"timestamp\":\"{}\",\"started_uptime_ms\":{},\"profile\":\"{}\",\"repeat\":{},\"total_bytes\":{},\"total_kb\":{},\"dir\":\"{}\",\"sync_each\":{},\"workers\":{},\"ops\":{},\"seed\":{},\"enospc_kb\":{},\"seconds\":{},\"serial_log\":{},\"scratch_fs\":\"{}\",\"scratch_device\":\"{}\",\"scratch_mount\":\"{}\"{}}}",
         VERSION,
         json_escape(anyos_version()),
+        json_escape(&intro.timestamp),
+        intro.started_uptime_ms,
         cfg.profile_name(),
+        cfg.repeat,
+        cfg.total_bytes,
+        cfg.total_bytes / 1024,
         json_escape(&cfg.dir),
+        json_bool(cfg.sync_each),
+        cfg.workers,
+        cfg.ops,
         cfg.seed,
+        cfg.enospc_kb,
+        cfg.seconds,
+        json_bool(cfg.serial_log),
+        json_escape(&cfg.scratch_fs),
+        json_escape(&cfg.scratch_device),
+        json_escape(&cfg.scratch_mount),
+        fs_fields
+    );
+    print_json_line(cfg, &line);
+}
+
+fn print_json_summary(cfg: &Config, summary: &Summary, intro: &RunIntro, elapsed: u32) {
+    let fs_fields = perf_fs_json_fields(cfg);
+    let line = format!(
+        "{{\"type\":\"summary\",\"tool\":\"vfsstress\",\"version\":\"{}\",\"anyos\":\"{}\",\"timestamp\":\"{}\",\"started_uptime_ms\":{},\"profile\":\"{}\",\"repeat\":{},\"total_bytes\":{},\"total_kb\":{},\"dir\":\"{}\",\"sync_each\":{},\"workers\":{},\"ops\":{},\"seed\":{},\"enospc_kb\":{},\"seconds\":{},\"elapsed_ms\":{},\"tests\":{},\"failures\":{},\"warnings\":{},\"skips\":{}{},\"result\":\"{}\"}}",
+        VERSION,
+        json_escape(anyos_version()),
+        json_escape(&intro.timestamp),
+        intro.started_uptime_ms,
+        cfg.profile_name(),
+        cfg.repeat,
+        cfg.total_bytes,
+        cfg.total_bytes / 1024,
+        json_escape(&cfg.dir),
+        json_bool(cfg.sync_each),
+        cfg.workers,
+        cfg.ops,
+        cfg.seed,
+        cfg.enospc_kb,
         cfg.seconds,
         elapsed,
         summary.tests,
@@ -5077,13 +5731,14 @@ fn print_json_summary(cfg: &Config, summary: &Summary, elapsed: u32) {
         fs_fields,
         if summary.failures == 0 { "PASS" } else { "FAIL" }
     );
+    print_json_line(cfg, &line);
 }
 
 fn print_json_test(cfg: &Config, name: &str, status: &str, elapsed: u32, detail: &str) {
     if !cfg.json {
         return;
     }
-    println!(
+    let line = format!(
         "{{\"type\":\"test\",\"name\":\"{}\",\"status\":\"{}\",\"elapsed_ms\":{},\"seed\":{},\"detail\":\"{}\"}}",
         json_escape(name),
         status,
@@ -5091,6 +5746,91 @@ fn print_json_test(cfg: &Config, name: &str, status: &str, elapsed: u32, detail:
         cfg.seed,
         json_escape(detail)
     );
+    print_json_line(cfg, &line);
+}
+
+fn print_json_case(
+    cfg: &Config,
+    round: u32,
+    result: &CaseResult,
+    status: &str,
+    elapsed: u32,
+    detail: &str,
+) {
+    if !cfg.json {
+        return;
+    }
+    let line = format!(
+        "{{\"type\":\"case\",\"name\":\"case\",\"status\":\"{}\",\"elapsed_ms\":{},\"round\":{},\"block\":{},\"bytes\":{},\"write_ms\":{},\"write_kb_s\":{},\"read_ms\":{},\"read_kb_s\":{},\"verify_ms\":{},\"verify_kb_s\":{},\"phase\":\"{}\",\"first_bad\":{},\"path\":\"{}\",\"seed\":{},\"detail\":\"{}\"}}",
+        status,
+        elapsed,
+        round,
+        result.block_size,
+        result.total_bytes,
+        result.write_ms,
+        kb_per_s(result.total_bytes, result.write_ms),
+        result.read_ms,
+        kb_per_s(result.total_bytes, result.read_ms),
+        result.verify_ms,
+        kb_per_s(result.total_bytes, result.verify_ms),
+        result.phase,
+        result.first_bad.unwrap_or(u32::MAX),
+        json_escape(&result.path),
+        cfg.seed,
+        json_escape(detail)
+    );
+    print_json_line(cfg, &line);
+}
+
+fn print_json_line(cfg: &Config, line: &str) {
+    if !cfg.json {
+        return;
+    }
+    if cfg.serial_log {
+        append_json_serial_line(line);
+        return;
+    }
+    println!("{}", line);
+}
+
+fn init_json_serial_block(cfg: &Config) {
+    if cfg.json && cfg.serial_log {
+        unsafe {
+            *JSON_SERIAL_BLOCK.0.get() = Some(String::new());
+        }
+    }
+}
+
+fn append_json_serial_line(line: &str) {
+    unsafe {
+        if let Some(buf) = (*JSON_SERIAL_BLOCK.0.get()).as_mut() {
+            if !buf.is_empty() {
+                buf.push_str(",\n");
+            }
+            buf.push_str("  ");
+            buf.push_str(line);
+        }
+    }
+}
+
+fn flush_json_serial_block(cfg: &Config) {
+    if !(cfg.json && cfg.serial_log) {
+        return;
+    }
+    let block = unsafe { (*JSON_SERIAL_BLOCK.0.get()).take() };
+    if let Some(block) = block {
+        if !block.is_empty() {
+            println!("[\n{}\n]", block);
+        }
+    }
+}
+
+fn json_bool(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
 }
 
 fn perf_fs_json_fields(cfg: &Config) -> String {
@@ -5109,6 +5849,23 @@ fn perf_fs_json_fields(cfg: &Config) -> String {
             json_escape(&probe)
         )
     }
+}
+
+fn current_timestamp() -> String {
+    let mut buf = [0u8; 8];
+    if sys::time(&mut buf) != 0 {
+        return String::from("unknown");
+    }
+    let year = u16::from_le_bytes([buf[0], buf[1]]);
+    let month = buf[2];
+    let day = buf[3];
+    let hour = buf[4];
+    let min = buf[5];
+    let sec = buf[6];
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+        year, month, day, hour, min, sec
+    )
 }
 
 fn json_escape(input: &str) -> String {

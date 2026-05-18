@@ -84,10 +84,13 @@ static IO_LOCK_OP_LBA: AtomicU32 = AtomicU32::new(0);
 static IO_LOCK_OP_COUNT: AtomicU32 = AtomicU32::new(0);
 static IO_LOCK_WAIT_LOGS: AtomicU32 = AtomicU32::new(0);
 static IO_LOCK_HOLD_LOGS: AtomicU32 = AtomicU32::new(0);
+static AHCI_FLUSH_FAILED_MASK: AtomicU32 = AtomicU32::new(0);
 const IO_LOCK_WAIT_WARN_MS: u32 = 50;
 const IO_LOCK_HOLD_WARN_MS: u32 = 250;
 const IO_LOCK_LOG_LIMIT: u32 = 64;
 const MAX_LOCKED_IO_SECTORS: u32 = 512;
+const MAX_LOCKED_READAHEAD_SECTORS: u32 = 512;
+const MAX_LOCKED_WRITE_SECTORS: u32 = 512;
 const MAX_LOCKED_WRITEBACK_SECTORS: u32 = 512;
 const MAX_UNLOCKED_AHCI_IO_SECTORS: u32 = 512;
 const IO_OP_UNKNOWN: u32 = 0;
@@ -138,7 +141,8 @@ static LAST_READ_END_LBA: AtomicU32 = AtomicU32::new(0);
 static READAHEAD_LEVEL: AtomicU32 = AtomicU32::new(64);
 const READAHEAD_MIN: u32 = 16; //   8 KiB
 const READAHEAD_MAX: u32 = 512; // 256 KiB
-const READ_CACHE_POPULATE_MAX: u32 = 128; // avoid polluting cache with large streams
+const READ_CACHE_POPULATE_MAX: u32 = 64; // avoid polluting cache with 64K+ streams
+const READAHEAD_TRIGGER_MAX: u32 = 128;
 
 /// Reusable readahead buffer pool.
 ///
@@ -146,11 +150,11 @@ const READ_CACHE_POPULATE_MAX: u32 = 128; // avoid polluting cache with large st
 /// on every call (up to ~300 KiB) and dropped it again at the end of the
 /// function. Under sustained I/O that kept the kernel heap allocator hot on
 /// every CPU simultaneously and amplified any latent allocator bug. The pool
-/// keeps four static 288 KiB buffers around so the steady-state miss path
-/// needs no heap allocation at all; it falls back to a `Vec` only when all
-/// slots are busy (rare — bounded by concurrent reader count).
+/// keeps four static buffers around so the steady-state miss path needs no
+/// heap allocation at all; it falls back to a `Vec` when all slots are busy or
+/// when an unusually large fetch does not fit the fixed slot.
 const READAHEAD_POOL_SIZE: usize = 4;
-const READAHEAD_BUF_BYTES: usize = (READAHEAD_MAX as usize + 64) * 512;
+const READAHEAD_BUF_BYTES: usize = (READAHEAD_MAX as usize + READAHEAD_TRIGGER_MAX as usize) * 512;
 
 struct ReadaheadSlot {
     in_use: AtomicBool,
@@ -208,10 +212,10 @@ fn acquire_readahead_slot() -> Option<ReadaheadLease> {
 /// Borrow a mutable slice into the pool buffer. The lease guarantees
 /// exclusive ownership until it drops, so the raw-pointer → &mut slice is safe.
 fn readahead_slot_bytes(lease: &ReadaheadLease, len: usize) -> &'static mut [u8] {
-    let n = len.min(READAHEAD_BUF_BYTES);
+    debug_assert!(len <= READAHEAD_BUF_BYTES);
     unsafe {
         let ptr = (*READAHEAD_POOL[lease.index].buf.get()).as_mut_ptr();
-        core::slice::from_raw_parts_mut(ptr, n)
+        core::slice::from_raw_parts_mut(ptr, len)
     }
 }
 
@@ -462,6 +466,10 @@ fn io_lock_required(disk_id: u8, op_kind: u32) -> bool {
 fn locked_io_batch_sectors(op_kind: u32) -> u32 {
     if op_kind == IO_OP_WRITEBACK {
         MAX_LOCKED_WRITEBACK_SECTORS
+    } else if op_kind == IO_OP_READAHEAD {
+        MAX_LOCKED_READAHEAD_SECTORS
+    } else if op_kind == IO_OP_WRITE {
+        MAX_LOCKED_WRITE_SECTORS
     } else {
         MAX_LOCKED_IO_SECTORS
     }
@@ -614,7 +622,7 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
     let miss_offset = cached as usize * 512;
 
     // Adaptive readahead (only when cache is active)
-    let readahead = if cache_active && miss_count <= 64 {
+    let readahead = if cache_active && miss_count <= READAHEAD_TRIGGER_MAX {
         let last_end = LAST_READ_END_LBA.load(Ordering::Relaxed);
         let is_sequential = miss_lba == last_end || (miss_lba > 0 && miss_lba <= last_end + 8);
         if is_sequential {
@@ -659,29 +667,67 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
     }
 
     // Prefer a pool buffer to avoid a heap allocation per read (see
-    // READAHEAD_POOL comment). Fall back to Vec only when all slots are in
-    // use simultaneously.
+    // READAHEAD_POOL comment). Fall back to Vec when all slots are in use or
+    // the adaptive fetch is larger than one fixed pool slot.
     let result = if readahead > 0 {
-        if let Some(lease) = acquire_readahead_slot() {
-            let big_buf = readahead_slot_bytes(&lease, fetch_bytes);
-            let ok =
-                read_sectors_raw_chunked(disk_id, miss_lba, total_fetch, big_buf, IO_OP_READAHEAD);
-            if ok {
-                crate::fs::blockcache::overlay_cached(disk_id, miss_lba, total_fetch, big_buf);
-                let needed = miss_count as usize * 512;
-                let copy_end = needed.min(buf.len() - miss_offset);
-                buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);
-                if populate_after_read {
-                    crate::fs::blockcache::populate(
+        if fetch_bytes <= READAHEAD_BUF_BYTES {
+            if let Some(lease) = acquire_readahead_slot() {
+                let big_buf = readahead_slot_bytes(&lease, fetch_bytes);
+                let ok = read_sectors_raw_chunked(
+                    disk_id,
+                    miss_lba,
+                    total_fetch,
+                    big_buf,
+                    IO_OP_READAHEAD,
+                );
+                if ok {
+                    crate::fs::blockcache::overlay_cached(
                         disk_id,
                         miss_lba,
                         total_fetch,
-                        &big_buf[..fetch_bytes],
+                        big_buf,
                     );
+                    let needed = miss_count as usize * 512;
+                    let copy_end = needed.min(buf.len() - miss_offset);
+                    buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);
+                    if populate_after_read {
+                        crate::fs::blockcache::populate(
+                            disk_id,
+                            miss_lba,
+                            total_fetch,
+                            &big_buf[..fetch_bytes],
+                        );
+                    }
+                    true
+                } else {
+                    false
                 }
-                true
             } else {
-                false
+                let mut big_buf = alloc::vec![0u8; fetch_bytes];
+                let ok = read_sectors_raw_chunked(
+                    disk_id,
+                    miss_lba,
+                    total_fetch,
+                    &mut big_buf,
+                    IO_OP_READAHEAD,
+                );
+                if ok {
+                    crate::fs::blockcache::overlay_cached(
+                        disk_id,
+                        miss_lba,
+                        total_fetch,
+                        &mut big_buf,
+                    );
+                    let needed = miss_count as usize * 512;
+                    let copy_end = needed.min(buf.len() - miss_offset);
+                    buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);
+                    if populate_after_read {
+                        crate::fs::blockcache::populate(disk_id, miss_lba, total_fetch, &big_buf);
+                    }
+                    true
+                } else {
+                    false
+                }
             }
         } else {
             let mut big_buf = alloc::vec![0u8; fetch_bytes];
@@ -920,9 +966,20 @@ pub fn flush_disk(disk_id: u8) {
     if !matches!(unsafe { BACKEND }, StorageBackend::Ahci) {
         return;
     }
+    let bit = if disk_id < 32 { 1u32 << disk_id } else { 0 };
+    if bit != 0 && (AHCI_FLUSH_FAILED_MASK.load(Ordering::Relaxed) & bit) != 0 {
+        return;
+    }
     io_lock_acquire(IoLockOp::new(IO_OP_FLUSH, disk_id, 0, 0));
-    let _ = ahci::flush_disk(disk_id);
+    let ok = ahci::flush_disk(disk_id);
     io_lock_release();
+    if !ok && bit != 0 {
+        AHCI_FLUSH_FAILED_MASK.fetch_or(bit, Ordering::Relaxed);
+        crate::serial_println!(
+            "[storage] AHCI flush disabled after timeout/failure for disk={}",
+            disk_id
+        );
+    }
 }
 
 // ── HAL integration ─────────────────────────────────────────────────────────

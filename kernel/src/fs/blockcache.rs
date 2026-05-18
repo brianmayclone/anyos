@@ -1033,12 +1033,8 @@ pub fn writeback_flush(disk_id: u8) -> u32 {
                 {
                     continue;
                 }
-                if ok {
-                    cache.remove_from_hash(snap.key, snap.slot);
-                    cache.set_slot_key(snap.slot, 0);
+                if ok && cache.slots[snap.slot].data == snap.data {
                     cache.slots[snap.slot].dirty = false;
-                    cache.slots[snap.slot].tick = 0;
-                    cache.next_free_hint = snap.slot;
                 }
             }
         }

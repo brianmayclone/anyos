@@ -206,6 +206,8 @@ impl ClusterCache {
 const EXFAT_EOC: u32 = 0xFFFFFFFF;
 const EXFAT_BAD: u32 = 0xFFFFFFF7;
 const EXFAT_FREE: u32 = 0x00000000;
+const APPEND_PREALLOC_MIN_BYTES: usize = 64 * 1024;
+const APPEND_PREALLOC_CLUSTERS: u32 = 16;
 
 // Directory entry type codes (bit 7 = InUse)
 const ENTRY_FILE: u8 = 0x85;
@@ -303,6 +305,7 @@ pub fn decode_inode(inode: u32) -> (u32, bool) {
 }
 
 /// Information about a found exFAT directory entry set.
+#[derive(Clone, Copy)]
 struct FoundEntry {
     first_cluster: u32,
     data_length: u64,
@@ -317,6 +320,145 @@ struct FoundEntry {
     mode: u16,
     /// Modification time as Unix timestamp
     mtime: u32,
+}
+
+const DIR_LOOKUP_CACHE_LIMIT: usize = 4096;
+
+struct DirLookupCacheEntry {
+    dir_cluster: u32,
+    name_hash: u32,
+    name: String,
+    found: FoundEntry,
+}
+
+struct DirLookupCache {
+    entries: Vec<DirLookupCacheEntry>,
+    indexed_dirs: Vec<u32>,
+    insert_hints: Vec<(u32, u32)>,
+    next_evict: usize,
+}
+
+impl DirLookupCache {
+    fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            indexed_dirs: Vec::new(),
+            insert_hints: Vec::new(),
+            next_evict: 0,
+        }
+    }
+
+    fn name_hash(name: &str) -> u32 {
+        let mut hash = 2166136261u32;
+        for byte in name.bytes() {
+            hash ^= byte.to_ascii_lowercase() as u32;
+            hash = hash.wrapping_mul(16777619);
+        }
+        hash
+    }
+
+    fn lookup(&self, dir_cluster: u32, name: &str) -> Option<FoundEntry> {
+        let hash = Self::name_hash(name);
+        for entry in &self.entries {
+            if entry.dir_cluster == dir_cluster
+                && entry.name_hash == hash
+                && entry.name.eq_ignore_ascii_case(name)
+            {
+                return Some(entry.found);
+            }
+        }
+        None
+    }
+
+    fn insert(&mut self, dir_cluster: u32, name: &str, found: FoundEntry) -> bool {
+        let hash = Self::name_hash(name);
+        for entry in &mut self.entries {
+            if entry.dir_cluster == dir_cluster
+                && entry.name_hash == hash
+                && entry.name.eq_ignore_ascii_case(name)
+            {
+                entry.found = found;
+                return true;
+            }
+        }
+
+        let entry = DirLookupCacheEntry {
+            dir_cluster,
+            name_hash: hash,
+            name: String::from(name),
+            found,
+        };
+        if self.entries.len() < DIR_LOOKUP_CACHE_LIMIT {
+            self.entries.push(entry);
+            true
+        } else {
+            self.indexed_dirs.clear();
+            false
+        }
+    }
+
+    fn remove(&mut self, dir_cluster: u32, name: &str) {
+        let hash = Self::name_hash(name);
+        let mut i = 0;
+        while i < self.entries.len() {
+            let entry = &self.entries[i];
+            if entry.dir_cluster == dir_cluster
+                && entry.name_hash == hash
+                && entry.name.eq_ignore_ascii_case(name)
+            {
+                self.entries.swap_remove(i);
+                if self.next_evict > 0 {
+                    self.next_evict -= 1;
+                }
+                continue;
+            }
+            i += 1;
+        }
+    }
+
+    fn clear_dir(&mut self, dir_cluster: u32) {
+        let mut i = 0;
+        while i < self.entries.len() {
+            if self.entries[i].dir_cluster == dir_cluster {
+                self.entries.swap_remove(i);
+                if self.next_evict > 0 {
+                    self.next_evict -= 1;
+                }
+                continue;
+            }
+            i += 1;
+        }
+        self.indexed_dirs.retain(|&cluster| cluster != dir_cluster);
+        self.insert_hints
+            .retain(|&(cluster, _)| cluster != dir_cluster);
+    }
+
+    fn is_indexed(&self, dir_cluster: u32) -> bool {
+        self.indexed_dirs.iter().any(|&cluster| cluster == dir_cluster)
+    }
+
+    fn mark_indexed(&mut self, dir_cluster: u32) {
+        if !self.is_indexed(dir_cluster) {
+            self.indexed_dirs.push(dir_cluster);
+        }
+    }
+
+    fn insert_hint(&self, dir_cluster: u32) -> Option<u32> {
+        self.insert_hints
+            .iter()
+            .find(|&&(cluster, _)| cluster == dir_cluster)
+            .map(|&(_, hint)| hint)
+    }
+
+    fn set_insert_hint(&mut self, dir_cluster: u32, hint_cluster: u32) {
+        for entry in &mut self.insert_hints {
+            if entry.0 == dir_cluster {
+                entry.1 = hint_cluster;
+                return;
+            }
+        }
+        self.insert_hints.push((dir_cluster, hint_cluster));
+    }
 }
 
 /// In-memory representation of a mounted exFAT filesystem.
@@ -352,6 +494,8 @@ pub struct ExFatFs {
     /// requiring `&mut self`.  Safe because `ExFatFs` is always accessed while
     /// the VFS `Mutex` is held — at most one CPU touches this at a time.
     cluster_cache: core::cell::UnsafeCell<ClusterCache>,
+    /// Exact `(directory cluster, name)` lookup cache for metadata-heavy paths.
+    dir_lookup_cache: core::cell::UnsafeCell<DirLookupCache>,
     /// True when FAT/bitmap metadata has been modified but not yet flushed to disk.
     /// Set by write_file/alloc_cluster/free_chain, cleared by flush_metadata.
     /// Allows deferring expensive metadata flushes until fsync/close/sync.
@@ -395,6 +539,136 @@ impl ExFatReadPlan {
 
         buf.truncate(self.file_size as usize);
         Ok(buf)
+    }
+
+    /// Execute a bounded read from this plan into an existing userspace buffer.
+    ///
+    /// This is used by the open-file `read(fd)` path: chain/range discovery is
+    /// done while holding the exFAT mutex, but the actual sector I/O happens
+    /// after that lock has been released.
+    pub fn execute_range(&self, file_offset: u64, buf: &mut [u8]) -> Result<usize, FsError> {
+        if buf.is_empty() || file_offset >= self.file_size {
+            return Ok(0);
+        }
+
+        let wanted = (self.file_size - file_offset).min(buf.len() as u64) as usize;
+        let read_start = file_offset;
+        let read_end = file_offset + wanted as u64;
+        let mut copied = 0usize;
+        let mut run_file_start = 0u64;
+
+        for &(abs_lba, sector_count) in &self.runs {
+            let run_bytes = sector_count as u64 * 512;
+            let run_file_end = run_file_start + run_bytes;
+
+            if run_file_end <= read_start {
+                run_file_start = run_file_end;
+                continue;
+            }
+            if run_file_start >= read_end {
+                break;
+            }
+
+            let overlap_start = read_start.max(run_file_start);
+            let overlap_end = read_end.min(run_file_end);
+            let rel_start = overlap_start - run_file_start;
+            let rel_end = overlap_end - run_file_start;
+            let first_sector = (rel_start / 512) as u32;
+            let last_sector = ((rel_end + 511) / 512) as u32;
+            let sectors = last_sector.saturating_sub(first_sector);
+            if sectors == 0 {
+                run_file_start = run_file_end;
+                continue;
+            }
+
+            let bytes = sectors as usize * 512;
+            let tmp_start = (rel_start - first_sector as u64 * 512) as usize;
+            let copy_len = (overlap_end - overlap_start) as usize;
+            let dst_start = (overlap_start - read_start) as usize;
+            if tmp_start == 0 && copy_len == bytes && dst_start + bytes <= buf.len() {
+                if !disk_read_sectors(
+                    self.disk_id,
+                    abs_lba + first_sector,
+                    sectors,
+                    &mut buf[dst_start..dst_start + bytes],
+                ) {
+                    return Err(FsError::IoError);
+                }
+                copied += bytes;
+                run_file_start = run_file_end;
+                continue;
+            }
+
+            let mut tmp = vec![0u8; bytes];
+            if !disk_read_sectors(self.disk_id, abs_lba + first_sector, sectors, &mut tmp) {
+                return Err(FsError::IoError);
+            }
+
+            buf[dst_start..dst_start + copy_len]
+                .copy_from_slice(&tmp[tmp_start..tmp_start + copy_len]);
+            copied += copy_len;
+            run_file_start = run_file_end;
+        }
+
+        Ok(copied)
+    }
+
+    /// Execute a sector-aligned overwrite into an existing file range.
+    ///
+    /// The caller must ensure this does not extend the file.  It is deliberately
+    /// limited to sector-aligned ranges so no read-modify-write is needed while
+    /// the exFAT mutex is released.
+    pub fn execute_write_range(&self, file_offset: u64, data: &[u8]) -> Result<usize, FsError> {
+        if data.is_empty() || file_offset >= self.file_size {
+            return Ok(0);
+        }
+        if file_offset % 512 != 0 || data.len() % 512 != 0 {
+            return Err(FsError::NotSupported);
+        }
+
+        let wanted = (self.file_size - file_offset).min(data.len() as u64) as usize;
+        let write_start = file_offset;
+        let write_end = file_offset + wanted as u64;
+        let mut written = 0usize;
+        let mut run_file_start = 0u64;
+
+        for &(abs_lba, sector_count) in &self.runs {
+            let run_bytes = sector_count as u64 * 512;
+            let run_file_end = run_file_start + run_bytes;
+
+            if run_file_end <= write_start {
+                run_file_start = run_file_end;
+                continue;
+            }
+            if run_file_start >= write_end {
+                break;
+            }
+
+            let overlap_start = write_start.max(run_file_start);
+            let overlap_end = write_end.min(run_file_end);
+            let rel_start = overlap_start - run_file_start;
+            let rel_end = overlap_end - run_file_start;
+            if rel_start % 512 != 0 || rel_end % 512 != 0 {
+                return Err(FsError::NotSupported);
+            }
+
+            let first_sector = (rel_start / 512) as u32;
+            let sectors = ((rel_end - rel_start) / 512) as u32;
+            let src_start = (overlap_start - write_start) as usize;
+            let bytes = sectors as usize * 512;
+            if !disk_write_sectors(
+                self.disk_id,
+                abs_lba + first_sector,
+                sectors,
+                &data[src_start..src_start + bytes],
+            ) {
+                return Err(FsError::IoError);
+            }
+            written += bytes;
+            run_file_start = run_file_end;
+        }
+
+        Ok(written)
     }
 }
 
@@ -507,6 +781,7 @@ impl ExFatFs {
             bitmap_contiguous: true,
             alloc_hint: 0,
             cluster_cache: core::cell::UnsafeCell::new(ClusterCache::new()),
+            dir_lookup_cache: core::cell::UnsafeCell::new(DirLookupCache::new()),
             metadata_dirty: false,
         };
 
@@ -746,20 +1021,59 @@ impl ExFatFs {
 
     fn write_cluster(&self, cluster: u32, buf: &[u8]) -> Result<(), FsError> {
         self.validate_cluster(cluster, "write_cluster")?;
-        // Invalidate cached copy so next read reflects the new on-disk content.
-        // SAFETY: same as read_cluster — VFS mutex ensures single-threaded access.
-        let cache = unsafe { &mut *self.cluster_cache.get() };
-        cache.invalidate(cluster);
-
         let lba = self.cluster_to_lba(cluster);
         let cs = self.cluster_size() as usize;
+        let cache = unsafe { &mut *self.cluster_cache.get() };
         if buf.len() >= cs {
-            self.write_sectors(lba, self.sectors_per_cluster(), &buf[..cs])
+            self.write_sectors(lba, self.sectors_per_cluster(), &buf[..cs])?;
+            cache.insert(cluster, &buf[..cs]);
         } else {
             let mut tmp = vec![0u8; cs];
             tmp[..buf.len()].copy_from_slice(buf);
-            self.write_sectors(lba, self.sectors_per_cluster(), &tmp)
+            self.write_sectors(lba, self.sectors_per_cluster(), &tmp)?;
+            cache.insert(cluster, &tmp);
         }
+        Ok(())
+    }
+
+    fn dir_cache_lookup(&self, dir_cluster: u32, name: &str) -> Option<FoundEntry> {
+        let cache = unsafe { &mut *self.dir_lookup_cache.get() };
+        cache.lookup(dir_cluster, name)
+    }
+
+    fn dir_cache_insert(&self, dir_cluster: u32, name: &str, found: FoundEntry) -> bool {
+        let cache = unsafe { &mut *self.dir_lookup_cache.get() };
+        cache.insert(dir_cluster, name, found)
+    }
+
+    fn dir_cache_remove(&self, dir_cluster: u32, name: &str) {
+        let cache = unsafe { &mut *self.dir_lookup_cache.get() };
+        cache.remove(dir_cluster, name);
+    }
+
+    fn dir_cache_clear_dir(&self, dir_cluster: u32) {
+        let cache = unsafe { &mut *self.dir_lookup_cache.get() };
+        cache.clear_dir(dir_cluster);
+    }
+
+    fn dir_cache_is_indexed(&self, dir_cluster: u32) -> bool {
+        let cache = unsafe { &mut *self.dir_lookup_cache.get() };
+        cache.is_indexed(dir_cluster)
+    }
+
+    fn dir_cache_mark_indexed(&self, dir_cluster: u32) {
+        let cache = unsafe { &mut *self.dir_lookup_cache.get() };
+        cache.mark_indexed(dir_cluster);
+    }
+
+    fn dir_insert_hint(&self, dir_cluster: u32) -> Option<u32> {
+        let cache = unsafe { &mut *self.dir_lookup_cache.get() };
+        cache.insert_hint(dir_cluster)
+    }
+
+    fn set_dir_insert_hint(&self, dir_cluster: u32, hint_cluster: u32) {
+        let cache = unsafe { &mut *self.dir_lookup_cache.get() };
+        cache.set_insert_hint(dir_cluster, hint_cluster);
     }
 
     // =================================================================
@@ -999,24 +1313,142 @@ impl ExFatFs {
         }
     }
 
-    /// Allocate a single cluster. Marks bitmap + writes EOC to FAT (deferred flush).
-    fn alloc_cluster(&mut self) -> Result<u32, FsError> {
+    fn is_cluster_free_idx(&self, idx: u32) -> bool {
+        if idx >= self.cluster_count {
+            return false;
+        }
+        let byte_idx = idx as usize / 8;
+        if byte_idx >= self.bitmap.len() {
+            return false;
+        }
+        let bit_idx = idx as usize % 8;
+        self.bitmap[byte_idx] & (1 << bit_idx) == 0
+    }
+
+    fn fat_entry_is_free_idx(&self, idx: u32) -> bool {
+        if idx >= self.cluster_count {
+            return false;
+        }
+        let cluster = idx + 2;
+        let off = (cluster as usize) * 4;
+        if off + 3 >= self.fat_cache.len() {
+            return false;
+        }
+        u32::from_le_bytes([
+            self.fat_cache[off],
+            self.fat_cache[off + 1],
+            self.fat_cache[off + 2],
+            self.fat_cache[off + 3],
+        ]) == EXFAT_FREE
+    }
+
+    fn mark_bitmap_allocated_for_stale_fat(&mut self, idx: u32, context: &str) {
+        if idx >= self.cluster_count {
+            return;
+        }
+        crate::serial_println!(
+            "exFAT: repairing stale free bitmap bit for allocated cluster {} during {}",
+            idx + 2,
+            context
+        );
+        self.mark_cluster_allocated(idx);
+    }
+
+    fn find_free_cluster_idx(&self) -> Option<u32> {
         let count = self.cluster_count;
+        if count == 0 || self.free_clusters == 0 {
+            return None;
+        }
         let hint = self.alloc_hint;
-        for j in 0..count {
-            let i = (hint + j) % count;
+        let mut scanned = 0u32;
+        let mut i = hint.min(count - 1);
+        while scanned < count {
             let byte_idx = i as usize / 8;
-            let bit_idx = i as usize % 8;
             if byte_idx >= self.bitmap.len() {
+                return None;
+            }
+            if self.bitmap[byte_idx] == 0xFF && i % 8 == 0 && i + 8 <= count && scanned + 8 <= count
+            {
+                i = (i + 8) % count;
+                scanned += 8;
                 continue;
             }
-            if self.bitmap[byte_idx] & (1 << bit_idx) == 0 {
-                let cluster = i + 2;
-                self.write_fat_entry(cluster, EXFAT_EOC)?;
-                self.mark_cluster_allocated(i);
-                self.alloc_hint = (i + 1) % count;
-                return Ok(cluster);
+            if self.is_cluster_free_idx(i) {
+                return Some(i);
             }
+            i = (i + 1) % count;
+            scanned += 1;
+        }
+        None
+    }
+
+    fn find_free_run_idx(&self, needed: u32) -> Option<u32> {
+        let count = self.cluster_count;
+        if needed == 0 || needed > count || self.free_clusters < needed {
+            return None;
+        }
+        let mut scanned = 0u32;
+        let mut i = self.alloc_hint.min(count - 1);
+        let mut run_start = 0u32;
+        let mut run_len = 0u32;
+
+        while scanned < count {
+            if run_len == 0 {
+                let byte_idx = i as usize / 8;
+                if byte_idx >= self.bitmap.len() {
+                    return None;
+                }
+                if self.bitmap[byte_idx] == 0xFF
+                    && i % 8 == 0
+                    && i + 8 <= count
+                    && scanned + 8 <= count
+                {
+                    i = (i + 8) % count;
+                    scanned += 8;
+                    continue;
+                }
+            }
+
+            if self.is_cluster_free_idx(i) && (run_len > 0 || i + needed <= count) {
+                if run_len == 0 {
+                    run_start = i;
+                }
+                run_len += 1;
+                if run_len == needed {
+                    return Some(run_start);
+                }
+            } else {
+                run_len = 0;
+            }
+
+            let next = (i + 1) % count;
+            if next <= i {
+                run_len = 0;
+            }
+            i = next;
+            scanned += 1;
+        }
+
+        None
+    }
+
+    /// Allocate a single cluster. Marks bitmap + writes EOC to FAT (deferred flush).
+    fn alloc_cluster(&mut self) -> Result<u32, FsError> {
+        for _ in 0..self.cluster_count {
+            let Some(i) = self.find_free_cluster_idx() else {
+                return Err(FsError::NoSpace);
+            };
+            if !self.fat_entry_is_free_idx(i) {
+                self.mark_bitmap_allocated_for_stale_fat(i, "alloc_cluster");
+                self.alloc_hint = (i + 1) % self.cluster_count.max(1);
+                continue;
+            }
+            let cluster = i + 2;
+            self.write_fat_entry(cluster, EXFAT_EOC)?;
+            self.mark_cluster_allocated(i);
+            self.alloc_hint = (i + 1) % self.cluster_count.max(1);
+            self.metadata_dirty = true;
+            return Ok(cluster);
         }
         Err(FsError::NoSpace)
     }
@@ -1027,36 +1459,36 @@ impl ExFatFs {
         if n == 0 {
             return Err(FsError::IoError);
         }
+        if self.free_clusters < n {
+            return Err(FsError::NoSpace);
+        }
         if n == 1 {
             return self.alloc_cluster();
         }
 
-        // Try contiguous allocation first
-        let count = self.cluster_count;
-        let hint = self.alloc_hint;
-        'outer: for start in 0..count {
-            let base = (hint + start) % count;
-            if base + n > count {
-                continue;
-            }
+        // Try contiguous allocation first.
+        if let Some(base) = self.find_free_run_idx(n) {
+            let mut run_clean = true;
             for k in 0..n {
                 let i = base + k;
-                let byte_idx = i as usize / 8;
-                let bit_idx = i as usize % 8;
-                if byte_idx >= self.bitmap.len() || self.bitmap[byte_idx] & (1 << bit_idx) != 0 {
-                    continue 'outer;
+                if !self.fat_entry_is_free_idx(i) {
+                    self.mark_bitmap_allocated_for_stale_fat(i, "alloc_clusters");
+                    run_clean = false;
                 }
             }
-            // Found contiguous run — allocate all at once
-            for k in 0..n {
-                let i = base + k;
-                let cluster = i + 2;
-                let next = if k + 1 < n { cluster + 1 } else { EXFAT_EOC };
-                self.write_fat_entry(cluster, next)?;
-                self.mark_cluster_allocated(i);
+            if run_clean {
+                // Found contiguous run — allocate all at once
+                for k in 0..n {
+                    let i = base + k;
+                    let cluster = i + 2;
+                    let next = if k + 1 < n { cluster + 1 } else { EXFAT_EOC };
+                    self.write_fat_entry(cluster, next)?;
+                    self.mark_cluster_allocated(i);
+                }
+                self.alloc_hint = (base + n) % self.cluster_count.max(1);
+                self.metadata_dirty = true;
+                return Ok(base + 2);
             }
-            self.alloc_hint = (base + n) % count;
-            return Ok(base + 2);
         }
 
         // Fallback: non-contiguous chain
@@ -1067,7 +1499,19 @@ impl ExFatFs {
             self.write_fat_entry(prev, c)?;
             prev = c;
         }
+        self.metadata_dirty = true;
         Ok(first)
+    }
+
+    fn append_alloc_count(&self, data_len: usize, cs: u32) -> u32 {
+        let data_clusters = ((data_len as u32) + cs - 1) / cs;
+        if data_clusters == 0 {
+            1
+        } else if data_len >= cs as usize {
+            data_clusters.max(APPEND_PREALLOC_CLUSTERS)
+        } else {
+            data_clusters
+        }
     }
 
     /// Convert an on-disk NoFatChain extent into explicit FAT links before a
@@ -1108,6 +1552,58 @@ impl ExFatFs {
         Ok(())
     }
 
+    fn zero_file_gap(&mut self, first: u32, old_size: u32, gap_end: u32) -> Result<(), FsError> {
+        if first < 2 || gap_end <= old_size {
+            return Ok(());
+        }
+
+        let cs = self.cluster_size();
+        let mut cluster = first;
+        let mut cluster_offset = 0u32;
+
+        while cluster_offset + cs <= old_size {
+            cluster_offset += cs;
+            match self.next_cluster(cluster) {
+                Some(next) => cluster = next,
+                None => {
+                    let new = self.alloc_cluster()?;
+                    self.write_fat_entry(cluster, new)?;
+                    cluster = new;
+                }
+            }
+        }
+
+        let mut pos = old_size;
+        while pos < gap_end {
+            while cluster_offset + cs <= pos {
+                cluster_offset += cs;
+                match self.next_cluster(cluster) {
+                    Some(next) => cluster = next,
+                    None => {
+                        let new = self.alloc_cluster()?;
+                        self.write_fat_entry(cluster, new)?;
+                        cluster = new;
+                    }
+                }
+            }
+
+            let start_in = (pos - cluster_offset) as usize;
+            let end_in = (gap_end - cluster_offset).min(cs) as usize;
+            let mut cbuf = vec![0u8; cs as usize];
+            if start_in != 0 || end_in != cs as usize {
+                self.read_cluster(cluster, &mut cbuf)?;
+            }
+            for b in &mut cbuf[start_in..end_in] {
+                *b = 0;
+            }
+            self.write_cluster(cluster, &cbuf)?;
+            pos = cluster_offset + end_in as u32;
+        }
+
+        self.metadata_dirty = true;
+        Ok(())
+    }
+
     /// Free a cluster chain (FAT-chained or contiguous).
     fn free_chain(
         &mut self,
@@ -1138,6 +1634,7 @@ impl ExFatFs {
                 }
             }
         }
+        self.metadata_dirty = true;
         Ok(())
     }
 
@@ -1243,14 +1740,49 @@ impl ExFatFs {
         name
     }
 
-    /// Case-insensitive comparison of a UTF-16 name against an ASCII name.
-    fn names_equal(utf16: &[u16], ascii: &str) -> bool {
-        let bytes = ascii.as_bytes();
-        if utf16.len() != bytes.len() {
+    fn encode_name_utf16(name: &str) -> Vec<u16> {
+        let mut out = Vec::new();
+        for ch in name.chars() {
+            let mut buf = [0u16; 2];
+            let encoded = ch.encode_utf16(&mut buf);
+            out.extend_from_slice(encoded);
+        }
+        out
+    }
+
+    fn utf16_name_to_string(name: &[u16]) -> Option<String> {
+        let mut out = String::new();
+        let mut i = 0;
+        while i < name.len() {
+            let ch = name[i];
+            if (0xD800..=0xDBFF).contains(&ch) {
+                if i + 1 >= name.len() {
+                    return None;
+                }
+                let lo = name[i + 1];
+                if !(0xDC00..=0xDFFF).contains(&lo) {
+                    return None;
+                }
+                let code = 0x10000 + (((ch as u32 - 0xD800) << 10) | (lo as u32 - 0xDC00));
+                out.push(core::char::from_u32(code)?);
+                i += 2;
+            } else if (0xDC00..=0xDFFF).contains(&ch) {
+                return None;
+            } else {
+                out.push(core::char::from_u32(ch as u32)?);
+                i += 1;
+            }
+        }
+        Some(out)
+    }
+
+    /// Case-insensitive comparison of two UTF-16 names.
+    fn names_equal_utf16(utf16: &[u16], rhs: &[u16]) -> bool {
+        if utf16.len() != rhs.len() {
             return false;
         }
         for (i, &ch) in utf16.iter().enumerate() {
-            if Self::upcase(ch) != Self::upcase(bytes[i] as u16) {
+            if Self::upcase(ch) != Self::upcase(rhs[i]) {
                 return false;
             }
         }
@@ -1259,6 +1791,12 @@ impl ExFatFs {
 
     /// Find a named entry in a raw directory buffer.
     fn find_entry_in_buf(&self, buf: &[u8], name: &str) -> Option<FoundEntry> {
+        let target_name = Self::encode_name_utf16(name);
+        self.find_entry_in_buf_utf16(buf, &target_name)
+    }
+
+    /// Find a named entry in a raw directory buffer.
+    fn find_entry_in_buf_utf16(&self, buf: &[u8], target_name: &[u16]) -> Option<FoundEntry> {
         let mut i = 0;
         while i + 32 <= buf.len() {
             let etype = buf[i];
@@ -1303,7 +1841,7 @@ impl ExFatFs {
             let mtime_unix = exfat_timestamp_to_unix(exfat_mtime);
 
             let collected = Self::collect_name(buf, i, secondary_count, name_length);
-            if Self::names_equal(&collected, name) {
+            if Self::names_equal_utf16(&collected, target_name) {
                 return Some(FoundEntry {
                     first_cluster,
                     data_length,
@@ -1321,6 +1859,100 @@ impl ExFatFs {
             i += total * 32;
         }
         None
+    }
+
+    fn index_dir_entries_from_buf(&self, dir_cluster: u32, buf: &[u8]) -> bool {
+        let mut complete = true;
+        let mut i = 0;
+        while i + 32 <= buf.len() {
+            let etype = buf[i];
+            if etype == 0x00 {
+                i += 32;
+                continue;
+            }
+            if etype != ENTRY_FILE {
+                i += 32;
+                continue;
+            }
+
+            let secondary_count = buf[i + 1];
+            let total = 1 + secondary_count as usize;
+            if i + total * 32 > buf.len() {
+                break;
+            }
+            let s = i + 32;
+            if buf[s] != ENTRY_STREAM {
+                i += 32;
+                continue;
+            }
+
+            let attributes = u16::from_le_bytes([buf[i + 4], buf[i + 5]]);
+            let general_flags = buf[s + 1];
+            let contiguous = general_flags & FLAG_CONTIGUOUS != 0;
+            let name_length = buf[s + 3] as usize;
+            let first_cluster = match buf[s + 20..s + 24].try_into() {
+                Ok(bytes) => u32::from_le_bytes(bytes),
+                Err(_) => break,
+            };
+            let data_length = match buf[s + 24..s + 32].try_into() {
+                Ok(bytes) => u64::from_le_bytes(bytes),
+                Err(_) => break,
+            };
+            let uid = u16::from_le_bytes([buf[i + 6], buf[i + 7]]);
+            let gid = u16::from_le_bytes([buf[i + 8], buf[i + 9]]);
+            let mode = u16::from_le_bytes([buf[i + 10], buf[i + 11]]);
+            let mode = if mode == 0 { 0xFFF } else { mode };
+            let exfat_mtime = match buf[i + 12..i + 16].try_into() {
+                Ok(bytes) => u32::from_le_bytes(bytes),
+                Err(_) => break,
+            };
+            let collected = Self::collect_name(buf, i, secondary_count, name_length);
+            if let Some(name) = Self::utf16_name_to_string(&collected) {
+                complete &= self.dir_cache_insert(
+                    dir_cluster,
+                    &name,
+                    FoundEntry {
+                        first_cluster,
+                        data_length,
+                        attributes,
+                        contiguous,
+                        file_entry_offset: i,
+                        secondary_count,
+                        uid,
+                        gid,
+                        mode,
+                        mtime: exfat_timestamp_to_unix(exfat_mtime),
+                    },
+                );
+            }
+            i += total * 32;
+        }
+        complete
+    }
+
+    fn ensure_dir_indexed(&self, dir_cluster: u32) -> Result<(), FsError> {
+        if self.dir_cache_is_indexed(dir_cluster) {
+            return Ok(());
+        }
+        self.dir_cache_clear_dir(dir_cluster);
+        let raw = self.read_dir_raw(dir_cluster)?;
+        if self.index_dir_entries_from_buf(dir_cluster, &raw) {
+            self.dir_cache_mark_indexed(dir_cluster);
+        }
+        Ok(())
+    }
+
+    fn dir_cluster_chain(&self, start_cluster: u32) -> Result<Vec<u32>, FsError> {
+        let mut clusters = Vec::new();
+        let mut cur = start_cluster;
+        loop {
+            self.validate_cluster(cur, "dir_cluster_chain")?;
+            clusters.push(cur);
+            match self.next_cluster(cur) {
+                Some(next) => cur = next,
+                None => return Ok(clusters),
+            }
+        }
     }
 
     /// Parse directory entries for listing (readdir).
@@ -1426,16 +2058,104 @@ impl ExFatFs {
         Err(FsError::IoError)
     }
 
-    /// Convert UTF-16LE code units to an ASCII `String`.
+    /// Convert UTF-16LE code units to a UTF-8 `String`.
     fn utf16_to_string(chars: &[u16]) -> String {
         let mut s = String::new();
-        for &ch in chars {
+        let mut i = 0;
+        while i < chars.len() {
+            let ch = chars[i];
             if ch == 0 {
                 break;
             }
-            s.push(if ch < 128 { ch as u8 as char } else { '?' });
+            let scalar = if (0xD800..=0xDBFF).contains(&ch) && i + 1 < chars.len() {
+                let lo = chars[i + 1];
+                if (0xDC00..=0xDFFF).contains(&lo) {
+                    i += 1;
+                    let high = (ch as u32) - 0xD800;
+                    let low = (lo as u32) - 0xDC00;
+                    char::from_u32(0x1_0000 + ((high << 10) | low)).unwrap_or('\u{FFFD}')
+                } else {
+                    '\u{FFFD}'
+                }
+            } else if (0xDC00..=0xDFFF).contains(&ch) {
+                '\u{FFFD}'
+            } else {
+                char::from_u32(ch as u32).unwrap_or('\u{FFFD}')
+            };
+            s.push(scalar);
+            i += 1;
         }
         s
+    }
+
+    fn validate_name_utf16_len(name: &str) -> Result<Vec<u16>, FsError> {
+        let utf16 = Self::encode_name_utf16(name);
+        if utf16.is_empty() || utf16.len() > 255 {
+            return Err(FsError::InvalidPath);
+        }
+        Ok(utf16)
+    }
+
+    fn build_entry_set_from_utf16(
+        utf16: &[u16],
+        attributes: u16,
+        first_cluster: u32,
+        data_length: u64,
+        contiguous: bool,
+        uid: u16,
+        gid: u16,
+        mode: u16,
+    ) -> Vec<u8> {
+        let name_len = utf16.len();
+        let fn_entries = (name_len + 14) / 15;
+        let secondary = 1 + fn_entries; // Stream + FileName(s)
+        let total = 1 + secondary;
+        let mut set = vec![0u8; total * 32];
+
+        // -- File Directory Entry (0x85) --
+        set[0] = ENTRY_FILE;
+        set[1] = secondary as u8;
+        // [2..3] = SetChecksum (filled last)
+        set[4..6].copy_from_slice(&attributes.to_le_bytes());
+        // [6..11] = uid/gid/mode in reserved bytes
+        set[6..8].copy_from_slice(&uid.to_le_bytes());
+        set[8..10].copy_from_slice(&gid.to_le_bytes());
+        set[10..12].copy_from_slice(&mode.to_le_bytes());
+        // [12..15] = LastModifiedTimestamp (exFAT format)
+        let now = current_exfat_timestamp();
+        set[12..16].copy_from_slice(&now.to_le_bytes());
+
+        // -- Stream Extension (0xC0) --
+        let s = 32;
+        set[s] = ENTRY_STREAM;
+        let mut flags: u8 = 0x01; // AllocationPossible
+        if contiguous {
+            flags |= FLAG_CONTIGUOUS;
+        }
+        set[s + 1] = flags;
+        set[s + 3] = name_len as u8;
+        let nh = Self::name_hash(utf16);
+        set[s + 4..s + 6].copy_from_slice(&nh.to_le_bytes());
+        set[s + 8..s + 16].copy_from_slice(&data_length.to_le_bytes()); // ValidDataLength
+        set[s + 20..s + 24].copy_from_slice(&first_cluster.to_le_bytes());
+        set[s + 24..s + 32].copy_from_slice(&data_length.to_le_bytes()); // DataLength
+
+        // -- FileName entries (0xC1) --
+        for fi in 0..fn_entries {
+            let f = (2 + fi) * 32;
+            set[f] = ENTRY_FILENAME;
+            for j in 0..15 {
+                let ci = fi * 15 + j;
+                let ch = if ci < utf16.len() { utf16[ci] } else { 0x0000 };
+                set[f + 2 + j * 2..f + 4 + j * 2].copy_from_slice(&ch.to_le_bytes());
+            }
+        }
+
+        // -- Checksum --
+        let checksum = Self::entry_set_checksum(&set, total);
+        set[2..4].copy_from_slice(&checksum.to_le_bytes());
+
+        set
     }
 
     // =================================================================
@@ -1456,9 +2176,19 @@ impl ExFatFs {
 
         for (idx, component) in components.iter().enumerate() {
             let is_last = idx == components.len() - 1;
-            let dir_data = self.read_dir_raw(current_cluster)?;
+            let cached = self.dir_cache_lookup(current_cluster, component);
+            let found = if let Some(found) = cached {
+                Some(found)
+            } else {
+                let dir_data = self.read_dir_raw(current_cluster)?;
+                let found = self.find_entry_in_buf(&dir_data, component);
+                if let Some(found) = found {
+                    self.dir_cache_insert(current_cluster, component, found);
+                }
+                found
+            };
 
-            match self.find_entry_in_buf(&dir_data, component) {
+            match found {
                 Some(found) => {
                     self.validate_found_entry_cluster(&found, component)?;
                     let is_dir = found.attributes & ATTR_DIRECTORY != 0;
@@ -1492,10 +2222,33 @@ impl ExFatFs {
         dir_cluster: u32,
         name: &str,
     ) -> Result<(u32, FileType, u32, bool, u16, u16, u16, u32), FsError> {
+        if let Some(found) = self.dir_cache_lookup(dir_cluster, name) {
+            self.validate_found_entry_cluster(&found, name)?;
+            let is_symlink = found.attributes & ATTR_SYMLINK != 0;
+            let is_dir = found.attributes & ATTR_DIRECTORY != 0;
+            let ft = if is_dir {
+                FileType::Directory
+            } else {
+                FileType::Regular
+            };
+            let inode = encode_inode(found.first_cluster, found.contiguous);
+            return Ok((
+                inode,
+                ft,
+                found.data_length as u32,
+                is_symlink,
+                found.uid,
+                found.gid,
+                found.mode,
+                found.mtime,
+            ));
+        }
+
         let raw = self.read_dir_raw(dir_cluster)?;
         match self.find_entry_in_buf(&raw, name) {
             Some(found) => {
                 self.validate_found_entry_cluster(&found, name)?;
+                self.dir_cache_insert(dir_cluster, name, found);
                 let is_symlink = found.attributes & ATTR_SYMLINK != 0;
                 let is_dir = found.attributes & ATTR_DIRECTORY != 0;
                 let ft = if is_dir {
@@ -1617,6 +2370,14 @@ impl ExFatFs {
                 cbuf[i + 2..i + 4].copy_from_slice(&checksum.to_le_bytes());
                 // Write back
                 self.write_cluster(cur, &cbuf)?;
+                let updated = FoundEntry {
+                    uid: new_uid.unwrap_or(found.uid),
+                    gid: new_gid.unwrap_or(found.gid),
+                    mode: new_mode.unwrap_or(found.mode),
+                    ..found
+                };
+                self.dir_cache_insert(parent_cluster, filename, updated);
+                self.metadata_dirty = true;
                 return Ok(());
             }
 
@@ -1852,6 +2613,45 @@ impl ExFatFs {
         }
     }
 
+    pub fn invalidate_file_range(&self, inode: u32, offset: u32, len: usize) {
+        if len == 0 {
+            return;
+        }
+        let (start_cluster, contiguous) = decode_inode(inode);
+        if start_cluster < 2 {
+            return;
+        }
+        let cs = self.cluster_size();
+        let first_idx = offset / cs;
+        let last_idx = offset.saturating_add(len as u32).saturating_sub(1) / cs;
+        let cache = unsafe { &mut *self.cluster_cache.get() };
+
+        if contiguous {
+            for idx in first_idx..=last_idx {
+                cache.invalidate(start_cluster + idx);
+            }
+            return;
+        }
+
+        let mut cluster = start_cluster;
+        let mut idx = 0u32;
+        loop {
+            if idx >= first_idx && idx <= last_idx {
+                cache.invalidate(cluster);
+            }
+            if idx >= last_idx {
+                break;
+            }
+            match self.next_cluster(cluster) {
+                Some(next) => {
+                    cluster = next;
+                    idx += 1;
+                }
+                None => break,
+            }
+        }
+    }
+
     // =================================================================
     // Public API — file write
     // =================================================================
@@ -1898,11 +2698,20 @@ impl ExFatFs {
         }
 
         let cs = self.cluster_size();
+        let append_prealloc = offset == old_size && data.len() >= APPEND_PREALLOC_MIN_BYTES;
         let first = if start_cluster < 2 {
-            self.alloc_cluster()?
+            if append_prealloc {
+                self.alloc_clusters(self.append_alloc_count(data.len(), cs))?
+            } else {
+                self.alloc_cluster()?
+            }
         } else {
             start_cluster
         };
+
+        if offset > old_size {
+            self.zero_file_gap(first, old_size, offset)?;
+        }
 
         let mut cluster = first;
         let mut cluster_offset = 0u32;
@@ -1920,7 +2729,11 @@ impl ExFatFs {
             match self.next_cluster(cluster) {
                 Some(next) => cluster = next,
                 None => {
-                    let new = self.alloc_cluster()?;
+                    let new = if append_prealloc {
+                        self.alloc_clusters(self.append_alloc_count(data.len(), cs))?
+                    } else {
+                        self.alloc_cluster()?
+                    };
                     self.write_fat_entry(cluster, new)?;
                     cluster = new;
                 }
@@ -1934,8 +2747,6 @@ impl ExFatFs {
         let mut last_cluster_offset = cluster_offset;
 
         loop {
-            last_cluster = cur;
-            last_cluster_offset = cluster_offset;
             let start_in = if cluster_offset < offset {
                 (offset - cluster_offset) as usize
             } else {
@@ -1974,11 +2785,15 @@ impl ExFatFs {
                     written += total_bytes;
                     cluster_offset += run_clusters * cs;
                     cur = probe;
+                    last_cluster = probe;
+                    last_cluster_offset = cluster_offset.saturating_sub(cs);
                 } else {
                     // Single full cluster write
                     self.write_cluster(cur, &data[written..written + cs as usize])?;
                     written += cs as usize;
                     cluster_offset += cs;
+                    last_cluster = cur;
+                    last_cluster_offset = cluster_offset.saturating_sub(cs);
                 }
             } else {
                 if start_in == 0 && to_write == cs as usize {
@@ -1993,6 +2808,8 @@ impl ExFatFs {
                 }
                 written += to_write;
                 cluster_offset += cs;
+                last_cluster = cur;
+                last_cluster_offset = cluster_offset.saturating_sub(cs);
             }
 
             if written >= data.len() {
@@ -2004,7 +2821,11 @@ impl ExFatFs {
                 None => {
                     // Pre-allocate remaining clusters in bulk
                     let remaining_bytes = data.len() - written;
-                    let needed = ((remaining_bytes as u32) + cs - 1) / cs;
+                    let needed = if append_prealloc {
+                        self.append_alloc_count(remaining_bytes, cs)
+                    } else {
+                        ((remaining_bytes as u32) + cs - 1) / cs
+                    };
                     if needed > 1 {
                         let bulk_first = self.alloc_clusters(needed)?;
                         self.write_fat_entry(cur, bulk_first)?;
@@ -2040,57 +2861,19 @@ impl ExFatFs {
         gid: u16,
         mode: u16,
     ) -> Vec<u8> {
-        let utf16: Vec<u16> = name.bytes().map(|b| b as u16).collect();
-        let name_len = utf16.len();
-        let fn_entries = (name_len + 14) / 15;
-        let secondary = 1 + fn_entries; // Stream + FileName(s)
-        let total = 1 + secondary;
-        let mut set = vec![0u8; total * 32];
-
-        // -- File Directory Entry (0x85) --
-        set[0] = ENTRY_FILE;
-        set[1] = secondary as u8;
-        // [2..3] = SetChecksum (filled last)
-        set[4..6].copy_from_slice(&attributes.to_le_bytes());
-        // [6..11] = uid/gid/mode in reserved bytes
-        set[6..8].copy_from_slice(&uid.to_le_bytes());
-        set[8..10].copy_from_slice(&gid.to_le_bytes());
-        set[10..12].copy_from_slice(&mode.to_le_bytes());
-        // [12..15] = LastModifiedTimestamp (exFAT format)
-        let now = current_exfat_timestamp();
-        set[12..16].copy_from_slice(&now.to_le_bytes());
-
-        // -- Stream Extension (0xC0) --
-        let s = 32;
-        set[s] = ENTRY_STREAM;
-        let mut flags: u8 = 0x01; // AllocationPossible
-        if contiguous {
-            flags |= FLAG_CONTIGUOUS;
+        match Self::validate_name_utf16_len(name) {
+            Ok(utf16) => Self::build_entry_set_from_utf16(
+                &utf16,
+                attributes,
+                first_cluster,
+                data_length,
+                contiguous,
+                uid,
+                gid,
+                mode,
+            ),
+            Err(_) => Vec::new(),
         }
-        set[s + 1] = flags;
-        set[s + 3] = name_len as u8;
-        let nh = Self::name_hash(&utf16);
-        set[s + 4..s + 6].copy_from_slice(&nh.to_le_bytes());
-        set[s + 8..s + 16].copy_from_slice(&data_length.to_le_bytes()); // ValidDataLength
-        set[s + 20..s + 24].copy_from_slice(&first_cluster.to_le_bytes());
-        set[s + 24..s + 32].copy_from_slice(&data_length.to_le_bytes()); // DataLength
-
-        // -- FileName entries (0xC1) --
-        for fi in 0..fn_entries {
-            let f = (2 + fi) * 32;
-            set[f] = ENTRY_FILENAME;
-            for j in 0..15 {
-                let ci = fi * 15 + j;
-                let ch = if ci < utf16.len() { utf16[ci] } else { 0x0000 };
-                set[f + 2 + j * 2..f + 4 + j * 2].copy_from_slice(&ch.to_le_bytes());
-            }
-        }
-
-        // -- Checksum --
-        let checksum = Self::entry_set_checksum(&set, total);
-        set[2..4].copy_from_slice(&checksum.to_le_bytes());
-
-        set
     }
 
     /// Find `count` consecutive free 32-byte entry slots in a directory buffer.
@@ -2155,56 +2938,164 @@ impl ExFatFs {
             gid,
             0xFFF,
         );
+        if entry_set.is_empty() {
+            return Err(FsError::InvalidPath);
+        }
         let num = entry_set.len() / 32;
         let cs = self.cluster_size() as usize;
-        let mut cur = parent_cluster;
+        let mtime = exfat_timestamp_to_unix(current_exfat_timestamp());
+        self.ensure_dir_indexed(parent_cluster)?;
+        let indexed = self.dir_cache_is_indexed(parent_cluster);
+        if indexed {
+            if self.dir_cache_lookup(parent_cluster, name).is_some() {
+                return Err(FsError::AlreadyExists);
+            }
+        } else {
+            let target_name = Self::encode_name_utf16(name);
+            let mut cur = parent_cluster;
+            loop {
+                let mut cbuf = vec![0u8; cs];
+                self.read_cluster(cur, &mut cbuf)?;
 
-        loop {
+                if self.find_entry_in_buf_utf16(&cbuf, &target_name).is_some() {
+                    return Err(FsError::AlreadyExists);
+                }
+
+                if let Some(off) = Self::find_free_entries(&cbuf, num) {
+                    cbuf[off..off + entry_set.len()].copy_from_slice(&entry_set);
+                    self.write_cluster(cur, &cbuf)?;
+                    self.metadata_dirty = true;
+                    self.set_dir_insert_hint(parent_cluster, cur);
+                    self.dir_cache_insert(
+                        parent_cluster,
+                        name,
+                        FoundEntry {
+                            first_cluster,
+                            data_length,
+                            attributes: attr,
+                            contiguous: false,
+                            file_entry_offset: off,
+                            secondary_count: (num - 1) as u8,
+                            uid,
+                            gid,
+                            mode: 0xFFF,
+                            mtime,
+                        },
+                    );
+                    return Ok(());
+                }
+
+                match self.next_cluster(cur) {
+                    Some(next) => cur = next,
+                    None => {
+                        let new = self.alloc_cluster()?;
+                        self.write_fat_entry(cur, new)?;
+                        self.metadata_dirty = true;
+                        let mut new_buf = vec![0u8; cs];
+                        new_buf[..entry_set.len()].copy_from_slice(&entry_set);
+                        self.write_cluster(new, &new_buf)?;
+                        self.set_dir_insert_hint(parent_cluster, new);
+                        self.dir_cache_insert(
+                            parent_cluster,
+                            name,
+                            FoundEntry {
+                                first_cluster,
+                                data_length,
+                                attributes: attr,
+                                contiguous: false,
+                                file_entry_offset: 0,
+                                secondary_count: (num - 1) as u8,
+                                uid,
+                                gid,
+                                mode: 0xFFF,
+                                mtime,
+                            },
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        let chain = self.dir_cluster_chain(parent_cluster)?;
+        let hint = self.dir_insert_hint(parent_cluster).unwrap_or(parent_cluster);
+        let start_idx = chain
+            .iter()
+            .position(|&cluster| cluster == hint)
+            .unwrap_or(0);
+
+        for step in 0..chain.len() {
+            let cur = chain[(start_idx + step) % chain.len()];
             let mut cbuf = vec![0u8; cs];
             self.read_cluster(cur, &mut cbuf)?;
 
             if let Some(off) = Self::find_free_entries(&cbuf, num) {
                 cbuf[off..off + entry_set.len()].copy_from_slice(&entry_set);
                 self.write_cluster(cur, &cbuf)?;
-                self.flush_metadata()?;
+                self.metadata_dirty = true;
+                self.set_dir_insert_hint(parent_cluster, cur);
+                self.dir_cache_insert(
+                    parent_cluster,
+                    name,
+                    FoundEntry {
+                        first_cluster,
+                        data_length,
+                        attributes: attr,
+                        contiguous: false,
+                        file_entry_offset: off,
+                        secondary_count: (num - 1) as u8,
+                        uid,
+                        gid,
+                        mode: 0xFFF,
+                        mtime,
+                    },
+                );
                 return Ok(());
             }
-
-            match self.next_cluster(cur) {
-                Some(next) => cur = next,
-                None => {
-                    let new = self.alloc_cluster()?;
-                    self.write_fat_entry(cur, new)?;
-                    self.flush_metadata()?;
-                    let mut new_buf = vec![0u8; cs];
-                    new_buf[..entry_set.len()].copy_from_slice(&entry_set);
-                    self.write_cluster(new, &new_buf)?;
-                    return Ok(());
-                }
-            }
         }
+
+        let tail = *chain.last().ok_or(FsError::IoError)?;
+        let new = self.alloc_cluster()?;
+        self.write_fat_entry(tail, new)?;
+        self.metadata_dirty = true;
+        let mut new_buf = vec![0u8; cs];
+        new_buf[..entry_set.len()].copy_from_slice(&entry_set);
+        self.write_cluster(new, &new_buf)?;
+        self.set_dir_insert_hint(parent_cluster, new);
+        self.dir_cache_insert(
+            parent_cluster,
+            name,
+            FoundEntry {
+                first_cluster,
+                data_length,
+                attributes: attr,
+                contiguous: false,
+                file_entry_offset: 0,
+                secondary_count: (num - 1) as u8,
+                uid,
+                gid,
+                mode: 0xFFF,
+                mtime,
+            },
+        );
+        Ok(())
     }
 
     /// Create a new empty file.
     pub fn create_file(&mut self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
-        let raw = self.read_dir_raw(parent_cluster)?;
-        if self.find_entry_in_buf(&raw, name).is_some() {
-            return Err(FsError::AlreadyExists);
-        }
         self.create_entry(parent_cluster, name, false, 0, 0)
     }
 
     /// Create a new subdirectory. Returns the new cluster.
     pub fn create_dir(&mut self, parent_cluster: u32, name: &str) -> Result<u32, FsError> {
-        let raw = self.read_dir_raw(parent_cluster)?;
-        if self.find_entry_in_buf(&raw, name).is_some() {
-            return Err(FsError::AlreadyExists);
-        }
         let cluster = self.alloc_cluster()?;
         let cs = self.cluster_size() as usize;
         let zeros = vec![0u8; cs];
         self.write_cluster(cluster, &zeros)?;
-        self.create_entry(parent_cluster, name, true, cluster, 0)?;
+        if let Err(err) = self.create_entry(parent_cluster, name, true, cluster, 0) {
+            let _ = self.free_chain(cluster, true, 0);
+            return Err(err);
+        }
         Ok(cluster)
     }
 
@@ -2216,6 +3107,10 @@ impl ExFatFs {
         new_parent: u32,
         new_name: &str,
     ) -> Result<(), FsError> {
+        if old_parent == new_parent && old_name == new_name {
+            return Ok(());
+        }
+
         // Find old entry to get metadata
         let raw = self.read_dir_raw(old_parent)?;
         let found = self
@@ -2224,6 +3119,11 @@ impl ExFatFs {
         let cluster = found.first_cluster;
         let size = found.data_length;
         let is_dir = (found.attributes & 0x10) != 0;
+
+        if self.lookup_in_dir(new_parent, new_name).is_ok() {
+            self.delete_file(new_parent, new_name)?;
+        }
+
         // Delete old directory entries WITHOUT freeing cluster chain
         let cs = self.cluster_size() as usize;
         let mut cur = old_parent;
@@ -2240,6 +3140,8 @@ impl ExFatFs {
                     }
                 }
                 self.write_cluster(cur, &cbuf)?;
+                self.dir_cache_remove(old_parent, old_name);
+                self.set_dir_insert_hint(old_parent, cur);
                 break;
             }
             match self.next_cluster(cur) {
@@ -2278,10 +3180,14 @@ impl ExFatFs {
                     }
                 }
                 self.write_cluster(cur, &cbuf)?;
+                self.dir_cache_remove(parent_cluster, name);
+                self.set_dir_insert_hint(parent_cluster, cur);
+                if found.attributes & ATTR_DIRECTORY != 0 {
+                    self.dir_cache_clear_dir(found.first_cluster);
+                }
                 if found.first_cluster >= 2 {
                     self.free_chain(found.first_cluster, found.contiguous, found.data_length)?;
                 }
-                self.flush_metadata()?;
                 return Ok(());
             }
 
@@ -2340,6 +3246,23 @@ impl ExFatFs {
                 cbuf[off + 2..off + 4].copy_from_slice(&checksum.to_le_bytes());
 
                 self.write_cluster(cur, &cbuf)?;
+                self.metadata_dirty = true;
+                self.dir_cache_insert(
+                    parent_cluster,
+                    name,
+                    FoundEntry {
+                        first_cluster: new_cluster,
+                        data_length: sz,
+                        attributes: found.attributes,
+                        contiguous: false,
+                        file_entry_offset: found.file_entry_offset,
+                        secondary_count: found.secondary_count,
+                        uid: found.uid,
+                        gid: found.gid,
+                        mode: found.mode,
+                        mtime: exfat_timestamp_to_unix(now),
+                    },
+                );
                 return Ok(());
             }
 
@@ -2358,7 +3281,6 @@ impl ExFatFs {
             .ok_or(FsError::NotFound)?;
         if found.first_cluster >= 2 {
             self.free_chain(found.first_cluster, found.contiguous, found.data_length)?;
-            self.flush_metadata()?;
         }
         self.update_entry(parent_cluster, name, 0, 0)
     }
@@ -2440,9 +3362,13 @@ impl ExFatFs {
             gid,
             0xFFF,
         );
+        if entry_set.is_empty() {
+            return Err(FsError::InvalidPath);
+        }
         let num = entry_set.len() / 32;
         let cs = self.cluster_size() as usize;
         let mut cur = parent_cluster;
+        let mtime = exfat_timestamp_to_unix(current_exfat_timestamp());
 
         loop {
             let mut cbuf = vec![0u8; cs];
@@ -2451,7 +3377,23 @@ impl ExFatFs {
             if let Some(off) = Self::find_free_entries(&cbuf, num) {
                 cbuf[off..off + entry_set.len()].copy_from_slice(&entry_set);
                 self.write_cluster(cur, &cbuf)?;
-                self.flush_metadata()?;
+                self.metadata_dirty = true;
+                self.dir_cache_insert(
+                    parent_cluster,
+                    name,
+                    FoundEntry {
+                        first_cluster,
+                        data_length,
+                        attributes: attr,
+                        contiguous: false,
+                        file_entry_offset: off,
+                        secondary_count: (num - 1) as u8,
+                        uid,
+                        gid,
+                        mode: 0xFFF,
+                        mtime,
+                    },
+                );
                 return Ok(());
             }
 
@@ -2460,10 +3402,26 @@ impl ExFatFs {
                 None => {
                     let new = self.alloc_cluster()?;
                     self.write_fat_entry(cur, new)?;
-                    self.flush_metadata()?;
+                    self.metadata_dirty = true;
                     let mut new_buf = vec![0u8; cs];
                     new_buf[..entry_set.len()].copy_from_slice(&entry_set);
                     self.write_cluster(new, &new_buf)?;
+                    self.dir_cache_insert(
+                        parent_cluster,
+                        name,
+                        FoundEntry {
+                            first_cluster,
+                            data_length,
+                            attributes: attr,
+                            contiguous: false,
+                            file_entry_offset: 0,
+                            secondary_count: (num - 1) as u8,
+                            uid,
+                            gid,
+                            mode: 0xFFF,
+                            mtime,
+                        },
+                    );
                     return Ok(());
                 }
             }
