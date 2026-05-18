@@ -8,9 +8,10 @@ use crate::package::{
     install_deb, install_package, install_resolved_plan, package_installed, prefetch_install_plan,
     resolve_install_plan, InstallProgress,
 };
+use crate::readiness::{shell_availability, LxeShellAvailability};
 use crate::rootfs::{
-    ensure_rootfs_layout, find_linux_shell, linux_path_in_rootfs, path_exists, print_path_probe,
-    repair_rootfs_runtime, write_bytes_atomic,
+    ensure_rootfs_layout, find_linux_bash, find_linux_shell, linux_path_in_rootfs, path_exists,
+    print_path_probe, repair_rootfs_runtime, write_bytes_atomic,
 };
 
 macro_rules! log_ok {
@@ -76,7 +77,7 @@ fn usage() {
     println!("  lxe [--verbose] init");
     println!("  lxe [--verbose] repair");
     println!("  lxe [--verbose] run <linux-elf64> [args...]");
-    println!("  lxe [--verbose] shell [shell-args...]");
+    println!("  lxe [--verbose] shell [--stdio] [bash-args...]");
     println!("  lxe [--verbose] pkg install <file.deb>");
     println!("  lxe [--verbose] apt install <package> [package...]");
 }
@@ -126,6 +127,13 @@ fn run(config: &mut LxeConfig, args: &[&str]) {
 }
 
 fn shell(config: &mut LxeConfig, args: &[&str]) {
+    let stdio = args.first().copied() == Some("--stdio");
+    if !stdio {
+        open_shell_app(config);
+        return;
+    }
+
+    let args = &args[1..];
     let lease = match daemon::acquire_run(config, "shell") {
         Ok(lease) => lease,
         Err(err) => {
@@ -133,9 +141,9 @@ fn shell(config: &mut LxeConfig, args: &[&str]) {
             return;
         }
     };
-    let Some(path) = find_linux_shell(&config.rootfs) else {
-        log_error!("lxe shell: no Linux shell found");
-        log_warn!("lxe shell: run 'lxe init' or install bash/dash first");
+    let Some(path) = find_linux_bash(&config.rootfs) else {
+        log_error!("lxe shell: bash not found");
+        log_warn!("lxe shell: run 'lxe init' or install bash first");
         lease.release();
         return;
     };
@@ -146,6 +154,28 @@ fn shell(config: &mut LxeConfig, args: &[&str]) {
     };
     run_linux_process(config, "lxe shell", &path, &child_args);
     lease.release();
+}
+
+fn open_shell_app(config: &LxeConfig) {
+    match shell_availability(config) {
+        LxeShellAvailability::Ready { .. } => {}
+        LxeShellAvailability::MissingRootfs { rootfs } => {
+            log_error!("lxe shell: LXE is not installed at {}", rootfs);
+            log_warn!("lxe shell: run 'lxe init' first");
+            return;
+        }
+        LxeShellAvailability::MissingBash { rootfs } => {
+            log_error!("lxe shell: bash is not installed in {}", rootfs);
+            log_warn!("lxe shell: run 'lxe apt install bash' or re-run 'lxe init'");
+            return;
+        }
+    }
+
+    let tid = process::launch_app("/Applications/Management/LXE Shell.app/LXE Shell", "");
+    if tid == u32::MAX {
+        log_fatal!("lxe shell: failed to open LXE Shell.app");
+        log_warn!("lxe shell: raw fallback for diagnostics: lxe shell --stdio");
+    }
 }
 
 fn init(config: &mut LxeConfig, configure_password: bool, verbose: bool) {

@@ -357,6 +357,16 @@ pub(crate) fn find_linux_shell(rootfs: &str) -> Option<String> {
     None
 }
 
+pub(crate) fn find_linux_bash(rootfs: &str) -> Option<String> {
+    for linux_path in ["/bin/bash", "/usr/bin/bash"] {
+        let path = linux_path_in_rootfs(rootfs, linux_path);
+        if regular_file_exists(&path) || path_exists(&path) {
+            return Some(path);
+        }
+    }
+    None
+}
+
 pub(crate) fn path_exists(path: &str) -> bool {
     fs::stat(path, &mut [0u32; 7]) == 0
 }

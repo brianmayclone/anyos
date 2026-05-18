@@ -12,6 +12,8 @@ pub mod daemon;
 #[cfg(not(feature = "host"))]
 pub mod manager;
 #[cfg(not(feature = "host"))]
+pub mod readiness;
+#[cfg(not(feature = "host"))]
 pub mod runtime;
 
 #[cfg(not(feature = "host"))]
