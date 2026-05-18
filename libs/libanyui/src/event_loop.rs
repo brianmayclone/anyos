@@ -37,6 +37,19 @@ struct PendingCallback {
     userdata: u64,
 }
 
+#[derive(Clone, Copy)]
+struct ScrollBlitDamage {
+    id: ControlId,
+    parent_abs_x: i32,
+    parent_abs_y: i32,
+    abs_x: i32,
+    abs_y: i32,
+    view_w: u32,
+    view_h: u32,
+    dx: i32,
+    dy: i32,
+}
+
 /// Run the event loop. Blocks until all windows are closed or quit is requested.
 /// Event-driven: blocks on `evt_chan_wait` until the compositor delivers an event
 /// or the next timer fires. VSync back-pressure uses a shorter timeout.
@@ -367,12 +380,11 @@ pub fn run_once() -> u32 {
                                                 if let Some(te_idx) =
                                                     control::find_idx(&st.controls, te_id)
                                                 {
-                                                    let resp = st.controls[te_idx]
-                                                        .handle_key_down(
-                                                            0,
-                                                            action_char,
-                                                            control::MOD_CTRL,
-                                                        );
+                                                    let resp = st.controls[te_idx].handle_key_down(
+                                                        0,
+                                                        action_char,
+                                                        control::MOD_CTRL,
+                                                    );
                                                     st.controls[te_idx].base_mut().mark_dirty();
                                                     if resp.fire_change {
                                                         fire_event_callback(
@@ -1120,9 +1132,8 @@ pub fn run_once() -> u32 {
                                                 if let Some(orphan) =
                                                     st.controls[te_idx].base().context_menu
                                                 {
-                                                    st.controls[te_idx]
-                                                        .base_mut()
-                                                        .context_menu = None;
+                                                    st.controls[te_idx].base_mut().context_menu =
+                                                        None;
                                                     st.controls.retain(|c| c.id() != orphan);
                                                 }
                                             }
@@ -2151,41 +2162,41 @@ pub fn run_once() -> u32 {
 
                     // Dispatch to hovered control, bubbling up to ScrollView if needed
                     if !consumed {
-                    if let Some(target_id) = st.hovered {
-                        let mut cur = target_id;
-                        loop {
-                            if let Some(idx) = control::find_idx(&st.controls, cur) {
-                                let resp = st.controls[idx].handle_scroll(dz);
-                                if resp.consumed {
-                                    st.controls[idx].base_mut().mark_dirty();
-                                    fire_event_callback(
-                                        &st.controls,
-                                        cur,
-                                        control::EVENT_SCROLL,
-                                        &mut pending_cbs,
-                                    );
-                                    if resp.fire_change {
+                        if let Some(target_id) = st.hovered {
+                            let mut cur = target_id;
+                            loop {
+                                if let Some(idx) = control::find_idx(&st.controls, cur) {
+                                    let resp = st.controls[idx].handle_scroll(dz);
+                                    if resp.consumed {
+                                        st.controls[idx].base_mut().mark_dirty();
                                         fire_event_callback(
                                             &st.controls,
                                             cur,
-                                            control::EVENT_CHANGE,
+                                            control::EVENT_SCROLL,
                                             &mut pending_cbs,
                                         );
+                                        if resp.fire_change {
+                                            fire_event_callback(
+                                                &st.controls,
+                                                cur,
+                                                control::EVENT_CHANGE,
+                                                &mut pending_cbs,
+                                            );
+                                        }
+                                        consumed = true;
+                                        break;
                                     }
-                                    consumed = true;
+                                    // Bubble up to parent
+                                    let parent = st.controls[idx].parent_id();
+                                    if parent == 0 || parent == cur {
+                                        break;
+                                    }
+                                    cur = parent;
+                                } else {
                                     break;
                                 }
-                                // Bubble up to parent
-                                let parent = st.controls[idx].parent_id();
-                                if parent == 0 || parent == cur {
-                                    break;
-                                }
-                                cur = parent;
-                            } else {
-                                break;
                             }
                         }
-                    }
                     } // end `if !consumed` for shift-aware horizontal path
 
                     // If scroll was not consumed (e.g. Canvas), still fire
@@ -2203,12 +2214,12 @@ pub fn run_once() -> u32 {
                                 // can read scroll direction via the
                                 // anyui_canvas_get_wheel export.
                                 if st.controls[idx].kind() == control::ControlKind::Canvas {
-                                    if let Some(cv) = control::cast_mut::<
-                                        crate::controls::canvas::Canvas,
-                                    >(
-                                        &mut st.controls[idx],
-                                        control::ControlKind::Canvas,
-                                    ) {
+                                    if let Some(cv) =
+                                        control::cast_mut::<crate::controls::canvas::Canvas>(
+                                            &mut st.controls[idx],
+                                            control::ControlKind::Canvas,
+                                        )
+                                    {
                                         cv.last_wheel_dz = dz;
                                     }
                                 }
@@ -2724,50 +2735,100 @@ pub fn run_once() -> u32 {
                 })
                 .filter(|&(_, _, w, h)| w > 0 && h > 0);
 
-            // Scale dirty rect to physical space (for Surface clip, SHM copy, present_rect)
-            let physical_dr = logical_dr
-                .map(|(dx, dy, dw, dh)| {
-                    let px = crate::theme::scale_i32(dx);
-                    let py = crate::theme::scale_i32(dy);
-                    let pw = crate::theme::scale(dw as u32);
-                    let ph = crate::theme::scale(dh as u32);
-                    // Clamp to physical surface bounds
-                    let px = px.max(0);
-                    let py = py.max(0);
-                    let pw = pw.min(sw.saturating_sub(px as u32));
-                    let ph = ph.min(sh.saturating_sub(py as u32));
-                    (px, py, pw, ph)
-                })
-                .filter(|&(_, _, w, h)| w > 0 && h > 0);
-
             // Double-buffered rendering: draw to a local back buffer first.
             let back_buf = st.comp_windows[wi].back_buffer.as_mut_ptr();
             let full_surf = crate::draw::Surface::new(back_buf, sw, sh);
 
-            let surf = if let Some((dx, dy, dw, dh)) = physical_dr {
-                full_surf.with_clip(dx, dy, dw, dh)
-            } else {
-                full_surf
-            };
+            if let Some(scroll_damage) = find_scroll_blit_damage(&st.controls, win_id) {
+                let mut scroll_present_rect = scale_and_clamp_rect(
+                    (
+                        scroll_damage.abs_x,
+                        scroll_damage.abs_y,
+                        scroll_damage.view_w,
+                        scroll_damage.view_h,
+                    ),
+                    sw,
+                    sh,
+                );
+                blit_back_buffer_scroll(back_buf, sw, sh, scroll_damage);
 
-            if let Some((dx, dy, dw, dh)) = physical_dr {
-                clear_back_buffer_rect(back_buf, sw, sh, dx, dy, dw, dh);
+                for rect in scroll_exposed_rects(scroll_damage).iter().flatten() {
+                    if let Some((dx, dy, dw, dh)) = scale_and_clamp_rect(*rect, sw, sh) {
+                        clear_back_buffer_rect(back_buf, sw, sh, dx, dy, dw, dh);
+                        let surf = full_surf.with_clip(dx, dy, dw, dh);
+                        render_tree(&st.controls, win_id, &surf, 0, 0, Some(*rect));
+                        scroll_present_rect =
+                            merge_pending_present_rect(scroll_present_rect, Some((dx, dy, dw, dh)));
+                    }
+                }
+
+                for rect in scroll_chrome_rects(&st.controls, scroll_damage)
+                    .iter()
+                    .flatten()
+                {
+                    if let Some((dx, dy, dw, dh)) = scale_and_clamp_rect(*rect, sw, sh) {
+                        clear_back_buffer_rect(back_buf, sw, sh, dx, dy, dw, dh);
+                        let surf = full_surf.with_clip(dx, dy, dw, dh);
+                        render_scrollview_chrome(&st.controls, scroll_damage, &surf);
+                        scroll_present_rect =
+                            merge_pending_present_rect(scroll_present_rect, Some((dx, dy, dw, dh)));
+                    }
+                }
+
+                clear_dirty(&mut st.controls, win_id);
+                sync_rendered_scroll_offsets(&mut st.controls, win_id);
+                st.comp_windows[wi].dirty = false;
+                st.comp_windows[wi].dirty_rect = None;
+                staged_rect = if st.comp_windows[wi].present_pending {
+                    merge_pending_present_rect(staged_rect, scroll_present_rect)
+                } else {
+                    scroll_present_rect
+                };
+                st.comp_windows[wi].present_pending = true;
+                st.comp_windows[wi].pending_present_rect = staged_rect;
             } else {
-                st.comp_windows[wi].back_buffer.fill(0x00000000);
+                // Scale dirty rect to physical space (for Surface clip, SHM copy, present_rect)
+                let physical_dr = logical_dr
+                    .map(|(dx, dy, dw, dh)| {
+                        let px = crate::theme::scale_i32(dx);
+                        let py = crate::theme::scale_i32(dy);
+                        let pw = crate::theme::scale(dw as u32);
+                        let ph = crate::theme::scale(dh as u32);
+                        // Clamp to physical surface bounds
+                        let px = px.max(0);
+                        let py = py.max(0);
+                        let pw = pw.min(sw.saturating_sub(px as u32));
+                        let ph = ph.min(sh.saturating_sub(py as u32));
+                        (px, py, pw, ph)
+                    })
+                    .filter(|&(_, _, w, h)| w > 0 && h > 0);
+
+                let surf = if let Some((dx, dy, dw, dh)) = physical_dr {
+                    full_surf.with_clip(dx, dy, dw, dh)
+                } else {
+                    full_surf
+                };
+
+                if let Some((dx, dy, dw, dh)) = physical_dr {
+                    clear_back_buffer_rect(back_buf, sw, sh, dx, dy, dw, dh);
+                } else {
+                    st.comp_windows[wi].back_buffer.fill(0x00000000);
+                }
+
+                render_tree(&st.controls, win_id, &surf, 0, 0, logical_dr);
+
+                clear_dirty(&mut st.controls, win_id);
+                sync_rendered_scroll_offsets(&mut st.controls, win_id);
+                st.comp_windows[wi].dirty = false;
+                st.comp_windows[wi].dirty_rect = None;
+                staged_rect = if st.comp_windows[wi].present_pending {
+                    merge_pending_present_rect(staged_rect, physical_dr)
+                } else {
+                    physical_dr
+                };
+                st.comp_windows[wi].present_pending = true;
+                st.comp_windows[wi].pending_present_rect = staged_rect;
             }
-
-            render_tree(&st.controls, win_id, &surf, 0, 0, logical_dr);
-
-            clear_dirty(&mut st.controls, win_id);
-            st.comp_windows[wi].dirty = false;
-            st.comp_windows[wi].dirty_rect = None;
-            staged_rect = if st.comp_windows[wi].present_pending {
-                merge_pending_present_rect(staged_rect, physical_dr)
-            } else {
-                physical_dr
-            };
-            st.comp_windows[wi].present_pending = true;
-            st.comp_windows[wi].pending_present_rect = staged_rect;
         }
 
         // Respect compositor ACK strictly: never overwrite the SHM surface while
@@ -3523,6 +3584,256 @@ fn rects_intersect(ax: i32, ay: i32, aw: u32, ah: u32, bx: i32, by: i32, bw: u32
     ax < bx + bw as i32 && ax + aw as i32 > bx && ay < by + bh as i32 && ay + ah as i32 > by
 }
 
+fn scale_and_clamp_rect(
+    rect: (i32, i32, u32, u32),
+    sw: u32,
+    sh: u32,
+) -> Option<(i32, i32, u32, u32)> {
+    let (x, y, w, h) = rect;
+    let px = crate::theme::scale_i32(x).max(0);
+    let py = crate::theme::scale_i32(y).max(0);
+    let pw = crate::theme::scale(w);
+    let ph = crate::theme::scale(h);
+    let pw = pw.min(sw.saturating_sub(px as u32));
+    let ph = ph.min(sh.saturating_sub(py as u32));
+    if pw == 0 || ph == 0 {
+        return None;
+    }
+    Some((px, py, pw, ph))
+}
+
+fn scale_delta_i32(v: i32) -> i32 {
+    if v < 0 {
+        -crate::theme::scale_i32(-v)
+    } else {
+        crate::theme::scale_i32(v)
+    }
+}
+
+fn find_scroll_blit_damage(
+    controls: &[Box<dyn Control>],
+    root_id: ControlId,
+) -> Option<ScrollBlitDamage> {
+    let mut found = None;
+    let mut rejected = false;
+    find_scroll_blit_damage_walk(controls, root_id, 0, 0, &mut found, &mut rejected);
+    if rejected {
+        None
+    } else {
+        found
+    }
+}
+
+fn find_scroll_blit_damage_walk(
+    controls: &[Box<dyn Control>],
+    id: ControlId,
+    parent_abs_x: i32,
+    parent_abs_y: i32,
+    found: &mut Option<ScrollBlitDamage>,
+    rejected: &mut bool,
+) {
+    if *rejected {
+        return;
+    }
+    let Some(idx) = control::find_idx(controls, id) else {
+        return;
+    };
+    let b = controls[idx].base();
+    let abs_x = parent_abs_x + b.x;
+    let abs_y = parent_abs_y + b.y;
+
+    if b.dirty {
+        if controls[idx].kind() != ControlKind::ScrollView || found.is_some() {
+            *rejected = true;
+            return;
+        }
+        if b.prev_x != b.x || b.prev_y != b.y || b.prev_w != b.w || b.prev_h != b.h {
+            *rejected = true;
+            return;
+        }
+        if subtree_has_dirty_descendant(controls, id) {
+            *rejected = true;
+            return;
+        }
+        let Some(sv) = control::cast_ref::<crate::controls::scroll_view::ScrollView>(
+            &controls[idx],
+            ControlKind::ScrollView,
+        ) else {
+            *rejected = true;
+            return;
+        };
+        let (sx, sy) = sv.scroll_offsets();
+        let (rendered_sx, rendered_sy) = sv.rendered_scroll_offsets();
+        let dx = sx - rendered_sx;
+        let dy = sy - rendered_sy;
+        let (view_w, view_h) = sv.viewport_size();
+        if (dx == 0 && dy == 0)
+            || view_w == 0
+            || view_h == 0
+            || dx.abs() as u32 >= view_w
+            || dy.abs() as u32 >= view_h
+        {
+            *rejected = true;
+            return;
+        }
+        *found = Some(ScrollBlitDamage {
+            id,
+            parent_abs_x,
+            parent_abs_y,
+            abs_x,
+            abs_y,
+            view_w,
+            view_h,
+            dx,
+            dy,
+        });
+        return;
+    }
+
+    let (child_abs_x, child_abs_y) = match controls[idx].kind() {
+        ControlKind::ScrollView => {
+            let (sx, sy) =
+                crate::controls::scroll_view::scroll_offsets(controls, controls[idx].id());
+            (abs_x - sx, abs_y - sy)
+        }
+        ControlKind::Expander => (
+            abs_x,
+            abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
+        ),
+        _ => (abs_x, abs_y),
+    };
+    for &cid in controls[idx].children() {
+        find_scroll_blit_damage_walk(controls, cid, child_abs_x, child_abs_y, found, rejected);
+        if *rejected {
+            return;
+        }
+    }
+}
+
+fn subtree_has_dirty_descendant(controls: &[Box<dyn Control>], id: ControlId) -> bool {
+    let Some(idx) = control::find_idx(controls, id) else {
+        return false;
+    };
+    for &cid in controls[idx].children() {
+        if let Some(child_idx) = control::find_idx(controls, cid) {
+            if controls[child_idx].base().dirty || subtree_has_dirty_descendant(controls, cid) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn scroll_exposed_rects(d: ScrollBlitDamage) -> [Option<(i32, i32, u32, u32)>; 2] {
+    let mut rects = [None, None];
+    if d.dy > 0 {
+        let h = (d.dy as u32).min(d.view_h);
+        rects[0] = Some((d.abs_x, d.abs_y + d.view_h as i32 - h as i32, d.view_w, h));
+    } else if d.dy < 0 {
+        let h = ((-d.dy) as u32).min(d.view_h);
+        rects[0] = Some((d.abs_x, d.abs_y, d.view_w, h));
+    }
+    if d.dx > 0 {
+        let w = (d.dx as u32).min(d.view_w);
+        rects[1] = Some((d.abs_x + d.view_w as i32 - w as i32, d.abs_y, w, d.view_h));
+    } else if d.dx < 0 {
+        let w = ((-d.dx) as u32).min(d.view_w);
+        rects[1] = Some((d.abs_x, d.abs_y, w, d.view_h));
+    }
+    rects
+}
+
+fn scroll_chrome_rects(
+    controls: &[Box<dyn Control>],
+    d: ScrollBlitDamage,
+) -> [Option<(i32, i32, u32, u32)>; 2] {
+    let mut rects = [None, None];
+    let Some(idx) = control::find_idx(controls, d.id) else {
+        return rects;
+    };
+    let Some(sv) = control::cast_ref::<crate::controls::scroll_view::ScrollView>(
+        &controls[idx],
+        ControlKind::ScrollView,
+    ) else {
+        return rects;
+    };
+    if let Some((x, y, w, h)) = sv.vertical_bar_rect() {
+        rects[0] = Some((d.abs_x + x, d.abs_y + y, w, h));
+    }
+    if let Some((x, y, w, h)) = sv.horizontal_bar_rect() {
+        rects[1] = Some((d.abs_x + x, d.abs_y + y, w, h));
+    }
+    rects
+}
+
+fn blit_back_buffer_scroll(back_buf: *mut u32, stride: u32, height: u32, d: ScrollBlitDamage) {
+    if back_buf.is_null() || stride == 0 || height == 0 {
+        return;
+    }
+
+    let vx = crate::theme::scale_i32(d.abs_x).max(0);
+    let vy = crate::theme::scale_i32(d.abs_y).max(0);
+    let vw = crate::theme::scale(d.view_w).min(stride.saturating_sub(vx as u32));
+    let vh = crate::theme::scale(d.view_h).min(height.saturating_sub(vy as u32));
+    let dx = scale_delta_i32(d.dx);
+    let dy = scale_delta_i32(d.dy);
+    let abs_dx = dx.abs() as u32;
+    let abs_dy = dy.abs() as u32;
+    if vw == 0 || vh == 0 || abs_dx >= vw || abs_dy >= vh {
+        return;
+    }
+
+    let copy_w = vw - abs_dx;
+    let copy_h = vh - abs_dy;
+    let (src_x, dst_x) = if dx > 0 { (vx + dx, vx) } else { (vx, vx - dx) };
+    let (src_y, dst_y) = if dy > 0 { (vy + dy, vy) } else { (vy, vy - dy) };
+
+    unsafe {
+        if dst_y > src_y {
+            for row in (0..copy_h).rev() {
+                let src = (src_y as u32 + row) as usize * stride as usize + src_x as usize;
+                let dst = (dst_y as u32 + row) as usize * stride as usize + dst_x as usize;
+                core::ptr::copy(back_buf.add(src), back_buf.add(dst), copy_w as usize);
+            }
+        } else {
+            for row in 0..copy_h {
+                let src = (src_y as u32 + row) as usize * stride as usize + src_x as usize;
+                let dst = (dst_y as u32 + row) as usize * stride as usize + dst_x as usize;
+                core::ptr::copy(back_buf.add(src), back_buf.add(dst), copy_w as usize);
+            }
+        }
+    }
+}
+
+fn render_scrollview_chrome(
+    controls: &[Box<dyn Control>],
+    d: ScrollBlitDamage,
+    surface: &crate::draw::Surface,
+) {
+    let Some(idx) = control::find_idx(controls, d.id) else {
+        return;
+    };
+    controls[idx].render(surface, d.parent_abs_x, d.parent_abs_y);
+}
+
+fn sync_rendered_scroll_offsets(controls: &mut [Box<dyn Control>], id: ControlId) {
+    let Some(idx) = control::find_idx(controls, id) else {
+        return;
+    };
+    if controls[idx].kind() == ControlKind::ScrollView {
+        if let Some(sv) = control::cast_mut::<crate::controls::scroll_view::ScrollView>(
+            &mut controls[idx],
+            ControlKind::ScrollView,
+        ) {
+            sv.sync_rendered_scroll_offsets();
+        }
+    }
+    let children: Vec<u32> = controls[idx].children().to_vec();
+    for &cid in &children {
+        sync_rendered_scroll_offsets(controls, cid);
+    }
+}
+
 /// Walk the control tree, compute absolute positions, and union dirty controls'
 /// bounding rects into `cw.dirty_rect`. If the root Window control itself is dirty,
 /// forces a full-window redraw (dirty_rect = None).
@@ -3850,11 +4161,11 @@ fn antialias_edge_pass(pixels: &mut [u32], w: usize, h: usize, strength: u32) {
             let avg_r = (((n0 >> 16) & 0xFF)
                 + ((n1 >> 16) & 0xFF)
                 + ((n2 >> 16) & 0xFF)
-                + ((n3 >> 16) & 0xFF)) / 4;
-            let avg_g = (((n0 >> 8) & 0xFF)
-                + ((n1 >> 8) & 0xFF)
-                + ((n2 >> 8) & 0xFF)
-                + ((n3 >> 8) & 0xFF)) / 4;
+                + ((n3 >> 16) & 0xFF))
+                / 4;
+            let avg_g =
+                (((n0 >> 8) & 0xFF) + ((n1 >> 8) & 0xFF) + ((n2 >> 8) & 0xFF) + ((n3 >> 8) & 0xFF))
+                    / 4;
             let avg_b = ((n0 & 0xFF) + (n1 & 0xFF) + (n2 & 0xFF) + (n3 & 0xFF)) / 4;
 
             let r = ((c >> 16) & 0xFF) * keep + avg_r * mix;
@@ -3862,10 +4173,7 @@ fn antialias_edge_pass(pixels: &mut [u32], w: usize, h: usize, strength: u32) {
             let b = (c & 0xFF) * keep + avg_b * mix;
             let out_a = a * keep + avg_a * mix;
 
-            pixels[i] = ((out_a / 255) << 24)
-                | ((r / 255) << 16)
-                | ((g / 255) << 8)
-                | (b / 255);
+            pixels[i] = ((out_a / 255) << 24) | ((r / 255) << 16) | ((g / 255) << 8) | (b / 255);
         }
     }
 }

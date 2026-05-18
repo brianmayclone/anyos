@@ -15,6 +15,11 @@ pub struct ScrollView {
     pub(crate) base: ControlBase,
     pub(crate) scroll_x: i32,
     pub(crate) scroll_y: i32,
+    /// Scroll offsets represented by the last completed render into the
+    /// window back buffer. The event loop uses this to fast-scroll by moving
+    /// existing pixels and painting only newly exposed bands.
+    pub(crate) rendered_scroll_x: i32,
+    pub(crate) rendered_scroll_y: i32,
     /// Total content width (computed from children bounds).
     pub(crate) content_width: u32,
     /// Total content height (computed from children bounds).
@@ -32,6 +37,8 @@ impl ScrollView {
             base,
             scroll_x: 0,
             scroll_y: 0,
+            rendered_scroll_x: 0,
+            rendered_scroll_y: 0,
             content_width: 0,
             content_height: 0,
             dragging_v_thumb: false,
@@ -88,6 +95,15 @@ impl ScrollView {
         (self.scroll_x, self.scroll_y)
     }
 
+    pub(crate) fn rendered_scroll_offsets(&self) -> (i32, i32) {
+        (self.rendered_scroll_x, self.rendered_scroll_y)
+    }
+
+    pub(crate) fn sync_rendered_scroll_offsets(&mut self) {
+        self.rendered_scroll_x = self.scroll_x;
+        self.rendered_scroll_y = self.scroll_y;
+    }
+
     pub fn set_scroll_offsets(&mut self, x: i32, y: i32) -> bool {
         let (view_w, view_h) = self.viewport_size();
         let max_scroll_x = if self.content_width > view_w {
@@ -110,6 +126,26 @@ impl ScrollView {
         self.base.state = self.scroll_y as u32;
         self.base.mark_dirty();
         true
+    }
+
+    pub(crate) fn vertical_bar_rect(&self) -> Option<(i32, i32, u32, u32)> {
+        self.scrollbar_metrics()?;
+        let (view_w, view_h) = self.viewport_size();
+        let w = self.base.w.saturating_sub(view_w);
+        if w == 0 || view_h == 0 {
+            return None;
+        }
+        Some((view_w as i32, 0, w, view_h))
+    }
+
+    pub(crate) fn horizontal_bar_rect(&self) -> Option<(i32, i32, u32, u32)> {
+        self.h_scrollbar_metrics()?;
+        let (view_w, view_h) = self.viewport_size();
+        let h = self.base.h.saturating_sub(view_h);
+        if h == 0 || view_w == 0 {
+            return None;
+        }
+        Some((0, view_h as i32, view_w, h))
     }
 
     pub(crate) fn viewport_size(&self) -> (u32, u32) {

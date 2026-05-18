@@ -103,6 +103,9 @@ const MAX_DEFERRED_FONT_INFLIGHT: usize = 2;
 const DEFERRED_FONT_BATCH_SIZE: usize = 2;
 const MAX_BACKGROUND_RENDERS_PER_FLUSH: usize = 2;
 const SCRIPT_PUMP_DELAY_MS: u32 = 16;
+const VISUAL_IDLE_TICK_MS: u32 = 250;
+const JS_TIMER_ACTIVE_MIN_DELAY_MS: u32 = 16;
+const JS_TIMER_IDLE_MIN_DELAY_MS: u32 = 250;
 const JS_TIMER_CALLBACK_BUDGET: usize = 4;
 const MAX_SCRIPT_SOURCE_BYTES: usize = usize::MAX;
 const DEBUG_SKIP_BLOCKING_SLOT0: bool = false;
@@ -300,6 +303,8 @@ struct AppState {
     scroll_render_pending: bool,
     /// Last user scroll timestamp. Background work yields while this is hot.
     last_scroll_input_ms: u32,
+    /// Last time visual-only animation work was allowed to run while idle.
+    last_visual_tick_ms: u32,
     /// Timer ID for the relayout debounce timer (0 = not running).
     relayout_timer: u32,
     /// Absolute uptime deadline for the pending relayout timer.
@@ -439,13 +444,13 @@ pub(crate) fn start_anim_timer() {
     st.anim_timer = ui_lib::set_timer(16, || {
         let st = state();
         if st.scroll_render_pending {
+            if scroll_interaction_hot() {
+                return;
+            }
             st.scroll_render_pending = false;
             refresh_active_viewport_tiles();
             unsafe {
                 IDLE_TICKS = 0;
-            }
-            if scroll_interaction_hot() {
-                return;
             }
         }
         let net_results = drain_results_from_mailboxes();
@@ -457,6 +462,15 @@ pub(crate) fn start_anim_timer() {
             process_fetched_results(net_results);
         }
         let active_tab = st.active_tab;
+        let now_ms = anyos_std::sys::uptime_ms();
+        let quiet_visual_idle = active_tab < st.tabs.len()
+            && !st.tabs[active_tab].is_loading
+            && !st.tabs[active_tab].js_worker_busy
+            && active_tab < st.render_dirty.len()
+            && st.render_dirty[active_tab] == RenderWork::None
+            && !net_worker::has_pending_activity()
+            && !net_worker::result_mailboxes_pending()
+            && !scroll_interaction_hot();
         let changed = if st.tabs[active_tab].js_worker_busy {
             if st.tabs[active_tab].webview.has_pending_tiles() && !scroll_interaction_hot() {
                 let scroll_y = st.tabs[active_tab].webview.scroll_view().get_state() as i32;
@@ -464,8 +478,23 @@ pub(crate) fn start_anim_timer() {
             } else {
                 false
             }
+        } else if !st.tabs[active_tab].webview.has_visual_work() {
+            false
+        } else if quiet_visual_idle
+            && st.last_visual_tick_ms != 0
+            && now_ms.wrapping_sub(st.last_visual_tick_ms) < VISUAL_IDLE_TICK_MS
+        {
+            false
         } else {
-            st.tabs[active_tab].webview.tick_visual_only(16)
+            let delta_ms = if st.last_visual_tick_ms == 0 {
+                16
+            } else {
+                now_ms.wrapping_sub(st.last_visual_tick_ms).max(1)
+            };
+            st.last_visual_tick_ms = now_ms;
+            st.tabs[active_tab]
+                .webview
+                .tick_visual_only(delta_ms as u64)
         };
         if drain_js_navigation_for_tab(active_tab) {
             unsafe {
@@ -566,15 +595,16 @@ pub(crate) fn refresh_active_viewport_tiles() {
     if tab_index >= st.tabs.len() {
         return;
     }
+    if scroll_interaction_hot() {
+        st.scroll_render_pending = true;
+        ensure_anim_timer();
+        return;
+    }
     let scroll_y = st.tabs[tab_index].webview.scroll_view().get_state() as i32;
     let needs_deferred_upgrade = st.tabs[tab_index]
         .webview
         .deferred_layout_upgrade_needed(scroll_y);
-    let pending = if scroll_interaction_hot() {
-        st.tabs[tab_index].webview.render_scroll_frame_at(scroll_y)
-    } else {
-        st.tabs[tab_index].webview.render_viewport_at(scroll_y)
-    };
+    let pending = st.tabs[tab_index].webview.render_viewport_at(scroll_y);
     if needs_deferred_upgrade {
         request_layout_refresh(tab_index);
     }
@@ -1043,10 +1073,22 @@ fn schedule_js_runtime_timer() {
     if st.js_runtime_timer != 0 {
         return;
     }
-    let Some((_, delay_ms)) = next_js_timer_tab() else {
+    let Some((tab_index, delay_ms)) = next_js_timer_tab() else {
         return;
     };
-    let delay_ms = delay_ms.max(1);
+    let idle_tab = tab_index < st.tabs.len()
+        && !st.tabs[tab_index].is_loading
+        && !st.tabs[tab_index].js_worker_busy
+        && tab_index < st.render_dirty.len()
+        && st.render_dirty[tab_index] == RenderWork::None
+        && !net_worker::has_pending_activity()
+        && !net_worker::result_mailboxes_pending();
+    let min_delay = if idle_tab {
+        JS_TIMER_IDLE_MIN_DELAY_MS
+    } else {
+        JS_TIMER_ACTIVE_MIN_DELAY_MS
+    };
+    let delay_ms = delay_ms.max(min_delay);
     st.js_runtime_timer = ui_lib::set_timer(delay_ms, move || {
         {
             let st = state();
@@ -3121,6 +3163,7 @@ fn main() {
             render_dirty: [RenderWork::None; 16],
             scroll_render_pending: false,
             last_scroll_input_ms: 0,
+            last_visual_tick_ms: 0,
             relayout_timer: 0,
             relayout_due_ms: 0,
             resize_timer: 0,

@@ -65,7 +65,7 @@ const BOUNCE_BUF_FRAMES: usize = BOUNCE_BUF_SIZE / 4096; // 128
 const AHCI_FAST_SPIN_ITERS: usize = 512;
 const AHCI_POLL_YIELD_EVERY: usize = 256;
 const AHCI_MAX_COMMAND_SLOTS: usize = 8;
-const AHCI_ENABLE_NCQ: bool = false;
+const AHCI_ENABLE_NCQ: bool = true;
 
 const MAX_PRDT: usize = 128;
 const PRDT_MAX_BYTES: u32 = 4 * 1024 * 1024;
@@ -223,6 +223,7 @@ static mut SECONDARY_AHCI_COUNT: usize = 0;
 const AHCI_SECONDARY_MMIO_VIRT: u64 = 0xFFFF_FFFF_D006_8000;
 
 static AHCI_SLOT_IN_USE: AtomicU32 = AtomicU32::new(0);
+static AHCI_SLOT_SUBMITTED: AtomicU32 = AtomicU32::new(0);
 static AHCI_SLOT_IRQ_FIRED: AtomicU32 = AtomicU32::new(0);
 static AHCI_SLOT_WAITERS: [AtomicU32; AHCI_MAX_COMMAND_SLOTS] =
     [const { AtomicU32::new(0) }; AHCI_MAX_COMMAND_SLOTS];
@@ -369,6 +370,7 @@ fn acquire_primary_slot(ahci: &AhciController) -> usize {
                 .is_ok()
             {
                 AHCI_SLOT_IRQ_FIRED.fetch_and(!bit, Ordering::AcqRel);
+                AHCI_SLOT_SUBMITTED.fetch_and(!bit, Ordering::AcqRel);
                 AHCI_SLOT_WAITERS[slot].store(0, Ordering::Release);
                 return slot;
             }
@@ -387,10 +389,11 @@ fn release_primary_slot(slot: usize) {
     let bit = 1u32 << slot;
     AHCI_SLOT_WAITERS[slot].store(0, Ordering::Release);
     AHCI_SLOT_IRQ_FIRED.fetch_and(!bit, Ordering::AcqRel);
+    AHCI_SLOT_SUBMITTED.fetch_and(!bit, Ordering::AcqRel);
     AHCI_SLOT_IN_USE.fetch_and(!bit, Ordering::AcqRel);
 }
 
-fn wait_until_recovery_owns_port(slot: usize) {
+fn wait_until_recovery_owns_port(slot: usize) -> bool {
     let bit = 1u32 << slot;
     let hz = crate::arch::hal::timer_frequency_hz() as u32;
     let start = crate::arch::hal::timer_current_ticks();
@@ -404,16 +407,14 @@ fn wait_until_recovery_owns_port(slot: usize) {
     loop {
         let in_use = AHCI_SLOT_IN_USE.load(Ordering::Acquire);
         if in_use & !bit == 0 {
-            return;
+            return true;
         }
-        if hz > 0
-            && crate::arch::hal::timer_current_ticks().wrapping_sub(start) >= timeout_ticks
-        {
+        if hz > 0 && crate::arch::hal::timer_current_ticks().wrapping_sub(start) >= timeout_ticks {
             crate::serial_println!(
                 "AHCI: recovery timed out waiting for other slots, in_use={:#x}",
                 in_use
             );
-            return;
+            return false;
         }
         if crate::task::scheduler::current_tid() > 0 {
             crate::task::scheduler::contention_backoff(&mut attempts);
@@ -426,6 +427,19 @@ fn wait_until_recovery_owns_port(slot: usize) {
 #[inline]
 fn is_ncq_command(command: u8) -> bool {
     command == ATA_CMD_READ_FPDMA_QUEUED || command == ATA_CMD_WRITE_FPDMA_QUEUED
+}
+
+#[inline]
+unsafe fn primary_active_commands(ahci: &AhciController) -> u32 {
+    let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
+    if ahci.ncq_supported {
+        // Non-NCQ commands are tracked through PxCI. NCQ commands are tracked
+        // through PxSACT; include both so mixed recovery/flush paths cannot
+        // report a slot complete while either register still owns it.
+        ci | port_read(ahci.mmio_base, ahci.active_port, PORT_SACT)
+    } else {
+        ci
+    }
 }
 
 // ── Port Start / Stop ───────────────────────────────
@@ -554,8 +568,9 @@ fn ahci_irq_handler(_irq: u8) {
         // Signal every completed primary-port command slot. Older code only
         // watched bit 0, which meant all AHCI traffic had to serialize through
         // slot 0 even though the HBA command list supports many slots.
-        let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
-        let completed = AHCI_SLOT_IN_USE.load(Ordering::Acquire) & active_slot_mask(ahci) & !ci;
+        let active = primary_active_commands(ahci);
+        let completed =
+            AHCI_SLOT_SUBMITTED.load(Ordering::Acquire) & active_slot_mask(ahci) & !active;
         if completed == 0 {
             return; // Command(s) still in progress — mid-transfer interrupt
         }
@@ -768,22 +783,27 @@ unsafe fn issue_command_once(
         AHCI_SLOT_WAITERS[slot].store(waiter_tid, Ordering::Release);
     }
 
+    AHCI_SLOT_SUBMITTED.fetch_and(!slot_bit, Ordering::AcqRel);
     dma_publish_before_command();
 
     if is_ncq_command(command) {
-        let sact = port_read(ahci.mmio_base, ahci.active_port, PORT_SACT);
-        port_write(ahci.mmio_base, ahci.active_port, PORT_SACT, sact | slot_bit);
+        // Linux writes only the tag bit to PxSACT before ringing PxCI. PxSACT
+        // is W1S for software submission and hardware clears completed tags
+        // from SDB FISes; doing an MMIO read/modify/write here races with
+        // other CPUs submitting adjacent NCQ slots.
+        port_write(ahci.mmio_base, ahci.active_port, PORT_SACT, slot_bit);
     }
 
     // Issue command on this slot.
     port_write(ahci.mmio_base, ahci.active_port, PORT_CI, slot_bit);
+    AHCI_SLOT_SUBMITTED.fetch_or(slot_bit, Ordering::Release);
 
     // Fast path: catch commands that complete immediately. Keep this short:
     // sustained readback issues many DMA commands and a long busy-spin here
     // starves render/input threads even though the I/O can sleep on IRQs.
     for _ in 0..AHCI_FAST_SPIN_ITERS {
-        let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
-        if ci & slot_bit == 0 {
+        let active = primary_active_commands(ahci);
+        if active & slot_bit == 0 {
             let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
             if tfd & 0x01 != 0 {
                 if waiter_tid > 0 {
@@ -826,8 +846,8 @@ unsafe fn wait_for_interrupt_completion(
     let sleep_interval = (hz / 1000).max(1);
 
     loop {
-        let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
-        if ci & slot_bit == 0 {
+        let active = primary_active_commands(ahci);
+        if active & slot_bit == 0 {
             AHCI_SLOT_WAITERS[slot].store(0, Ordering::Release);
             let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
             if tfd & 0x01 != 0 {
@@ -857,8 +877,11 @@ unsafe fn wait_for_interrupt_completion(
             return false;
         }
 
-        if AHCI_SLOT_IRQ_FIRED.load(Ordering::Acquire) & slot_bit != 0 {
-            core::hint::spin_loop();
+        if AHCI_SLOT_IRQ_FIRED.fetch_and(!slot_bit, Ordering::AcqRel) & slot_bit != 0 {
+            // The IRQ is only a wake hint; a shared/mid-transfer interrupt can
+            // arrive while the slot is still active. Clear the hint and yield
+            // instead of burning a CPU until the next SDB/D2H completion.
+            crate::task::scheduler::schedule();
         } else {
             crate::task::scheduler::sleep_until(now.wrapping_add(sleep_interval));
         }
@@ -877,7 +900,11 @@ unsafe fn issue_command_prdt(
     let serialized = !is_ncq_command(command);
     if serialized {
         AHCI_RECOVERY.store(true, Ordering::Release);
-        wait_until_recovery_owns_port(slot);
+        if !wait_until_recovery_owns_port(slot) {
+            AHCI_RECOVERY.store(false, Ordering::Release);
+            release_primary_slot(slot);
+            return false;
+        }
     }
     let ok = issue_command_prdt_on_acquired_slot(ahci, slot, command, lba, count, prdt, write);
     if serialized {
@@ -902,7 +929,18 @@ unsafe fn issue_command_prdt_on_acquired_slot(
     }
 
     let started_recovery = !AHCI_RECOVERY.swap(true, Ordering::AcqRel);
-    wait_until_recovery_owns_port(slot);
+    if !wait_until_recovery_owns_port(slot) {
+        if started_recovery {
+            AHCI_RECOVERY.store(false, Ordering::Release);
+        }
+        crate::serial_println!(
+            "AHCI: command recovery could not own port (slot={}, cmd={:#x}, lba={})",
+            slot,
+            command,
+            lba
+        );
+        return false;
+    }
 
     // On failure, retry once after resetting the port
     for retry in 0..AHCI_MAX_RETRIES {
@@ -1092,8 +1130,8 @@ unsafe fn poll_completion(ahci: &AhciController, slot: usize) -> bool {
         let mut spins = 0usize;
         let mut backoff_attempts = 0u32;
         loop {
-            let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
-            if ci & slot_bit == 0 {
+            let active = primary_active_commands(ahci);
+            if active & slot_bit == 0 {
                 let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
                 if tfd & 0x01 != 0 {
                     crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
@@ -1125,8 +1163,8 @@ unsafe fn poll_completion(ahci: &AhciController, slot: usize) -> bool {
     } else {
         // Early boot fallback — iteration count (no timer yet)
         for _ in 0..10_000_000 {
-            let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
-            if ci & slot_bit == 0 {
+            let active = primary_active_commands(ahci);
+            if active & slot_bit == 0 {
                 let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
                 if tfd & 0x01 != 0 {
                     crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
@@ -1174,46 +1212,45 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
         let dst = unsafe { buf.as_mut_ptr().add(offset) };
         let mut prdt = [EMPTY_PRDT_SPEC; MAX_PRDT];
 
-        let ok = if let Some(prdt_len) =
-            build_prdt_from_virt(dst as *const u8, byte_count, &mut prdt)
-        {
-            unsafe {
-                issue_command_prdt(
-                    ahci,
-                    command,
-                    cur_lba,
-                    batch as u16,
-                    &prdt[..prdt_len],
-                    false,
-                )
-            }
-        } else {
-            let slot = acquire_primary_slot(ahci);
-            let bounce_phys = ahci.bounce_phys_slots[slot];
-            let bounce_virt = ahci.bounce_virt_slots[slot];
-            let specs = [PrdtSpec {
-                phys: bounce_phys,
-                len: byte_count as u32,
-            }];
-            let ok = unsafe {
-                issue_command_prdt_on_acquired_slot(
-                    ahci,
-                    slot,
-                    command,
-                    cur_lba,
-                    batch as u16,
-                    &specs,
-                    false,
-                )
-            };
-            if ok {
+        let ok =
+            if let Some(prdt_len) = build_prdt_from_virt(dst as *const u8, byte_count, &mut prdt) {
                 unsafe {
-                    core::ptr::copy_nonoverlapping(bounce_virt as *const u8, dst, byte_count);
+                    issue_command_prdt(
+                        ahci,
+                        command,
+                        cur_lba,
+                        batch as u16,
+                        &prdt[..prdt_len],
+                        false,
+                    )
                 }
-            }
-            release_primary_slot(slot);
-            ok
-        };
+            } else {
+                let slot = acquire_primary_slot(ahci);
+                let bounce_phys = ahci.bounce_phys_slots[slot];
+                let bounce_virt = ahci.bounce_virt_slots[slot];
+                let specs = [PrdtSpec {
+                    phys: bounce_phys,
+                    len: byte_count as u32,
+                }];
+                let ok = unsafe {
+                    issue_command_prdt_on_acquired_slot(
+                        ahci,
+                        slot,
+                        command,
+                        cur_lba,
+                        batch as u16,
+                        &specs,
+                        false,
+                    )
+                };
+                if ok {
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(bounce_virt as *const u8, dst, byte_count);
+                    }
+                }
+                release_primary_slot(slot);
+                ok
+            };
 
         if !ok {
             return false;
@@ -1722,14 +1759,15 @@ pub fn init_and_register(pci: &PciDevice) {
                 total_sectors = (*identify.add(60) as u64) | ((*identify.add(61) as u64) << 16);
             }
             let sata_caps = *identify.add(76);
-            let ncq_supported = (sata_caps & (1 << 8)) != 0;
+            let hba_ncq_supported = (cap & (1 << 30)) != 0;
+            let ncq_supported = hba_ncq_supported && (sata_caps & (1 << 8)) != 0;
             let queue_depth = ((*identify.add(75) & 0x1F) + 1) as u8;
+            let ncq_enabled = AHCI_ENABLE_NCQ && ncq_supported && queue_depth > 1;
 
             if let Some(ahci) = AHCI.as_mut() {
                 ahci.total_sectors = total_sectors;
                 ahci.model = model;
-                ahci.ncq_supported =
-                    AHCI_ENABLE_NCQ && ncq_supported && queue_depth > 1 && ahci.slot_count > 1;
+                ahci.ncq_supported = ncq_enabled && ahci.slot_count > 1;
                 if ahci.ncq_supported {
                     ahci.slot_count = ahci.slot_count.min(queue_depth);
                 } else {
@@ -1740,14 +1778,16 @@ pub fn init_and_register(pci: &PciDevice) {
                 }
             }
 
+            let ncq_active = AHCI.as_ref().map_or(false, |a| a.ncq_supported);
+            let active_slots = AHCI.as_ref().map_or(1, |a| a.slot_count);
             let model_str = core::str::from_utf8(&model).unwrap_or("???").trim();
             crate::serial_verbose_println!(
                 "  AHCI: '{}', {} sectors ({} MiB), NCQ={} slots={}",
                 model_str,
                 total_sectors,
                 total_sectors / 2048,
-                ncq_supported as u8,
-                AHCI.as_ref().map_or(1, |a| a.slot_count)
+                ncq_active as u8,
+                active_slots
             );
         } else {
             crate::serial_verbose_println!("  AHCI: IDENTIFY DEVICE failed");
@@ -1760,7 +1800,8 @@ pub fn init_and_register(pci: &PciDevice) {
         let mut interrupt_driven = false;
         {
             // Enable command-completion, error, and hot-plug interrupts on port
-            let port_ie = (1u32 << 0)  // D2H Register FIS Interrupt (command complete)
+            let port_ie = (1u32 << 0)  // D2H Register FIS Interrupt (non-NCQ command complete)
+                        | (1 << 3)     // Set Device Bits FIS Interrupt (NCQ command complete)
                         | (1 << 22)    // PhyRdy Change Status (hot-plug)
                         | (1 << 30)    // Task File Error Status
                         | (1 << 31); // Host Bus Fatal Error
