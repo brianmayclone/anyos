@@ -192,6 +192,58 @@ pub(super) fn linux_open_translated(path: &str, linux_flags: u64, linux_path: &s
     local_fd as u64
 }
 
+pub(super) fn linux_fsync(fd: u32) -> u64 {
+    linux_sync_fd_data_only(fd)
+}
+
+pub(super) fn linux_fdatasync(fd: u32) -> u64 {
+    linux_sync_fd_data_only(fd)
+}
+
+pub(super) fn linux_sync() -> u64 {
+    crate::fs::vfs::sync_all_data_only();
+    0
+}
+
+pub(super) fn linux_syncfs(fd: u32) -> u64 {
+    if crate::task::scheduler::current_fd_get(fd).is_none() {
+        return linux_err(EBADF);
+    }
+    crate::fs::vfs::sync_all_data_only();
+    0
+}
+
+pub(super) fn linux_sync_file_range(fd: u32, _offset: u64, _nbytes: u64, _flags: u64) -> u64 {
+    if crate::task::scheduler::current_fd_get(fd).is_none() {
+        return linux_err(EBADF);
+    }
+    // Linux allows this as a range writeback hint. Our block cache is sector
+    // keyed and the VFS currently lacks a range-only flush API, so treat this
+    // as a successful scheduling hint instead of forcing a global disk flush.
+    0
+}
+
+fn linux_sync_fd_data_only(fd: u32) -> u64 {
+    use crate::fs::fd_table::FdKind;
+
+    match crate::task::scheduler::current_fd_get(fd) {
+        Some(entry) => match entry.kind {
+            FdKind::File { global_id } => match crate::fs::vfs::fdatasync(global_id) {
+                Ok(()) => 0,
+                Err(e) => linux_fs_err(e),
+            },
+            FdKind::PipeRead { .. }
+            | FdKind::PipeWrite { .. }
+            | FdKind::Tty
+            | FdKind::PtySlave { .. }
+            | FdKind::LinuxSocket { .. }
+            | FdKind::LinuxProc { .. } => 0,
+            FdKind::None => linux_err(EBADF),
+        },
+        None => linux_err(EBADF),
+    }
+}
+
 pub(super) fn linux_log_library_open(
     linux_path: &str,
     resolved_path: &str,

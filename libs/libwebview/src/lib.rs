@@ -1463,7 +1463,6 @@ impl WebView {
                         != pending_ws_before;
                 if !self.js_runtime.mutations.is_empty() {
                     self.flush_pending_mutations(&mut dom);
-                    self.relayout();
                     changed = true;
                     self.js_quiet_timer_ticks = 0;
                     self.js_timer_throttle_accum_ms = 0;
@@ -2538,7 +2537,6 @@ impl WebView {
         if !self.js_runtime.mutations.is_empty() {
             self.flush_pending_mutations(&mut dom);
             self.dom_val = Some(dom);
-            self.relayout();
         } else {
             self.dom_val = Some(dom);
         }
@@ -3774,44 +3772,42 @@ impl WebView {
         y0 < viewport_bottom + margin && y1 > viewport_top - margin
     }
 
-    fn paint_mutations_intersect_viewport(
+    fn paint_mutation_y_range(
         &self,
         dom: &dom::Dom,
         mutations: &[js::DomMutation],
-    ) -> bool {
+    ) -> Option<(i32, i32)> {
+        let mut y0 = i32::MAX;
+        let mut y1 = i32::MIN;
         for mutation in mutations {
-            let Some(node_id) = Self::paint_mutation_visual_node_id(dom, mutation) else {
-                return true;
-            };
-            let Some((_, y, _, h)) = self.node_bounds(node_id) else {
-                return true;
-            };
-            if self.y_range_intersects_viewport(y, h) {
-                return true;
-            }
+            let node_id = Self::paint_mutation_visual_node_id(dom, mutation)?;
+            let (_, y, _, h) = self.node_bounds(node_id)?;
+            y0 = y0.min(y);
+            y1 = y1.max(y.saturating_add(h.max(1)));
         }
-        false
+        if y0 == i32::MAX || y1 <= y0 {
+            None
+        } else {
+            Some((y0, y1 - y0))
+        }
     }
 
-    fn invalidate_offscreen_paint_mutation_tiles(
+    fn refresh_paint_mutation_tiles(
         &mut self,
         dom: &dom::Dom,
         mutations: &[js::DomMutation],
-    ) {
-        let mut invalidated = 0usize;
-        for mutation in mutations {
-            let Some(node_id) = Self::paint_mutation_visual_node_id(dom, mutation) else {
-                return;
-            };
-            let Some((_, y, _, h)) = self.node_bounds(node_id) else {
-                return;
-            };
-            self.renderer.invalidate_y_range(y, h);
-            invalidated += 1;
-        }
-        if invalidated > 0 {
+    ) -> bool {
+        let Some((y, h)) = self.paint_mutation_y_range(dom, mutations) else {
+            return false;
+        };
+        let Some(root) = self.layout_root.as_ref() else {
+            return false;
+        };
+        self.renderer.refresh_paint_y_range(root, y, h);
+        if self.y_range_intersects_viewport(y, h) {
             self.pending_tiles = true;
         }
+        true
     }
 
     fn mutation_target_node_id(mutation: &js::DomMutation) -> Option<usize> {
@@ -4693,11 +4689,9 @@ impl WebView {
                     Self::apply_paint_only_mutations_to_layout(&pending_mutations, root);
                     Self::apply_form_state_mutations_to_layout(dom, &pending_mutations, root);
                 }
-                if self.paint_mutations_intersect_viewport(dom, &pending_mutations) {
+
+                if !self.refresh_paint_mutation_tiles(dom, &pending_mutations) {
                     self.repaint_from_cached_layout();
-                } else {
-                    self.invalidate_offscreen_paint_mutation_tiles(dom, &pending_mutations);
-                    return MutationImpact::None;
                 }
             }
             MutationImpact::None => {}

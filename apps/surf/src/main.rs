@@ -937,7 +937,7 @@ fn finish_script_slot(result: js_worker::JsWorkerResult) {
             }
             pump_deferred_images_for_tab(result.tab_index);
         }
-        request_image_refresh(result.tab_index);
+        ensure_anim_timer();
     }
     finish_blocking_scripts_for_tab(result.tab_index);
     if any_script_work_pending() {
@@ -1017,7 +1017,7 @@ fn finish_js_timer_job(
             }
             pump_deferred_images_for_tab(tab_index);
         }
-        request_image_refresh(tab_index);
+        ensure_anim_timer();
     }
     schedule_js_runtime_timer();
 }

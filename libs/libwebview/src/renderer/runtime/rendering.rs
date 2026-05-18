@@ -222,6 +222,32 @@ impl Renderer {
         !self.display_list_complete
     }
 
+    /// Refresh draw commands and tile pixels for a document-space Y range.
+    ///
+    /// Paint-only JS mutations do not change geometry, so throwing away every
+    /// visible tile is unnecessary. Rebuild the display-list band that covers
+    /// the changed node(s), invalidate only the overlapping tile rows, and let
+    /// the normal viewport tile pump rasterize the rows that are actually
+    /// needed on screen.
+    pub fn refresh_paint_y_range(&mut self, root: &LayoutBox, y: i32, h: i32) {
+        let raw_y0 = y.max(0);
+        let raw_y1 = y.saturating_add(h.max(1)).max(raw_y0 + 1);
+        let y0 = ((raw_y0 as u32 / TILE_HEIGHT) * TILE_HEIGHT) as i32;
+        let mut y1 = ((((raw_y1 as u32).saturating_add(TILE_HEIGHT - 1)) / TILE_HEIGHT)
+            * TILE_HEIGHT) as i32;
+        if self.doc_h > 0 {
+            y1 = y1.min(self.doc_h as i32);
+        }
+        if y1 <= y0 {
+            return;
+        }
+
+        self.display_list = DisplayList::build_visible(root, y0, y1);
+        self.display_list_complete = false;
+        self.display_list_y_range = Some((y0, y1));
+        self.invalidate_y_range(y0, y1 - y0);
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Scroll render (fast path)
     // ─────────────────────────────────────────────────────────────────────

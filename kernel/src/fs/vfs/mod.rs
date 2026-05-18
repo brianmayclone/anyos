@@ -5014,8 +5014,7 @@ fn sync_file(slot_id: FileDescriptor, flush_hardware: bool) -> Result<(), FsErro
     Ok(())
 }
 
-/// Flush all dirty filesystem metadata and storage write caches.
-pub fn sync_all() {
+fn sync_all_inner(flush_hardware: bool) {
     let mut disks_to_flush: Vec<u8> = Vec::new();
     let mut exfat_commits: Vec<(usize, DetachedExFatCommit)> = Vec::new();
     let mut exfat_drivers: Vec<Arc<ExFatFsDriver>> = Vec::new();
@@ -5071,8 +5070,23 @@ pub fn sync_all() {
     }
     // Flush write-back block cache to disk (coalesced writes)
     flush_blockcache_for_disks(&disks_to_flush);
-    // Then flush the drive's hardware write cache to persistent media
-    flush_hardware_for_disks(&disks_to_flush);
+    if flush_hardware {
+        // Then flush the drive's hardware write cache to persistent media.
+        flush_hardware_for_disks(&disks_to_flush);
+    }
+}
+
+/// Flush all dirty filesystem metadata and storage write caches.
+pub fn sync_all() {
+    sync_all_inner(true);
+}
+
+/// Flush filesystem metadata and write-back data without forcing the drive's
+/// hardware cache. This is used for LXE Linux sync-style syscalls where doing
+/// an AHCI FLUSH CACHE EXT for every package-manager durability point stalls
+/// the whole guest much harder than Linux's block layer normally would.
+pub fn sync_all_data_only() {
+    sync_all_inner(false);
 }
 
 pub fn umount_fs(mount_path: &str) -> Result<(), FsError> {

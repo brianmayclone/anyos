@@ -189,6 +189,7 @@ const LINUX_SYS_STATFS: u64 = 137;
 const LINUX_SYS_FSTATFS: u64 = 138;
 const LINUX_SYS_GETPRIORITY: u64 = 140;
 const LINUX_SYS_SETPRIORITY: u64 = 141;
+const LINUX_SYS_SYNC: u64 = 162;
 const LINUX_SYS_PRCTL: u64 = 157;
 const LINUX_SYS_ARCH_PRCTL: u64 = 158;
 const LINUX_SYS_SETRLIMIT: u64 = 160;
@@ -232,10 +233,12 @@ const LINUX_SYS_FCHMODAT: u64 = 268;
 const LINUX_SYS_FACCESSAT: u64 = 269;
 const LINUX_SYS_PSELECT6: u64 = 270;
 const LINUX_SYS_SET_ROBUST_LIST: u64 = 273;
+const LINUX_SYS_SYNC_FILE_RANGE: u64 = 277;
 const LINUX_SYS_UTIMENSAT: u64 = 280;
 const LINUX_SYS_DUP3: u64 = 292;
 const LINUX_SYS_PIPE2: u64 = 293;
 const LINUX_SYS_PRLIMIT64: u64 = 302;
+const LINUX_SYS_SYNCFS: u64 = 306;
 const LINUX_SYS_SENDMMSG: u64 = 307;
 const LINUX_SYS_RENAMEAT2: u64 = 316;
 const LINUX_SYS_GETRANDOM: u64 = 318;
@@ -383,8 +386,8 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_MSGSND => linux_msgsnd(a1, a2, a3, a4),
         LINUX_SYS_MSGRCV => linux_msgrcv(a1, a2, a3, a4, a5),
         LINUX_SYS_MSGCTL => linux_msgctl(a1, a2, a3),
-        LINUX_SYS_FSYNC => anyos_u32_ret(handlers::sys_fsync(a1 as u32)),
-        LINUX_SYS_FDATASYNC => anyos_u32_ret(handlers::sys_fdatasync(a1 as u32)),
+        LINUX_SYS_FSYNC => linux_fsync(a1 as u32),
+        LINUX_SYS_FDATASYNC => linux_fdatasync(a1 as u32),
         LINUX_SYS_TRUNCATE => linux_truncate(a1, a2),
         LINUX_SYS_FTRUNCATE => linux_ftruncate(a1 as u32, a2),
         LINUX_SYS_FCNTL => linux_fcntl(a1 as u32, a2 as u32, a3),
@@ -463,6 +466,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_FSTATFS => linux_fstatfs(a1 as u32, a2),
         LINUX_SYS_GETPRIORITY => linux_getpriority(a1, linux_i32_arg(a2)),
         LINUX_SYS_SETPRIORITY => linux_setpriority(a1, linux_i32_arg(a2), linux_i32_arg(a3)),
+        LINUX_SYS_SYNC => linux_sync(),
         LINUX_SYS_PRCTL => linux_prctl(a1, a2),
         LINUX_SYS_SETRLIMIT => linux_setrlimit(a1, a2),
         LINUX_SYS_GETTID => crate::task::scheduler::current_tid() as u64,
@@ -495,8 +499,10 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_FACCESSAT => linux_faccessat(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_FACCESSAT2 => linux_faccessat2(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_SET_ROBUST_LIST => 0,
+        LINUX_SYS_SYNC_FILE_RANGE => linux_sync_file_range(a1 as u32, a2, a3, a4),
         LINUX_SYS_UTIMENSAT => linux_utimensat(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_PRLIMIT64 => linux_prlimit64(linux_i32_arg(a1), a2, a3, a4),
+        LINUX_SYS_SYNCFS => linux_syncfs(a1 as u32),
         LINUX_SYS_RENAMEAT2 => {
             if a5 == 0 {
                 linux_renameat(linux_i32_arg(a1), a2, linux_i32_arg(a3), a4)
@@ -561,6 +567,9 @@ pub(crate) fn syscall_name(num: u32) -> &'static str {
         LINUX_SYS_UNAME => "uname",
         LINUX_SYS_FSYNC => "fsync",
         LINUX_SYS_FDATASYNC => "fdatasync",
+        LINUX_SYS_SYNC => "sync",
+        LINUX_SYS_SYNC_FILE_RANGE => "sync_file_range",
+        LINUX_SYS_SYNCFS => "syncfs",
         LINUX_SYS_FCNTL => "fcntl",
         LINUX_SYS_GETCWD => "getcwd",
         LINUX_SYS_GETTIMEOFDAY => "gettimeofday",
