@@ -89,6 +89,10 @@ impl ImageCache {
 
     /// Add a decoded image.  Evicts LRU entries if the cache exceeds the byte cap.
     pub fn add(&mut self, src: String, pixels: Vec<u32>, width: u32, height: u32) {
+        let expected_pixels = (width as usize).saturating_mul(height as usize);
+        if width == 0 || height == 0 || pixels.len() < expected_pixels {
+            return;
+        }
         let new_bytes = pixels.len() * 4;
 
         if let Some(idx) = self.entries.iter().position(|e| e.src == src) {

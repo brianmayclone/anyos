@@ -2530,7 +2530,15 @@ fn compute_decode_size(
     target_h: Option<u32>,
 ) -> (u32, u32) {
     let (mut tw, mut th) = match (target_w, target_h) {
-        (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
+        (Some(w), Some(h)) if w > 0 && h > 0 && orig_w > 0 && orig_h > 0 => {
+            let by_width = (w, (orig_h as u64 * w as u64 / orig_w as u64).max(1) as u32);
+            let by_height = ((orig_w as u64 * h as u64 / orig_h as u64).max(1) as u32, h);
+            if by_width.1 <= h {
+                by_width
+            } else {
+                by_height
+            }
+        }
         (Some(w), None) if w > 0 && orig_w > 0 => {
             (w, (orig_h as u64 * w as u64 / orig_w as u64).max(1) as u32)
         }

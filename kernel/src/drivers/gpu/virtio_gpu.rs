@@ -462,15 +462,17 @@ pub struct VirtioGpu {
     cursor_x: u32,
     cursor_y: u32,
 
-    // Pre-allocated DMA buffers for commands/responses (identity-mapped phys)
+    // Pre-allocated DMA buffers for commands/responses. The values stored here
+    // are guest-physical DMA addresses for the virtqueue descriptors; CPU
+    // accesses must translate them through physmap because GPU commands can be
+    // submitted from syscalls while a user CR3 is active.
     cmd_buf: u64,  // 1 page (4096 bytes) for command payloads
     resp_buf: u64, // 1 page (4096 bytes) for response payloads
 
     // Pre-allocated cursor backing store (64x64x4 = 16 KiB = 4 pages).
-    // Allocated during init (under kernel CR3 with full identity mapping).
-    // CRITICAL: user CR3 only identity-maps 64 MiB (PD[0..31]).
-    // Runtime low-memory allocation can fail after boot if the identity window
-    // is exhausted, so keep this permanent buffer here.
+    // Allocated during init and accessed by the CPU through physmap. Runtime
+    // low-memory allocation can fail after boot if the identity window is
+    // exhausted, so keep this permanent buffer here.
     cursor_buf_phys: u64,
 
     // Supported display modes (native first, then filtered COMMON_MODES)
@@ -498,6 +500,26 @@ pub struct VirtioGpu {
 unsafe impl Send for VirtioGpu {}
 
 impl VirtioGpu {
+    #[inline]
+    fn dma_ptr(phys: u64) -> *mut u8 {
+        physmap::phys_to_virt_or_identity(PhysAddr::new(phys))
+    }
+
+    #[inline]
+    fn cmd_buf_ptr(&self) -> *mut u8 {
+        Self::dma_ptr(self.cmd_buf)
+    }
+
+    #[inline]
+    fn resp_buf_ptr(&self) -> *mut u8 {
+        Self::dma_ptr(self.resp_buf)
+    }
+
+    #[inline]
+    fn cmd_3d_buf_ptr(&self) -> *mut u8 {
+        Self::dma_ptr(self.cmd_3d_buf)
+    }
+
     fn free_page_list(pages: &[u64]) {
         for &p in pages {
             physical::free_frame(PhysAddr::new(p));
@@ -635,12 +657,12 @@ impl VirtioGpu {
 
         // Copy command to DMA buffer
         unsafe {
-            core::ptr::copy_nonoverlapping(cmd.as_ptr(), self.cmd_buf as *mut u8, cmd_len);
+            core::ptr::copy_nonoverlapping(cmd.as_ptr(), self.cmd_buf_ptr(), cmd_len);
         }
 
         // Zero response buffer header
         unsafe {
-            core::ptr::write_bytes(self.resp_buf as *mut u8, 0, 24);
+            core::ptr::write_bytes(self.resp_buf_ptr(), 0, 24);
         }
 
         // Execute: cmd_buf (readable) → resp_buf (writable, enough for any response)
@@ -675,7 +697,7 @@ impl VirtioGpu {
         let _ = virtio::mmio_read8(self.device.isr_addr);
 
         // Read response type
-        let resp_type = unsafe { core::ptr::read_volatile(self.resp_buf as *const u32) };
+        let resp_type = unsafe { core::ptr::read_volatile(self.resp_buf_ptr() as *const u32) };
         resp_type
     }
 
@@ -688,15 +710,17 @@ impl VirtioGpu {
         }
         // Use second half of cmd_buf for cursor commands to avoid overlap
         let cursor_buf = self.cmd_buf + 2048;
+        let cursor_buf_ptr = Self::dma_ptr(cursor_buf);
 
         unsafe {
-            core::ptr::copy_nonoverlapping(cmd.as_ptr(), cursor_buf as *mut u8, cmd_len);
+            core::ptr::copy_nonoverlapping(cmd.as_ptr(), cursor_buf_ptr, cmd_len);
         }
 
         // Zero response area
         let cursor_resp = self.resp_buf + 2048;
+        let cursor_resp_ptr = Self::dma_ptr(cursor_resp);
         unsafe {
-            core::ptr::write_bytes(cursor_resp as *mut u8, 0, 24);
+            core::ptr::write_bytes(cursor_resp_ptr, 0, 24);
         }
 
         // Read queue notify offset for cursorq (queue 1)
@@ -747,7 +771,7 @@ impl VirtioGpu {
         }
 
         // Parse response
-        let resp = unsafe { &*(self.resp_buf as *const RespDisplayInfo) };
+        let resp = unsafe { &*(self.resp_buf_ptr() as *const RespDisplayInfo) };
         for i in 0..16 {
             if resp.pmodes[i].enabled != 0 {
                 let w = resp.pmodes[i].r_width;
@@ -776,7 +800,7 @@ impl VirtioGpu {
         if resp_type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO {
             return;
         }
-        let resp = unsafe { &*(self.resp_buf as *const RespDisplayInfo) };
+        let resp = unsafe { &*(self.resp_buf_ptr() as *const RespDisplayInfo) };
         self.display_infos.clear();
         self.enabled_scanout_count = 0;
         for i in 0..16 {
@@ -809,7 +833,7 @@ impl VirtioGpu {
         if resp_type != VIRTIO_GPU_RESP_OK_EDID {
             return None;
         }
-        let resp = unsafe { &*(self.resp_buf as *const RespEdid) };
+        let resp = unsafe { &*(self.resp_buf_ptr() as *const RespEdid) };
         if resp.size < 128 {
             return None;
         }
@@ -923,7 +947,7 @@ impl VirtioGpu {
         };
 
         unsafe {
-            let dst = self.cmd_buf as *mut u8;
+            let dst = self.cmd_buf_ptr();
             core::ptr::copy_nonoverlapping(&hdr as *const _ as *const u8, dst, hdr_size);
             for (i, &(addr, length)) in runs.iter().enumerate() {
                 let entry = MemEntry {
@@ -937,7 +961,7 @@ impl VirtioGpu {
                     entry_size,
                 );
             }
-            core::ptr::write_bytes(self.resp_buf as *mut u8, 0, 24);
+            core::ptr::write_bytes(self.resp_buf_ptr(), 0, 24);
         }
 
         let cmd_len = total;
@@ -960,7 +984,7 @@ impl VirtioGpu {
         if result.is_none() {
             return false;
         }
-        let resp = unsafe { core::ptr::read_volatile(self.resp_buf as *const u32) };
+        let resp = unsafe { core::ptr::read_volatile(self.resp_buf_ptr() as *const u32) };
         resp == VIRTIO_GPU_RESP_OK_NODATA
     }
 
@@ -1099,7 +1123,7 @@ impl VirtioGpu {
 
         // Zero the framebuffer
         unsafe {
-            core::ptr::write_bytes(fb_phys as *mut u8, 0, num_pages * 4096);
+            core::ptr::write_bytes(Self::dma_ptr(fb_phys), 0, num_pages * 4096);
         }
 
         self.fb_phys = fb_phys;
@@ -1357,7 +1381,7 @@ impl VirtioGpu {
 
         // Copy header + data into the 3D DMA buffer
         unsafe {
-            let dst = self.cmd_3d_buf as *mut u8;
+            let dst = self.cmd_3d_buf_ptr();
             core::ptr::copy_nonoverlapping(&hdr as *const _ as *const u8, dst, hdr_size);
             core::ptr::copy_nonoverlapping(data.as_ptr(), dst.add(hdr_size), data.len());
         }
@@ -1366,7 +1390,7 @@ impl VirtioGpu {
 
         // Zero response
         unsafe {
-            core::ptr::write_bytes(self.resp_buf as *mut u8, 0, 24);
+            core::ptr::write_bytes(self.resp_buf_ptr(), 0, 24);
         }
 
         let common_cfg = self.device.common_cfg;
@@ -1388,7 +1412,7 @@ impl VirtioGpu {
         if result.is_none() {
             return false;
         }
-        let resp = unsafe { core::ptr::read_volatile(self.resp_buf as *const u32) };
+        let resp = unsafe { core::ptr::read_volatile(self.resp_buf_ptr() as *const u32) };
         resp == VIRTIO_GPU_RESP_OK_NODATA
     }
 }
@@ -1472,7 +1496,7 @@ impl GpuDriver for VirtioGpu {
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     data.as_ptr().add(data_offset),
-                    self.cmd_3d_buf as *mut u8,
+                    self.cmd_3d_buf_ptr(),
                     chunk_bytes,
                 );
             }
@@ -1550,7 +1574,7 @@ impl GpuDriver for VirtioGpu {
             let buf_offset = (y as usize) * row_bytes;
 
             unsafe {
-                core::ptr::write_bytes(self.cmd_3d_buf as *mut u8, 0, chunk_bytes);
+                core::ptr::write_bytes(self.cmd_3d_buf_ptr(), 0, chunk_bytes);
             }
 
             if !self.cmd_attach_backing(sid, self.cmd_3d_buf, num_pages) {
@@ -1575,7 +1599,7 @@ impl GpuDriver for VirtioGpu {
             if ok {
                 unsafe {
                     core::ptr::copy_nonoverlapping(
-                        self.cmd_3d_buf as *const u8,
+                        self.cmd_3d_buf_ptr() as *const u8,
                         buf.as_mut_ptr().add(buf_offset),
                         chunk_bytes,
                     );
@@ -1712,7 +1736,7 @@ impl GpuDriver for VirtioGpu {
             Some(p) => {
                 let phys = p.as_u64();
                 unsafe {
-                    core::ptr::write_bytes(phys as *mut u8, 0, num_pages * 4096);
+                    core::ptr::write_bytes(Self::dma_ptr(phys), 0, num_pages * 4096);
                 }
                 (phys, phys)
             }
@@ -2151,12 +2175,12 @@ impl GpuDriver for VirtioGpu {
 
         // Zero the pre-allocated cursor buffer (transparent)
         unsafe {
-            core::ptr::write_bytes(cursor_phys as *mut u8, 0, cursor_pages * 4096);
+            core::ptr::write_bytes(Self::dma_ptr(cursor_phys), 0, cursor_pages * 4096);
         }
 
         // Copy pixel data into 64x64 buffer (src may be smaller)
         unsafe {
-            let dst = cursor_phys as *mut u32;
+            let dst = Self::dma_ptr(cursor_phys) as *mut u32;
             for row in 0..(h.min(cursor_h) as usize) {
                 for col in 0..(w.min(cursor_w) as usize) {
                     let src_idx = row * (w as usize) + col;
@@ -2400,7 +2424,7 @@ impl GpuDriver for VirtioGpu {
             }
         };
         unsafe {
-            core::ptr::write_bytes(fb_phys as *mut u8, 0, num_pages * 4096);
+            core::ptr::write_bytes(Self::dma_ptr(fb_phys), 0, num_pages * 4096);
         }
         let res_id = self.next_resource_id;
         self.next_resource_id += 1;
@@ -2843,7 +2867,8 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     let cmd_buf = match physical::alloc_frame() {
         Some(p) => {
             unsafe {
-                core::ptr::write_bytes(p.as_u64() as *mut u8, 0, 4096);
+                let ptr = physmap::phys_to_virt_or_identity(p);
+                core::ptr::write_bytes(ptr, 0, 4096);
             }
             p.as_u64()
         }
@@ -2856,7 +2881,8 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     let resp_buf = match physical::alloc_frame() {
         Some(p) => {
             unsafe {
-                core::ptr::write_bytes(p.as_u64() as *mut u8, 0, 4096);
+                let ptr = physmap::phys_to_virt_or_identity(p);
+                core::ptr::write_bytes(ptr, 0, 4096);
             }
             p.as_u64()
         }
@@ -2880,7 +2906,8 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     let cursor_buf_phys = match physical::alloc_contiguous(4) {
         Some(p) => {
             unsafe {
-                core::ptr::write_bytes(p.as_u64() as *mut u8, 0, 4 * 4096);
+                let ptr = physmap::phys_to_virt_or_identity(p);
+                core::ptr::write_bytes(ptr, 0, 4 * 4096);
             }
             p.as_u64()
         }
@@ -2895,7 +2922,8 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         match physical::alloc_contiguous(16) {
             Some(p) => {
                 unsafe {
-                    core::ptr::write_bytes(p.as_u64() as *mut u8, 0, 16 * 4096);
+                    let ptr = physmap::phys_to_virt_or_identity(p);
+                    core::ptr::write_bytes(ptr, 0, 16 * 4096);
                 }
                 p.as_u64()
             }

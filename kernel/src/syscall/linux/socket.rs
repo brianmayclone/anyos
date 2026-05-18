@@ -24,6 +24,7 @@ const SOL_SOCKET: u64 = 1;
 const SO_ERROR: u64 = 4;
 const SO_RCVTIMEO: u64 = 20;
 const SO_SNDTIMEO: u64 = 21;
+const TCP_RECV_COPY_CHUNK: usize = 256 * 1024;
 
 const EPHEMERAL_FIRST: u16 = 49152;
 const EPHEMERAL_LAST: u16 = 60999;
@@ -886,7 +887,14 @@ pub(super) fn socket_read(fd: u32, buf_ptr: u64, len: u64) -> u64 {
     match entry.state {
         LinuxSocketState::TcpConnected { tcp_id, .. }
         | LinuxSocketState::TcpConnectedV6 { tcp_id, .. } => {
+            if len == 0 {
+                return 0;
+            }
             if buf_ptr == 0 || len > u32::MAX as u64 {
+                return linux_err(EFAULT);
+            }
+            let recv_len = (len as usize).min(TCP_RECV_COPY_CHUNK);
+            if !handlers::helpers::is_user_range_accessible(buf_ptr, recv_len as u64) {
                 return linux_err(EFAULT);
             }
             let nonblock = fd_nonblock(fd);
@@ -898,15 +906,25 @@ pub(super) fn socket_read(fd: u32, buf_ptr: u64, len: u64) -> u64 {
                     _ => {}
                 }
             }
-            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
+            let mut buf = Vec::new();
+            buf.resize(recv_len, 0);
             let timeout = if nonblock {
                 0
             } else {
                 3 * crate::arch::hal::timer_frequency_hz() as u32
             };
-            match crate::net::tcp::recv(tcp_id, buf, timeout) {
+            match crate::net::tcp::recv(tcp_id, &mut buf, timeout) {
                 u32::MAX => linux_err(EAGAIN),
                 n => {
+                    if n != 0
+                        && !handlers::helpers::copy_to_user_bytes(
+                            buf_ptr,
+                            &buf[..n as usize],
+                            TCP_RECV_COPY_CHUNK,
+                        )
+                    {
+                        return linux_err(EFAULT);
+                    }
                     crate::task::scheduler::record_net_rx(n as u64);
                     super::trace::trace_socket_io("net-rx", fd, socket_id, len, n as u64, buf_ptr);
                     n as u64

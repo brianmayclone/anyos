@@ -367,9 +367,11 @@ impl Renderer {
                 self.display_list = DisplayList::build_visible(root, build_y_start, build_y_end);
                 self.display_list_complete = false;
                 self.display_list_y_range = Some((build_y_start, build_y_end));
-                // Keep already rasterized tiles/canvases. Expanding the band only
-                // adds more commands outside the previous range; it should not
-                // destroy the current viewport and force a full repaint/jank spike.
+                // The visible display list is rebuilt, not appended. Cached
+                // tile pixels inside the rebuilt band may have been rasterized
+                // against an older command set (for example before late PNGs
+                // arrived), so do not reuse them with the new band.
+                self.invalidate_y_range(build_y_start, build_y_end - build_y_start);
             }
         }
 

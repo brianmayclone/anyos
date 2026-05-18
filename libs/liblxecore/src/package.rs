@@ -3,8 +3,8 @@ use crate::model::PackageInfo;
 use crate::rootfs::{
     copy_file, ensure_dir, ensure_dir_recursive, ensure_parent_dirs, file_size, is_elf_file,
     linux_path_in_rootfs, normalize_abs_path, path_exists, path_exists_no_follow, path_is_symlink,
-    path_under_rootfs, print_path_probe, replace_with_temp_file, resolve_rootfs_symlink_path,
-    symlink_points_to, write_bytes_atomic,
+    path_under_rootfs, print_path_probe, resolve_rootfs_symlink_path, symlink_points_to,
+    write_bytes_atomic,
 };
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -21,23 +21,15 @@ const DOWNLOAD_PROGRESS_STEP: u32 = 512 * 1024;
 static mut DOWNLOAD_LAST_PRINT: u32 = 0;
 static mut APT_INDEX_READY: bool = false;
 
-fn package_temp_path(path: &str) -> String {
-    alloc::format!("{}.lxe-tmp", path)
-}
-
 fn extract_tar_entry_atomic(reader: &libzip_client::TarReader, index: u32, dest: &str) -> bool {
     ensure_parent_dirs(dest);
-    let temp = package_temp_path(dest);
-    let _ = fs::unlink(&temp);
-    if !reader.extract_to_file(index, &temp) {
-        let _ = fs::unlink(&temp);
+    let Some(data) = reader.extract(index) else {
+        return false;
+    };
+    if data.len() != reader.entry_size(index) as usize {
         return false;
     }
-    if file_size(&temp) != reader.entry_size(index) {
-        let _ = fs::unlink(&temp);
-        return false;
-    }
-    replace_with_temp_file(&temp, dest)
+    write_bytes_atomic(dest, &data)
 }
 
 struct PackageLink {
@@ -1071,10 +1063,20 @@ fn set_apt_index_ready() {
     }
 }
 
+fn clear_apt_index_ready() {
+    unsafe {
+        APT_INDEX_READY = false;
+    }
+}
+
 fn ensure_apt_index(config: &LxeConfig, progress: &mut InstallProgress) -> bool {
     if apt_index_ready() {
         progress.phase("apt index", "using verified cache");
-        return true;
+        if ensure_plain_package_index(config, progress, "ready cache") {
+            return true;
+        }
+        clear_apt_index_ready();
+        println!("lxe apt: cached package index is not materialized; refreshing");
     }
 
     progress.phase("apt index", "initializing libzip");
@@ -1101,7 +1103,7 @@ fn ensure_apt_index(config: &LxeConfig, progress: &mut InstallProgress) -> bool 
             );
         }
         if looks_like_plain_packages_index(&packages_txt)
-            && packages_index_has_required_entries(config)
+            && plain_package_index_has_required_entries(config)
         {
             set_apt_index_ready();
             println!("lxe apt: cached package index: ok");
@@ -1162,16 +1164,18 @@ fn ensure_apt_index(config: &LxeConfig, progress: &mut InstallProgress) -> bool 
                 "apt index decompress",
                 &alloc::format!("{} bytes gzip", downloaded),
             );
-            let gzip_status =
-                libzip_client::gzip_decompress_file_status(&packages_gz, &packages_txt);
-            if gzip_status != libzip_client::GZIP_STATUS_OK {
+            let Some(decompressed) = read_compressed_package_index(config) else {
                 progress.finish();
                 println!(
-                    "lxe apt: failed to decompress package index: {} (downloaded {} bytes)",
-                    gzip_status_text(gzip_status),
+                    "lxe apt: failed to decompress package index (downloaded {} bytes)",
                     downloaded
                 );
                 print_gzip_diagnostic(&packages_gz, downloaded);
+                continue;
+            };
+            if !write_bytes_atomic(&packages_txt, &decompressed) {
+                progress.finish();
+                println!("lxe apt: cannot store decompressed package index");
                 continue;
             }
         }
@@ -1191,7 +1195,7 @@ fn ensure_apt_index(config: &LxeConfig, progress: &mut InstallProgress) -> bool 
             println!("lxe apt: decompressed package index is not a Packages file");
             continue;
         }
-        if !packages_index_has_required_entries(config) {
+        if !plain_package_index_has_required_entries(config) {
             progress.finish();
             println!("lxe apt: decompressed package index is missing bootstrap entries");
             continue;
@@ -1203,6 +1207,64 @@ fn ensure_apt_index(config: &LxeConfig, progress: &mut InstallProgress) -> bool 
 
     let _ = fs::unlink(&packages_txt);
     false
+}
+
+fn ensure_plain_package_index(
+    config: &LxeConfig,
+    progress: &mut InstallProgress,
+    reason: &str,
+) -> bool {
+    let packages_txt = config.package_index_txt();
+    if file_size(&packages_txt) > 0
+        && looks_like_plain_packages_index(&packages_txt)
+        && plain_package_index_has_required_entries(config)
+    {
+        return true;
+    }
+
+    progress.phase("apt index", "materializing Packages cache");
+    let Some(index) = read_compressed_package_index(config) else {
+        println!(
+            "lxe apt: cannot materialize package index for {}; compressed cache missing",
+            reason
+        );
+        return false;
+    };
+    if index.is_empty() || !looks_like_plain_packages_bytes(&index) {
+        println!(
+            "lxe apt: cannot materialize package index for {}; compressed cache is invalid",
+            reason
+        );
+        return false;
+    }
+    if !package_index_bytes_has_required_entries(config, &index) {
+        println!(
+            "lxe apt: cannot materialize package index for {}; compressed cache lacks bootstrap entries",
+            reason
+        );
+        return false;
+    }
+    if !write_bytes_atomic(&packages_txt, &index) {
+        println!(
+            "lxe apt: cannot materialize package index '{}'",
+            packages_txt
+        );
+        return false;
+    }
+    if file_size(&packages_txt) != index.len().min(u32::MAX as usize) as u32 {
+        println!(
+            "lxe apt: materialized package index size mismatch: got {}, expected {}",
+            file_size(&packages_txt),
+            index.len()
+        );
+        return false;
+    }
+    println!(
+        "lxe apt: materialized package index: {} ({} bytes)",
+        packages_txt,
+        index.len()
+    );
+    true
 }
 
 fn find_package_in_index(config: &LxeConfig, wanted: &str) -> Option<PackageInfo> {
@@ -2129,7 +2191,11 @@ fn looks_like_gzip(path: &str) -> bool {
 
 fn looks_like_plain_packages_index(path: &str) -> bool {
     let prefix = read_prefix(path);
-    prefix.starts_with(b"Package:")
+    looks_like_plain_packages_bytes(&prefix)
+}
+
+fn looks_like_plain_packages_bytes(data: &[u8]) -> bool {
+    data.starts_with(b"Package:")
 }
 
 fn looks_like_deb_bytes(data: &[u8]) -> bool {
@@ -2209,24 +2275,6 @@ fn compressed_file_crc32(path: &str) -> Option<u32> {
         }
     }
     Some(!crc)
-}
-
-fn gzip_status_text(status: u32) -> &'static str {
-    match status {
-        libzip_client::GZIP_STATUS_OK => "ok",
-        libzip_client::GZIP_ERR_TOO_SHORT => "input too short",
-        libzip_client::GZIP_ERR_BAD_MAGIC => "bad gzip magic",
-        libzip_client::GZIP_ERR_BAD_METHOD => "unsupported gzip method",
-        libzip_client::GZIP_ERR_BAD_FLAGS => "invalid gzip flags",
-        libzip_client::GZIP_ERR_BAD_HEADER => "invalid gzip header",
-        libzip_client::GZIP_ERR_TOO_LARGE => "uncompressed output exceeds limit",
-        libzip_client::GZIP_ERR_INFLATE => "deflate stream failed",
-        libzip_client::GZIP_ERR_BAD_CRC => "crc mismatch",
-        libzip_client::GZIP_ERR_BAD_SIZE => "uncompressed size mismatch",
-        libzip_client::GZIP_ERR_READ_FILE => "cannot read gzip file",
-        libzip_client::GZIP_ERR_WRITE_FILE => "cannot write decompressed file",
-        _ => "unknown gzip error",
-    }
 }
 
 fn download_url(config: &LxeConfig, url: &str, dest: &str, progress: &mut InstallProgress) -> bool {
@@ -2410,20 +2458,15 @@ fn reset_download_progress() {
     }
 }
 
-fn packages_index_has_required_entries(config: &LxeConfig) -> bool {
-    let packages_txt = config.package_index_txt();
-    let missing = missing_required_package_names(&packages_txt, &config.index_required_packages);
-    if missing.is_empty() {
-        return true;
-    }
+fn plain_package_index_has_required_entries(config: &LxeConfig) -> bool {
+    missing_required_package_names(&config.package_index_txt(), &config.index_required_packages)
+        .is_empty()
+}
 
-    let compressed = match read_compressed_package_index(config) {
-        Some(index) => index,
-        None => return false,
-    };
-    for pkg in missing {
-        if find_package_in_bytes(config, &compressed, &pkg)
-            .map(|info| info.package == pkg)
+fn package_index_bytes_has_required_entries(config: &LxeConfig, index: &[u8]) -> bool {
+    for pkg in &config.index_required_packages {
+        if find_package_in_bytes(config, index, pkg)
+            .map(|info| info.package == *pkg)
             .unwrap_or(false)
         {
             continue;
