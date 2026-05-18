@@ -6024,4 +6024,5 @@ td, th { padding: 4px 8px; }
 img { max-width: 100%; }
 strong, b { font-weight: bold; }
 em, i { font-style: italic; }
+marquee { display: inline-block; overflow: hidden; white-space: nowrap; }
 ";

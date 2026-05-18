@@ -168,6 +168,7 @@ pub enum Tag {
     // Deprecated but still encountered
     Center,
     Font,
+    Marquee,
     Nobr,
     Tt,
     // Unknown fallback
@@ -313,6 +314,7 @@ impl Tag {
             // Deprecated
             b"center" => Tag::Center,
             b"font" => Tag::Font,
+            b"marquee" => Tag::Marquee,
             b"nobr" => Tag::Nobr,
             b"tt" => Tag::Tt,
             _ => Tag::Unknown,
@@ -509,6 +511,7 @@ impl Tag {
             Tag::Search => "SEARCH",
             Tag::Center => "CENTER",
             Tag::Font => "FONT",
+            Tag::Marquee => "MARQUEE",
             Tag::Nobr => "NOBR",
             Tag::Tt => "TT",
             Tag::Unknown => "UNKNOWN",
@@ -561,6 +564,7 @@ impl Tag {
                 | Tag::Nobr
                 | Tag::Tt
                 | Tag::Font
+                | Tag::Marquee
         )
     }
 }

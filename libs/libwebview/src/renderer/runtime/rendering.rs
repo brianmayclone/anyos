@@ -273,6 +273,8 @@ impl Renderer {
         };
         let prioritized_rows =
             Self::prioritized_tile_rows(first_row, last_row, scroll_y, viewport_h);
+        let (visible_first_row, visible_last_row) =
+            Self::visible_tile_row_range(scroll_y, viewport_h, doc_h);
         let mut pending = false;
 
         if !self.display_list_complete {
@@ -291,19 +293,32 @@ impl Renderer {
                 None => true,
             };
             let defer_display_list_expand = needs_band_expand && scrolling;
-            if defer_display_list_expand {
+            let visible_tile_missing = defer_display_list_expand
+                && (visible_first_row..=visible_last_row).any(|row| {
+                    !self.tile_canvases.iter().any(|tc| tc.active && tc.row == row)
+                        && self.tile_cache.get(row).is_none()
+                });
+            if defer_display_list_expand && !visible_tile_missing {
                 // Building a visible display list still walks a large part of
                 // the layout tree. Doing that inside a scroll-input frame is
-                // the kind of synchronous work users feel immediately. Keep
-                // attaching cached tiles below, but leave missing tile work
-                // pending for the idle viewport tick.
+                // the kind of synchronous work users feel immediately. If all
+                // visible tiles are already backed by pixels, leave prefetch
+                // expansion for the idle viewport tick.
                 pending = true;
             }
-            if needs_band_expand && !defer_display_list_expand {
+            if needs_band_expand && (!defer_display_list_expand || visible_tile_missing) {
+                let (build_y_start, build_y_end) = if visible_tile_missing {
+                    let start = (scroll_y - TILE_HEIGHT as i32).max(0);
+                    let end =
+                        (scroll_y + viewport_h as i32 + TILE_HEIGHT as i32).min(doc_h as i32);
+                    (start, end.max(start + 1))
+                } else {
+                    (band_y_start, band_y_end)
+                };
                 crate::debug_surf!(
                     "[render] expanding visible display list for scroll range [{}..{})",
-                    band_y_start,
-                    band_y_end
+                    build_y_start,
+                    build_y_end
                 );
                 self.hit_regions.clear();
                 self.link_map.clear();
@@ -318,16 +333,19 @@ impl Renderer {
                         parent,
                         self.submit_cb,
                         self.submit_cb_ud,
-                        band_y_start,
-                        band_y_end,
+                        build_y_start,
+                        build_y_end,
                     );
                 }
-                self.display_list = DisplayList::build_visible(root, band_y_start, band_y_end);
+                self.display_list = DisplayList::build_visible(root, build_y_start, build_y_end);
                 self.display_list_complete = false;
-                self.display_list_y_range = Some((band_y_start, band_y_end));
+                self.display_list_y_range = Some((build_y_start, build_y_end));
                 // Keep already rasterized tiles/canvases. Expanding the band only
                 // adds more commands outside the previous range; it should not
                 // destroy the current viewport and force a full repaint/jank spike.
+                if defer_display_list_expand {
+                    pending = true;
+                }
             }
         }
 
@@ -344,8 +362,9 @@ impl Renderer {
             MAX_TILE_CANVAS_CREATES_PER_IDLE_TICK
         };
 
-        let keep_first = first_row.saturating_sub(4);
-        let keep_last = (last_row + 4).min(if doc_h > 0 {
+        let keep_margin_rows = 16;
+        let keep_first = first_row.saturating_sub(keep_margin_rows);
+        let keep_last = (last_row + keep_margin_rows).min(if doc_h > 0 {
             (doc_h - 1) / TILE_HEIGHT
         } else {
             0
@@ -359,6 +378,20 @@ impl Renderer {
             }
 
             if self.tile_cache.get(row).is_none() {
+                if !self.display_list_complete {
+                    let row_y_start = (row * TILE_HEIGHT) as i32;
+                    let row_y_end = row_y_start + TILE_HEIGHT as i32;
+                    let row_covered = self
+                        .display_list_y_range
+                        .map(|(built_y_start, built_y_end)| {
+                            row_y_start < built_y_end && row_y_end > built_y_start
+                        })
+                        .unwrap_or(false);
+                    if !row_covered {
+                        pending = true;
+                        continue;
+                    }
+                }
                 if rasterized >= max_tiles {
                     pending = true;
                     continue;

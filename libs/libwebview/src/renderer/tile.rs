@@ -7,13 +7,13 @@ use libanyui_client as ui;
 // ═══════════════════════════════════════════════════════════════════════════
 
 pub(super) const TILE_HEIGHT: u32 = 256;
-const MAX_CACHED_TILES: usize = 160;
-pub(super) const BUFFER_ZONE: i32 = 1536;
-pub(super) const MAX_TILE_CANVASES: usize = 48;
-pub(super) const MAX_TILE_CANVAS_CREATES_PER_IDLE_TICK: usize = 8;
-pub(super) const MAX_TILE_CANVAS_CREATES_PER_SCROLL_TICK: usize = 1;
-pub(super) const MAX_TILES_PER_IDLE_TICK: usize = 12;
-pub(super) const MAX_TILES_PER_SCROLL_TICK: usize = 0;
+const MAX_CACHED_TILES: usize = 512;
+pub(super) const BUFFER_ZONE: i32 = 2048;
+pub(super) const MAX_TILE_CANVASES: usize = 128;
+pub(super) const MAX_TILE_CANVAS_CREATES_PER_IDLE_TICK: usize = 16;
+pub(super) const MAX_TILE_CANVAS_CREATES_PER_SCROLL_TICK: usize = 4;
+pub(super) const MAX_TILES_PER_IDLE_TICK: usize = 24;
+pub(super) const MAX_TILES_PER_SCROLL_TICK: usize = 2;
 pub(super) const INITIAL_VISIBLE_EXTRA_ROWS: u32 = 1;
 
 struct CachedTile {

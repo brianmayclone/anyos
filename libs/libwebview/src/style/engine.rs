@@ -321,6 +321,13 @@ fn ua_style_and_flags(tag: Tag) -> (ComputedStyle, u32) {
         Tag::Font => {
             s.display = Display::Inline;
         }
+        Tag::Marquee => {
+            s.display = Display::InlineBlock;
+            s.overflow_x = OverflowVal::Hidden;
+            s.overflow_y = OverflowVal::Hidden;
+            s.white_space = WhiteSpace::Nowrap;
+            flags |= SET_WHITE_SPACE;
+        }
         // Block-level elements that just use defaults.
         Tag::Div
         | Tag::Section

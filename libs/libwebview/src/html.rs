@@ -740,7 +740,7 @@ fn is_button_scope_marker(tag: Tag) -> bool {
         Tag::Html | Tag::Table | Tag::Template | Tag::Button
         // The spec also lists: applet, caption, td, th, marquee, object
         // We include the ones we support:
-        | Tag::Caption | Tag::Td | Tag::Th | Tag::Object
+        | Tag::Caption | Tag::Td | Tag::Th | Tag::Marquee | Tag::Object
     )
 }
 

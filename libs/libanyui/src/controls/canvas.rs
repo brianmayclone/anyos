@@ -483,7 +483,7 @@ impl Control for Canvas {
             self.base.mark_dirty();
             EventResponse::CHANGED
         } else {
-            EventResponse::CONSUMED
+            EventResponse::IGNORED
         }
     }
 
