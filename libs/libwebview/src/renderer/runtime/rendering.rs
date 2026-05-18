@@ -330,9 +330,9 @@ impl Renderer {
                 // Building a visible display list still walks a large part of
                 // the layout tree. Doing that inside a scroll-input frame is
                 // the kind of synchronous work users feel immediately. If all
-                // visible tiles are already backed by pixels, leave prefetch
-                // expansion for the idle viewport tick.
-                pending = true;
+                // visible tiles are already backed by pixels, leave offscreen
+                // expansion for the next scroll/idle opportunity. This is not
+                // visible work and must not keep the 16 ms timer alive forever.
             }
             if needs_band_expand && (!defer_display_list_expand || visible_tile_missing) {
                 let (build_y_start, build_y_end) = if visible_tile_missing {
@@ -370,9 +370,6 @@ impl Renderer {
                 // Keep already rasterized tiles/canvases. Expanding the band only
                 // adds more commands outside the previous range; it should not
                 // destroy the current viewport and force a full repaint/jank spike.
-                if defer_display_list_expand {
-                    pending = true;
-                }
             }
         }
 
@@ -400,6 +397,7 @@ impl Renderer {
         self.deactivate_distant_tile_canvases(keep_first, keep_last);
 
         for row in prioritized_rows {
+            let row_is_visible = row >= visible_first_row && row <= visible_last_row;
             if self
                 .tile_canvases
                 .iter()
@@ -420,12 +418,16 @@ impl Renderer {
                         })
                         .unwrap_or(false);
                     if !row_covered {
-                        pending = true;
+                        if row_is_visible {
+                            pending = true;
+                        }
                         continue;
                     }
                 }
                 if rasterized >= max_tiles {
-                    pending = true;
+                    if !scrolling || row_is_visible {
+                        pending = true;
+                    }
                     continue;
                 }
                 let tile_buf = self.rasterize_tile_dl(images, w, row, doc_h, clear_color);
@@ -434,7 +436,9 @@ impl Renderer {
             }
 
             if created_canvases >= max_canvas_creates {
-                pending = true;
+                if !scrolling || row_is_visible {
+                    pending = true;
+                }
                 continue;
             }
             if self.tile_canvases.len() >= MAX_TILE_CANVASES
@@ -445,7 +449,9 @@ impl Renderer {
             if self.create_tile_canvas(row, w, doc_h, parent) {
                 created_canvases += 1;
             } else {
-                pending = true;
+                if !scrolling || row_is_visible {
+                    pending = true;
+                }
             }
         }
 
