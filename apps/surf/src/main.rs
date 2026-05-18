@@ -106,12 +106,17 @@ const SCRIPT_PUMP_DELAY_MS: u32 = 16;
 const VISUAL_IDLE_TICK_MS: u32 = 250;
 const JS_TIMER_ACTIVE_MIN_DELAY_MS: u32 = 16;
 const JS_TIMER_IDLE_MIN_DELAY_MS: u32 = 250;
+const JS_TIMER_QUIET_BACKOFF_AFTER: u16 = 8;
+const JS_TIMER_QUIET_DEEP_BACKOFF_AFTER: u16 = 24;
+const JS_TIMER_QUIET_BACKOFF_DELAY_MS: u32 = 1000;
+const JS_TIMER_QUIET_DEEP_BACKOFF_DELAY_MS: u32 = 5000;
 const JS_TIMER_CALLBACK_BUDGET: usize = 4;
 const MAX_SCRIPT_SOURCE_BYTES: usize = usize::MAX;
 const DEBUG_SKIP_BLOCKING_SLOT0: bool = false;
 const RELAYOUT_FOLLOWUP_DELAY_MS: u32 = 16;
 const IMAGE_REPAINT_BURST_DELAY_MS: u32 = 64;
 const NET_POLL_INTERVAL_MS: u32 = 250;
+const NET_STALE_WAIT_EMPTY_POLLS: u32 = 20;
 const DEBUG_SKIP_BLOCKING_SLOT2: bool = false;
 
 fn debug_text_fingerprint(text: &str) -> u64 {
@@ -295,6 +300,10 @@ struct AppState {
     script_pump_timer: u32,
     /// Timer ID for scheduling JS runtime timers onto the JS worker.
     js_runtime_timer: u32,
+    /// Timer ID for delayed startup navigation (0 = not running).
+    start_nav_timer: u32,
+    /// Consecutive JS timer worker ticks that fired without visible/host work.
+    js_timer_quiet_ticks: [u16; 16],
     /// Per-tab render work. Paint-only updates can reuse the cached layout tree,
     /// while layout updates require a full relayout before painting.
     render_dirty: [RenderWork; 16],
@@ -987,6 +996,17 @@ fn finish_js_timer_job(
     if drain_js_navigation_for_tab(tab_index) {
         return;
     }
+    {
+        let st = state();
+        if tab_index < st.js_timer_quiet_ticks.len() {
+            if changed || fired == 0 {
+                st.js_timer_quiet_ticks[tab_index] = 0;
+            } else {
+                st.js_timer_quiet_ticks[tab_index] =
+                    st.js_timer_quiet_ticks[tab_index].saturating_add(1);
+            }
+        }
+    }
     if changed {
         let base_url = {
             let st = state();
@@ -1084,7 +1104,18 @@ fn schedule_js_runtime_timer() {
         && !net_worker::has_pending_activity()
         && !net_worker::result_mailboxes_pending();
     let min_delay = if idle_tab {
-        JS_TIMER_IDLE_MIN_DELAY_MS
+        let quiet_ticks = if tab_index < st.js_timer_quiet_ticks.len() {
+            st.js_timer_quiet_ticks[tab_index]
+        } else {
+            0
+        };
+        if quiet_ticks >= JS_TIMER_QUIET_DEEP_BACKOFF_AFTER {
+            JS_TIMER_QUIET_DEEP_BACKOFF_DELAY_MS
+        } else if quiet_ticks >= JS_TIMER_QUIET_BACKOFF_AFTER {
+            JS_TIMER_QUIET_BACKOFF_DELAY_MS
+        } else {
+            JS_TIMER_IDLE_MIN_DELAY_MS
+        }
     } else {
         JS_TIMER_ACTIVE_MIN_DELAY_MS
     };
@@ -1092,7 +1123,9 @@ fn schedule_js_runtime_timer() {
     st.js_runtime_timer = ui_lib::set_timer(delay_ms, move || {
         {
             let st = state();
+            let timer_id = st.js_runtime_timer;
             st.js_runtime_timer = 0;
+            defer_kill_timer(timer_id);
         }
         let Some((tab_index, due_ms)) = next_js_timer_tab() else {
             return;
@@ -1258,7 +1291,9 @@ fn finish_blocking_scripts_for_tab(tab_index: usize) {
 fn pump_script_tick() {
     {
         let st = state();
+        let timer_id = st.script_pump_timer;
         st.script_pump_timer = 0;
+        defer_kill_timer(timer_id);
     }
 
     if scroll_interaction_hot() {
@@ -1401,6 +1436,12 @@ fn schedule_active_webview_resize(delay_ms: u32) {
 }
 
 fn run_pending_start_navigation() {
+    {
+        let st = state();
+        let timer_id = st.start_nav_timer;
+        st.start_nav_timer = 0;
+        defer_kill_timer(timer_id);
+    }
     resize_active_webview_now();
 
     let start_url = {
@@ -1437,6 +1478,7 @@ fn start_net_poll_timer() {
         st.tabs.iter().any(tab_waiting_on_network)
     );
     st.net_poll_timer = ui_lib::set_timer(NET_POLL_INTERVAL_MS, || {
+        static mut STALE_WAIT_POLLS: u32 = 0;
         #[cfg(feature = "debug_surf")]
         let mailbox_counts = net_worker::mailbox_pending_counts();
         #[cfg(feature = "debug_surf")]
@@ -1455,18 +1497,35 @@ fn start_net_poll_timer() {
         if results.is_empty() {
             let st = state();
             let tab_waiting_on_network = st.tabs.iter().any(tab_waiting_on_network);
+            let worker_pending = net_worker::has_pending_activity();
             #[cfg(feature = "debug_surf")]
             crate::surf_log!(
                 "[surf] net-poll empty: waiting_on_network={} worker_pending={} timer={}",
                 tab_waiting_on_network,
-                net_worker::has_pending_activity(),
+                worker_pending,
                 st.net_poll_timer
             );
-            if tab_waiting_on_network || net_worker::has_pending_activity() {
+            if worker_pending {
                 unsafe {
                     EMPTY_POLLS = 0;
+                    STALE_WAIT_POLLS = 0;
                 }
                 return;
+            }
+            if tab_waiting_on_network {
+                unsafe {
+                    STALE_WAIT_POLLS += 1;
+                }
+                if unsafe { STALE_WAIT_POLLS } <= NET_STALE_WAIT_EMPTY_POLLS {
+                    unsafe {
+                        EMPTY_POLLS = 0;
+                    }
+                    return;
+                }
+                crate::surf_log!(
+                    "[surf] net-poll stale wait: no worker activity for {} empty poll(s), allowing timer to idle",
+                    unsafe { STALE_WAIT_POLLS }
+                );
             }
 
             unsafe {
@@ -1475,6 +1534,7 @@ fn start_net_poll_timer() {
             if unsafe { EMPTY_POLLS } > 60 {
                 unsafe {
                     EMPTY_POLLS = 0;
+                    STALE_WAIT_POLLS = 0;
                 }
                 let st = state();
                 if st.net_poll_timer != 0 {
@@ -1487,6 +1547,7 @@ fn start_net_poll_timer() {
         }
         unsafe {
             EMPTY_POLLS = 0;
+            STALE_WAIT_POLLS = 0;
         }
         process_fetched_results(results);
     });
@@ -1974,8 +2035,10 @@ fn flush_pending_render_before_scripts(tab_index: usize) {
 /// and stop the timer.
 fn flush_relayout() {
     let st = state();
+    let timer_id = st.relayout_timer;
     st.relayout_timer = 0;
     st.relayout_due_ms = 0;
+    defer_kill_timer(timer_id);
     if scroll_interaction_hot() {
         schedule_render_flush(SCROLL_INTERACTION_GRACE_MS);
         return;
@@ -3160,6 +3223,8 @@ fn main() {
             net_poll_timer: 0,
             script_pump_timer: 0,
             js_runtime_timer: 0,
+            start_nav_timer: 0,
+            js_timer_quiet_ticks: [0; 16],
             render_dirty: [RenderWork::None; 16],
             scroll_render_pending: false,
             last_scroll_input_ms: 0,
@@ -3379,7 +3444,7 @@ fn main() {
     // then start the initial navigation so CSS media queries and early JS see
     // the same viewport that surf-host starts with.
     schedule_active_webview_resize(50);
-    ui_lib::set_timer(75, run_pending_start_navigation);
+    state().start_nav_timer = ui_lib::set_timer(75, run_pending_start_navigation);
 
     crate::surf_log!("[surf] entering event loop");
     ui_lib::run();

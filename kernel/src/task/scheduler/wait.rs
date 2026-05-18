@@ -438,7 +438,8 @@ pub fn contention_backoff(attempts: &mut u32) {
     }
 
     let cpu_id = get_cpu_id();
-    let has_non_idle_thread = cpu_id < MAX_CPUS && PER_CPU_HAS_THREAD[cpu_id].load(Ordering::Relaxed);
+    let has_non_idle_thread =
+        cpu_id < MAX_CPUS && PER_CPU_HAS_THREAD[cpu_id].load(Ordering::Relaxed);
     if has_non_idle_thread {
         let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
         sleep_until(wake_at);

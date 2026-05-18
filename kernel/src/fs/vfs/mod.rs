@@ -4705,13 +4705,18 @@ pub fn get_fd_path(slot_id: FileDescriptor) -> Result<alloc::string::String, FsE
 
 /// Truncate a file to zero length.
 pub fn truncate(path: &str) -> Result<(), FsError> {
+    truncate_to(path, 0)
+}
+
+/// Resize a file to `new_size` bytes where the backing filesystem supports it.
+pub fn truncate_to(path: &str, new_size: u32) -> Result<(), FsError> {
     if is_dev_path(path) {
         return Err(FsError::PermissionDenied);
     }
     let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
-    // CoreFS truncate-to-zero via driver.
+    // Mounted filesystems with driver-specific resize support.
     if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points)
     {
         if mnt_fs_type == FsType::CoreFs {
@@ -4727,7 +4732,7 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
             if ft == FileType::Directory {
                 return Err(FsError::IsADirectory);
             }
-            return driver.truncate_file(inode, 0);
+            return driver.truncate_file(inode, new_size);
         }
         if mnt_fs_type == FsType::Fuse {
             let session_id = fuse_session_id_for(state, mount_path).ok_or(FsError::IoError)?;
@@ -4739,27 +4744,98 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
             let req = fuse_proto::Request::Setattr {
                 ino: ino_u64,
                 attr: fuse_proto::PartialAttr {
-                    size: Some(0),
+                    size: Some(new_size as u64),
                     ..Default::default()
                 },
             };
             let _ = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
             return Ok(());
         }
+        if mnt_fs_type == FsType::ExFat {
+            if new_size != 0 {
+                return Err(FsError::NotSupported);
+            }
+            let exfat = state
+                .mounted_exfat
+                .iter_mut()
+                .find(|(p, _)| p == mount_path)
+                .map(|(_, fs)| fs)
+                .ok_or(FsError::IoError)?;
+            let mut exfat = exfat.lock_inner();
+            let (parent_path, filename) = split_parent_name(relative_path)?;
+            let (pr_inode, parent_type, _) = exfat.lookup(parent_path)?;
+            if parent_type != FileType::Directory {
+                return Err(FsError::NotADirectory);
+            }
+            let pc = crate::fs::exfat::decode_inode(pr_inode).0;
+            return exfat.truncate_file(pc, filename);
+        }
+        if new_size != 0 {
+            return Err(FsError::NotSupported);
+        }
     }
 
     // --- OverlayFS truncate ---
     if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
+        if new_size != 0 {
+            return Err(FsError::NotSupported);
+        }
         let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
         let overlay = state.overlay_fs.as_mut().ok_or(FsError::IoError)?;
         return overlay.truncate(iso, path);
     }
 
     // --- Generic root-FS dispatch (Phase 6 Step 6). ---
-    state
-        .root_fs()
-        .ok_or(FsError::IoError)?
-        .truncate_by_path(path)
+    let root = state.root_fs().ok_or(FsError::IoError)?;
+    if new_size == 0 {
+        return root.truncate_by_path(path);
+    }
+    let (inode, file_type, _) = root.lookup(path)?;
+    if file_type == FileType::Directory {
+        return Err(FsError::IsADirectory);
+    }
+    root.truncate(inode, new_size)
+}
+
+/// Resize an open file description.
+pub fn ftruncate_to(slot_id: FileDescriptor, new_size: u32) -> Result<(), FsError> {
+    let (path, fs_id) = {
+        let vfs = vfs_lock();
+        let state = vfs.as_ref().ok_or(FsError::IoError)?;
+        let file = state
+            .open_files
+            .get(slot_id as usize)
+            .and_then(|e| e.as_ref())
+            .ok_or(FsError::BadFd)?;
+        if file.file_type == FileType::Directory {
+            return Err(FsError::IsADirectory);
+        }
+        if !file.flags.write {
+            return Err(FsError::BadFd);
+        }
+        (file.path.clone(), file.fs_id)
+    };
+
+    truncate_to(&path, new_size)?;
+
+    let mut vfs = vfs_lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+    let file = state
+        .open_files
+        .get_mut(slot_id as usize)
+        .and_then(|e| e.as_mut())
+        .ok_or(FsError::BadFd)?;
+    if file.path != path {
+        return Ok(());
+    }
+    file.size = new_size;
+    if new_size == 0 && (fs_id == 0 || fs_id == 3 || fs_id == 6) {
+        file.inode = 0;
+        file.seek_cache_offset = 0;
+        file.seek_cache_cluster = 0;
+        file.entry_dirty = false;
+    }
+    Ok(())
 }
 
 /// Resolve a mount device spec to a BlockDevice.

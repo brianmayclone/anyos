@@ -1868,7 +1868,11 @@ impl GpuDriver for VirtioGpu {
             res_id,
             self.fb_phys,
             num_pages,
-            if self.fb_page_list.is_empty() { "contiguous" } else { "scatter-gather" }
+            if self.fb_page_list.is_empty() {
+                "contiguous"
+            } else {
+                "scatter-gather"
+            }
         );
 
         // The transfer already happened before SET_SCANOUT; now expose the

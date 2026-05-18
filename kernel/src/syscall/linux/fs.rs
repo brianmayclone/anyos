@@ -193,15 +193,15 @@ pub(super) fn linux_open_translated(path: &str, linux_flags: u64, linux_path: &s
 }
 
 pub(super) fn linux_fsync(fd: u32) -> u64 {
-    linux_sync_fd_data_only(fd)
+    linux_sync_fd(fd, true)
 }
 
 pub(super) fn linux_fdatasync(fd: u32) -> u64 {
-    linux_sync_fd_data_only(fd)
+    linux_sync_fd(fd, false)
 }
 
 pub(super) fn linux_sync() -> u64 {
-    crate::fs::vfs::sync_all_data_only();
+    crate::fs::vfs::sync_all();
     0
 }
 
@@ -209,7 +209,7 @@ pub(super) fn linux_syncfs(fd: u32) -> u64 {
     if crate::task::scheduler::current_fd_get(fd).is_none() {
         return linux_err(EBADF);
     }
-    crate::fs::vfs::sync_all_data_only();
+    crate::fs::vfs::sync_all();
     0
 }
 
@@ -223,15 +223,22 @@ pub(super) fn linux_sync_file_range(fd: u32, _offset: u64, _nbytes: u64, _flags:
     0
 }
 
-fn linux_sync_fd_data_only(fd: u32) -> u64 {
+fn linux_sync_fd(fd: u32, flush_hardware: bool) -> u64 {
     use crate::fs::fd_table::FdKind;
 
     match crate::task::scheduler::current_fd_get(fd) {
         Some(entry) => match entry.kind {
-            FdKind::File { global_id } => match crate::fs::vfs::fdatasync(global_id) {
-                Ok(()) => 0,
-                Err(e) => linux_fs_err(e),
-            },
+            FdKind::File { global_id } => {
+                let result = if flush_hardware {
+                    crate::fs::vfs::fsync(global_id)
+                } else {
+                    crate::fs::vfs::fdatasync(global_id)
+                };
+                match result {
+                    Ok(()) => 0,
+                    Err(e) => linux_fs_err(e),
+                }
+            }
             FdKind::PipeRead { .. }
             | FdKind::PipeWrite { .. }
             | FdKind::Tty
@@ -975,24 +982,37 @@ pub(super) fn linux_creat(path_ptr: u64) -> u64 {
 }
 
 pub(super) fn linux_truncate(path_ptr: u64, len: u64) -> u64 {
-    if len != 0 {
-        return linux_err(ENOSYS);
+    if len > u32::MAX as u64 {
+        return linux_err(EFBIG);
     }
     let path = match linux_translate_user_path(path_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
-    match crate::fs::vfs::truncate(&path) {
+    match crate::fs::vfs::truncate_to(&path, len as u32) {
         Ok(()) => 0,
         Err(e) => linux_fs_err(e),
     }
 }
 
 pub(super) fn linux_ftruncate(fd: u32, len: u64) -> u64 {
-    if len != 0 {
-        return linux_err(ENOSYS);
+    use crate::fs::fd_table::FdKind;
+
+    if len > u32::MAX as u64 {
+        return linux_err(EFBIG);
     }
-    anyos_u32_ret(handlers::sys_ftruncate(fd, len as u32))
+    let global_id = match crate::task::scheduler::current_fd_get(fd) {
+        Some(entry) => match entry.kind {
+            FdKind::File { global_id } => global_id,
+            FdKind::None => return linux_err(EBADF),
+            _ => return linux_err(EINVAL),
+        },
+        None => return linux_err(EBADF),
+    };
+    match crate::fs::vfs::ftruncate_to(global_id, len as u32) {
+        Ok(()) => 0,
+        Err(e) => linux_fs_err(e),
+    }
 }
 
 pub(super) fn linux_chmod(path_ptr: u64, mode: u64) -> u64 {

@@ -136,8 +136,8 @@ fn auto_apply_native_resolution() {
 }
 
 fn update_display_geometry(width: u32, height: u32, pitch: u32, addr: u32) {
-    let kernel_addr = drivers::gpu::with_gpu(|gpu| gpu.framebuffer_kernel_addr())
-        .unwrap_or(addr as u64);
+    let kernel_addr =
+        drivers::gpu::with_gpu(|gpu| gpu.framebuffer_kernel_addr()).unwrap_or(addr as u64);
     drivers::framebuffer::update(kernel_addr, pitch, width, height, 32);
     drivers::gpu::update_cursor_bounds(width, height);
     drivers::input::vmmouse::update_screen_size(width, height);

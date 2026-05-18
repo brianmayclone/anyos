@@ -40,6 +40,7 @@ const EAGAIN: i32 = 11;
 const ENOTDIR: i32 = 20;
 const EISDIR: i32 = 21;
 const ENOTTY: i32 = 25;
+const EFBIG: i32 = 27;
 const EPERM: i32 = 1;
 const ESRCH: i32 = 3;
 const EINTR: i32 = 4;

@@ -368,6 +368,9 @@ pub(crate) fn navigate(url_str: &str) {
     st.tabs[st.active_tab]
         .load_state
         .begin_navigation(generation);
+    if st.active_tab < st.js_timer_quiet_ticks.len() {
+        st.js_timer_quiet_ticks[st.active_tab] = 0;
+    }
     st.tabs[st.active_tab].js_console_logged_len = 0;
     st.tabs[st.active_tab].js_worker_busy = false;
     crate::devtools::reset_for_navigation();
@@ -413,6 +416,9 @@ pub(crate) fn navigate_post(url_str: &str, body: &str) {
     st.tabs[st.active_tab]
         .load_state
         .begin_navigation(generation);
+    if st.active_tab < st.js_timer_quiet_ticks.len() {
+        st.js_timer_quiet_ticks[st.active_tab] = 0;
+    }
     st.tabs[st.active_tab].js_console_logged_len = 0;
     st.tabs[st.active_tab].js_worker_busy = false;
     crate::devtools::reset_for_navigation();
@@ -444,6 +450,9 @@ fn navigate_file(path: &str) {
 
     let generation = crate::net_worker::new_generation();
     st.tabs[tab_idx].load_state.begin_navigation(generation);
+    if tab_idx < st.js_timer_quiet_ticks.len() {
+        st.js_timer_quiet_ticks[tab_idx] = 0;
+    }
     st.tabs[tab_idx].is_loading = true;
 
     st.tabs[tab_idx].status_text = String::from("Loading file...");
