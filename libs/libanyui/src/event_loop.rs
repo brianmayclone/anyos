@@ -3651,10 +3651,6 @@ fn find_scroll_blit_damage_walk(
             *rejected = true;
             return;
         }
-        if subtree_has_dirty_descendant(controls, id) {
-            *rejected = true;
-            return;
-        }
         let Some(sv) = control::cast_ref::<crate::controls::scroll_view::ScrollView>(
             &controls[idx],
             ControlKind::ScrollView,
@@ -3667,6 +3663,16 @@ fn find_scroll_blit_damage_walk(
         let dx = sx - rendered_sx;
         let dy = sy - rendered_sy;
         let (view_w, view_h) = sv.viewport_size();
+        if subtree_has_dirty_in_rect(
+            controls,
+            id,
+            abs_x - sx,
+            abs_y - sy,
+            (abs_x, abs_y, view_w, view_h),
+        ) {
+            *rejected = true;
+            return;
+        }
         if (dx == 0 && dy == 0)
             || view_w == 0
             || view_h == 0
@@ -3710,13 +3716,39 @@ fn find_scroll_blit_damage_walk(
     }
 }
 
-fn subtree_has_dirty_descendant(controls: &[Box<dyn Control>], id: ControlId) -> bool {
+fn subtree_has_dirty_in_rect(
+    controls: &[Box<dyn Control>],
+    id: ControlId,
+    parent_abs_x: i32,
+    parent_abs_y: i32,
+    rect: (i32, i32, u32, u32),
+) -> bool {
     let Some(idx) = control::find_idx(controls, id) else {
         return false;
     };
     for &cid in controls[idx].children() {
         if let Some(child_idx) = control::find_idx(controls, cid) {
-            if controls[child_idx].base().dirty || subtree_has_dirty_descendant(controls, cid) {
+            let b = controls[child_idx].base();
+            let abs_x = parent_abs_x + b.x;
+            let abs_y = parent_abs_y + b.y;
+            if b.dirty && rects_intersect(abs_x, abs_y, b.w, b.h, rect.0, rect.1, rect.2, rect.3) {
+                return true;
+            }
+            let (child_abs_x, child_abs_y) = match controls[child_idx].kind() {
+                ControlKind::ScrollView => {
+                    let (sx, sy) = crate::controls::scroll_view::scroll_offsets(
+                        controls,
+                        controls[child_idx].id(),
+                    );
+                    (abs_x - sx, abs_y - sy)
+                }
+                ControlKind::Expander => (
+                    abs_x,
+                    abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
+                ),
+                _ => (abs_x, abs_y),
+            };
+            if subtree_has_dirty_in_rect(controls, cid, child_abs_x, child_abs_y, rect) {
                 return true;
             }
         }

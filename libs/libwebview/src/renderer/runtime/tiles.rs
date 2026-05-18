@@ -1,4 +1,9 @@
 impl Renderer {
+    fn park_inactive_tile_canvas(tc: &mut TileCanvas) {
+        tc.canvas.set_position(0, -1_000_000);
+        tc.active = false;
+    }
+
     fn rasterize_tile_dl(
         &mut self,
         images: &ImageCache,
@@ -32,8 +37,7 @@ impl Renderer {
     fn deactivate_all_tile_canvases(&mut self) {
         for tc in &mut self.tile_canvases {
             if tc.active {
-                tc.canvas.set_visible(false);
-                tc.active = false;
+                Self::park_inactive_tile_canvas(tc);
             }
         }
     }
@@ -41,8 +45,7 @@ impl Renderer {
     fn deactivate_distant_tile_canvases(&mut self, keep_first: u32, keep_last: u32) {
         for tc in &mut self.tile_canvases {
             if tc.active && (tc.row < keep_first || tc.row > keep_last) {
-                tc.canvas.set_visible(false);
-                tc.active = false;
+                Self::park_inactive_tile_canvas(tc);
             }
         }
     }
@@ -56,8 +59,7 @@ impl Renderer {
             self.tile_cache.invalidate_row(row);
             for tc in &mut self.tile_canvases {
                 if tc.active && tc.row == row {
-                    tc.canvas.set_visible(false);
-                    tc.active = false;
+                    Self::park_inactive_tile_canvas(tc);
                 }
             }
         }
@@ -81,18 +83,11 @@ impl Renderer {
         let Some(idx) = farthest_idx else {
             return false;
         };
-        self.tile_canvases[idx].canvas.set_visible(false);
-        self.tile_canvases[idx].active = false;
+        Self::park_inactive_tile_canvas(&mut self.tile_canvases[idx]);
         true
     }
 
-    fn create_tile_canvas(
-        &mut self,
-        row: u32,
-        doc_w: u32,
-        doc_h: u32,
-        parent: &ui::View,
-    ) -> bool {
+    fn create_tile_canvas(&mut self, row: u32, doc_w: u32, doc_h: u32, parent: &ui::View) -> bool {
         self.tile_cache.touch(row);
         let pixels = match self.tile_cache.get(row) {
             Some(px) => px,
@@ -114,7 +109,6 @@ impl Renderer {
             }
             tc.canvas.set_position(0, tile_y);
             tc.canvas.copy_pixels_from(pixels);
-            tc.canvas.set_visible(true);
             tc.active = true;
             return true;
         }
