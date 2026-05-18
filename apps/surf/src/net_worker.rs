@@ -1476,6 +1476,24 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
 
             match http::fetch(&url, &mut cookies, pool) {
                 Ok(mut response) => {
+                    let mut result_url = url;
+                    if let Some(fallback_url) = google_search_fallback_url(&result_url, &response) {
+                        surf_net_log!(
+                            "google search blocked; fallback to {}://{}{}",
+                            fallback_url.scheme,
+                            fallback_url.host,
+                            fallback_url.path
+                        );
+                        let mut fallback_cookies = CookieJar::new();
+                        if let Ok(fallback_response) =
+                            http::fetch(&fallback_url, &mut fallback_cookies, pool)
+                        {
+                            response = fallback_response;
+                            inject_search_fallback_css(&mut response.body);
+                            result_url = fallback_url;
+                            cookies = fallback_cookies;
+                        }
+                    }
                     stamp_worker_timing(
                         &mut response.timing,
                         request_id,
@@ -1485,7 +1503,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     enqueue_result(FetchResult::NavDone {
                         tab_index,
                         response,
-                        url,
+                        url: result_url,
                         cookies,
                         generation,
                     });
@@ -2007,6 +2025,99 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
 }
 
 /// Map a `FetchError` to a static error message string.
+fn google_search_fallback_url(url: &Url, response: &http::Response) -> Option<Url> {
+    let query = google_search_query_raw(url)?;
+    let final_is_sorry = response
+        .final_url
+        .as_ref()
+        .map(is_google_sorry_url)
+        .unwrap_or(false);
+    if !final_is_sorry && !body_is_google_search_challenge(&response.body) {
+        return None;
+    }
+
+    let mut path = String::from("/html/?q=");
+    path.push_str(query);
+    path.push_str("&kl=de-de");
+    Some(Url {
+        scheme: String::from("https"),
+        host: String::from("html.duckduckgo.com"),
+        port: 443,
+        path,
+    })
+}
+
+fn is_google_sorry_url(url: &Url) -> bool {
+    is_google_host(&url.host) && url.path.starts_with("/sorry/")
+}
+
+fn google_search_query_raw(url: &Url) -> Option<&str> {
+    if !is_google_host(&url.host) || !url.path.starts_with("/search?") {
+        return None;
+    }
+    query_param_raw(&url.path, "q")
+}
+
+fn is_google_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("google.com")
+        || host.eq_ignore_ascii_case("www.google.com")
+        || host.eq_ignore_ascii_case("google.de")
+        || host.eq_ignore_ascii_case("www.google.de")
+}
+
+fn query_param_raw<'a>(path: &'a str, name: &str) -> Option<&'a str> {
+    let query_start = path.find('?')? + 1;
+    let query_end = path[query_start..]
+        .find('#')
+        .map(|idx| query_start + idx)
+        .unwrap_or(path.len());
+    for pair in path[query_start..query_end].split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key == name && !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn body_is_google_search_challenge(body: &[u8]) -> bool {
+    body_contains_ascii(body, b"If you're having trouble accessing Google Search")
+        || body_contains_ascii(body, b"/httpservice/retry/enablejs")
+        || body_contains_ascii(body, b"var g='knitsail'")
+}
+
+fn body_contains_ascii(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack.len() >= needle.len()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+fn inject_search_fallback_css(body: &mut Vec<u8>) {
+    let css = b"<style>
+body{padding:18px 24px}
+#state_hidden,#header,.frm__select,.header__logo-wrap,.site-wrapper-border{display:none!important}
+.results{display:block;max-width:860px;margin:0;padding:0}
+.result{display:block;margin:0 0 28px 0;padding:0}
+.result__title{font-size:20px;line-height:1.25;margin:0 0 3px 0}
+.result__url{color:#0b7a20}
+.result__snippet{color:#333;line-height:1.35}
+</style>";
+    if let Some(pos) = body.windows(b"</head>".len()).position(|w| w == b"</head>") {
+        let mut patched = Vec::with_capacity(css.len() + body.len());
+        patched.extend_from_slice(&body[..pos]);
+        patched.extend_from_slice(css);
+        patched.extend_from_slice(&body[pos..]);
+        *body = patched;
+    } else {
+        let mut patched = Vec::with_capacity(css.len() + body.len());
+        patched.extend_from_slice(css);
+        patched.extend_from_slice(body);
+        *body = patched;
+    }
+}
+
 fn fetch_error_msg(e: FetchError) -> &'static str {
     match e {
         FetchError::InvalidUrl => "Invalid URL",

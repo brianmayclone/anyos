@@ -188,6 +188,7 @@ pub(super) fn linux_open_translated(path: &str, linux_flags: u64, linux_path: &s
     if cloexec {
         crate::task::scheduler::current_fd_set_cloexec(local_fd, true);
     }
+    trace::trace_open(linux_path, &resolved_path, local_fd, global_id, linux_flags);
     linux_log_library_open(linux_path, &resolved_path, local_fd, global_id);
     local_fd as u64
 }
@@ -234,10 +235,17 @@ fn linux_sync_fd(fd: u32, flush_hardware: bool) -> u64 {
                 } else {
                     crate::fs::vfs::fdatasync(global_id)
                 };
-                match result {
+                let ret = match result {
                     Ok(()) => 0,
                     Err(e) => linux_fs_err(e),
-                }
+                };
+                trace::trace_fsync(
+                    if flush_hardware { "fsync" } else { "fdatasync" },
+                    fd,
+                    global_id,
+                    ret,
+                );
+                ret
             }
             FdKind::PipeRead { .. }
             | FdKind::PipeWrite { .. }
@@ -675,14 +683,16 @@ pub(super) fn linux_rename(old_ptr: u64, new_ptr: u64) -> u64 {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
-    match crate::fs::vfs::rename(&old_path, &new_path) {
+    let ret = match crate::fs::vfs::rename(&old_path, &new_path) {
         Ok(()) => {
             linux_resolve_cache_invalidate_path(&old_path);
             linux_resolve_cache_invalidate_path(&new_path);
             0
         }
         Err(e) => linux_fs_err(e),
-    }
+    };
+    trace::trace_path_op("rename", &old_path, Some(&new_path), ret);
+    ret
 }
 
 pub(super) fn linux_renameat(old_dirfd: i32, old_ptr: u64, new_dirfd: i32, new_ptr: u64) -> u64 {
@@ -694,14 +704,16 @@ pub(super) fn linux_renameat(old_dirfd: i32, old_ptr: u64, new_dirfd: i32, new_p
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
-    match crate::fs::vfs::rename(&old_path, &new_path) {
+    let ret = match crate::fs::vfs::rename(&old_path, &new_path) {
         Ok(()) => {
             linux_resolve_cache_invalidate_path(&old_path);
             linux_resolve_cache_invalidate_path(&new_path);
             0
         }
         Err(e) => linux_fs_err(e),
-    }
+    };
+    trace::trace_path_op("renameat", &old_path, Some(&new_path), ret);
+    ret
 }
 
 pub(super) fn linux_link(old_ptr: u64, new_ptr: u64) -> u64 {
@@ -934,13 +946,15 @@ pub(super) fn linux_unlink_translated(path: &str) -> u64 {
         );
         return linux_err(EBUSY);
     }
-    match crate::fs::vfs::delete(path) {
+    let ret = match crate::fs::vfs::delete(path) {
         Ok(()) => {
             linux_resolve_cache_invalidate_path(path);
             0
         }
         Err(e) => linux_fs_err(e),
-    }
+    };
+    trace::trace_path_op("unlink", path, None, ret);
+    ret
 }
 
 fn linux_is_protected_rootfs_path(path: &str) -> bool {

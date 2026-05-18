@@ -908,6 +908,7 @@ pub(super) fn socket_read(fd: u32, buf_ptr: u64, len: u64) -> u64 {
                 u32::MAX => linux_err(EAGAIN),
                 n => {
                     crate::task::scheduler::record_net_rx(n as u64);
+                    super::trace::trace_socket_io("net-rx", fd, socket_id, len, n as u64, buf_ptr);
                     n as u64
                 }
             }
@@ -967,6 +968,7 @@ pub(super) fn socket_write(fd: u32, buf_ptr: u64, len: u64) -> u64 {
                     break;
                 }
             }
+            super::trace::trace_socket_io("net-tx", fd, socket_id, len, total as u64, buf_ptr);
             total as u64
         }
         LinuxSocketState::Udp {

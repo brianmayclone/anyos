@@ -32,7 +32,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const SURF_HOST_USER_AGENT: &str =
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 Surf/1.0";
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36";
 const HOST_SYNC_WEB_FONT_LIMIT: usize = 6;
 const HOST_VIEWPORT_RENDER_PASS_LIMIT: usize = 128;
 const HOST_SCREENSHOT_TIMER_CALLBACK_BUDGET: usize = 64;
@@ -2829,7 +2829,18 @@ fn fetch_page(url: &str, cookies: &mut HostCookieJar) -> (String, String) {
         let data_path = dir.join(format!("{}.html", key));
         let url_path = dir.join(format!("{}.url", key));
 
-        let mut request = ureq::get(&full_url).set("User-Agent", SURF_HOST_USER_AGENT);
+        let mut request = ureq::get(&full_url)
+            .set("User-Agent", SURF_HOST_USER_AGENT)
+            .set(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            )
+            .set("Accept-Language", "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7")
+            .set("Upgrade-Insecure-Requests", "1")
+            .set("Sec-Fetch-Dest", "document")
+            .set("Sec-Fetch-Mode", "navigate")
+            .set("Sec-Fetch-Site", "none")
+            .set("Sec-Fetch-User", "?1");
         if let Some(cookie_hdr) = cookies.cookie_header_for_url(&full_url) {
             eprintln!("[surf-host] sending cookies: {} bytes", cookie_hdr.len());
             request = request.set("Cookie", &cookie_hdr);
@@ -2847,6 +2858,11 @@ fn fetch_page(url: &str, cookies: &mut HostCookieJar) -> (String, String) {
                 let mut bytes = Vec::new();
                 let _ = response.into_reader().read_to_end(&mut bytes);
                 let body = decode_html_bytes(&bytes, content_type.as_deref());
+                if is_google_search_challenge(&final_url, &body) {
+                    if let Some(fallback) = fetch_search_fallback(&full_url) {
+                        return fallback;
+                    }
+                }
                 let _ = std::fs::create_dir_all(&dir);
                 let _ = std::fs::write(&data_path, &bytes);
                 let _ = std::fs::write(&url_path, final_url.as_bytes());
@@ -2854,6 +2870,9 @@ fn fetch_page(url: &str, cookies: &mut HostCookieJar) -> (String, String) {
             }
             Err(e) => {
                 eprintln!("[surf-host] fetch error: {}", e);
+                if let Some(fallback) = fetch_search_fallback(&full_url) {
+                    return fallback;
+                }
                 if let Ok(bytes) = std::fs::read(&data_path) {
                     let final_url =
                         std::fs::read_to_string(&url_path).unwrap_or_else(|_| full_url.clone());
@@ -2863,6 +2882,92 @@ fn fetch_page(url: &str, cookies: &mut HostCookieJar) -> (String, String) {
             }
         }
     }
+}
+
+fn is_google_search_challenge(url: &str, body: &str) -> bool {
+    is_google_search_url(url)
+        && (body.contains("If you're having trouble accessing Google Search")
+            || body.contains("/httpservice/retry/enablejs")
+            || body.contains("var g='knitsail'"))
+}
+
+fn fetch_search_fallback(url: &str) -> Option<(String, String)> {
+    let query = google_search_query_raw(url)?;
+    let fallback_url = format!("https://html.duckduckgo.com/html/?q={}&kl=de-de", query);
+    eprintln!(
+        "[surf-host] Google search blocked; loading fallback results: {}",
+        fallback_url
+    );
+    let response = ureq::get(&fallback_url)
+        .set("User-Agent", SURF_HOST_USER_AGENT)
+        .set(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .set("Accept-Language", "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7")
+        .timeout(std::time::Duration::from_secs(8))
+        .call()
+        .ok()?;
+    let final_url = response.get_url().to_string();
+    let content_type = response.header("Content-Type").map(str::to_string);
+    let mut bytes = Vec::new();
+    response.into_reader().read_to_end(&mut bytes).ok()?;
+    Some((
+        inject_search_fallback_css(decode_html_bytes(&bytes, content_type.as_deref())),
+        final_url,
+    ))
+}
+
+fn inject_search_fallback_css(mut body: String) -> String {
+    let css = r#"<style>
+body{padding:18px 24px}
+#state_hidden,#header,.frm__select,.header__logo-wrap,.site-wrapper-border{display:none!important}
+.results{display:block;max-width:860px;margin:0;padding:0}
+.result{display:block;margin:0 0 28px 0;padding:0}
+.result__title{font-size:20px;line-height:1.25;margin:0 0 3px 0}
+.result__url{color:#0b7a20}
+.result__snippet{color:#333;line-height:1.35}
+</style>"#;
+    if let Some(pos) = body.find("</head>") {
+        body.insert_str(pos, css);
+    } else {
+        body.insert_str(0, css);
+    }
+    body
+}
+
+fn is_google_search_url(url: &str) -> bool {
+    let Some(parts) = parse_host_url(url) else {
+        return false;
+    };
+    (parts.host == "google.com"
+        || parts.host == "www.google.com"
+        || parts.host == "google.de"
+        || parts.host == "www.google.de")
+        && parts.path == "/search"
+        && query_param_raw(url, "q").is_some()
+}
+
+fn google_search_query_raw(url: &str) -> Option<String> {
+    if is_google_search_url(url) {
+        return query_param_raw(url, "q").map(str::to_string);
+    }
+    None
+}
+
+fn query_param_raw<'a>(url: &'a str, name: &str) -> Option<&'a str> {
+    let query_start = url.find('?')? + 1;
+    let query_end = url[query_start..]
+        .find('#')
+        .map(|idx| query_start + idx)
+        .unwrap_or(url.len());
+    for pair in url[query_start..query_end].split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key == name && !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
 }
 
 fn decode_html_bytes(bytes: &[u8], content_type: Option<&str>) -> String {
@@ -3483,7 +3588,11 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
         while let Some(parent) = cur {
             if dom
                 .attr(parent, "class")
-                .map(|classes| classes.split_ascii_whitespace().any(|class| class == needle))
+                .map(|classes| {
+                    classes
+                        .split_ascii_whitespace()
+                        .any(|class| class == needle)
+                })
                 .unwrap_or(false)
             {
                 return true;
@@ -4631,10 +4740,7 @@ fn run_javascript(
                 }
                 inline_count += 1;
             }
-            libwebview::js::ScriptEntry::External {
-                src: src_url,
-                mode,
-            } => {
+            libwebview::js::ScriptEntry::External { src: src_url, mode } => {
                 let full_url = resolve_url(base_url, src_url);
                 eprintln!("[js] fetching script: {}", full_url);
                 if let Some(data) = fetch_resource(&full_url) {

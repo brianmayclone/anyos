@@ -144,7 +144,7 @@ pub fn make_window(
     nav.set_property(
         String::from("userAgent"),
         JsValue::String(String::from(
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 Surf/1.0",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
         )),
     );
     nav.set_property(
@@ -201,7 +201,7 @@ pub fn make_window(
     nav.set_property(
         String::from("appVersion"),
         JsValue::String(String::from(
-            "5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 Surf/1.0",
+            "5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
         )),
     );
     let permissions = JsValue::new_object();

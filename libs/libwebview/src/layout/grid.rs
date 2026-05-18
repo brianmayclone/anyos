@@ -1271,10 +1271,19 @@ fn definite_grid_content_height(
     current_height: i32,
     content_height: i32,
 ) -> i32 {
-    let mut h = current_height.max(content_height);
+    let has_definite_container_height = current_height > 0
+        || style.height.is_some()
+        || style.height_pct.is_some()
+        || style.height_calc.is_some();
+    let mut h = if current_height > 0 {
+        current_height
+    } else {
+        content_height
+    };
     if let Some(explicit) = style.height {
         h = h.max(explicit);
-    } else if (style.height_pct.is_some() || style.height_calc.is_some())
+    } else if current_height <= 0
+        && (style.height_pct.is_some() || style.height_calc.is_some())
         && style.max_height.is_some()
     {
         // A grid container with a definite percentage/calc height may be clamped
@@ -1287,7 +1296,11 @@ fn definite_grid_content_height(
     if let Some(max_h) = style.max_height {
         h = h.min(max_h);
     }
-    h.max(content_height)
+    if has_definite_container_height || style.max_height.is_some() {
+        h.max(0)
+    } else {
+        h.max(content_height)
+    }
 }
 
 fn distribute_grid_content_block(

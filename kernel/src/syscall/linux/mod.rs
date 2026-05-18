@@ -16,6 +16,7 @@ mod path;
 mod process;
 mod procfs;
 mod socket;
+mod trace;
 
 use abi::*;
 use fs::*;

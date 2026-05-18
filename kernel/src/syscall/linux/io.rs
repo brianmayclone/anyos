@@ -69,7 +69,11 @@ pub(super) fn linux_read(fd: u32, buf_ptr: u64, len: u64) -> u64 {
         }
         _ => {}
     }
-    anyos_u32_ret(handlers::sys_read(fd, buf_ptr, len as u32))
+    let ret = anyos_u32_ret(handlers::sys_read(fd, buf_ptr, len as u32));
+    if let crate::fs::fd_table::FdKind::File { global_id } = entry.kind {
+        trace::trace_file_io("file-read", fd, global_id, len, ret, buf_ptr);
+    }
+    ret
 }
 
 pub(super) fn linux_write(fd: u32, buf_ptr: u64, len: u64) -> u64 {
@@ -82,7 +86,11 @@ pub(super) fn linux_write(fd: u32, buf_ptr: u64, len: u64) -> u64 {
     if let crate::fs::fd_table::FdKind::LinuxSocket { .. } = entry.kind {
         return socket_write(fd, buf_ptr, len);
     }
-    anyos_u32_ret(handlers::sys_write(fd, buf_ptr, len as u32))
+    let ret = anyos_u32_ret(handlers::sys_write(fd, buf_ptr, len as u32));
+    if let crate::fs::fd_table::FdKind::File { global_id } = entry.kind {
+        trace::trace_file_io("file-write", fd, global_id, len, ret, buf_ptr);
+    }
+    ret
 }
 
 pub(super) fn linux_pipe2(pipefd_ptr: u64, linux_flags: u64) -> u64 {
