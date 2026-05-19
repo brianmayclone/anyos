@@ -92,6 +92,13 @@ struct SubBatch {
     fast_fog_b: f32,
     fast_fog_start: f32,
     fast_fog_inv_range: f32,
+    fast_shadow_depth: *const f32,
+    fast_shadow_len: usize,
+    fast_shadow_w: u32,
+    fast_shadow_h: u32,
+    fast_shadow_strength: f32,
+    fast_shadow_texel_x: f32,
+    fast_shadow_texel_y: f32,
     fast_mode: u32,
     use_fast_path: bool,
 
@@ -531,11 +538,15 @@ pub fn end_sub_batch(
             }
             FastPathInfo::ForgerBlocks {
                 tex,
+                shadow,
                 fog_r,
                 fog_g,
                 fog_b,
                 fog_start,
                 fog_inv_range,
+                shadow_strength,
+                shadow_texel_x,
+                shadow_texel_y,
             } => {
                 sb.use_fast_path = true;
                 sb.fast_mode = 2;
@@ -548,6 +559,13 @@ pub fn end_sub_batch(
                 sb.fast_fog_b = *fog_b;
                 sb.fast_fog_start = *fog_start;
                 sb.fast_fog_inv_range = *fog_inv_range;
+                sb.fast_shadow_depth = shadow.map(|s| s.data).unwrap_or(core::ptr::null());
+                sb.fast_shadow_len = shadow.map(|s| s.len).unwrap_or(0);
+                sb.fast_shadow_w = shadow.map(|s| s.width).unwrap_or(0);
+                sb.fast_shadow_h = shadow.map(|s| s.height).unwrap_or(0);
+                sb.fast_shadow_strength = if shadow.is_some() { *shadow_strength } else { 0.0 };
+                sb.fast_shadow_texel_x = *shadow_texel_x;
+                sb.fast_shadow_texel_y = *shadow_texel_y;
             }
         }
     }
@@ -1063,6 +1081,24 @@ fn rasterize_tri_forger_band(
     let v0_dist = v0.varyings[2][0] * inv_w0c;
     let v1_dist = v1.varyings[2][0] * inv_w1c;
     let v2_dist = v2.varyings[2][0] * inv_w2c;
+    let v0_shadow = [
+        v0.varyings[3][0] * inv_w0c,
+        v0.varyings[3][1] * inv_w0c,
+        v0.varyings[3][2] * inv_w0c,
+        v0.varyings[3][3] * inv_w0c,
+    ];
+    let v1_shadow = [
+        v1.varyings[3][0] * inv_w1c,
+        v1.varyings[3][1] * inv_w1c,
+        v1.varyings[3][2] * inv_w1c,
+        v1.varyings[3][3] * inv_w1c,
+    ];
+    let v2_shadow = [
+        v2.varyings[3][0] * inv_w2c,
+        v2.varyings[3][1] * inv_w2c,
+        v2.varyings[3][2] * inv_w2c,
+        v2.varyings[3][3] * inv_w2c,
+    ];
     let v0_mat = v0.varyings[4][0] * inv_w0c;
     let v1_mat = v1.varyings[4][0] * inv_w1c;
     let v2_mat = v2.varyings[4][0] * inv_w2c;
@@ -1185,7 +1221,6 @@ fn rasterize_tri_forger_band(
                     let light = (bary0 * v0_light + bary1 * v1_light + bary2 * v2_light) * corr;
                     let dist = (bary0 * v0_dist + bary1 * v1_dist + bary2 * v2_dist) * corr;
                     let material = (bary0 * v0_mat + bary1 * v1_mat + bary2 * v2_mat) * corr;
-
                     let u_f = u_raw - (u_raw as i32) as f32;
                     let u_w = if u_f < 0.0 { u_f + 1.0 } else { u_f };
                     let v_f = v_raw - (v_raw as i32) as f32;
@@ -1198,9 +1233,33 @@ fn rasterize_tri_forger_band(
                     let tex_g = ((texel >> 8) & 0xFF) as f32;
                     let tex_b = (texel & 0xFF) as f32;
 
-                    let mut r = tex_r * light;
-                    let mut g = tex_g * light;
-                    let mut b = tex_b * light;
+                    let visibility = if sb.fast_shadow_strength > 0.001 {
+                        let sh_x = (bary0 * v0_shadow[0] + bary1 * v1_shadow[0] + bary2 * v2_shadow[0]) * corr;
+                        let sh_y = (bary0 * v0_shadow[1] + bary1 * v1_shadow[1] + bary2 * v2_shadow[1]) * corr;
+                        let sh_z = (bary0 * v0_shadow[2] + bary1 * v1_shadow[2] + bary2 * v2_shadow[2]) * corr;
+                        let sh_w = (bary0 * v0_shadow[3] + bary1 * v1_shadow[3] + bary2 * v2_shadow[3]) * corr;
+                        raster::forger_shadow_visibility(
+                            sb.fast_shadow_depth,
+                            sb.fast_shadow_len,
+                            sb.fast_shadow_w,
+                            sb.fast_shadow_h,
+                            sb.fast_shadow_strength,
+                            sb.fast_shadow_texel_x,
+                            sb.fast_shadow_texel_y,
+                            sh_x,
+                            sh_y,
+                            sh_z,
+                            sh_w,
+                            material,
+                        )
+                    } else {
+                        1.0
+                    };
+
+                    let lit = light * visibility;
+                    let mut r = tex_r * lit;
+                    let mut g = tex_g * lit;
+                    let mut b = tex_b * lit;
                     if raytrace_materials && material > 0.9 && tex_a < 220 {
                         let shaded = raster::shade_forger_water(
                             r,

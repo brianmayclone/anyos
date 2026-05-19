@@ -444,6 +444,111 @@ impl ResolvedTexture {
     }
 }
 
+/// Pre-resolved depth texture for shadow-map sampling in specialized fast paths.
+#[derive(Clone, Copy)]
+pub struct ResolvedDepthTexture {
+    pub data: *const f32,
+    pub len: usize,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ResolvedDepthTexture {
+    pub fn resolve_unit(unit: usize) -> Option<Self> {
+        unsafe {
+            let bound = crate::BOUND_TEXTURES_PTR;
+            let store = crate::TEX_STORE_PTR;
+            if bound.is_null() || store.is_null() || unit >= (*bound).len() {
+                return None;
+            }
+            let tex_id = (*bound)[unit];
+            if tex_id == 0 {
+                return None;
+            }
+            match (*store).get(tex_id) {
+                Some(tex)
+                    if tex.width > 0
+                        && tex.height > 0
+                        && tex.internal_format == GL_DEPTH_COMPONENT
+                        && !tex.depth.is_empty() =>
+                {
+                    Some(ResolvedDepthTexture {
+                        data: tex.depth.as_ptr(),
+                        len: tex.depth.len(),
+                        width: tex.width,
+                        height: tex.height,
+                    })
+                }
+                _ => None,
+            }
+        }
+    }
+}
+
+#[inline(always)]
+pub(crate) fn sample_shadow_depth(
+    data: *const f32,
+    len: usize,
+    width: u32,
+    height: u32,
+    u: f32,
+    v: f32,
+) -> f32 {
+    if data.is_null() || width == 0 || height == 0 || len == 0 {
+        return 1.0;
+    }
+    let x = ((u * width as f32) as i32).clamp(0, width as i32 - 1) as u32;
+    let y = ((v * height as f32) as i32).clamp(0, height as i32 - 1) as u32;
+    let idx = (y * width + x) as usize;
+    if idx < len {
+        unsafe { *data.add(idx) }
+    } else {
+        1.0
+    }
+}
+
+#[inline(always)]
+pub(crate) fn forger_shadow_visibility(
+    data: *const f32,
+    len: usize,
+    width: u32,
+    height: u32,
+    strength: f32,
+    texel_x: f32,
+    texel_y: f32,
+    sh_x: f32,
+    sh_y: f32,
+    sh_z: f32,
+    sh_w: f32,
+    material: f32,
+) -> f32 {
+    if strength <= 0.001 || data.is_null() || width == 0 || height == 0 {
+        return 1.0;
+    }
+
+    let inv_sw = fast_rcp(sh_w.max(0.0001));
+    let ndc_x = sh_x * inv_sw;
+    let ndc_y = sh_y * inv_sw;
+    let ndc_z = sh_z * inv_sw;
+    let uv_x = ndc_x * 0.5 + 0.5;
+    let uv_y = 0.5 - ndc_y * 0.5;
+    let shadow_depth = ndc_z * 0.5 + 0.5;
+    if uv_x < 0.0 || uv_x > 1.0 || uv_y < 0.0 || uv_y > 1.0 || shadow_depth < 0.0 || shadow_depth > 1.0 {
+        return 1.0;
+    }
+
+    let cmp_depth = shadow_depth - 0.0014;
+    let mut lit = 0.0;
+    lit += if cmp_depth <= sample_shadow_depth(data, len, width, height, uv_x, uv_y) { 0.36 } else { 0.0 };
+    lit += if cmp_depth <= sample_shadow_depth(data, len, width, height, uv_x - texel_x, uv_y) { 0.16 } else { 0.0 };
+    lit += if cmp_depth <= sample_shadow_depth(data, len, width, height, uv_x + texel_x, uv_y) { 0.16 } else { 0.0 };
+    lit += if cmp_depth <= sample_shadow_depth(data, len, width, height, uv_x, uv_y - texel_y) { 0.16 } else { 0.0 };
+    lit += if cmp_depth <= sample_shadow_depth(data, len, width, height, uv_x, uv_y + texel_y) { 0.16 } else { 0.0 };
+
+    let shadow_blocking = 1.0 - material * 0.55;
+    1.0 - strength * shadow_blocking * (1.0 - lit)
+}
+
 /// Fast-path rasterizer for the common "textured + vertex-lit" case.
 ///
 /// Eliminates all per-pixel function calls by inlining:
@@ -700,7 +805,7 @@ pub fn rasterize_triangle_fast(
     }
 }
 
-/// Fast path for Forger's block shader when shadow strength is zero.
+/// Fast path for Forger's block shader.
 ///
 /// This keeps the expensive fragment JIT out of the common path while preserving
 /// the visible shader work that matters for the default 60 FPS target:
@@ -714,6 +819,10 @@ pub fn rasterize_triangle_forger_blocks(
     fog_b: f32,
     fog_start: f32,
     fog_inv_range: f32,
+    shadow: Option<&ResolvedDepthTexture>,
+    shadow_strength: f32,
+    shadow_texel_x: f32,
+    shadow_texel_y: f32,
     v0: &ClipVertex,
     v1: &ClipVertex,
     v2: &ClipVertex,
@@ -748,7 +857,7 @@ pub fn rasterize_triangle_forger_blocks(
     let inv_w1c = 1.0 / w1_clip;
     let inv_w2c = 1.0 / w2_clip;
 
-    // Forger varying layout: 0=uv, 1=lighting, 2=clip distance, 4=material/translucency.
+    // Forger varying layout: 0=uv, 1=lighting, 2=clip distance, 3=shadow coord, 4=material/translucency.
     let v0_uv = [v0.varyings[0][0] * inv_w0c, v0.varyings[0][1] * inv_w0c];
     let v1_uv = [v1.varyings[0][0] * inv_w1c, v1.varyings[0][1] * inv_w1c];
     let v2_uv = [v2.varyings[0][0] * inv_w2c, v2.varyings[0][1] * inv_w2c];
@@ -758,6 +867,24 @@ pub fn rasterize_triangle_forger_blocks(
     let v0_dist = v0.varyings[2][0] * inv_w0c;
     let v1_dist = v1.varyings[2][0] * inv_w1c;
     let v2_dist = v2.varyings[2][0] * inv_w2c;
+    let v0_shadow = [
+        v0.varyings[3][0] * inv_w0c,
+        v0.varyings[3][1] * inv_w0c,
+        v0.varyings[3][2] * inv_w0c,
+        v0.varyings[3][3] * inv_w0c,
+    ];
+    let v1_shadow = [
+        v1.varyings[3][0] * inv_w1c,
+        v1.varyings[3][1] * inv_w1c,
+        v1.varyings[3][2] * inv_w1c,
+        v1.varyings[3][3] * inv_w1c,
+    ];
+    let v2_shadow = [
+        v2.varyings[3][0] * inv_w2c,
+        v2.varyings[3][1] * inv_w2c,
+        v2.varyings[3][2] * inv_w2c,
+        v2.varyings[3][3] * inv_w2c,
+    ];
     let v0_mat = v0.varyings[4][0] * inv_w0c;
     let v1_mat = v1.varyings[4][0] * inv_w1c;
     let v2_mat = v2.varyings[4][0] * inv_w2c;
@@ -789,6 +916,10 @@ pub fn rasterize_triangle_forger_blocks(
     let fog_b255 = fog_b.clamp(0.0, 1.0) * 255.0;
     let raytrace_materials = unsafe { crate::CPU_RAYTRACE_MODE != 0 };
     let water_phase = (crate::syscall::uptime_ms() & 0xFFFF) as f32 * 0.001;
+    let shadow_data = shadow.map(|s| s.data).unwrap_or(core::ptr::null());
+    let shadow_len = shadow.map(|s| s.len).unwrap_or(0);
+    let shadow_w = shadow.map(|s| s.width).unwrap_or(0);
+    let shadow_h = shadow.map(|s| s.height).unwrap_or(0);
 
     let mut a12 = s1[1] - s2[1];
     let mut b12 = s2[0] - s1[0];
@@ -888,7 +1019,6 @@ pub fn rasterize_triangle_forger_blocks(
                     let light = (bary0 * v0_light + bary1 * v1_light + bary2 * v2_light) * corr;
                     let dist = (bary0 * v0_dist + bary1 * v1_dist + bary2 * v2_dist) * corr;
                     let material = (bary0 * v0_mat + bary1 * v1_mat + bary2 * v2_mat) * corr;
-
                     let u_f = u_raw - (u_raw as i32) as f32;
                     let u_w = if u_f < 0.0 { u_f + 1.0 } else { u_f };
                     let v_f = v_raw - (v_raw as i32) as f32;
@@ -902,9 +1032,33 @@ pub fn rasterize_triangle_forger_blocks(
                     let tex_g = ((texel >> 8) & 0xFF) as f32;
                     let tex_b = (texel & 0xFF) as f32;
 
-                    let mut r = tex_r * light;
-                    let mut g = tex_g * light;
-                    let mut b = tex_b * light;
+                    let visibility = if shadow_strength > 0.001 {
+                        let sh_x = (bary0 * v0_shadow[0] + bary1 * v1_shadow[0] + bary2 * v2_shadow[0]) * corr;
+                        let sh_y = (bary0 * v0_shadow[1] + bary1 * v1_shadow[1] + bary2 * v2_shadow[1]) * corr;
+                        let sh_z = (bary0 * v0_shadow[2] + bary1 * v1_shadow[2] + bary2 * v2_shadow[2]) * corr;
+                        let sh_w = (bary0 * v0_shadow[3] + bary1 * v1_shadow[3] + bary2 * v2_shadow[3]) * corr;
+                        forger_shadow_visibility(
+                            shadow_data,
+                            shadow_len,
+                            shadow_w,
+                            shadow_h,
+                            shadow_strength,
+                            shadow_texel_x,
+                            shadow_texel_y,
+                            sh_x,
+                            sh_y,
+                            sh_z,
+                            sh_w,
+                            material,
+                        )
+                    } else {
+                        1.0
+                    };
+
+                    let lit = light * visibility;
+                    let mut r = tex_r * lit;
+                    let mut g = tex_g * lit;
+                    let mut b = tex_b * lit;
 
                     if raytrace_materials && material > 0.9 && tex_a < 220 {
                         let shaded = shade_forger_water(
@@ -981,30 +1135,21 @@ fn narrow_band(v: f32, center: f32, half_width: f32) -> f32 {
     }
 }
 
-#[inline(always)]
-fn unpack_rgb(color: u32) -> (f32, f32, f32) {
-    (
-        ((color >> 16) & 0xFF) as f32,
-        ((color >> 8) & 0xFF) as f32,
-        (color & 0xFF) as f32,
-    )
-}
-
 /// Screen-space CPU water polish for Forger.
 ///
-/// The block fast path has no direct world query here, so the "ray" is a cheap
-/// screen-space reflection: sample already-rendered pixels above the water,
-/// distort them by ripples, then add caustic bands and shoreline highlights.
+/// Keep this self-contained and deterministic: the parallel rasterizer writes
+/// the framebuffer while this runs, so sampling framebuffer color here creates
+/// visible feedback and stale-frame artifacts.
 pub(crate) fn shade_forger_water(
     mut r: f32,
     mut g: f32,
     mut b: f32,
     px: i32,
     py: i32,
-    fb_w: u32,
-    fb_h: u32,
-    color_ptr: *mut u32,
-    has_color: bool,
+    _fb_w: u32,
+    _fb_h: u32,
+    _color_ptr: *mut u32,
+    _has_color: bool,
     depth: f32,
     u_raw: f32,
     v_raw: f32,
@@ -1016,84 +1161,45 @@ pub(crate) fn shade_forger_water(
     let ripple_a = fast_fract(u_raw * 31.0 + v_raw * 17.0 + phase * 0.37);
     let ripple_b = fast_fract(u_raw * -13.0 + v_raw * 41.0 + phase * 0.23);
     let ripple_c = fast_fract((px as f32) * 0.019 + (py as f32) * 0.031 + phase * 0.19);
+    let view_depth = (1.0 - depth).clamp(0.0, 1.0);
 
-    if has_color && !color_ptr.is_null() && fb_w > 0 && fb_h > 0 {
-        let sx = (px + ((ripple_a - 0.5) * 24.0 + (ripple_b - 0.5) * 12.0) as i32)
-            .max(0)
-            .min(fb_w as i32 - 1);
-        let perspective_pull = (1.0 - depth).clamp(0.0, 1.0);
-        let sample_up = 10 + (perspective_pull * 92.0) as i32 + (ripple_c * 22.0) as i32;
-        let sy = (py - sample_up).max(0).min(fb_h as i32 - 1);
-        let sample = unsafe { *color_ptr.add((sy as u32 * fb_w + sx as u32) as usize) };
-        let (sr, sg, sb) = unpack_rgb(sample);
-        let luma = sr * 0.30 + sg * 0.59 + sb * 0.11;
-        let water_like = sb > sr * 1.22 && sb > sg * 1.10;
-        let sky_like = luma < 12.0;
-        let shore_like = !water_like && !sky_like;
-        let reflect = if shore_like {
-            0.58
-        } else if sky_like {
-            0.12
-        } else {
-            0.28
-        };
-
-        let refl_r = if shore_like {
-            (sr * 1.18).min(255.0)
-        } else {
-            sr
-        };
-        let refl_g = if shore_like {
-            (sg * 1.16).min(255.0)
-        } else {
-            sg
-        };
-        let refl_b = if shore_like {
-            (sb * 1.08).min(255.0)
-        } else {
-            sb
-        };
-        r = r * (1.0 - reflect) + refl_r * reflect;
-        g = g * (1.0 - reflect) + refl_g * reflect;
-        b = b * (1.0 - reflect) + refl_b * reflect;
-
-        if shore_like {
-            let foam_line = narrow_band(
-                fast_fract(u_raw * 11.0 + v_raw * 7.0 + phase * 0.32),
-                0.52,
-                0.055,
-            );
-            let foam = (foam_line * (0.55 + ripple_b * 0.45)).min(1.0);
-            r = (r + 42.0 * foam).min(255.0);
-            g = (g + 64.0 * foam).min(255.0);
-            b = (b + 72.0 * foam).min(255.0);
-        }
-    }
+    let water_r = 24.0 + fog_r255 * 0.10 + view_depth * 20.0;
+    let water_g = 72.0 + fog_g255 * 0.14 + view_depth * 28.0;
+    let water_b = 138.0 + fog_b255 * 0.10 + view_depth * 38.0;
+    let tint = 0.32 + ripple_c * 0.06;
+    r = r * (1.0 - tint) + water_r * tint;
+    g = g * (1.0 - tint) + water_g * tint;
+    b = b * (1.0 - tint) + water_b * tint;
 
     let ca_a = narrow_band(
-        fast_fract(u_raw * 23.0 + v_raw * 15.0 + phase * 0.46),
+        fast_fract(u_raw * 13.0 + v_raw * 8.0 + phase * 0.21),
         0.50,
-        0.045,
+        0.030,
     );
     let ca_b = narrow_band(
-        fast_fract(u_raw * -17.0 + v_raw * 27.0 + phase * 0.29),
+        fast_fract(u_raw * -9.0 + v_raw * 15.0 + phase * 0.17),
         0.48,
-        0.035,
+        0.026,
     );
-    let caustic = (ca_a * 0.62 + ca_b * 0.48).min(0.9);
-    r = (r + (42.0 + fog_r255 * 0.08) * caustic).min(255.0);
-    g = (g + (80.0 + fog_g255 * 0.08) * caustic).min(255.0);
-    b = (b + 112.0 * caustic).min(255.0);
+    let caustic = ((ca_a * 0.16 + ca_b * 0.12) * (0.45 + view_depth * 0.55)).min(0.22);
+    r = (r + (22.0 + fog_r255 * 0.03) * caustic).min(255.0);
+    g = (g + (44.0 + fog_g255 * 0.04) * caustic).min(255.0);
+    b = (b + 58.0 * caustic).min(255.0);
 
     let glint = narrow_band(
-        fast_fract(u_raw * 47.0 + v_raw * 19.0 + phase * 0.73),
+        fast_fract(u_raw * 29.0 + v_raw * 11.0 + phase * 0.43),
         0.82,
-        0.035,
+        0.020,
     );
-    let fresnel = (0.18 + glint * 0.42).min(0.55);
-    r = r * (1.0 - fresnel) + (fog_r255 + 38.0).min(255.0) * fresnel;
-    g = g * (1.0 - fresnel) + (fog_g255 + 58.0).min(255.0) * fresnel;
-    b = b * (1.0 - fresnel) + 255.0 * fresnel;
+    let fresnel = (0.08 + view_depth * 0.10 + glint * 0.18).min(0.26);
+    r = r * (1.0 - fresnel) + (fog_r255 + 24.0).min(255.0) * fresnel;
+    g = g * (1.0 - fresnel) + (fog_g255 + 34.0).min(255.0) * fresnel;
+    b = b * (1.0 - fresnel) + 235.0 * fresnel;
+
+    let soft_wave = (ripple_a - 0.5) * 5.0 + (ripple_b - 0.5) * 3.0;
+    r = (r + soft_wave).clamp(0.0, 255.0);
+    g = (g + soft_wave * 1.2).clamp(0.0, 255.0);
+    b = (b + soft_wave * 1.7).clamp(0.0, 255.0);
 
     (r, g, b)
 }

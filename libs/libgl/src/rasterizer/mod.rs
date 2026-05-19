@@ -486,11 +486,15 @@ pub enum FastPathInfo {
     /// atlas texture, scalar vertex light, fog, and material-aware water polish.
     ForgerBlocks {
         tex: raster::ResolvedTexture,
+        shadow: Option<raster::ResolvedDepthTexture>,
         fog_r: f32,
         fog_g: f32,
         fog_b: f32,
         fog_start: f32,
         fog_inv_range: f32,
+        shadow_strength: f32,
+        shadow_texel_x: f32,
+        shadow_texel_y: f32,
     },
 }
 
@@ -507,20 +511,31 @@ fn detect_fast_path(
 
     if is_forger_block_program(program) {
         let shadow_strength = uniform_scalar(program, uniforms, "uShadowStrength").unwrap_or(1.0);
-        if shadow_strength <= 0.001 {
-            let fog = uniform_vec3(program, uniforms, "uFogColor").unwrap_or([0.55, 0.65, 0.90]);
-            let fog_start = uniform_scalar(program, uniforms, "uFogStart").unwrap_or(32.0);
-            let fog_end = uniform_scalar(program, uniforms, "uFogEnd").unwrap_or(fog_start + 1.0);
-            let fog_range = (fog_end - fog_start).abs().max(0.001);
-            return raster::ResolvedTexture::resolve_unit0().map(|tex| FastPathInfo::ForgerBlocks {
-                tex,
-                fog_r: fog[0],
-                fog_g: fog[1],
-                fog_b: fog[2],
-                fog_start,
-                fog_inv_range: 1.0 / fog_range,
-            });
-        }
+        let fog = uniform_vec3(program, uniforms, "uFogColor").unwrap_or([0.55, 0.65, 0.90]);
+        let fog_start = uniform_scalar(program, uniforms, "uFogStart").unwrap_or(32.0);
+        let fog_end = uniform_scalar(program, uniforms, "uFogEnd").unwrap_or(fog_start + 1.0);
+        let fog_range = (fog_end - fog_start).abs().max(0.001);
+        let texel = uniform_vec2(program, uniforms, "uShadowTexelSize").unwrap_or([1.0 / 1024.0, 1.0 / 1024.0]);
+        let shadow_unit = uniform_scalar(program, uniforms, "uShadowMap")
+            .map(|v| (v + 0.5).clamp(0.0, (crate::state::MAX_TEXTURE_UNITS - 1) as f32) as usize)
+            .unwrap_or(7);
+        let shadow = if shadow_strength > 0.001 {
+            raster::ResolvedDepthTexture::resolve_unit(shadow_unit)
+        } else {
+            None
+        };
+        return raster::ResolvedTexture::resolve_unit0().map(|tex| FastPathInfo::ForgerBlocks {
+            tex,
+            shadow,
+            fog_r: fog[0],
+            fog_g: fog[1],
+            fog_b: fog[2],
+            fog_start,
+            fog_inv_range: 1.0 / fog_range,
+            shadow_strength: if shadow.is_some() { shadow_strength } else { 0.0 },
+            shadow_texel_x: texel[0],
+            shadow_texel_y: texel[1],
+        });
     }
 
     if fs_ir.instructions.len() <= 20 && program.varyings.len() == 2 {
@@ -567,6 +582,15 @@ fn uniform_vec3(
 ) -> Option<[f32; 3]> {
     let slot = find_uniform_slot(program, name)?;
     uniforms.get(slot).map(|v| [v[0], v[1], v[2]])
+}
+
+fn uniform_vec2(
+    program: &crate::shader::GlProgram,
+    uniforms: &[[f32; 4]],
+    name: &str,
+) -> Option<[f32; 2]> {
+    let slot = find_uniform_slot(program, name)?;
+    uniforms.get(slot).map(|v| [v[0], v[1]])
 }
 
 fn find_uniform_slot(program: &crate::shader::GlProgram, name: &str) -> Option<usize> {
@@ -767,8 +791,8 @@ fn process_triangle(
             Some(FastPathInfo::Simple { tex, mat_r, mat_g, mat_b }) => {
                 raster::rasterize_triangle_fast(ctx, tex, *mat_r, *mat_g, *mat_b, v0, v1, v2, &s0, &s1, &s2, fb_w, fb_h);
             }
-            Some(FastPathInfo::ForgerBlocks { tex, fog_r, fog_g, fog_b, fog_start, fog_inv_range }) => {
-                raster::rasterize_triangle_forger_blocks(ctx, tex, *fog_r, *fog_g, *fog_b, *fog_start, *fog_inv_range, v0, v1, v2, &s0, &s1, &s2, fb_w, fb_h);
+            Some(FastPathInfo::ForgerBlocks { tex, shadow, fog_r, fog_g, fog_b, fog_start, fog_inv_range, shadow_strength, shadow_texel_x, shadow_texel_y }) => {
+                raster::rasterize_triangle_forger_blocks(ctx, tex, *fog_r, *fog_g, *fog_b, *fog_start, *fog_inv_range, shadow.as_ref(), *shadow_strength, *shadow_texel_x, *shadow_texel_y, v0, v1, v2, &s0, &s1, &s2, fb_w, fb_h);
             }
             None => {
                 raster::rasterize_triangle(ctx, fs_ir, uniforms, fs_exec, fs_jit, v0, v1, v2, &s0, &s1, &s2, num_varyings, fb_w, fb_h);
@@ -801,8 +825,8 @@ fn process_triangle(
             Some(FastPathInfo::Simple { tex, mat_r, mat_g, mat_b }) => {
                 raster::rasterize_triangle_fast(ctx, tex, *mat_r, *mat_g, *mat_b, &t[0], &t[1], &t[2], &s0, &s1, &s2, fb_w, fb_h);
             }
-            Some(FastPathInfo::ForgerBlocks { tex, fog_r, fog_g, fog_b, fog_start, fog_inv_range }) => {
-                raster::rasterize_triangle_forger_blocks(ctx, tex, *fog_r, *fog_g, *fog_b, *fog_start, *fog_inv_range, &t[0], &t[1], &t[2], &s0, &s1, &s2, fb_w, fb_h);
+            Some(FastPathInfo::ForgerBlocks { tex, shadow, fog_r, fog_g, fog_b, fog_start, fog_inv_range, shadow_strength, shadow_texel_x, shadow_texel_y }) => {
+                raster::rasterize_triangle_forger_blocks(ctx, tex, *fog_r, *fog_g, *fog_b, *fog_start, *fog_inv_range, shadow.as_ref(), *shadow_strength, *shadow_texel_x, *shadow_texel_y, &t[0], &t[1], &t[2], &s0, &s1, &s2, fb_w, fb_h);
             }
             None => {
                 raster::rasterize_triangle(ctx, fs_ir, uniforms, fs_exec, fs_jit, &t[0], &t[1], &t[2], &s0, &s1, &s2, t[0].num_varyings, fb_w, fb_h);

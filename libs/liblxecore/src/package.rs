@@ -2053,11 +2053,13 @@ fn mark_installed(
     ensure_dir(&db_dir);
     let path = installed_package_path(config, &info.package, rootfs);
     let body = alloc::format!(
-        "Package: {}\nVersion: {}\nRootFS: {}\nFilename: {}\nFiles: {}\n{}",
+        "Package: {}\nVersion: {}\nRootFS: {}\nFilename: {}\nDepends: {}\nPre-Depends: {}\nFiles: {}\n{}",
         info.package,
         info.version,
         rootfs,
         info.filename,
+        info.depends,
+        info.pre_depends,
         files,
         manifest
     );
@@ -2102,6 +2104,15 @@ fn dpkg_status_record_from_marker(
     let package = marker_field(marker, "Package")?;
     let version = marker_field(marker, "Version")?;
     let filename = marker_field(marker, "Filename").unwrap_or("");
+    let index_info = find_package_in_index(config, package);
+    let depends = marker_field(marker, "Depends")
+        .filter(|value| !value.is_empty())
+        .or_else(|| index_info.as_ref().map(|info| info.depends.as_str()))
+        .unwrap_or("");
+    let pre_depends = marker_field(marker, "Pre-Depends")
+        .filter(|value| !value.is_empty())
+        .or_else(|| index_info.as_ref().map(|info| info.pre_depends.as_str()))
+        .unwrap_or("");
     let arch = package_arch_from_filename(filename, &config.apt_arch);
     let installed_size = installed_size_from_marker(rootfs, marker);
     let mut record = String::new();
@@ -2121,6 +2132,16 @@ fn dpkg_status_record_from_marker(
     record.push_str("Version: ");
     record.push_str(version);
     record.push('\n');
+    if !pre_depends.is_empty() {
+        record.push_str("Pre-Depends: ");
+        record.push_str(pre_depends);
+        record.push('\n');
+    }
+    if !depends.is_empty() {
+        record.push_str("Depends: ");
+        record.push_str(depends);
+        record.push('\n');
+    }
     record.push_str("Description: LXE bootstrapped Debian package ");
     record.push_str(package);
     record.push('\n');
