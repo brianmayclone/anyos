@@ -68,6 +68,20 @@ pub fn open(name: &str) -> u32 {
 /// truncated.  Very large writes may be accepted partially, matching the old
 /// byte-stream behavior used by stdout-style pipes.
 pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
+    write_inner(pipe_id, data, true)
+}
+
+/// Write data without running PTY input notifications.
+///
+/// PTY slave output is itself written through named pipes. If that output were
+/// to run the master-input notification path while the PTY lock is already
+/// held, immediate echo can either recurse into the line discipline or lose the
+/// wakeup through a non-blocking lock attempt.
+pub fn write_no_pty_notify(pipe_id: u32, data: &[u8]) -> u32 {
+    write_inner(pipe_id, data, false)
+}
+
+fn write_inner(pipe_id: u32, data: &[u8], notify_pty: bool) -> u32 {
     if data.is_empty() {
         return 0;
     }
@@ -90,7 +104,7 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
         }
     };
 
-    if written != u32::MAX && written != 0 {
+    if notify_pty && written != u32::MAX && written != 0 {
         crate::ipc::pty::notify_input_pipe_written(pipe_id);
     }
 

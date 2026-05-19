@@ -47,6 +47,8 @@ struct Pty {
     input_pipe: u32,
     output_pipe: u32,
     termios: Termios,
+    rows: u16,
+    cols: u16,
     read_buf: VecDeque<u8>,
     line_buf: Vec<u8>,
 }
@@ -64,6 +66,8 @@ pub fn create(input_pipe: u32, output_pipe: u32) -> u32 {
         input_pipe,
         output_pipe,
         termios: Termios::default(),
+        rows: 25,
+        cols: 80,
         read_buf: VecDeque::new(),
         line_buf: Vec::new(),
     });
@@ -95,6 +99,56 @@ pub fn set_termios(id: u32, termios: Termios) -> bool {
     }
 }
 
+pub fn get_winsize(id: u32) -> Option<(u16, u16)> {
+    PTYS
+        .lock()
+        .iter()
+        .find(|pty| pty.id == id)
+        .map(|pty| (pty.rows, pty.cols))
+}
+
+pub fn set_winsize(id: u32, rows: u16, cols: u16) -> bool {
+    if rows == 0 || cols == 0 {
+        return false;
+    }
+    let changed = {
+        let mut ptys = PTYS.lock();
+        if let Some(pty) = ptys.iter_mut().find(|pty| pty.id == id) {
+            let changed = pty.rows != rows || pty.cols != cols;
+            pty.rows = rows;
+            pty.cols = cols;
+            changed
+        } else {
+            return false;
+        }
+    };
+    if changed {
+        let _ = crate::task::scheduler::send_signal_to_pty(id, crate::ipc::signal::SIGWINCH);
+    }
+    true
+}
+
+pub fn set_winsize_by_input_pipe(input_pipe: u32, rows: u16, cols: u16) -> bool {
+    if input_pipe == 0 || rows == 0 || cols == 0 {
+        return false;
+    }
+    let (id, changed) = {
+        let mut ptys = PTYS.lock();
+        if let Some(pty) = ptys.iter_mut().find(|pty| pty.input_pipe == input_pipe) {
+            let changed = pty.rows != rows || pty.cols != cols;
+            pty.rows = rows;
+            pty.cols = cols;
+            (pty.id, changed)
+        } else {
+            return false;
+        }
+    };
+    if changed {
+        let _ = crate::task::scheduler::send_signal_to_pty(id, crate::ipc::signal::SIGWINCH);
+    }
+    true
+}
+
 /// Called by the named-pipe layer when a terminal master writes input bytes.
 ///
 /// This makes PTY echo and canonical editing happen at input time, just like a
@@ -106,10 +160,7 @@ pub fn notify_input_pipe_written(input_pipe: u32) {
         return;
     }
 
-    let Some(mut ptys) = PTYS.try_lock() else {
-        return;
-    };
-
+    let mut ptys = PTYS.lock();
     for pty in ptys.iter_mut().filter(|pty| pty.input_pipe == input_pipe) {
         pty.pump_master_input();
     }
@@ -165,12 +216,12 @@ pub fn write_slave(id: u32, data: &[u8]) -> u32 {
             out.push(byte);
         }
         if out.len() >= 4096 {
-            let _ = crate::ipc::pipe::write(output_pipe, &out);
+            let _ = crate::ipc::pipe::write_no_pty_notify(output_pipe, &out);
             out.clear();
         }
     }
     if !out.is_empty() {
-        let _ = crate::ipc::pipe::write(output_pipe, &out);
+        let _ = crate::ipc::pipe::write_no_pty_notify(output_pipe, &out);
     }
     data.len() as u32
 }
@@ -232,6 +283,6 @@ impl Pty {
     }
 
     fn echo(&self, bytes: &[u8]) {
-        let _ = crate::ipc::pipe::write(self.output_pipe, bytes);
+        let _ = crate::ipc::pipe::write_no_pty_notify(self.output_pipe, bytes);
     }
 }

@@ -156,6 +156,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_CON_POLL_KEY, "con_poll_key"),
     (SYS_CON_GET_SIZE, "con_get_size"),
     (SYS_CON_SET_MODE, "con_set_mode"),
+    (SYS_PTY_SET_WINSIZE, "pty_set_winsize"),
     // Platform / thermal / ACPI / I²C
     (SYS_THERMAL_READ, "thermal_read"),
     (SYS_THERMAL_CPU, "thermal_cpu"),

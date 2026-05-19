@@ -260,6 +260,7 @@ pub const SYS_CON_POLL_KEY: u32 = 292;
 pub const SYS_CON_GET_SIZE: u32 = 293;
 pub const SYS_CON_SET_MODE: u32 = 294;
 pub const SYS_CON_RESIZE: u32 = 295;
+pub const SYS_PTY_SET_WINSIZE: u32 = 296;
 
 // Debug / trace (anyTrace)
 pub const SYS_DEBUG_ATTACH: u32 = 300;

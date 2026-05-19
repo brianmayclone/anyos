@@ -141,6 +141,7 @@ fn shell(config: &mut LxeConfig, args: &[&str]) {
             return;
         }
     };
+    ensure_rootfs_layout(config);
     let Some(path) = find_linux_bash(&config.rootfs) else {
         log_error!("lxe shell: bash not found");
         log_warn!("lxe shell: run 'lxe init' or install bash first");

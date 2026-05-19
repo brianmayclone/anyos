@@ -18,6 +18,7 @@ anyos_std::entry!(main);
 const WIN_W: u32 = 900;
 const WIN_H: u32 = 640;
 const FONT_SIZE: u16 = 14;
+const CELL_W: i32 = 8;
 const LINE_H: i32 = 18;
 const PAD_X: i32 = 10;
 const PAD_Y: i32 = 8;
@@ -26,7 +27,10 @@ const FG: u32 = 0xFFE8E8EA;
 const DIM: u32 = 0xFF8B8D98;
 const ERROR: u32 = 0xFFFF6B6B;
 const CURSOR: u32 = 0xFFE8E8EA;
+const SCROLL_TRACK: u32 = 0x332A2D38;
+const SCROLL_THUMB: u32 = 0xAA8B8D98;
 const MAX_LINES: usize = 2000;
+const WHEEL_SCROLL_LINES: usize = 3;
 
 struct LxeShellApp {
     win: anyui::Window,
@@ -35,11 +39,12 @@ struct LxeShellApp {
     stdout_pipe: u32,
     child_tid: u32,
     lines: Vec<String>,
+    cursor_row: usize,
     cursor_col: usize,
+    scrollback_lines: usize,
     in_escape: bool,
     escape: Vec<u8>,
-    pending_echo: Vec<u8>,
-    skip_erase_echo: u8,
+    line_drawing: bool,
     running: bool,
     dirty: bool,
 }
@@ -70,11 +75,12 @@ fn main() {
             stdout_pipe: 0,
             child_tid: 0,
             lines: Vec::new(),
+            cursor_row: 0,
             cursor_col: 0,
+            scrollback_lines: 0,
             in_escape: false,
             escape: Vec::new(),
-            pending_echo: Vec::new(),
-            skip_erase_echo: 0,
+            line_drawing: false,
             running: false,
             dirty: true,
         });
@@ -93,7 +99,12 @@ fn main() {
         app().canvas.focus();
     });
 
+    app().canvas.on_wheel(|dz| {
+        handle_wheel(dz);
+    });
+
     app().win.on_resize(|_| {
+        update_pty_size();
         app().dirty = true;
         render();
         app().canvas.focus();
@@ -165,6 +176,7 @@ fn start_lxe_shell() {
     app().stdin_pipe = stdin_pipe;
     app().child_tid = tid;
     app().running = true;
+    update_pty_size();
 }
 
 fn stop_child() {
@@ -218,7 +230,21 @@ fn poll_child() {
     }
 }
 
+fn update_pty_size() {
+    let stdin_pipe = app().stdin_pipe;
+    if stdin_pipe == 0 {
+        return;
+    }
+    let cols = terminal_cols().clamp(20, u16::MAX as usize) as u16;
+    let rows = visible_rows().clamp(5, u16::MAX as usize) as u16;
+    let _ = ipc::pty_set_winsize(stdin_pipe, cols, rows);
+}
+
 fn handle_key(ke: &KeyEvent) {
+    if handle_scrollback_key(ke) {
+        return;
+    }
+
     if app().stdin_pipe == 0 || !app().running {
         return;
     }
@@ -226,33 +252,32 @@ fn handle_key(ke: &KeyEvent) {
     let mut tmp = [0u8; 8];
     let data = key_bytes(ke, &mut tmp);
     if !data.is_empty() {
-        local_echo(data);
+        app().scrollback_lines = 0;
         let _ = ipc::pipe_write(app().stdin_pipe, data);
     }
 }
 
-fn local_echo(data: &[u8]) {
-    let mut changed = false;
-    for &b in data {
-        match b {
-            0x20..=0x7e => {
-                insert_char(b as char);
-                app().pending_echo.push(b);
-                changed = true;
-            }
-            b'\x7f' | b'\x08' => {
-                backspace();
-                app().skip_erase_echo = 3;
-                changed = true;
-            }
-            _ => {}
-        }
+fn handle_scrollback_key(ke: &KeyEvent) -> bool {
+    if !ke.shift() {
+        return false;
     }
-    if changed {
-        app().dirty = true;
-        render();
-        app().dirty = false;
+
+    match ke.keycode {
+        KEY_PAGE_UP => scroll_by(visible_rows().max(1) as isize),
+        KEY_PAGE_DOWN => scroll_by(-(visible_rows().max(1) as isize)),
+        KEY_HOME => scroll_to_top(),
+        KEY_END => scroll_to_bottom(),
+        _ => return false,
     }
+    true
+}
+
+fn handle_wheel(dz: i32) {
+    if dz == 0 {
+        return;
+    }
+    let delta = dz as isize * WHEEL_SCROLL_LINES as isize;
+    scroll_by(delta);
 }
 
 fn key_bytes<'a>(ke: &KeyEvent, tmp: &'a mut [u8; 8]) -> &'a [u8] {
@@ -299,17 +324,19 @@ fn push_line(text: &str, _color: u32) {
     if a.lines.is_empty() {
         a.lines.push(String::new());
     }
+    let keep_view = a.scrollback_lines > 0;
     a.lines.push(String::from(text));
+    if keep_view {
+        a.scrollback_lines = a.scrollback_lines.saturating_add(1);
+    }
     trim_lines(a);
+    a.cursor_row = a.lines.len().saturating_sub(1);
     a.cursor_col = a.lines.last().map(|s| s.len()).unwrap_or(0);
+    clamp_scrollback(a);
     a.dirty = true;
 }
 
 fn feed_output_byte(b: u8) {
-    if consume_local_echo(b) {
-        return;
-    }
-
     if app().in_escape {
         app().escape.push(b);
         if escape_sequence_complete(b) {
@@ -330,11 +357,19 @@ fn feed_output_byte(b: u8) {
         b'\n' => newline(),
         b'\x08' => backspace(),
         b'\t' => {
-            for _ in 0..4 {
+            let next_tab = ((app().cursor_col / 8) + 1) * 8;
+            while app().cursor_col < next_tab {
                 put_char(' ');
             }
         }
-        0x20..=0x7e => put_char(b as char),
+        0x20..=0x7e => {
+            let ch = if app().line_drawing {
+                acs_char(b)
+            } else {
+                b as char
+            };
+            put_char(ch);
+        }
         _ => {}
     }
     app().dirty = true;
@@ -354,20 +389,6 @@ fn escape_sequence_complete(b: u8) -> bool {
     }
 }
 
-fn consume_local_echo(b: u8) -> bool {
-    if !app().pending_echo.is_empty() && app().pending_echo[0] == b {
-        app().pending_echo.remove(0);
-        return true;
-    }
-
-    if app().skip_erase_echo > 0 && (b == b'\x08' || b == b'\x7f' || b == b' ') {
-        app().skip_erase_echo -= 1;
-        return true;
-    }
-
-    false
-}
-
 fn finish_escape() {
     if app().escape.is_empty() {
         app().in_escape = false;
@@ -375,6 +396,13 @@ fn finish_escape() {
     }
 
     if app().escape[0] != b'[' {
+        if matches!(app().escape[0], b'(' | b')' | b'*' | b'+') {
+            match app().escape.get(1).copied().unwrap_or(b'B') {
+                b'0' => app().line_drawing = true,
+                b'B' | b'A' => app().line_drawing = false,
+                _ => {}
+            }
+        }
         app().in_escape = false;
         app().escape.clear();
         app().dirty = true;
@@ -383,14 +411,22 @@ fn finish_escape() {
 
     let final_byte = *app().escape.last().unwrap_or(&0);
     match final_byte {
-        b'K' => erase_line(csi_first_number().unwrap_or(0)),
-        b'J' => {
-            if csi_first_number().unwrap_or(0) == 2 {
-                app().lines.clear();
-                app().lines.push(String::new());
-                app().cursor_col = 0;
-            }
+        b'A' => {
+            let n = csi_first_number().unwrap_or(1);
+            app().cursor_row = app().cursor_row.saturating_sub(n);
+            ensure_cursor_line();
         }
+        b'B' => {
+            let n = csi_first_number().unwrap_or(1);
+            app().cursor_row = app().cursor_row.saturating_add(n);
+            ensure_cursor_line();
+        }
+        b'K' => erase_line(csi_first_number().unwrap_or(0)),
+        b'J' => match csi_first_number().unwrap_or(0) {
+            1 => erase_to_screen_start(),
+            2 | 3 => clear_screen(),
+            _ => erase_to_screen_end(),
+        },
         b'C' => {
             let n = csi_first_number().unwrap_or(1);
             app().cursor_col = app().cursor_col.saturating_add(n);
@@ -404,10 +440,23 @@ fn finish_escape() {
             app().cursor_col = col.saturating_sub(1);
         }
         b'H' | b'f' => {
+            let row = csi_number_at(0).unwrap_or(1);
             let col = csi_number_at(1).unwrap_or(1);
+            app().cursor_row = row.saturating_sub(1);
             app().cursor_col = col.saturating_sub(1);
+            ensure_cursor_line();
         }
-        b'm' | b'h' | b'l' | b's' | b'u' => {}
+        b'd' => {
+            let row = csi_first_number().unwrap_or(1);
+            app().cursor_row = row.saturating_sub(1);
+            ensure_cursor_line();
+        }
+        b'h' | b'l' => {
+            if csi_is_private() && csi_has_number(1049) {
+                clear_screen();
+            }
+        }
+        b'm' | b's' | b'u' => {}
         _ => {}
     }
     app().in_escape = false;
@@ -450,19 +499,51 @@ fn csi_number_at(wanted: usize) -> Option<usize> {
     }
 }
 
+fn csi_is_private() -> bool {
+    app().escape.get(1).copied() == Some(b'?')
+}
+
+fn csi_has_number(needle: usize) -> bool {
+    let mut n = 0usize;
+    let mut seen = false;
+    for &b in &app().escape {
+        if b.is_ascii_digit() {
+            seen = true;
+            n = n.saturating_mul(10).saturating_add((b - b'0') as usize);
+        } else {
+            if seen && n == needle {
+                return true;
+            }
+            if b == b';' || b == b'?' {
+                n = 0;
+                seen = false;
+            } else if seen {
+                break;
+            }
+        }
+    }
+    seen && n == needle
+}
+
 fn newline() {
     let a = app();
-    a.lines.push(String::new());
+    let keep_view = a.scrollback_lines > 0;
+    a.cursor_row = a.cursor_row.saturating_add(1);
+    while a.lines.len() <= a.cursor_row {
+        a.lines.push(String::new());
+    }
+    if keep_view {
+        a.scrollback_lines = a.scrollback_lines.saturating_add(1);
+    }
     a.cursor_col = 0;
     trim_lines(a);
+    clamp_scrollback(a);
 }
 
 fn insert_char(ch: char) {
     let a = app();
-    if a.lines.is_empty() {
-        a.lines.push(String::new());
-    }
-    let line = a.lines.last_mut().unwrap();
+    ensure_cursor_line_for(a);
+    let line = &mut a.lines[a.cursor_row];
     let pos = a.cursor_col.min(line.len());
     line.insert(pos, ch);
     a.cursor_col = pos + ch.len_utf8();
@@ -470,10 +551,8 @@ fn insert_char(ch: char) {
 
 fn put_char(ch: char) {
     let a = app();
-    if a.lines.is_empty() {
-        a.lines.push(String::new());
-    }
-    let line = a.lines.last_mut().unwrap();
+    ensure_cursor_line_for(a);
+    let line = &mut a.lines[a.cursor_row];
     while a.cursor_col > line.len() {
         line.push(' ');
     }
@@ -490,7 +569,8 @@ fn backspace() {
     if a.lines.is_empty() || a.cursor_col == 0 {
         return;
     }
-    let line = a.lines.last_mut().unwrap();
+    ensure_cursor_line_for(a);
+    let line = &mut a.lines[a.cursor_row];
     let pos = a.cursor_col.min(line.len());
     if pos > 0 {
         line.remove(pos - 1);
@@ -503,7 +583,8 @@ fn erase_line(mode: usize) {
     if a.lines.is_empty() {
         return;
     }
-    let line = a.lines.last_mut().unwrap();
+    ensure_cursor_line_for(a);
+    let line = &mut a.lines[a.cursor_row];
     let pos = a.cursor_col.min(line.len());
     match mode {
         1 => {
@@ -515,10 +596,121 @@ fn erase_line(mode: usize) {
     }
 }
 
+fn clear_screen() {
+    let a = app();
+    a.lines.clear();
+    a.lines.push(String::new());
+    a.cursor_row = 0;
+    a.cursor_col = 0;
+    a.scrollback_lines = 0;
+}
+
+fn erase_to_screen_end() {
+    let a = app();
+    ensure_cursor_line_for(a);
+    let pos = a.cursor_col.min(a.lines[a.cursor_row].len());
+    a.lines[a.cursor_row].truncate(pos);
+    let start = a.cursor_row.saturating_add(1);
+    for line in a.lines.iter_mut().skip(start) {
+        line.clear();
+    }
+}
+
+fn erase_to_screen_start() {
+    let a = app();
+    ensure_cursor_line_for(a);
+    for line in a.lines.iter_mut().take(a.cursor_row) {
+        line.clear();
+    }
+    let pos = a.cursor_col.min(a.lines[a.cursor_row].len());
+    a.lines[a.cursor_row].replace_range(0..pos, &" ".repeat(pos));
+}
+
+fn ensure_cursor_line() {
+    let a = app();
+    ensure_cursor_line_for(a);
+}
+
+fn ensure_cursor_line_for(a: &mut LxeShellApp) {
+    if a.lines.is_empty() {
+        a.lines.push(String::new());
+    }
+    let max_row = a.cursor_row.min(MAX_LINES.saturating_sub(1));
+    a.cursor_row = max_row;
+    while a.lines.len() <= a.cursor_row {
+        a.lines.push(String::new());
+    }
+}
+
+fn acs_char(b: u8) -> char {
+    match b {
+        b'q' => '-',
+        b'x' => '|',
+        b'l' | b'k' | b'm' | b'j' | b't' | b'u' | b'v' | b'w' | b'n' => '+',
+        b'a' | b'f' | b'g' | b'~' => '.',
+        b'`' | b'\'' => '+',
+        _ => b as char,
+    }
+}
+
 fn trim_lines(a: &mut LxeShellApp) {
     while a.lines.len() > MAX_LINES {
         a.lines.remove(0);
+        a.cursor_row = a.cursor_row.saturating_sub(1);
     }
+    clamp_scrollback(a);
+}
+
+fn visible_rows() -> usize {
+    let h = app().canvas.get_height() as i32;
+    ((h - PAD_Y * 2).max(LINE_H) / LINE_H) as usize
+}
+
+fn terminal_cols() -> usize {
+    let (w, _) = app().canvas.get_size();
+    let w = w as i32;
+    ((w - PAD_X * 2 - 8).max(CELL_W) / CELL_W) as usize
+}
+
+fn max_scrollback(a: &LxeShellApp) -> usize {
+    a.lines.len().saturating_sub(visible_rows())
+}
+
+fn clamp_scrollback(a: &mut LxeShellApp) {
+    let max = max_scrollback(a);
+    if a.scrollback_lines > max {
+        a.scrollback_lines = max;
+    }
+}
+
+fn scroll_by(delta: isize) {
+    let a = app();
+    let max = max_scrollback(a);
+    let next = if delta >= 0 {
+        a.scrollback_lines.saturating_add(delta as usize)
+    } else {
+        a.scrollback_lines.saturating_sub((-delta) as usize)
+    };
+    a.scrollback_lines = next.min(max);
+    a.dirty = true;
+    render();
+    a.dirty = false;
+}
+
+fn scroll_to_top() {
+    let a = app();
+    a.scrollback_lines = max_scrollback(a);
+    a.dirty = true;
+    render();
+    a.dirty = false;
+}
+
+fn scroll_to_bottom() {
+    let a = app();
+    a.scrollback_lines = 0;
+    a.dirty = true;
+    render();
+    a.dirty = false;
 }
 
 fn render() {
@@ -526,22 +718,47 @@ fn render() {
     let canvas = a.canvas;
     canvas.clear(BG);
 
+    clamp_scrollback(a);
+    let (w, _) = canvas.get_size();
+    let w = w as i32;
     let h = canvas.get_height() as i32;
     let rows = ((h - PAD_Y * 2).max(LINE_H) / LINE_H) as usize;
-    let start = a.lines.len().saturating_sub(rows);
+    let bottom = a.lines.len().saturating_sub(a.scrollback_lines);
+    let start = bottom.saturating_sub(rows);
+    let end = bottom.min(a.lines.len());
     let mut y = PAD_Y;
-    for line in a.lines.iter().skip(start) {
+    for line in a.lines.iter().skip(start).take(end.saturating_sub(start)) {
         canvas.draw_text(PAD_X, y, FG, 4, FONT_SIZE, line);
         y += LINE_H;
     }
 
-    if a.running {
-        let visible_cursor_line = a.lines.len().saturating_sub(1) >= start;
-        if visible_cursor_line {
-            let cursor_row = a.lines.len().saturating_sub(1).saturating_sub(start);
-            let x = PAD_X + (a.cursor_col as i32 * 8);
+    if a.lines.len() > rows {
+        draw_scrollbar(canvas, w, h, rows, start);
+    }
+
+    if a.running && a.scrollback_lines == 0 {
+        if a.cursor_row >= start && a.cursor_row < end {
+            let cursor_row = a.cursor_row.saturating_sub(start);
+            let x = PAD_X + (a.cursor_col as i32 * CELL_W);
             let y = PAD_Y + cursor_row as i32 * LINE_H + LINE_H - 3;
-            canvas.fill_rect(x, y, 8, 2, CURSOR);
+            canvas.fill_rect(x, y, CELL_W as u32, 2, CURSOR);
         }
     }
+}
+
+fn draw_scrollbar(canvas: anyui::Canvas, w: i32, h: i32, rows: usize, start: usize) {
+    let track_x = (w - 6).max(PAD_X);
+    let track_y = PAD_Y;
+    let track_h = (h - PAD_Y * 2).max(LINE_H);
+    canvas.fill_rect(track_x, track_y, 3, track_h as u32, SCROLL_TRACK);
+
+    let total = app().lines.len().max(1);
+    let visible = rows.min(total).max(1);
+    let thumb_h = ((track_h as usize * visible) / total)
+        .max(18)
+        .min(track_h as usize) as i32;
+    let max_start = total.saturating_sub(visible).max(1);
+    let travel = (track_h - thumb_h).max(0);
+    let thumb_y = track_y + ((travel as usize * start.min(max_start)) / max_start) as i32;
+    canvas.fill_rect(track_x - 1, thumb_y, 5, thumb_h as u32, SCROLL_THUMB);
 }

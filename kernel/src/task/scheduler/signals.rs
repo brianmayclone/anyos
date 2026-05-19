@@ -92,6 +92,22 @@ pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
     false
 }
 
+/// Send a signal to every live thread attached to the given PTY.
+pub fn send_signal_to_pty(pty_id: u32, sig: u32) -> u32 {
+    if pty_id == 0 {
+        return 0;
+    }
+    let mut sent = 0u32;
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        for thread in sched.threads.iter_mut().filter(|thread| thread.pty_id == pty_id) {
+            thread.signals.send(sig);
+            sent = sent.saturating_add(1);
+        }
+    }
+    sent
+}
+
 /// Dequeue the lowest-numbered pending, unblocked signal for the current thread.
 pub fn current_signal_dequeue() -> Option<u32> {
     let mut guard = SCHEDULER.lock();

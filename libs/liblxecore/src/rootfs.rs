@@ -35,11 +35,24 @@ pub(crate) fn ensure_rootfs_layout(config: &LxeConfig) {
     ensure_dir(&alloc::format!("{}/etc/pam.d", rootfs));
     ensure_dir(&alloc::format!("{}/root", rootfs));
     ensure_linux_apt_dirs(rootfs);
+    let apt_keyring = "/usr/share/keyrings/debian-archive-keyring.gpg";
+    let apt_security_base = "http://deb.debian.org/debian-security";
     let _ = write_bytes_atomic(
         &alloc::format!("{}/etc/apt/sources.list", rootfs),
         alloc::format!(
-            "deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] {} {} {}\n",
+            "deb [signed-by={}] {} {} {}\n\
+             deb [signed-by={}] {} {}-updates {}\n\
+             deb [signed-by={}] {} {}-security {}\n",
+            apt_keyring,
             config.apt_base,
+            config.apt_dist,
+            config.apt_component,
+            apt_keyring,
+            config.apt_base,
+            config.apt_dist,
+            config.apt_component,
+            apt_keyring,
+            apt_security_base,
             config.apt_dist,
             config.apt_component
         )

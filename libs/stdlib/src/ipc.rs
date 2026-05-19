@@ -62,6 +62,16 @@ pub fn pipe_close(pipe_id: u32) -> u32 {
     syscall1(SYS_PIPE_CLOSE, pipe_id as u64)
 }
 
+/// Set the terminal window size for the PTY attached to a named input pipe.
+/// Returns true when a PTY was found and updated.
+pub fn pty_set_winsize(input_pipe: u32, cols: u16, rows: u16) -> bool {
+    if input_pipe == 0 || cols == 0 || rows == 0 {
+        return false;
+    }
+    let packed = ((cols as u32) << 16) | rows as u32;
+    syscall2(SYS_PTY_SET_WINSIZE, input_pipe as u64, packed as u64) == packed
+}
+
 // ─── Event Bus — System Events ────────────────────────────────────────
 
 /// Subscribe to system events. filter=0 means all events. Returns sub_id.

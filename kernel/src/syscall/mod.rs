@@ -466,6 +466,7 @@ pub(crate) fn dispatch_inner(
         SYS_CON_GET_SIZE => handlers::sys_con_get_size(),
         SYS_CON_SET_MODE => handlers::sys_con_set_mode(arg1 as u32),
         SYS_CON_RESIZE => handlers::sys_con_resize(arg1 as u32),
+        SYS_PTY_SET_WINSIZE => handlers::sys_pty_set_winsize(arg1 as u32, arg2 as u32),
 
         // Platform / thermal / ACPI / I²C
         #[cfg(target_arch = "x86_64")]

@@ -30,6 +30,7 @@ pub const SIGSTOP: u32 = 19;
 pub const SIGTSTP: u32 = 20;
 pub const SIGTTIN: u32 = 21;
 pub const SIGTTOU: u32 = 22;
+pub const SIGWINCH: u32 = 28;
 
 /// Sentinel value meaning "default action" (matches libc SIG_DFL = 0).
 pub const SIG_DFL: u64 = 0;
@@ -197,7 +198,7 @@ impl SignalState {
 
     /// Returns true if the default action for this signal is to ignore it.
     pub fn default_is_ignore(sig: u32) -> bool {
-        matches!(sig, SIGCHLD | SIGCONT)
+        matches!(sig, SIGCHLD | SIGCONT | SIGWINCH)
     }
 
     /// Returns true if the default action for this signal is to stop the process.

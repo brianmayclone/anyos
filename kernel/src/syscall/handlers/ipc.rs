@@ -87,6 +87,21 @@ pub fn sys_pipe_list(buf_ptr: u64, buf_size: u32) -> u32 {
     count as u32
 }
 
+/// Set the window size for the PTY attached to a named input pipe.
+///
+/// arg1=input_pipe_id, arg2=(cols<<16)|rows. This is intentionally scoped to
+/// the pipe endpoint owned by terminal frontends, so apps can update their PTY
+/// size without needing direct access to the slave fd.
+pub fn sys_pty_set_winsize(input_pipe: u32, packed: u32) -> u32 {
+    let rows = (packed & 0xFFFF) as u16;
+    let cols = (packed >> 16) as u16;
+    if crate::ipc::pty::set_winsize_by_input_pipe(input_pipe, rows, cols) {
+        packed
+    } else {
+        0
+    }
+}
+
 // =========================================================================
 // Event bus (SYS_EVT_*)
 // =========================================================================

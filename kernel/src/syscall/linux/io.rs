@@ -979,9 +979,12 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
                 if !handlers::helpers::is_user_range_accessible(arg, 8) {
                     return linux_err(EFAULT);
                 }
-                let packed = handlers::sys_con_get_size();
-                let cols = (packed >> 16) as u16;
-                let rows = (packed & 0xFFFF) as u16;
+                let (rows, cols) = if let Some(pty_id) = linux_fd_pty_id(fd) {
+                    crate::ipc::pty::get_winsize(pty_id).unwrap_or((25, 80))
+                } else {
+                    let packed = handlers::sys_con_get_size();
+                    ((packed & 0xFFFF) as u16, (packed >> 16) as u16)
+                };
                 unsafe {
                     *((arg + 0) as *mut u16) = rows;
                     *((arg + 2) as *mut u16) = cols;
@@ -998,6 +1001,13 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
             }
             if arg != 0 && !handlers::helpers::is_user_range_accessible(arg, 8) {
                 return linux_err(EFAULT);
+            }
+            if arg != 0 {
+                if let Some(pty_id) = linux_fd_pty_id(fd) {
+                    let rows = unsafe { *((arg + 0) as *const u16) };
+                    let cols = unsafe { *((arg + 2) as *const u16) };
+                    let _ = crate::ipc::pty::set_winsize(pty_id, rows, cols);
+                }
             }
             crate::serial_verbose_println!("lxe linux ioctl: TIOCSWINSZ fd={} -> ok", fd);
             0

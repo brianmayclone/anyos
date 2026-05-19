@@ -269,6 +269,7 @@ pub(crate) const SYS_CON_GET_SIZE: u32 = 293;
 pub(crate) const SYS_CON_SET_MODE: u32 = 294;
 /// Resize console: arg = (cols<<16)|rows. Returns new packed size.
 pub(crate) const SYS_CON_RESIZE: u32 = 295;
+pub(crate) const SYS_PTY_SET_WINSIZE: u32 = 296;
 
 // Debug / trace (anyTrace)
 pub(crate) const SYS_DEBUG_ATTACH: u32 = 300;
