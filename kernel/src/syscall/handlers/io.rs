@@ -476,10 +476,10 @@ pub fn sys_isatty(fd: u32) -> u32 {
     }
 }
 
-/// sys_ftruncate - Truncate a file by fd to zero length.
-/// arg1 = fd, arg2 = length (currently ignored, always truncates to 0).
+/// sys_ftruncate - Truncate a file by fd.
+/// arg1 = fd, arg2 = length.
 /// Returns 0 on success, u32::MAX on error.
-pub fn sys_ftruncate(fd: u32, _length: u32) -> u32 {
+pub fn sys_ftruncate(fd: u32, length: u32) -> u32 {
     use crate::fs::fd_table::FdKind;
     let global_id = match crate::task::scheduler::current_fd_get(fd) {
         Some(entry) => match entry.kind {
@@ -491,11 +491,7 @@ pub fn sys_ftruncate(fd: u32, _length: u32) -> u32 {
             return u32::MAX;
         }
     };
-    let path = match crate::fs::vfs::get_fd_path(global_id) {
-        Ok(p) => p,
-        Err(e) => return fs_err(e),
-    };
-    match crate::fs::vfs::truncate(&path) {
+    match crate::fs::vfs::ftruncate_to(global_id, length) {
         Ok(()) => 0,
         Err(e) => fs_err(e),
     }

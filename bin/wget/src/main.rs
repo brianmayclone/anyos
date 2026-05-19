@@ -15,7 +15,7 @@ const CONNECT_TIMEOUT: u32 = 10000;
 const MAX_REDIRECTS: usize = 20;
 const MAX_HTTP_REQUEST: usize = 2048;
 const RECV_BUF_SIZE: usize = 32 * 1024;
-const FILE_WRITE_CHUNK: usize = 16 * 1024;
+const FILE_WRITE_CHUNK: usize = 64 * 1024;
 const VERSION: &str = "1.0";
 
 // ── URL parsing ─────────────────────────────────────────────────────────────

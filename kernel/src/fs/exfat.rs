@@ -207,6 +207,7 @@ const EXFAT_EOC: u32 = 0xFFFFFFFF;
 const EXFAT_BAD: u32 = 0xFFFFFFF7;
 const EXFAT_FREE: u32 = 0x00000000;
 const APPEND_PREALLOC_MIN_BYTES: usize = 64 * 1024;
+const APPEND_PREALLOC_SMALL_WRITE_MIN_BYTES: usize = 16 * 1024;
 const APPEND_PREALLOC_CLUSTERS: u32 = 16;
 
 // Directory entry type codes (bit 7 = InUse)
@@ -509,10 +510,16 @@ pub struct ExFatFs {
 pub struct ExFatReadPlan {
     /// Contiguous (absolute_lba, sector_count) runs covering the file.
     pub runs: Vec<(u32, u32)>,
+    /// File offset of the first byte covered by `runs`, rounded down to a
+    /// cluster boundary. Full-file plans use zero.
+    pub base_offset: u64,
     /// Actual file size in bytes.
     pub file_size: u64,
     /// Physical disk ID for disk-aware I/O.
     pub disk_id: u32,
+    /// Last cluster touched by the plan, for sequential read seek caching.
+    pub hint_offset: u32,
+    pub hint_cluster: u32,
 }
 
 impl ExFatReadPlan {
@@ -557,7 +564,7 @@ impl ExFatReadPlan {
         let read_start = file_offset;
         let read_end = file_offset + wanted as u64;
         let mut copied = 0usize;
-        let mut run_file_start = 0u64;
+        let mut run_file_start = self.base_offset;
 
         for &(abs_lba, sector_count) in &self.runs {
             let run_bytes = sector_count as u64 * 512;
@@ -2570,8 +2577,11 @@ impl ExFatFs {
         if file_size == 0 || start_cluster < 2 {
             return ExFatReadPlan {
                 runs,
+                base_offset: 0,
                 file_size: file_size_u64,
                 disk_id: self.device_id,
+                hint_offset: 0,
+                hint_cluster: 0,
             };
         }
 
@@ -2582,8 +2592,11 @@ impl ExFatFs {
             runs.push((lba, n * spc));
             return ExFatReadPlan {
                 runs,
+                base_offset: 0,
                 file_size: file_size_u64,
                 disk_id: self.device_id,
+                hint_offset: n.saturating_sub(1).saturating_mul(self.cluster_size()),
+                hint_cluster: start_cluster.saturating_add(n.saturating_sub(1)),
             };
         }
 
@@ -2610,8 +2623,125 @@ impl ExFatFs {
 
         ExFatReadPlan {
             runs,
+            base_offset: 0,
             file_size: file_size_u64,
             disk_id: self.device_id,
+            hint_offset: 0,
+            hint_cluster: 0,
+        }
+    }
+
+    pub fn get_file_read_plan_range(
+        &self,
+        inode: u32,
+        file_size: u32,
+        offset: u32,
+        len: usize,
+        hint: Option<(u32, u32)>,
+    ) -> ExFatReadPlan {
+        let (start_cluster, contiguous) = decode_inode(inode);
+        let spc = self.sectors_per_cluster();
+        let cs = self.cluster_size();
+        let mut runs = Vec::new();
+        let file_size_u64 = file_size as u64;
+
+        if file_size == 0 || start_cluster < 2 || len == 0 || offset >= file_size {
+            return ExFatReadPlan {
+                runs,
+                base_offset: 0,
+                file_size: file_size_u64,
+                disk_id: self.device_id,
+                hint_offset: 0,
+                hint_cluster: 0,
+            };
+        }
+
+        let wanted = (file_size - offset).min(len.min(u32::MAX as usize) as u32);
+        let first_idx = offset / cs;
+        let base_offset = first_idx.saturating_mul(cs);
+        let bytes_from_base = offset - base_offset + wanted;
+        let needed_clusters = ((bytes_from_base + cs - 1) / cs).max(1);
+
+        if contiguous {
+            let first_cluster = start_cluster + first_idx;
+            runs.push((self.cluster_to_lba(first_cluster), needed_clusters * spc));
+            return ExFatReadPlan {
+                runs,
+                base_offset: base_offset as u64,
+                file_size: file_size_u64,
+                disk_id: self.device_id,
+                hint_offset: base_offset + needed_clusters.saturating_sub(1) * cs,
+                hint_cluster: first_cluster + needed_clusters.saturating_sub(1),
+            };
+        }
+
+        let mut cluster = start_cluster;
+        let mut cluster_idx = 0u32;
+        if let Some((hint_offset, hint_cluster)) = hint {
+            let hint_idx = hint_offset / cs;
+            if hint_cluster >= 2 && hint_offset % cs == 0 && hint_idx <= first_idx {
+                cluster = hint_cluster;
+                cluster_idx = hint_idx;
+            }
+        }
+
+        while cluster_idx < first_idx {
+            match self.next_cluster(cluster) {
+                Some(next) => {
+                    cluster = next;
+                    cluster_idx += 1;
+                }
+                None => {
+                    return ExFatReadPlan {
+                        runs,
+                        base_offset: base_offset as u64,
+                        file_size: file_size_u64,
+                        disk_id: self.device_id,
+                        hint_offset: 0,
+                        hint_cluster: 0,
+                    };
+                }
+            }
+        }
+
+        let mut remaining = needed_clusters;
+        let mut last_cluster = cluster;
+        let mut last_idx = cluster_idx;
+        while remaining > 0 {
+            let run_start = cluster;
+            let mut run_clusters = 1u32;
+            last_cluster = cluster;
+            while run_clusters < remaining {
+                match self.next_cluster(last_cluster) {
+                    Some(next) if next == last_cluster + 1 => {
+                        run_clusters += 1;
+                        last_cluster = next;
+                    }
+                    _ => break,
+                }
+            }
+            runs.push((self.cluster_to_lba(run_start), run_clusters * spc));
+            last_idx = cluster_idx + run_clusters - 1;
+            remaining -= run_clusters;
+            if remaining == 0 {
+                break;
+            }
+            match self.next_cluster(last_cluster) {
+                Some(next) => {
+                    cluster = next;
+                    cluster_idx = last_idx + 1;
+                }
+                None => break,
+            }
+        }
+
+        ExFatReadPlan {
+            runs,
+            base_offset: base_offset as u64,
+            file_size: file_size_u64,
+            disk_id: self.device_id,
+            hint_offset: last_idx.saturating_mul(cs),
+            hint_cluster: last_cluster,
         }
     }
 
@@ -2700,7 +2830,11 @@ impl ExFatFs {
         }
 
         let cs = self.cluster_size();
-        let append_prealloc = offset == old_size && data.len() >= APPEND_PREALLOC_MIN_BYTES;
+        let projected_size = old_size.saturating_add(data.len().min(u32::MAX as usize) as u32);
+        let append_prealloc = offset == old_size
+            && (data.len() >= APPEND_PREALLOC_MIN_BYTES
+                || (data.len() >= APPEND_PREALLOC_SMALL_WRITE_MIN_BYTES
+                    && projected_size >= APPEND_PREALLOC_MIN_BYTES as u32));
         let first = if start_cluster < 2 {
             if append_prealloc {
                 self.alloc_clusters(self.append_alloc_count(data.len(), cs))?

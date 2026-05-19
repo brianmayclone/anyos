@@ -25,6 +25,8 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Maximum number of simultaneously open file descriptors (system-wide).
 const MAX_OPEN_FILES: usize = 1024;
+const EXFAT_APPEND_BUFFER_MAX: usize = 64 * 1024;
+const EXFAT_APPEND_BUFFER_WRITE_BYTES: usize = 4 * 1024;
 
 /// Counter for write operations — triggers periodic metadata flush.
 /// After every FLUSH_INTERVAL writes, dirty metadata is flushed to disk.
@@ -485,6 +487,13 @@ struct DetachedRead {
     size: u32,
     reserved: usize,
     path: String,
+    exfat_read_hint: Option<ExFatReadHint>,
+}
+
+#[derive(Copy, Clone)]
+struct ExFatReadHint {
+    offset: u32,
+    cluster: u32,
 }
 
 enum DetachedReadPrep {
@@ -520,6 +529,17 @@ struct DetachedExFatWriteResult {
     hint_cluster: u32,
 }
 
+struct PendingExFatAppendFlush {
+    backend: DetachedWriteBackend,
+    fs_id: u32,
+    path: String,
+    old_inode: u32,
+    old_size: u32,
+    offset: u32,
+    seek_hint: Option<(u32, u32)>,
+    data: Vec<u8>,
+}
+
 enum DetachedWriteResult {
     CoreFs { bytes_written: usize },
     ExFat(DetachedExFatWriteResult),
@@ -529,6 +549,12 @@ enum DetachedWritePrep {
     Unsupported,
     Empty,
     Ready(DetachedWrite),
+}
+
+enum ExFatAppendBufferWrite {
+    Buffered(usize),
+    NeedsFlush,
+    NotApplicable,
 }
 
 enum DetachedStatBackend {
@@ -886,6 +912,8 @@ fn insert_detached_open(result: DetachedOpenResult) -> Result<FileDescriptor, Fs
         seek_cache_offset: 0,
         seek_cache_cluster: 0,
         entry_dirty: false,
+        append_buffer_offset: 0,
+        append_buffer: Vec::new(),
     };
     state.open_files[slot_id as usize] = Some(file);
     Ok(slot_id)
@@ -1995,6 +2023,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             seek_cache_offset: 0,
             seek_cache_cluster: 0,
             entry_dirty: false,
+            append_buffer_offset: 0,
+            append_buffer: Vec::new(),
         };
 
         state.open_files[slot_id as usize] = Some(file);
@@ -2023,6 +2053,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                         seek_cache_offset: 0,
                         seek_cache_cluster: 0,
                         entry_dirty: false,
+                        append_buffer_offset: 0,
+                        append_buffer: Vec::new(),
                     };
                     state.open_files[slot_id as usize] = Some(file);
                     return Ok(slot_id);
@@ -2053,6 +2085,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                         seek_cache_offset: 0,
                         seek_cache_cluster: 0,
                         entry_dirty: false,
+                        append_buffer_offset: 0,
+                        append_buffer: Vec::new(),
                     };
                     state.open_files[slot_id as usize] = Some(file);
                     return Ok(slot_id);
@@ -2124,6 +2158,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                     seek_cache_offset: 0,
                     seek_cache_cluster: 0,
                     entry_dirty: false,
+            append_buffer_offset: 0,
+            append_buffer: Vec::new(),
                 };
                 state.open_files[slot_id as usize] = Some(file);
                 return Ok(slot_id);
@@ -2181,6 +2217,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                     seek_cache_offset: 0,
                     seek_cache_cluster: 0,
                     entry_dirty: false,
+            append_buffer_offset: 0,
+            append_buffer: Vec::new(),
                 };
                 state.open_files[slot_id as usize] = Some(file);
                 return Ok(slot_id);
@@ -2232,6 +2270,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                     seek_cache_offset: 0,
                     seek_cache_cluster: 0,
                     entry_dirty: false,
+            append_buffer_offset: 0,
+            append_buffer: Vec::new(),
                 };
                 state.open_files[slot_id as usize] = Some(file);
                 return Ok(slot_id);
@@ -2300,6 +2340,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             seek_cache_offset: 0,
             seek_cache_cluster: 0,
             entry_dirty: false,
+            append_buffer_offset: 0,
+            append_buffer: Vec::new(),
         };
         state.open_files[slot_id as usize] = Some(file);
         return Ok(slot_id);
@@ -2361,6 +2403,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             seek_cache_offset: 0,
             seek_cache_cluster: 0,
             entry_dirty: false,
+            append_buffer_offset: 0,
+            append_buffer: Vec::new(),
         };
 
         state.open_files[slot_id as usize] = Some(file);
@@ -2391,6 +2435,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             seek_cache_offset: 0,
             seek_cache_cluster: 0,
             entry_dirty: false,
+            append_buffer_offset: 0,
+            append_buffer: Vec::new(),
         };
         state.open_files[slot_id as usize] = Some(file);
         return Ok(slot_id);
@@ -2441,6 +2487,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             seek_cache_offset: 0,
             seek_cache_cluster: 0,
             entry_dirty: false,
+            append_buffer_offset: 0,
+            append_buffer: Vec::new(),
         };
         state.open_files[slot_id as usize] = Some(file);
         return Ok(slot_id);
@@ -2485,6 +2533,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             seek_cache_offset: 0,
             seek_cache_cluster: 0,
             entry_dirty: false,
+            append_buffer_offset: 0,
+            append_buffer: Vec::new(),
         };
         state.open_files[slot_id as usize] = Some(file);
         return Ok(slot_id);
@@ -2511,6 +2561,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             seek_cache_offset: 0,
             seek_cache_cluster: 0,
             entry_dirty: false,
+            append_buffer_offset: 0,
+            append_buffer: Vec::new(),
         };
         state.open_files[slot_id as usize] = Some(file);
         return Ok(slot_id);
@@ -2521,6 +2573,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
 
 /// Close a global open file slot (by slot_id). Decrements refcount, frees if 0.
 pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
+    flush_exfat_append_buffer(slot_id)?;
     let mut do_writeback = false;
     let mut disks_to_flush: Vec<u8> = Vec::new();
     let mut exfat_commit: Option<DetachedExFatCommit> = None;
@@ -2639,6 +2692,7 @@ pub fn preferred_write_chunk(slot_id: FileDescriptor) -> usize {
 /// Frees the slot if refcount drops to 0. On last close of a writable exFAT
 /// file, flushes deferred metadata to disk.
 pub fn decref(slot_id: u32) {
+    let _ = flush_exfat_append_buffer(slot_id);
     let mut do_writeback = false;
     let mut disks_to_flush: Vec<u8> = Vec::new();
     let mut exfat_commit: Option<DetachedExFatCommit> = None;
@@ -2730,7 +2784,7 @@ fn prepare_detached_read(slot_id: FileDescriptor, len: usize) -> Result<Detached
         return Ok(DetachedReadPrep::Eof);
     }
 
-    let (fs_id, path, position, size, inode, backend) = {
+    let (fs_id, path, position, size, inode, backend, seek_hint) = {
         let vfs = vfs_lock();
         let state = vfs.as_ref().ok_or(FsError::IoError)?;
         let file = state
@@ -2763,7 +2817,20 @@ fn prepare_detached_read(slot_id: FileDescriptor, len: usize) -> Result<Detached
             }
             _ => return Ok(DetachedReadPrep::Unsupported),
         };
-        (fs_id, path, file.position, file.size, file.inode, backend)
+        let seek_hint = if file.seek_cache_cluster >= 2 && file.seek_cache_offset <= file.position {
+            Some((file.seek_cache_offset, file.seek_cache_cluster))
+        } else {
+            None
+        };
+        (
+            fs_id,
+            path,
+            file.position,
+            file.size,
+            file.inode,
+            backend,
+            seek_hint,
+        )
     };
 
     if position >= size {
@@ -2775,10 +2842,20 @@ fn prepare_detached_read(slot_id: FileDescriptor, len: usize) -> Result<Detached
     let exfat_plan = match &backend {
         DetachedReadBackend::ExFat(driver) => {
             let exfat = driver.lock_inner();
-            Some(exfat.get_file_read_plan(inode, size))
+            Some(exfat.get_file_read_plan_range(inode, size, position, reserved, seek_hint))
         }
         DetachedReadBackend::CoreFs(_) => None,
     };
+    let exfat_read_hint = exfat_plan.as_ref().and_then(|plan| {
+        if plan.hint_cluster >= 2 {
+            Some(ExFatReadHint {
+                offset: plan.hint_offset,
+                cluster: plan.hint_cluster,
+            })
+        } else {
+            None
+        }
+    });
 
     {
         let mut vfs = vfs_lock();
@@ -2807,6 +2884,7 @@ fn prepare_detached_read(slot_id: FileDescriptor, len: usize) -> Result<Detached
         size,
         reserved,
         path,
+        exfat_read_hint,
     }))
 }
 
@@ -2862,7 +2940,7 @@ fn prepare_detached_read_at(
     let exfat_plan = match &backend {
         DetachedReadBackend::ExFat(driver) => {
             let exfat = driver.lock_inner();
-            Some(exfat.get_file_read_plan(inode, size))
+            Some(exfat.get_file_read_plan_range(inode, size, offset, reserved, None))
         }
         DetachedReadBackend::CoreFs(_) => None,
     };
@@ -2875,6 +2953,7 @@ fn prepare_detached_read_at(
         size,
         reserved,
         path,
+        exfat_read_hint: None,
     }))
 }
 
@@ -2897,10 +2976,28 @@ fn finish_detached_read(
         return Err(FsError::IoError);
     }
     if unread == 0 {
+        if let Some(hint) = plan.exfat_read_hint {
+            update_detached_read_hint(slot_id, plan, hint);
+        }
         return Ok(bytes_read);
     }
     rollback_detached_read(slot_id, plan, unread);
     Ok(bytes_read)
+}
+
+fn update_detached_read_hint(slot_id: FileDescriptor, plan: &DetachedRead, hint: ExFatReadHint) {
+    let mut vfs = vfs_lock();
+    let Some(state) = vfs.as_mut() else {
+        return;
+    };
+    let Some(Some(file)) = state.open_files.get_mut(slot_id as usize) else {
+        return;
+    };
+    if file.inode != plan.inode || file.path != plan.path || file.size != plan.size {
+        return;
+    }
+    file.seek_cache_offset = hint.offset;
+    file.seek_cache_cluster = hint.cluster;
 }
 
 fn execute_detached_read(plan: &DetachedRead, buf: &mut [u8]) -> Result<usize, FsError> {
@@ -3203,6 +3300,177 @@ fn finish_detached_exfat_write(
     Ok(plan.reserved)
 }
 
+fn snapshot_exfat_append_flush(
+    state: &VfsState,
+    slot_id: usize,
+) -> Result<Option<PendingExFatAppendFlush>, FsError> {
+    let file = state
+        .open_files
+        .get(slot_id)
+        .and_then(|e| e.as_ref())
+        .ok_or(FsError::BadFd)?;
+    if file.append_buffer.is_empty() {
+        return Ok(None);
+    }
+    let backend = match file.fs_id {
+        3 => {
+            let driver = state
+                .exfat_fs
+                .as_ref()
+                .map(Arc::clone)
+                .ok_or(FsError::IoError)?;
+            DetachedWriteBackend::ExFat(driver)
+        }
+        6 => {
+            let driver = state
+                .mounted_exfat_handle_for_path(&file.path)
+                .ok_or(FsError::IoError)?;
+            DetachedWriteBackend::ExFat(driver)
+        }
+        _ => return Ok(None),
+    };
+    let seek_hint = if file.seek_cache_cluster >= 2 && file.seek_cache_offset <= file.append_buffer_offset {
+        Some((file.seek_cache_offset, file.seek_cache_cluster))
+    } else {
+        None
+    };
+    Ok(Some(PendingExFatAppendFlush {
+        backend,
+        fs_id: file.fs_id,
+        path: file.path.clone(),
+        old_inode: file.inode,
+        old_size: file.append_buffer_offset,
+        offset: file.append_buffer_offset,
+        seek_hint,
+        data: file.append_buffer.clone(),
+    }))
+}
+
+fn execute_exfat_append_flush(
+    pending: &PendingExFatAppendFlush,
+) -> Result<DetachedExFatWriteResult, FsError> {
+    match &pending.backend {
+        DetachedWriteBackend::ExFat(driver) => {
+            let mut exfat = driver.lock_inner();
+            let (new_cluster, new_size, hint_offset, hint_cluster) = exfat.write_file_with_hint(
+                pending.old_inode,
+                pending.offset,
+                &pending.data,
+                pending.old_size,
+                pending.seek_hint,
+            )?;
+            Ok(DetachedExFatWriteResult {
+                new_cluster,
+                new_size,
+                hint_offset,
+                hint_cluster,
+            })
+        }
+        DetachedWriteBackend::CoreFs(_) => Err(FsError::IoError),
+    }
+}
+
+fn finish_exfat_append_flush(
+    slot_id: FileDescriptor,
+    pending: &PendingExFatAppendFlush,
+    result: DetachedExFatWriteResult,
+) -> Result<(), FsError> {
+    let mut vfs = vfs_lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+    let file = state
+        .open_files
+        .get_mut(slot_id as usize)
+        .and_then(|e| e.as_mut())
+        .ok_or(FsError::BadFd)?;
+    if file.fs_id != pending.fs_id
+        || file.path != pending.path
+        || file.append_buffer_offset != pending.offset
+        || file.append_buffer.len() != pending.data.len()
+    {
+        return Err(FsError::BadFd);
+    }
+    file.inode = result.new_cluster;
+    file.size = core::cmp::max(file.size, result.new_size);
+    file.seek_cache_offset = result.hint_offset;
+    file.seek_cache_cluster = result.hint_cluster;
+    if result.new_cluster != pending.old_inode || result.new_size != pending.old_size {
+        file.entry_dirty = true;
+    }
+    file.append_buffer.clear();
+    file.append_buffer_offset = file.size;
+    Ok(())
+}
+
+fn flush_exfat_append_buffer(slot_id: FileDescriptor) -> Result<(), FsError> {
+    let pending = {
+        let vfs = vfs_lock();
+        let state = vfs.as_ref().ok_or(FsError::IoError)?;
+        snapshot_exfat_append_flush(state, slot_id as usize)?
+    };
+    let Some(pending) = pending else {
+        return Ok(());
+    };
+    let result = execute_exfat_append_flush(&pending)?;
+    finish_exfat_append_flush(slot_id, &pending, result)
+}
+
+fn prepare_exfat_append_buffer_write(
+    slot_id: FileDescriptor,
+    buf: &[u8],
+) -> Result<ExFatAppendBufferWrite, FsError> {
+    if buf.is_empty() {
+        return Ok(ExFatAppendBufferWrite::NotApplicable);
+    }
+
+    let mut flush_after = false;
+    {
+        let mut vfs = vfs_lock();
+        let state = vfs.as_mut().ok_or(FsError::IoError)?;
+        let file = state
+            .open_files
+            .get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
+            .ok_or(FsError::BadFd)?;
+        let is_exfat_append = (file.fs_id == 3 || file.fs_id == 6)
+            && file.flags.write
+            && !file.flags.sync
+            && file.file_type != FileType::Directory
+            && file.position == file.size;
+        let can_append_existing = !file.append_buffer.is_empty()
+            && is_exfat_append
+            && buf.len() == EXFAT_APPEND_BUFFER_WRITE_BYTES
+            && file.append_buffer_offset + file.append_buffer.len() as u32 == file.position
+            && file.append_buffer.len().saturating_add(buf.len()) <= EXFAT_APPEND_BUFFER_MAX;
+        if !file.append_buffer.is_empty() && !can_append_existing {
+            return Ok(ExFatAppendBufferWrite::NeedsFlush);
+        }
+        if !(file.fs_id == 3 || file.fs_id == 6)
+            || !file.flags.write
+            || file.flags.sync
+            || file.file_type == FileType::Directory
+            || file.position != file.size
+            || buf.len() != EXFAT_APPEND_BUFFER_WRITE_BYTES
+            || (!file.append_buffer.is_empty()
+                && file.append_buffer_offset + file.append_buffer.len() as u32 != file.position)
+            || file.append_buffer.len().saturating_add(buf.len()) > EXFAT_APPEND_BUFFER_MAX
+        {
+            return Ok(ExFatAppendBufferWrite::NotApplicable);
+        }
+        if file.append_buffer.is_empty() {
+            file.append_buffer_offset = file.position;
+        }
+        file.append_buffer.extend_from_slice(buf);
+        file.position = file.position.saturating_add(buf.len() as u32);
+        file.size = file.size.max(file.position);
+        flush_after = file.append_buffer.len() >= EXFAT_APPEND_BUFFER_MAX;
+    }
+
+    if flush_after {
+        flush_exfat_append_buffer(slot_id)?;
+    }
+    Ok(ExFatAppendBufferWrite::Buffered(buf.len()))
+}
+
 fn rollback_detached_write(slot_id: FileDescriptor, plan: &DetachedWrite, amount: usize) {
     if amount == 0 {
         return;
@@ -3249,6 +3517,7 @@ fn maybe_flush_exfat_metadata_periodic() {
 /// Read bytes from an open file into `buf`. `slot_id` is the global open_files index.
 /// Returns the number of bytes read (0 at EOF).
 pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
+    flush_exfat_append_buffer(slot_id)?;
     match prepare_detached_read(slot_id, buf.len())? {
         DetachedReadPrep::Eof => return Ok(0),
         DetachedReadPrep::Ready(plan) => {
@@ -3464,6 +3733,7 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
 
 /// Read bytes from an open file at a fixed offset without changing its seek position.
 pub fn read_at(slot_id: FileDescriptor, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+    flush_exfat_append_buffer(slot_id)?;
     match prepare_detached_read_at(slot_id, offset, buf.len())? {
         DetachedReadPrep::Eof => Ok(0),
         DetachedReadPrep::Ready(plan) => execute_detached_read(&plan, buf),
@@ -3474,6 +3744,11 @@ pub fn read_at(slot_id: FileDescriptor, offset: u32, buf: &mut [u8]) -> Result<u
 /// Write bytes from `buf` to an open file. `slot_id` is the global open_files index.
 /// Returns the number of bytes written.
 pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
+    match prepare_exfat_append_buffer_write(slot_id, buf)? {
+        ExFatAppendBufferWrite::Buffered(buffered) => return Ok(buffered),
+        ExFatAppendBufferWrite::NeedsFlush => flush_exfat_append_buffer(slot_id)?,
+        ExFatAppendBufferWrite::NotApplicable => {}
+    }
     match prepare_detached_write(slot_id, buf.len())? {
         DetachedWritePrep::Empty => return Ok(0),
         DetachedWritePrep::Ready(plan) => {
@@ -4494,6 +4769,7 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
 /// Seek within an open file. `slot_id` is the global open_files index.
 /// Returns new position.
 pub fn lseek(slot_id: FileDescriptor, offset: i32, whence: u32) -> Result<u32, FsError> {
+    flush_exfat_append_buffer(slot_id)?;
     let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
@@ -4902,6 +5178,7 @@ pub fn truncate_to(path: &str, new_size: u32) -> Result<(), FsError> {
 
 /// Resize an open file description.
 pub fn ftruncate_to(slot_id: FileDescriptor, new_size: u32) -> Result<(), FsError> {
+    flush_exfat_append_buffer(slot_id)?;
     let (path, fs_id) = {
         let vfs = vfs_lock();
         let state = vfs.as_ref().ok_or(FsError::IoError)?;
@@ -5146,6 +5423,7 @@ pub fn fdatasync(slot_id: FileDescriptor) -> Result<(), FsError> {
 }
 
 fn sync_file(slot_id: FileDescriptor, flush_hardware: bool) -> Result<(), FsError> {
+    flush_exfat_append_buffer(slot_id)?;
     let mut disks_to_flush: Vec<u8> = Vec::new();
     let mut exfat_commit: Option<DetachedExFatCommit> = None;
     let mut corefs_to_flush: Option<Arc<crate::fs::corefs::CoreFsDriver>> = None;
@@ -6062,6 +6340,8 @@ fn fuse_open_entry(
         seek_cache_offset: ((fh >> 32) & 0xFFFF_FFFF) as u32, // repurpose: high-32 of fh
         seek_cache_cluster: session_id,
         entry_dirty: false,
+        append_buffer_offset: 0,
+        append_buffer: Vec::new(),
     };
     state.open_files[slot_id as usize] = Some(file);
     Ok(slot_id)

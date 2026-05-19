@@ -1,6 +1,7 @@
 //! Shared filesystem data structures used by the VFS and concrete filesystems.
 
 use alloc::string::String;
+use alloc::vec::Vec;
 
 pub type FileDescriptor = u32;
 
@@ -79,6 +80,11 @@ pub struct OpenFile {
     pub seek_cache_cluster: u32,
     /// exFAT: directory entry needs a deferred size/cluster commit.
     pub entry_dirty: bool,
+    /// exFAT: small sequential append buffer.  This lets 4 KiB writers reach
+    /// the filesystem as larger contiguous writes without changing userspace's
+    /// visible file offset or size.
+    pub append_buffer_offset: u32,
+    pub append_buffer: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]

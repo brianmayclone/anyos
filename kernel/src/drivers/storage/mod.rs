@@ -835,9 +835,10 @@ fn read_sectors_raw_for_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) 
 /// (RAM speed) while maintaining read coherency.
 ///
 /// Bulk writes go directly to disk.  The write-back cache is intentionally
-/// reserved for small metadata-sized writes; streaming downloads otherwise
-/// fill the cache with dirty data faster than it can be flushed.
-const WRITE_BACK_MAX_SECTORS: u32 = 32;
+/// reserved for single-cluster/metadata-sized writes; 16 KiB+ streaming writes
+/// otherwise spend too much time inserting sector-sized dirty cache entries
+/// only to flush them as data shortly afterwards.
+const WRITE_BACK_MAX_SECTORS: u32 = 8;
 
 pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
     write_sectors_on_disk(0, lba, count, buf)

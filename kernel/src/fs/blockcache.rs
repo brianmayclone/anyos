@@ -336,6 +336,17 @@ impl BlockCache {
 
     /// Insert a sector into the cache (clean, read-cache entry).
     pub fn insert(&mut self, disk_id: u8, lba: u32, data: &[u8]) {
+        self.insert_with_dirty(disk_id, lba, data, false, "insert-scan");
+    }
+
+    fn insert_with_dirty(
+        &mut self,
+        disk_id: u8,
+        lba: u32,
+        data: &[u8],
+        dirty: bool,
+        scan_context: &str,
+    ) {
         if self.slots.is_empty() {
             return; // Not initialized
         }
@@ -367,6 +378,9 @@ impl BlockCache {
                 self.slots[si].data[..n].copy_from_slice(&data[..n]);
                 self.tick = self.tick.wrapping_add(1);
                 self.slots[si].tick = self.tick;
+                if dirty {
+                    self.slots[si].dirty = true;
+                }
                 return;
             }
         }
@@ -375,12 +389,15 @@ impl BlockCache {
         // slots for every sector of a streaming write.
         if !hit_never_used && first_reusable.is_none() {
             for i in 0..self.slots.len() {
-                self.quarantine_slot(i, "insert-scan");
+                self.quarantine_slot(i, scan_context);
                 if self.slots[i].key == key && self.slot_key_valid(i) {
                     let n = data.len().min(512);
                     self.slots[i].data[..n].copy_from_slice(&data[..n]);
                     self.tick = self.tick.wrapping_add(1);
                     self.slots[i].tick = self.tick;
+                    if dirty {
+                        self.slots[i].dirty = true;
+                    }
                     return;
                 }
             }
@@ -437,7 +454,7 @@ impl BlockCache {
             }
         }
         self.set_slot_key(victim, key);
-        self.slots[victim].dirty = false;
+        self.slots[victim].dirty = dirty;
         self.tick = self.tick.wrapping_add(1);
         self.slots[victim].tick = self.tick;
 
@@ -461,36 +478,7 @@ impl BlockCache {
 
     /// Insert a dirty sector (for write-back caching).
     pub fn insert_dirty(&mut self, disk_id: u8, lba: u32, data: &[u8]) {
-        if self.slots.is_empty() {
-            return;
-        }
-        self.insert(disk_id, lba, data);
-        let key = Self::make_key(disk_id, lba);
-        // Mark as dirty
-        let h = Self::hash(key);
-        for probe in 0..MAX_PROBES {
-            let idx = (h + probe) & (HASH_SIZE - 1);
-            let slot_idx = self.hash_table[idx];
-            if slot_idx == EMPTY {
-                break;
-            }
-            if slot_idx == TOMBSTONE {
-                continue;
-            }
-            let si = slot_idx as usize;
-            if si < self.slots.len() && self.slots[si].key == key && self.slot_key_valid(si) {
-                self.slots[si].dirty = true;
-                return;
-            }
-        }
-        // Fallback linear scan
-        for i in 0..self.slots.len() {
-            self.quarantine_slot(i, "insert-dirty-scan");
-            if self.slots[i].key == key && self.slot_key_valid(i) {
-                self.slots[i].dirty = true;
-                return;
-            }
-        }
+        self.insert_with_dirty(disk_id, lba, data, true, "insert-dirty-scan");
     }
 
     /// Invalidate a cached sector (e.g. after direct disk write).
@@ -828,10 +816,7 @@ pub fn write_back(disk_id: u8, lba: u32, count: u32, data: &[u8]) {
     for i in 0..count {
         let offset = i as usize * 512;
         if offset + 512 <= data.len() {
-            cache.insert(disk_id, lba + i, &data[offset..offset + 512]);
-            // Mark as dirty
-            let key = BlockCache::make_key(disk_id, lba + i);
-            cache.mark_dirty(key);
+            cache.insert_dirty(disk_id, lba + i, &data[offset..offset + 512]);
             accepted += 1;
         }
     }
