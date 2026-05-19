@@ -1,8 +1,20 @@
 use super::handlers;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 const HASH_MAX: usize = 64 * 1024;
 const FNV_OFFSET: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
+
+static TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub(super) fn set_enabled(enabled: bool) {
+    TRACE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+#[inline]
+fn enabled() -> bool {
+    TRACE_ENABLED.load(Ordering::Relaxed)
+}
 
 pub(super) fn path_interesting(path: &str) -> bool {
     path.contains("/var/lib/apt/lists")
@@ -19,6 +31,9 @@ pub(super) fn trace_open(
     global_id: u32,
     flags: u64,
 ) {
+    if !enabled() {
+        return;
+    }
     if !path_interesting(linux_path) && !path_interesting(resolved_path) {
         return;
     }
@@ -46,6 +61,9 @@ pub(super) fn trace_file_io(
     ret: u64,
     buf_ptr: u64,
 ) {
+    if !enabled() {
+        return;
+    }
     let path = match crate::fs::vfs::get_fd_path(global_id) {
         Ok(path) => path,
         Err(_) => return,
@@ -93,6 +111,9 @@ pub(super) fn trace_file_io(
 }
 
 pub(super) fn trace_fsync(op: &str, fd: u32, global_id: u32, ret: u64) {
+    if !enabled() {
+        return;
+    }
     let path = match crate::fs::vfs::get_fd_path(global_id) {
         Ok(path) => path,
         Err(_) => return,
@@ -112,6 +133,9 @@ pub(super) fn trace_fsync(op: &str, fd: u32, global_id: u32, ret: u64) {
 }
 
 pub(super) fn trace_path_op(op: &str, old_path: &str, new_path: Option<&str>, ret: u64) {
+    if !enabled() {
+        return;
+    }
     let interesting = path_interesting(old_path) || new_path.map(path_interesting).unwrap_or(false);
     if !interesting {
         return;
@@ -143,6 +167,9 @@ pub(super) fn trace_socket_io(
     ret: u64,
     buf_ptr: u64,
 ) {
+    if !enabled() {
+        return;
+    }
     let signed = ret as i64;
     if signed <= 0 {
         return;

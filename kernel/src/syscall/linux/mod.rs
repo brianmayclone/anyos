@@ -30,6 +30,10 @@ use socket::*;
 
 pub(crate) use socket::{socket_decref, socket_incref};
 
+pub(crate) fn set_trace_enabled(enabled: bool) {
+    trace::set_enabled(enabled);
+}
+
 const EINVAL: i32 = 22;
 const ENOMEM: i32 = 12;
 const EBADF: i32 = 9;

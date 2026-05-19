@@ -65,6 +65,10 @@ fn parse_boot_params(boot_info: &BootInfo) {
                     SETUP_MODE.store(true, Ordering::Relaxed);
                     serial_println!("Setup mode enabled (ISO installer)");
                 }
+                "lxe_trace" | "lxetrace" => {
+                    crate::syscall::linux::set_trace_enabled(true);
+                    serial_println!("LXE syscall trace enabled via boot params");
+                }
                 _ => parse_resolution_override(token),
             }
         }
