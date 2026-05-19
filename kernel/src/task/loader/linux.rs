@@ -581,18 +581,32 @@ fn default_envp() -> alloc::vec::Vec<alloc::string::String> {
 
 /// Load and run a Linux x86_64 ELF through lxe.
 pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32, &'static str> {
+    load_and_run_with_args_stdio(path, name, args, super::SpawnStdio::NONE)
+}
+
+pub fn load_and_run_with_args_stdio(
+    path: &str,
+    name: &str,
+    args: &str,
+    stdio: super::SpawnStdio,
+) -> Result<u32, &'static str> {
     #[cfg(not(target_arch = "x86_64"))]
     {
-        let _ = (path, name, args);
+        let _ = (path, name, args, stdio);
         return Err("lxe: Linux x86_64 ABI requires an x86_64 kernel");
     }
 
     #[cfg(target_arch = "x86_64")]
-    load_and_run_with_args_x86_64(path, name, args)
+    load_and_run_with_args_x86_64(path, name, args, stdio)
 }
 
 #[cfg(target_arch = "x86_64")]
-fn load_and_run_with_args_x86_64(path: &str, name: &str, args: &str) -> Result<u32, &'static str> {
+fn load_and_run_with_args_x86_64(
+    path: &str,
+    name: &str,
+    args: &str,
+    stdio: super::SpawnStdio,
+) -> Result<u32, &'static str> {
     let linux_rootfs = lxe_rootfs_for_binary(path);
     let load_path = match lxe_resolve_rootfs_path(&linux_rootfs, path) {
         Ok(path) => path,
@@ -697,6 +711,10 @@ fn load_and_run_with_args_x86_64(path: &str, name: &str, args: &str) -> Result<u
         result.user_pages,
         result.entry
     );
+
+    // Linux userspace probes terminal state very early (isatty/ioctl TCGETS).
+    // Attach PTY stdio before wake so bash/readline never observes legacy fds.
+    super::apply_spawn_stdio(tid, stdio);
 
     crate::task::scheduler::wake_thread(tid);
     Ok(tid)

@@ -773,22 +773,39 @@ pub fn sys_try_waitpid(tid: u32) -> u32 {
 /// Sentinel return value from sys_spawn: the .app needs a permission dialog first.
 const PERM_NEEDED: u32 = u32::MAX - 2;
 
-fn attach_stdio_pty(tid: u32, stdout_pipe: u32, stdin_pipe: u32) {
-    if stdout_pipe == 0 || stdin_pipe == 0 {
-        return;
-    }
-    let pty_id = crate::ipc::pty::create(stdin_pipe, stdout_pipe);
-    if pty_id != 0 {
-        crate::task::scheduler::attach_thread_pty(tid, pty_id);
-    }
+fn create_spawn_stdio(
+    stdout_pipe: u32,
+    stdin_pipe: u32,
+    inherit_parent_pty: bool,
+) -> (crate::task::loader::SpawnStdio, bool) {
+    let inherited_pty = if inherit_parent_pty {
+        crate::task::scheduler::current_thread_pty_id()
+    } else {
+        0
+    };
+
+    let (pty_id, created_pty) = if inherited_pty != 0 {
+        (inherited_pty, false)
+    } else if stdout_pipe != 0 && stdin_pipe != 0 {
+        let pty_id = crate::ipc::pty::create(stdin_pipe, stdout_pipe);
+        (pty_id, pty_id != 0)
+    } else {
+        (0, false)
+    };
+
+    (
+        crate::task::loader::SpawnStdio {
+            stdout_pipe,
+            stdin_pipe,
+            pty_id,
+        },
+        created_pty,
+    )
 }
 
-fn inherit_or_attach_stdio_pty(tid: u32, stdout_pipe: u32, stdin_pipe: u32) {
-    let inherited = crate::task::scheduler::current_thread_pty_id();
-    if inherited != 0 {
-        crate::task::scheduler::attach_thread_pty(tid, inherited);
-    } else {
-        attach_stdio_pty(tid, stdout_pipe, stdin_pipe);
+fn destroy_created_spawn_stdio(stdio: crate::task::loader::SpawnStdio, created_pty: bool) {
+    if created_pty {
+        crate::ipc::pty::destroy(stdio.pty_id);
     }
 }
 
@@ -886,7 +903,9 @@ pub fn sys_spawn(path_ptr: u64, stdout_pipe: u32, args_ptr: u64, stdin_pipe: u32
         }
     }
 
-    match crate::task::loader::load_and_run_with_args(path, name, args) {
+    let (stdio, created_pty) = create_spawn_stdio(stdout_pipe, stdin_pipe, false);
+
+    match crate::task::loader::load_and_run_with_args_stdio(path, name, args, stdio) {
         Ok(tid) => {
             // Inherit parent's cwd — but NOT for .app bundles, which already
             // had their CWD set from Info.conf inside load_and_run_with_args.
@@ -899,13 +918,6 @@ pub fn sys_spawn(path_ptr: u64, stdout_pipe: u32, args_ptr: u64, stdin_pipe: u32
                     }
                 }
             }
-            if stdout_pipe != 0 {
-                crate::task::scheduler::set_thread_stdout_pipe(tid, stdout_pipe);
-            }
-            if stdin_pipe != 0 {
-                crate::task::scheduler::set_thread_stdin_pipe(tid, stdin_pipe);
-            }
-            attach_stdio_pty(tid, stdout_pipe, stdin_pipe);
             // Inherit parent's environment variables
             if let Some(parent_pd) = crate::task::scheduler::current_thread_page_directory() {
                 if let Some(child_pd) = crate::task::scheduler::thread_page_directory(tid) {
@@ -916,6 +928,7 @@ pub fn sys_spawn(path_ptr: u64, stdout_pipe: u32, args_ptr: u64, stdin_pipe: u32
             tid
         }
         Err(e) => {
+            destroy_created_spawn_stdio(stdio, created_pty);
             crate::serial_verbose_println!("sys_spawn: FAILED path='{}': {}", path, e);
             u32::MAX
         }
@@ -936,17 +949,12 @@ pub fn sys_lxe_spawn(path_ptr: u64, args_ptr: u64) -> u32 {
     };
     let name = path.rsplit('/').next().unwrap_or("linux");
 
-    match crate::task::loader::load_and_run_linux_with_args(path, name, args) {
+    let stdout_pipe = crate::task::scheduler::current_thread_stdout_pipe();
+    let stdin_pipe = crate::task::scheduler::current_thread_stdin_pipe();
+    let (stdio, created_pty) = create_spawn_stdio(stdout_pipe, stdin_pipe, true);
+
+    match crate::task::loader::load_and_run_linux_with_args_stdio(path, name, args, stdio) {
         Ok(tid) => {
-            let stdout_pipe = crate::task::scheduler::current_thread_stdout_pipe();
-            let stdin_pipe = crate::task::scheduler::current_thread_stdin_pipe();
-            if stdout_pipe != 0 {
-                crate::task::scheduler::set_thread_stdout_pipe(tid, stdout_pipe);
-            }
-            if stdin_pipe != 0 {
-                crate::task::scheduler::set_thread_stdin_pipe(tid, stdin_pipe);
-            }
-            inherit_or_attach_stdio_pty(tid, stdout_pipe, stdin_pipe);
             crate::task::scheduler::set_thread_cwd(tid, "/");
             if let Some(parent_pd) = crate::task::scheduler::current_thread_page_directory() {
                 if let Some(child_pd) = crate::task::scheduler::thread_page_directory(tid) {
@@ -956,6 +964,7 @@ pub fn sys_lxe_spawn(path_ptr: u64, args_ptr: u64) -> u32 {
             tid
         }
         Err(e) => {
+            destroy_created_spawn_stdio(stdio, created_pty);
             crate::serial_verbose_println!("sys_lxe_spawn: FAILED path='{}': {}", path, e);
             u32::MAX
         }

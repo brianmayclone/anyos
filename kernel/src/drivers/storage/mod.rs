@@ -681,12 +681,7 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
                     IO_OP_READAHEAD,
                 );
                 if ok {
-                    crate::fs::blockcache::overlay_cached(
-                        disk_id,
-                        miss_lba,
-                        total_fetch,
-                        big_buf,
-                    );
+                    crate::fs::blockcache::overlay_cached(disk_id, miss_lba, total_fetch, big_buf);
                     let needed = miss_count as usize * 512;
                     let copy_end = needed.min(buf.len() - miss_offset);
                     buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);

@@ -434,7 +434,9 @@ impl DirLookupCache {
     }
 
     fn is_indexed(&self, dir_cluster: u32) -> bool {
-        self.indexed_dirs.iter().any(|&cluster| cluster == dir_cluster)
+        self.indexed_dirs
+            .iter()
+            .any(|&cluster| cluster == dir_cluster)
     }
 
     fn mark_indexed(&mut self, dir_cluster: u32) {
@@ -3018,7 +3020,9 @@ impl ExFatFs {
         }
 
         let chain = self.dir_cluster_chain(parent_cluster)?;
-        let hint = self.dir_insert_hint(parent_cluster).unwrap_or(parent_cluster);
+        let hint = self
+            .dir_insert_hint(parent_cluster)
+            .unwrap_or(parent_cluster);
         let start_idx = chain
             .iter()
             .position(|&cluster| cluster == hint)

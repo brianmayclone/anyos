@@ -1080,12 +1080,54 @@ pub fn load_and_run(path: &str, name: &str) -> Result<u32, &'static str> {
     load_and_run_with_args(path, name, "")
 }
 
+#[derive(Clone, Copy)]
+pub struct SpawnStdio {
+    pub stdout_pipe: u32,
+    pub stdin_pipe: u32,
+    pub pty_id: u32,
+}
+
+impl SpawnStdio {
+    pub const NONE: Self = Self {
+        stdout_pipe: 0,
+        stdin_pipe: 0,
+        pty_id: 0,
+    };
+}
+
+pub(crate) fn apply_spawn_stdio(tid: u32, stdio: SpawnStdio) {
+    if stdio.stdout_pipe != 0 {
+        crate::task::scheduler::set_thread_stdout_pipe(tid, stdio.stdout_pipe);
+    }
+    if stdio.stdin_pipe != 0 {
+        crate::task::scheduler::set_thread_stdin_pipe(tid, stdio.stdin_pipe);
+    }
+    if stdio.pty_id != 0 {
+        crate::task::scheduler::attach_thread_pty(tid, stdio.pty_id);
+    }
+}
+
 /// Load a flat binary or ELF and run it with command-line arguments.
 /// If `path` ends with `.app`, it is treated as a bundle directory:
 /// the binary is resolved from Info.conf `exec=` field, or derived from the folder name.
 /// The exec binary MUST reside directly inside the .app directory (no subdirectories).
 pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32, &'static str> {
-    load_and_run_with_args_abi(path, name, args, crate::task::abi::AbiPersonality::AnyOs)
+    load_and_run_with_args_stdio(path, name, args, SpawnStdio::NONE)
+}
+
+pub fn load_and_run_with_args_stdio(
+    path: &str,
+    name: &str,
+    args: &str,
+    stdio: SpawnStdio,
+) -> Result<u32, &'static str> {
+    load_and_run_with_args_abi_stdio(
+        path,
+        name,
+        args,
+        crate::task::abi::AbiPersonality::AnyOs,
+        stdio,
+    )
 }
 
 /// Load and run a Linux x86_64 ELF through lxe.
@@ -1094,17 +1136,27 @@ pub fn load_and_run_linux_with_args(
     name: &str,
     args: &str,
 ) -> Result<u32, &'static str> {
-    linux::load_and_run_with_args(path, name, args)
+    linux::load_and_run_with_args_stdio(path, name, args, SpawnStdio::NONE)
 }
 
-fn load_and_run_with_args_abi(
+pub fn load_and_run_linux_with_args_stdio(
+    path: &str,
+    name: &str,
+    args: &str,
+    stdio: SpawnStdio,
+) -> Result<u32, &'static str> {
+    linux::load_and_run_with_args_stdio(path, name, args, stdio)
+}
+
+fn load_and_run_with_args_abi_stdio(
     path: &str,
     name: &str,
     args: &str,
     abi: crate::task::abi::AbiPersonality,
+    stdio: SpawnStdio,
 ) -> Result<u32, &'static str> {
     if abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
-        return linux::load_and_run_with_args(path, name, args);
+        return linux::load_and_run_with_args_stdio(path, name, args, stdio);
     }
 
     // .app bundle resolution
@@ -1459,6 +1511,10 @@ fn load_and_run_with_args_abi(
         total_user_pages,
         entry_point
     );
+
+    // Stdio must be visible before the first userspace instruction. Shells
+    // probe fd 0/1/2 during startup and cache TTY/termios behavior.
+    apply_spawn_stdio(tid, stdio);
 
     // All setup complete (CR3, pending data, args, CWD, caps). Now make the thread runnable.
     crate::task::scheduler::wake_thread(tid);

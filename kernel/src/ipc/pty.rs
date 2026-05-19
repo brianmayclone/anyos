@@ -70,6 +70,14 @@ pub fn create(input_pipe: u32, output_pipe: u32) -> u32 {
     id
 }
 
+pub fn destroy(id: u32) {
+    if id == 0 {
+        return;
+    }
+    let mut ptys = PTYS.lock();
+    ptys.retain(|pty| pty.id != id);
+}
+
 pub fn get_termios(id: u32) -> Option<Termios> {
     PTYS.lock()
         .iter()
