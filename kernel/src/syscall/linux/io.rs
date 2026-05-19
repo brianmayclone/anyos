@@ -827,9 +827,18 @@ fn linux_fd_poll_revents(kind: crate::fs::fd_table::FdKind, events: i16) -> i16 
                 0
             }
         }
+        crate::fs::fd_table::FdKind::PtySlave { pty_id } => {
+            let mut revents = 0;
+            if (events & POLLIN) != 0 && crate::ipc::pty::bytes_available(pty_id) != 0 {
+                revents |= POLLIN;
+            }
+            if (events & POLLOUT) != 0 {
+                revents |= POLLOUT;
+            }
+            revents
+        }
         crate::fs::fd_table::FdKind::File { .. }
         | crate::fs::fd_table::FdKind::Tty
-        | crate::fs::fd_table::FdKind::PtySlave { .. }
         | crate::fs::fd_table::FdKind::LinuxProc { .. } => events & (POLLIN | POLLOUT),
         crate::fs::fd_table::FdKind::None => POLLERR,
     }
@@ -1023,6 +1032,15 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
                     }
                     unsafe {
                         write_u32(arg, 0, crate::ipc::anon_pipe::bytes_available(pipe_id));
+                    }
+                    return 0;
+                }
+                if let crate::fs::fd_table::FdKind::PtySlave { pty_id } = entry.kind {
+                    if arg == 0 || !handlers::helpers::is_user_range_accessible(arg, 4) {
+                        return linux_err(EFAULT);
+                    }
+                    unsafe {
+                        write_u32(arg, 0, crate::ipc::pty::bytes_available(pty_id));
                     }
                     return 0;
                 }

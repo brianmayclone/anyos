@@ -213,8 +213,8 @@ pub struct Renderer {
     pub u_tan_half_fov: i32,
     pub u_aspect: i32,
     pub a_sky_pos: i32,
-    // Chunk VBOs: (vbo_id, vertex_count)
-    pub chunk_vbos: BTreeMap<(i32, i32), (u32, u32)>,
+    // Chunk VBOs: (vbo_id, solid_vertex_count, water_vertex_count)
+    pub chunk_vbos: BTreeMap<(i32, i32), (u32, u32, u32)>,
     // Camera
     pub yaw: f32,
     pub pitch: f32,
@@ -396,7 +396,7 @@ impl Renderer {
 
     pub fn clear_chunks(&mut self) {
         let mut ids = alloc::vec::Vec::new();
-        for &(vbo, _) in self.chunk_vbos.values() {
+        for &(vbo, _, _) in self.chunk_vbos.values() {
             ids.push(vbo);
         }
         if !ids.is_empty() {
@@ -410,15 +410,16 @@ impl Renderer {
 
         if mesh.vertices.is_empty() {
             // Remove existing VBO if any
-            if let Some((vbo, _)) = self.chunk_vbos.remove(&key) {
+            if let Some((vbo, _, _)) = self.chunk_vbos.remove(&key) {
                 gl::delete_buffers(&[vbo]);
             }
             return;
         }
 
-        let vertex_count = (mesh.vertices.len() / FLOATS_PER_VERTEX) as u32;
+        let solid_vertex_count = mesh.solid_vertex_count;
+        let water_vertex_count = mesh.water_vertex_count;
 
-        let vbo = if let Some((existing_vbo, _)) = self.chunk_vbos.get(&key) {
+        let vbo = if let Some((existing_vbo, _, _)) = self.chunk_vbos.get(&key) {
             *existing_vbo
         } else {
             let mut ids = [0u32; 1];
@@ -429,7 +430,8 @@ impl Renderer {
         gl::bind_buffer(gl::GL_ARRAY_BUFFER, vbo);
         gl::buffer_data_f32(gl::GL_ARRAY_BUFFER, &mesh.vertices, gl::GL_STATIC_DRAW);
 
-        self.chunk_vbos.insert(key, (vbo, vertex_count));
+        self.chunk_vbos
+            .insert(key, (vbo, solid_vertex_count, water_vertex_count));
     }
 
     pub fn render(
@@ -584,14 +586,14 @@ impl Renderer {
                 );
                 let mut total_verts = 0u32;
                 let mut drawn_chunks = 0u32;
-                for (&(cx, cz), &(_, vc)) in &self.chunk_vbos {
+                for (&(cx, cz), &(_, solid_vc, water_vc)) in &self.chunk_vbos {
                     let ccx = cx as f32 * 16.0 + 8.0;
                     let ccz = cz as f32 * 16.0 + 8.0;
                     let dx = ccx - cam_x;
                     let dz = ccz - cam_z;
                     let d = dx * dx + dz * dz;
                     if d <= self.fog_distance * self.fog_distance {
-                        total_verts += vc;
+                        total_verts += solid_vc + water_vc;
                         drawn_chunks += 1;
                     }
                 }
@@ -658,7 +660,8 @@ impl Renderer {
         gl::enable_vertex_attrib_array(self.a_translucency as u32);
 
         gl::bind_texture(gl::GL_TEXTURE_2D, self.atlas_tex);
-        self.draw_chunk_group(cam_x, cam_z, stride, fwd_x, fwd_z, 0.0, f32::MAX);
+        self.draw_chunk_group(cam_x, cam_z, stride, fwd_x, fwd_z, 0.0, f32::MAX, false);
+        self.draw_chunk_group(cam_x, cam_z, stride, fwd_x, fwd_z, 0.0, f32::MAX, true);
         gl::disable_vertex_attrib_array(self.a_position as u32);
         gl::disable_vertex_attrib_array(self.a_texcoord as u32);
         gl::disable_vertex_attrib_array(self.a_light as u32);
@@ -694,7 +697,10 @@ impl Renderer {
 
         gl::enable_vertex_attrib_array(self.a_shadow_position as u32);
         let stride = (FLOATS_PER_VERTEX * 4) as i32;
-        for (&(cx, cz), &(vbo, vert_count)) in &self.chunk_vbos {
+        for (&(cx, cz), &(vbo, solid_count, _)) in &self.chunk_vbos {
+            if solid_count == 0 {
+                continue;
+            }
             gl::bind_buffer(gl::GL_ARRAY_BUFFER, vbo);
             gl::vertex_attrib_pointer(
                 self.a_shadow_position as u32,
@@ -704,7 +710,7 @@ impl Renderer {
                 stride,
                 0,
             );
-            gl::draw_arrays(gl::GL_TRIANGLES, 0, vert_count as i32);
+            gl::draw_arrays(gl::GL_TRIANGLES, 0, solid_count as i32);
         }
         gl::disable_vertex_attrib_array(self.a_shadow_position as u32);
     }
@@ -718,8 +724,17 @@ impl Renderer {
         fwd_z: f32,
         min_dist_sq: f32,
         max_dist_sq: f32,
+        water_pass: bool,
     ) {
-        for (&(cx, cz), &(vbo, vert_count)) in &self.chunk_vbos {
+        for (&(cx, cz), &(vbo, solid_count, water_count)) in &self.chunk_vbos {
+            let (first, vert_count) = if water_pass {
+                (solid_count, water_count)
+            } else {
+                (0, solid_count)
+            };
+            if vert_count == 0 {
+                continue;
+            }
             let Some((dx, dz, dist_sq)) = self.visible_chunk_delta(cx, cz, cam_x, cam_z) else {
                 continue;
             };
@@ -746,7 +761,7 @@ impl Renderer {
                 stride,
                 36,
             );
-            gl::draw_arrays(gl::GL_TRIANGLES, 0, vert_count as i32);
+            gl::draw_arrays(gl::GL_TRIANGLES, first as i32, vert_count as i32);
         }
     }
 

@@ -193,6 +193,15 @@ pub fn read_slave(id: u32, buf: &mut [u8], blocking: bool) -> u32 {
     }
 }
 
+pub fn bytes_available(id: u32) -> u32 {
+    let mut ptys = PTYS.lock();
+    let Some(pty) = ptys.iter_mut().find(|pty| pty.id == id) else {
+        return 0;
+    };
+    pty.pump_master_input();
+    pty.read_buf.len().min(u32::MAX as usize) as u32
+}
+
 pub fn write_slave(id: u32, data: &[u8]) -> u32 {
     if data.is_empty() {
         return 0;

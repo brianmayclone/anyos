@@ -9,8 +9,8 @@
 //! (or when the process exits, if the kernel supports it).
 
 use crate::rasterizer::raster::ResolvedTexture;
-use crate::rasterizer::FastPathInfo;
 use crate::rasterizer::ClipVertex;
+use crate::rasterizer::FastPathInfo;
 use crate::state::MAX_TEXTURE_UNITS;
 use crate::syscall;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -513,7 +513,12 @@ pub fn end_sub_batch(
     sb.fast_mode = 0;
     if let Some(fast) = fast {
         match fast {
-            FastPathInfo::Simple { tex, mat_r, mat_g, mat_b } => {
+            FastPathInfo::Simple {
+                tex,
+                mat_r,
+                mat_g,
+                mat_b,
+            } => {
                 sb.use_fast_path = true;
                 sb.fast_mode = 1;
                 sb.fast_tex_data = tex.data;
@@ -524,7 +529,14 @@ pub fn end_sub_batch(
                 sb.fast_mat_g = *mat_g;
                 sb.fast_mat_b = *mat_b;
             }
-            FastPathInfo::ForgerBlocks { tex, fog_r, fog_g, fog_b, fog_start, fog_inv_range } => {
+            FastPathInfo::ForgerBlocks {
+                tex,
+                fog_r,
+                fog_g,
+                fog_b,
+                fog_start,
+                fog_inv_range,
+            } => {
                 sb.use_fast_path = true;
                 sb.fast_mode = 2;
                 sb.fast_tex_data = tex.data;
@@ -1073,6 +1085,7 @@ fn rasterize_tri_forger_band(
     let fog_g255 = sb.fast_fog_g.clamp(0.0, 1.0) * 255.0;
     let fog_b255 = sb.fast_fog_b.clamp(0.0, 1.0) * 255.0;
     let raytrace_materials = unsafe { crate::CPU_RAYTRACE_MODE != 0 };
+    let water_phase = (syscall::uptime_ms() & 0xFFFF) as f32 * 0.001;
 
     let mut a12 = s1[1] - s2[1];
     let mut b12 = s2[0] - s1[0];
@@ -1112,13 +1125,18 @@ fn rasterize_tri_forger_band(
                     if a_val > 1e-8 {
                         if w_val < 0.0 {
                             let x = min_x + crate::rasterizer::math::ceil((-w_val) / a_val) as i32;
-                            if x > span_left { span_left = x; }
+                            if x > span_left {
+                                span_left = x;
+                            }
                         }
                     } else if a_val < -1e-8 {
-                        if w_val < 0.0 { empty = true; }
-                        else {
+                        if w_val < 0.0 {
+                            empty = true;
+                        } else {
                             let x = min_x + (w_val / (-a_val)) as i32;
-                            if x < span_right { span_right = x; }
+                            if x < span_right {
+                                span_right = x;
+                            }
                         }
                     } else if w_val < -1e-8 {
                         empty = true;
@@ -1153,7 +1171,9 @@ fn rasterize_tri_forger_band(
                             1.0
                         };
                         if !fragment::depth_test(depth, cur, sb.depth_func) {
-                            w0 += a12; w1 += a20; w2 += a01;
+                            w0 += a12;
+                            w1 += a20;
+                            w2 += a01;
                             continue;
                         }
                     }
@@ -1182,15 +1202,31 @@ fn rasterize_tri_forger_band(
                     let mut g = tex_g * light;
                     let mut b = tex_b * light;
                     if raytrace_materials && material > 0.9 && tex_a < 220 {
-                        let wave = fast_fract(u_raw * 43.0 + v_raw * 29.0 + (px as f32 + py as f32) * 0.015);
-                        let glint = if wave > 0.86 { (wave - 0.86) * 2.2 } else { 0.0 };
-                        let reflect = (0.16 + glint).min(0.34);
-                        r = r * (1.0 - reflect) + (fog_r255 + 28.0).min(255.0) * reflect;
-                        g = g * (1.0 - reflect) + (fog_g255 + 36.0).min(255.0) * reflect;
-                        b = b * (1.0 - reflect) + 255.0 * reflect;
+                        let shaded = raster::shade_forger_water(
+                            r,
+                            g,
+                            b,
+                            px,
+                            py,
+                            pool.fb_w,
+                            pool.fb_h,
+                            pool.color_ptr,
+                            pool.has_color,
+                            depth,
+                            u_raw,
+                            v_raw,
+                            fog_r255,
+                            fog_g255,
+                            fog_b255,
+                            water_phase,
+                        );
+                        r = shaded.0;
+                        g = shaded.1;
+                        b = shaded.2;
                     }
 
-                    let fog_t = ((dist - sb.fast_fog_start) * sb.fast_fog_inv_range).clamp(0.0, 1.0);
+                    let fog_t =
+                        ((dist - sb.fast_fog_start) * sb.fast_fog_inv_range).clamp(0.0, 1.0);
                     r = r + (fog_r255 - r) * fog_t;
                     g = g + (fog_g255 - g) * fog_t;
                     b = b + (fog_b255 - b) * fog_t;
@@ -1208,20 +1244,15 @@ fn rasterize_tri_forger_band(
                         }
                     }
                 }
-                w0 += a12; w1 += a20; w2 += a01;
+                w0 += a12;
+                w1 += a20;
+                w2 += a01;
             }
         }
         w0_row += b12;
         w1_row += b20;
         w2_row += b01;
     }
-}
-
-#[inline(always)]
-fn fast_fract(x: f32) -> f32 {
-    let i = x as i32;
-    let f = x - i as f32;
-    if f < 0.0 { f + 1.0 } else { f }
 }
 
 /// Rasterize one triangle in general path, restricted to [band_min_y, band_max_y].

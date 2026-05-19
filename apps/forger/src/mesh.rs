@@ -43,11 +43,15 @@ struct MaskCell {
 pub struct ChunkMesh {
     pub vertices: Vec<f32>,
     pub vertex_count: u32,
+    pub solid_vertex_count: u32,
+    pub water_vertex_count: u32,
 }
 
 pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
     let mut vertices = Vec::with_capacity(64 * 1024);
+    let mut water_vertices = Vec::with_capacity(8 * 1024);
     let mut vertex_count: u32 = 0;
+    let mut water_vertex_count: u32 = 0;
     let mut mask_a: Vec<Option<MaskCell>> = Vec::new();
     let mut mask_b: Vec<Option<MaskCell>> = Vec::new();
     let mut used_a: Vec<bool> = Vec::new();
@@ -65,6 +69,8 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
         return ChunkMesh {
             vertices,
             vertex_count,
+            solid_vertex_count: vertex_count,
+            water_vertex_count,
         };
     }
 
@@ -91,9 +97,16 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
             &mask_a[..mask_len],
             &mut used_a[..mask_len],
             |x, z, w, h, cell| {
-                emit_top_quad(
+                let (out, count) = output_for_cell(
+                    cell,
                     &mut vertices,
                     &mut vertex_count,
+                    &mut water_vertices,
+                    &mut water_vertex_count,
+                );
+                emit_top_quad(
+                    out,
+                    count,
                     base_x + x as i32,
                     wy,
                     base_z + z as i32,
@@ -109,9 +122,16 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
             &mask_b[..mask_len],
             &mut used_b[..mask_len],
             |x, z, w, h, cell| {
-                emit_bottom_quad(
+                let (out, count) = output_for_cell(
+                    cell,
                     &mut vertices,
                     &mut vertex_count,
+                    &mut water_vertices,
+                    &mut water_vertex_count,
+                );
+                emit_bottom_quad(
+                    out,
+                    count,
                     base_x + x as i32,
                     wy,
                     base_z + z as i32,
@@ -146,16 +166,14 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
             &mask_a[..mask_len],
             &mut used_a[..mask_len],
             |z, y, d, h, cell| {
-                emit_east_quad(
+                let (out, count) = output_for_cell(
+                    cell,
                     &mut vertices,
                     &mut vertex_count,
-                    wx,
-                    y as i32,
-                    base_z + z as i32,
-                    d,
-                    h,
-                    cell,
+                    &mut water_vertices,
+                    &mut water_vertex_count,
                 );
+                emit_east_quad(out, count, wx, y as i32, base_z + z as i32, d, h, cell);
             },
         );
         greedy_mask(
@@ -164,16 +182,14 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
             &mask_b[..mask_len],
             &mut used_b[..mask_len],
             |z, y, d, h, cell| {
-                emit_west_quad(
+                let (out, count) = output_for_cell(
+                    cell,
                     &mut vertices,
                     &mut vertex_count,
-                    wx,
-                    y as i32,
-                    base_z + z as i32,
-                    d,
-                    h,
-                    cell,
+                    &mut water_vertices,
+                    &mut water_vertex_count,
                 );
+                emit_west_quad(out, count, wx, y as i32, base_z + z as i32, d, h, cell);
             },
         );
     }
@@ -201,16 +217,14 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
             &mask_a[..mask_len],
             &mut used_a[..mask_len],
             |x, y, w, h, cell| {
-                emit_south_quad(
+                let (out, count) = output_for_cell(
+                    cell,
                     &mut vertices,
                     &mut vertex_count,
-                    base_x + x as i32,
-                    y as i32,
-                    wz,
-                    w,
-                    h,
-                    cell,
+                    &mut water_vertices,
+                    &mut water_vertex_count,
                 );
+                emit_south_quad(out, count, base_x + x as i32, y as i32, wz, w, h, cell);
             },
         );
         greedy_mask(
@@ -219,23 +233,41 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
             &mask_b[..mask_len],
             &mut used_b[..mask_len],
             |x, y, w, h, cell| {
-                emit_north_quad(
+                let (out, count) = output_for_cell(
+                    cell,
                     &mut vertices,
                     &mut vertex_count,
-                    base_x + x as i32,
-                    y as i32,
-                    wz,
-                    w,
-                    h,
-                    cell,
+                    &mut water_vertices,
+                    &mut water_vertex_count,
                 );
+                emit_north_quad(out, count, base_x + x as i32, y as i32, wz, w, h, cell);
             },
         );
     }
 
+    let solid_vertex_count = vertex_count;
+    vertices.append(&mut water_vertices);
+    vertex_count += water_vertex_count;
+
     ChunkMesh {
         vertices,
         vertex_count,
+        solid_vertex_count,
+        water_vertex_count,
+    }
+}
+
+fn output_for_cell<'a>(
+    cell: MaskCell,
+    solid_vertices: &'a mut Vec<f32>,
+    solid_count: &'a mut u32,
+    water_vertices: &'a mut Vec<f32>,
+    water_count: &'a mut u32,
+) -> (&'a mut Vec<f32>, &'a mut u32) {
+    if cell.block_id == block::WATER {
+        (water_vertices, water_count)
+    } else {
+        (solid_vertices, solid_count)
     }
 }
 

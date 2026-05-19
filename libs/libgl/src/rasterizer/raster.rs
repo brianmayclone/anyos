@@ -8,15 +8,15 @@
 //! **Zero heap allocation**: varying interpolation uses a stack buffer, and the
 //! `ShaderExec` is passed in pre-allocated from the draw call.
 
+use super::fragment;
+use super::ClipVertex;
+use super::MAX_VARYINGS;
+use crate::compiler::backend_jit::{JitContext, JitFn};
+use crate::compiler::backend_sw::ShaderExec;
+use crate::compiler::ir::Program as IrProgram;
+use crate::simd::Vec4;
 use crate::state::GlContext;
 use crate::types::*;
-use crate::compiler::ir::Program as IrProgram;
-use crate::compiler::backend_sw::ShaderExec;
-use crate::compiler::backend_jit::{JitFn, JitContext};
-use crate::simd::Vec4;
-use super::ClipVertex;
-use super::fragment;
-use super::MAX_VARYINGS;
 
 /// Rasterize a single triangle with incremental edge functions.
 ///
@@ -46,11 +46,15 @@ pub fn rasterize_triangle(
     let min_y = min3(s0[1], s1[1], s2[1]).max(0.0) as i32;
     let max_y = (super::math::ceil(max3(s0[1], s1[1], s2[1])) as i32).min(fb_h - 1);
 
-    if min_x > max_x || min_y > max_y { return; }
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
 
     // ── Triangle area + degenerate check ─────────────────────────────────
     let area = edge_fn(s0, s1, s2);
-    if area.abs() < 1e-6 { return; }
+    if area.abs() < 1e-6 {
+        return;
+    }
     // inv_area must always be positive so barycentric coordinates are correct.
     // When area < 0 (CW screen-space winding from viewport Y-flip), we negate
     // edge values and increments so the inside test (>= 0) works uniformly.
@@ -81,9 +85,15 @@ pub fn rasterize_triangle(
         let iw0 = Vec4::splat(inv_w0c);
         let iw1 = Vec4::splat(inv_w1c);
         let iw2 = Vec4::splat(inv_w2c);
-        Vec4::load(&v0.varyings[vi]).mul(iw0).store(&mut v0_persp[vi]);
-        Vec4::load(&v1.varyings[vi]).mul(iw1).store(&mut v1_persp[vi]);
-        Vec4::load(&v2.varyings[vi]).mul(iw2).store(&mut v2_persp[vi]);
+        Vec4::load(&v0.varyings[vi])
+            .mul(iw0)
+            .store(&mut v0_persp[vi]);
+        Vec4::load(&v1.varyings[vi])
+            .mul(iw1)
+            .store(&mut v1_persp[vi]);
+        Vec4::load(&v2.varyings[vi])
+            .mul(iw2)
+            .store(&mut v2_persp[vi]);
     }
 
     // ── Depth values ─────────────────────────────────────────────────────
@@ -91,7 +101,9 @@ pub fn rasterize_triangle(
     let z1 = s1[2];
     let z2 = s2[2];
 
-    let Some(target) = crate::framebuffer::current_target(ctx) else { return; };
+    let Some(target) = crate::framebuffer::current_target(ctx) else {
+        return;
+    };
     let fb_width = target.width;
     let tex_sample = real_tex_sample;
     let tex_sample_addr = real_tex_sample as usize;
@@ -123,15 +135,17 @@ pub fn rasterize_triangle(
 
     // Normalize sign: when area < 0 (CW screen winding), flip all edge
     // values and increments so the inside test (>= 0) works uniformly.
-    let (mut a12, mut b12, mut a20, mut b20, mut a01, mut b01) =
-        (a12, b12, a20, b20, a01, b01);
+    let (mut a12, mut b12, mut a20, mut b20, mut a01, mut b01) = (a12, b12, a20, b20, a01, b01);
     if area < 0.0 {
         w0_row = -w0_row;
         w1_row = -w1_row;
         w2_row = -w2_row;
-        a12 = -a12; b12 = -b12;
-        a20 = -a20; b20 = -b20;
-        a01 = -a01; b01 = -b01;
+        a12 = -a12;
+        b12 = -b12;
+        a20 = -a20;
+        b20 = -b20;
+        a01 = -a01;
+        b01 = -b01;
     }
 
     // Stack-allocated varying interpolation buffer (zero heap alloc)
@@ -168,14 +182,18 @@ pub fn rasterize_triangle(
                     if a_val > 1e-8 {
                         if w_val < 0.0 {
                             let x = min_x + super::math::ceil((-w_val) / a_val) as i32;
-                            if x > span_left { span_left = x; }
+                            if x > span_left {
+                                span_left = x;
+                            }
                         }
                     } else if a_val < -1e-8 {
                         if w_val < 0.0 {
                             empty = true;
                         } else {
                             let x = min_x + (w_val / (-a_val)) as i32;
-                            if x < span_right { span_right = x; }
+                            if x < span_right {
+                                span_right = x;
+                            }
                         }
                     } else if w_val < -1e-8 {
                         empty = true;
@@ -265,7 +283,9 @@ pub fn rasterize_triangle(
                             tex_sample: tex_sample_addr,
                             discarded: 0,
                         };
-                        unsafe { jit(&mut jit_ctx); }
+                        unsafe {
+                            jit(&mut jit_ctx);
+                        }
                         if jit_ctx.discarded != 0 {
                             continue;
                         }
@@ -327,13 +347,21 @@ pub fn edge_fn(a: &[f32; 3], b: &[f32; 3], c: &[f32; 3]) -> f32 {
 #[inline(always)]
 pub fn min3(a: f32, b: f32, c: f32) -> f32 {
     let m = if a < b { a } else { b };
-    if m < c { m } else { c }
+    if m < c {
+        m
+    } else {
+        c
+    }
 }
 
 #[inline(always)]
 pub fn max3(a: f32, b: f32, c: f32) -> f32 {
     let m = if a > b { a } else { b };
-    if m > c { m } else { c }
+    if m > c {
+        m
+    } else {
+        c
+    }
 }
 
 /// Fast reciprocal (1/x).
@@ -373,9 +401,13 @@ impl ResolvedTexture {
         unsafe {
             let bound = crate::BOUND_TEXTURES_PTR;
             let store = crate::TEX_STORE_PTR;
-            if bound.is_null() || store.is_null() { return None; }
+            if bound.is_null() || store.is_null() {
+                return None;
+            }
             let tex_id = (*bound)[0];
-            if tex_id == 0 { return None; }
+            if tex_id == 0 {
+                return None;
+            }
             match (*store).get(tex_id) {
                 Some(tex) if tex.width > 0 && tex.height > 0 => {
                     let mut mip_data = [core::ptr::null(); crate::texture::MAX_MIP_LEVELS];
@@ -424,7 +456,9 @@ impl ResolvedTexture {
 pub fn rasterize_triangle_fast(
     ctx: &mut GlContext,
     tex: &ResolvedTexture,
-    mat_r: f32, mat_g: f32, mat_b: f32,
+    mat_r: f32,
+    mat_g: f32,
+    mat_b: f32,
     v0: &ClipVertex,
     v1: &ClipVertex,
     v2: &ClipVertex,
@@ -439,18 +473,24 @@ pub fn rasterize_triangle_fast(
     let max_x = (super::math::ceil(max3(s0[0], s1[0], s2[0])) as i32).min(fb_w - 1);
     let min_y = min3(s0[1], s1[1], s2[1]).max(0.0) as i32;
     let max_y = (super::math::ceil(max3(s0[1], s1[1], s2[1])) as i32).min(fb_h - 1);
-    if min_x > max_x || min_y > max_y { return; }
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
 
     // ── Triangle area ────────────────────────────────────────────────────
     let area = edge_fn(s0, s1, s2);
-    if area.abs() < 1e-6 { return; }
+    if area.abs() < 1e-6 {
+        return;
+    }
     let inv_area = 1.0 / area.abs();
 
     // ── Clip-space W for perspective correction ──────────────────────────
     let w0_clip = v0.position[3];
     let w1_clip = v1.position[3];
     let w2_clip = v2.position[3];
-    if w0_clip.abs() < 1e-6 || w1_clip.abs() < 1e-6 || w2_clip.abs() < 1e-6 { return; }
+    if w0_clip.abs() < 1e-6 || w1_clip.abs() < 1e-6 || w2_clip.abs() < 1e-6 {
+        return;
+    }
 
     let inv_w0c = 1.0 / w0_clip;
     let inv_w1c = 1.0 / w1_clip;
@@ -459,16 +499,32 @@ pub fn rasterize_triangle_fast(
     // ── Pre-divide varyings by W (lighting rgb + texcoord uv) ────────────
     // Varying 0 = lighting (r,g,b in [0],[1],[2])
     // Varying 1 = texcoord (u,v in [0],[1])
-    let v0_lit = [v0.varyings[0][0] * inv_w0c, v0.varyings[0][1] * inv_w0c, v0.varyings[0][2] * inv_w0c];
-    let v1_lit = [v1.varyings[0][0] * inv_w1c, v1.varyings[0][1] * inv_w1c, v1.varyings[0][2] * inv_w1c];
-    let v2_lit = [v2.varyings[0][0] * inv_w2c, v2.varyings[0][1] * inv_w2c, v2.varyings[0][2] * inv_w2c];
+    let v0_lit = [
+        v0.varyings[0][0] * inv_w0c,
+        v0.varyings[0][1] * inv_w0c,
+        v0.varyings[0][2] * inv_w0c,
+    ];
+    let v1_lit = [
+        v1.varyings[0][0] * inv_w1c,
+        v1.varyings[0][1] * inv_w1c,
+        v1.varyings[0][2] * inv_w1c,
+    ];
+    let v2_lit = [
+        v2.varyings[0][0] * inv_w2c,
+        v2.varyings[0][1] * inv_w2c,
+        v2.varyings[0][2] * inv_w2c,
+    ];
 
     let v0_uv = [v0.varyings[1][0] * inv_w0c, v0.varyings[1][1] * inv_w0c];
     let v1_uv = [v1.varyings[1][0] * inv_w1c, v1.varyings[1][1] * inv_w1c];
     let v2_uv = [v2.varyings[1][0] * inv_w2c, v2.varyings[1][1] * inv_w2c];
 
-    let z0 = s0[2]; let z1 = s1[2]; let z2 = s2[2];
-    let Some(target) = crate::framebuffer::current_target(ctx) else { return; };
+    let z0 = s0[2];
+    let z1 = s1[2];
+    let z2 = s2[2];
+    let Some(target) = crate::framebuffer::current_target(ctx) else {
+        return;
+    };
     let fb_width = target.width;
     let depth_test = ctx.depth_test;
     let depth_func = ctx.depth_func;
@@ -507,10 +563,15 @@ pub fn rasterize_triangle_fast(
     let mut w2_row = (s1[0] - s0[0]) * (p0y - s0[1]) - (s1[1] - s0[1]) * (p0x - s0[0]);
 
     if area < 0.0 {
-        w0_row = -w0_row; w1_row = -w1_row; w2_row = -w2_row;
-        a12 = -a12; b12 = -b12;
-        a20 = -a20; b20 = -b20;
-        a01 = -a01; b01 = -b01;
+        w0_row = -w0_row;
+        w1_row = -w1_row;
+        w2_row = -w2_row;
+        a12 = -a12;
+        b12 = -b12;
+        a20 = -a20;
+        b20 = -b20;
+        a01 = -a01;
+        b01 = -b01;
     }
 
     // ── Scanline loop with span clipping ─────────────────────────────────
@@ -527,15 +588,22 @@ pub fn rasterize_triangle_fast(
                     if a_val > 1e-8 {
                         if w_val < 0.0 {
                             let x = min_x + super::math::ceil((-w_val) / a_val) as i32;
-                            if x > span_left { span_left = x; }
+                            if x > span_left {
+                                span_left = x;
+                            }
                         }
                     } else if a_val < -1e-8 {
-                        if w_val < 0.0 { empty = true; }
-                        else {
+                        if w_val < 0.0 {
+                            empty = true;
+                        } else {
                             let x = min_x + (w_val / (-a_val)) as i32;
-                            if x < span_right { span_right = x; }
+                            if x < span_right {
+                                span_right = x;
+                            }
                         }
-                    } else if w_val < -1e-8 { empty = true; }
+                    } else if w_val < -1e-8 {
+                        empty = true;
+                    }
                 }
             };
         }
@@ -568,7 +636,9 @@ pub fn rasterize_triangle_fast(
                             1.0
                         };
                         if !fragment::depth_test(depth, cur, depth_func) {
-                            w0 += a12; w1 += a20; w2 += a01;
+                            w0 += a12;
+                            w1 += a20;
+                            w2 += a01;
                             continue;
                         }
                     }
@@ -618,11 +688,15 @@ pub fn rasterize_triangle_fast(
                     }
                 }
 
-                w0 += a12; w1 += a20; w2 += a01;
+                w0 += a12;
+                w1 += a20;
+                w2 += a01;
             }
         }
 
-        w0_row += b12; w1_row += b20; w2_row += b01;
+        w0_row += b12;
+        w1_row += b20;
+        w2_row += b01;
     }
 }
 
@@ -653,16 +727,22 @@ pub fn rasterize_triangle_forger_blocks(
     let max_x = (super::math::ceil(max3(s0[0], s1[0], s2[0])) as i32).min(fb_w - 1);
     let min_y = min3(s0[1], s1[1], s2[1]).max(0.0) as i32;
     let max_y = (super::math::ceil(max3(s0[1], s1[1], s2[1])) as i32).min(fb_h - 1);
-    if min_x > max_x || min_y > max_y { return; }
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
 
     let area = edge_fn(s0, s1, s2);
-    if area.abs() < 1e-6 { return; }
+    if area.abs() < 1e-6 {
+        return;
+    }
     let inv_area = 1.0 / area.abs();
 
     let w0_clip = v0.position[3];
     let w1_clip = v1.position[3];
     let w2_clip = v2.position[3];
-    if w0_clip.abs() < 1e-6 || w1_clip.abs() < 1e-6 || w2_clip.abs() < 1e-6 { return; }
+    if w0_clip.abs() < 1e-6 || w1_clip.abs() < 1e-6 || w2_clip.abs() < 1e-6 {
+        return;
+    }
 
     let inv_w0c = 1.0 / w0_clip;
     let inv_w1c = 1.0 / w1_clip;
@@ -682,8 +762,12 @@ pub fn rasterize_triangle_forger_blocks(
     let v1_mat = v1.varyings[4][0] * inv_w1c;
     let v2_mat = v2.varyings[4][0] * inv_w2c;
 
-    let z0 = s0[2]; let z1 = s1[2]; let z2 = s2[2];
-    let Some(target) = crate::framebuffer::current_target(ctx) else { return; };
+    let z0 = s0[2];
+    let z1 = s1[2];
+    let z2 = s2[2];
+    let Some(target) = crate::framebuffer::current_target(ctx) else {
+        return;
+    };
     let fb_width = target.width;
     let depth_test = ctx.depth_test;
     let depth_func = ctx.depth_func;
@@ -692,7 +776,9 @@ pub fn rasterize_triangle_forger_blocks(
     let tex_data = tex.mip_data[0];
     let tex_w = tex.mip_widths[0];
     let tex_h = tex.mip_heights[0];
-    if tex_data.is_null() || tex_w == 0 || tex_h == 0 { return; }
+    if tex_data.is_null() || tex_w == 0 || tex_h == 0 {
+        return;
+    }
     let tex_w_f = tex_w as f32;
     let tex_h_f = tex_h as f32;
     let tex_w_max = (tex_w - 1) as i32;
@@ -702,6 +788,7 @@ pub fn rasterize_triangle_forger_blocks(
     let fog_g255 = fog_g.clamp(0.0, 1.0) * 255.0;
     let fog_b255 = fog_b.clamp(0.0, 1.0) * 255.0;
     let raytrace_materials = unsafe { crate::CPU_RAYTRACE_MODE != 0 };
+    let water_phase = (crate::syscall::uptime_ms() & 0xFFFF) as f32 * 0.001;
 
     let mut a12 = s1[1] - s2[1];
     let mut b12 = s2[0] - s1[0];
@@ -717,10 +804,15 @@ pub fn rasterize_triangle_forger_blocks(
     let mut w2_row = (s1[0] - s0[0]) * (p0y - s0[1]) - (s1[1] - s0[1]) * (p0x - s0[0]);
 
     if area < 0.0 {
-        w0_row = -w0_row; w1_row = -w1_row; w2_row = -w2_row;
-        a12 = -a12; b12 = -b12;
-        a20 = -a20; b20 = -b20;
-        a01 = -a01; b01 = -b01;
+        w0_row = -w0_row;
+        w1_row = -w1_row;
+        w2_row = -w2_row;
+        a12 = -a12;
+        b12 = -b12;
+        a20 = -a20;
+        b20 = -b20;
+        a01 = -a01;
+        b01 = -b01;
     }
 
     for py in min_y..=max_y {
@@ -736,15 +828,22 @@ pub fn rasterize_triangle_forger_blocks(
                     if a_val > 1e-8 {
                         if w_val < 0.0 {
                             let x = min_x + super::math::ceil((-w_val) / a_val) as i32;
-                            if x > span_left { span_left = x; }
+                            if x > span_left {
+                                span_left = x;
+                            }
                         }
                     } else if a_val < -1e-8 {
-                        if w_val < 0.0 { empty = true; }
-                        else {
+                        if w_val < 0.0 {
+                            empty = true;
+                        } else {
                             let x = min_x + (w_val / (-a_val)) as i32;
-                            if x < span_right { span_right = x; }
+                            if x < span_right {
+                                span_right = x;
+                            }
                         }
-                    } else if w_val < -1e-8 { empty = true; }
+                    } else if w_val < -1e-8 {
+                        empty = true;
+                    }
                 }
             };
         }
@@ -775,7 +874,9 @@ pub fn rasterize_triangle_forger_blocks(
                             1.0
                         };
                         if !fragment::depth_test(depth, cur, depth_func) {
-                            w0 += a12; w1 += a20; w2 += a01;
+                            w0 += a12;
+                            w1 += a20;
+                            w2 += a01;
                             continue;
                         }
                     }
@@ -806,12 +907,27 @@ pub fn rasterize_triangle_forger_blocks(
                     let mut b = tex_b * light;
 
                     if raytrace_materials && material > 0.9 && tex_a < 220 {
-                        let wave = fast_fract(u_raw * 43.0 + v_raw * 29.0 + (px as f32 + py as f32) * 0.015);
-                        let glint = if wave > 0.86 { (wave - 0.86) * 2.2 } else { 0.0 };
-                        let reflect = (0.16 + glint).min(0.34);
-                        r = r * (1.0 - reflect) + (fog_r255 + 28.0).min(255.0) * reflect;
-                        g = g * (1.0 - reflect) + (fog_g255 + 36.0).min(255.0) * reflect;
-                        b = b * (1.0 - reflect) + 255.0 * reflect;
+                        let shaded = shade_forger_water(
+                            r,
+                            g,
+                            b,
+                            px,
+                            py,
+                            fb_width,
+                            fb_h as u32,
+                            target.color_ptr,
+                            target.has_color,
+                            depth,
+                            u_raw,
+                            v_raw,
+                            fog_r255,
+                            fog_g255,
+                            fog_b255,
+                            water_phase,
+                        );
+                        r = shaded.0;
+                        g = shaded.1;
+                        b = shaded.2;
                     }
 
                     let fog_t = ((dist - fog_start) * fog_inv_range).clamp(0.0, 1.0);
@@ -833,10 +949,14 @@ pub fn rasterize_triangle_forger_blocks(
                         }
                     }
                 }
-                w0 += a12; w1 += a20; w2 += a01;
+                w0 += a12;
+                w1 += a20;
+                w2 += a01;
             }
         }
-        w0_row += b12; w1_row += b20; w2_row += b01;
+        w0_row += b12;
+        w1_row += b20;
+        w2_row += b01;
     }
 }
 
@@ -844,7 +964,138 @@ pub fn rasterize_triangle_forger_blocks(
 fn fast_fract(x: f32) -> f32 {
     let i = x as i32;
     let f = x - i as f32;
-    if f < 0.0 { f + 1.0 } else { f }
+    if f < 0.0 {
+        f + 1.0
+    } else {
+        f
+    }
+}
+
+#[inline(always)]
+fn narrow_band(v: f32, center: f32, half_width: f32) -> f32 {
+    let d = if v > center { v - center } else { center - v };
+    if d < half_width {
+        (half_width - d) / half_width
+    } else {
+        0.0
+    }
+}
+
+#[inline(always)]
+fn unpack_rgb(color: u32) -> (f32, f32, f32) {
+    (
+        ((color >> 16) & 0xFF) as f32,
+        ((color >> 8) & 0xFF) as f32,
+        (color & 0xFF) as f32,
+    )
+}
+
+/// Screen-space CPU water polish for Forger.
+///
+/// The block fast path has no direct world query here, so the "ray" is a cheap
+/// screen-space reflection: sample already-rendered pixels above the water,
+/// distort them by ripples, then add caustic bands and shoreline highlights.
+pub(crate) fn shade_forger_water(
+    mut r: f32,
+    mut g: f32,
+    mut b: f32,
+    px: i32,
+    py: i32,
+    fb_w: u32,
+    fb_h: u32,
+    color_ptr: *mut u32,
+    has_color: bool,
+    depth: f32,
+    u_raw: f32,
+    v_raw: f32,
+    fog_r255: f32,
+    fog_g255: f32,
+    fog_b255: f32,
+    phase: f32,
+) -> (f32, f32, f32) {
+    let ripple_a = fast_fract(u_raw * 31.0 + v_raw * 17.0 + phase * 0.37);
+    let ripple_b = fast_fract(u_raw * -13.0 + v_raw * 41.0 + phase * 0.23);
+    let ripple_c = fast_fract((px as f32) * 0.019 + (py as f32) * 0.031 + phase * 0.19);
+
+    if has_color && !color_ptr.is_null() && fb_w > 0 && fb_h > 0 {
+        let sx = (px + ((ripple_a - 0.5) * 24.0 + (ripple_b - 0.5) * 12.0) as i32)
+            .max(0)
+            .min(fb_w as i32 - 1);
+        let perspective_pull = (1.0 - depth).clamp(0.0, 1.0);
+        let sample_up = 10 + (perspective_pull * 92.0) as i32 + (ripple_c * 22.0) as i32;
+        let sy = (py - sample_up).max(0).min(fb_h as i32 - 1);
+        let sample = unsafe { *color_ptr.add((sy as u32 * fb_w + sx as u32) as usize) };
+        let (sr, sg, sb) = unpack_rgb(sample);
+        let luma = sr * 0.30 + sg * 0.59 + sb * 0.11;
+        let water_like = sb > sr * 1.22 && sb > sg * 1.10;
+        let sky_like = luma < 12.0;
+        let shore_like = !water_like && !sky_like;
+        let reflect = if shore_like {
+            0.58
+        } else if sky_like {
+            0.12
+        } else {
+            0.28
+        };
+
+        let refl_r = if shore_like {
+            (sr * 1.18).min(255.0)
+        } else {
+            sr
+        };
+        let refl_g = if shore_like {
+            (sg * 1.16).min(255.0)
+        } else {
+            sg
+        };
+        let refl_b = if shore_like {
+            (sb * 1.08).min(255.0)
+        } else {
+            sb
+        };
+        r = r * (1.0 - reflect) + refl_r * reflect;
+        g = g * (1.0 - reflect) + refl_g * reflect;
+        b = b * (1.0 - reflect) + refl_b * reflect;
+
+        if shore_like {
+            let foam_line = narrow_band(
+                fast_fract(u_raw * 11.0 + v_raw * 7.0 + phase * 0.32),
+                0.52,
+                0.055,
+            );
+            let foam = (foam_line * (0.55 + ripple_b * 0.45)).min(1.0);
+            r = (r + 42.0 * foam).min(255.0);
+            g = (g + 64.0 * foam).min(255.0);
+            b = (b + 72.0 * foam).min(255.0);
+        }
+    }
+
+    let ca_a = narrow_band(
+        fast_fract(u_raw * 23.0 + v_raw * 15.0 + phase * 0.46),
+        0.50,
+        0.045,
+    );
+    let ca_b = narrow_band(
+        fast_fract(u_raw * -17.0 + v_raw * 27.0 + phase * 0.29),
+        0.48,
+        0.035,
+    );
+    let caustic = (ca_a * 0.62 + ca_b * 0.48).min(0.9);
+    r = (r + (42.0 + fog_r255 * 0.08) * caustic).min(255.0);
+    g = (g + (80.0 + fog_g255 * 0.08) * caustic).min(255.0);
+    b = (b + 112.0 * caustic).min(255.0);
+
+    let glint = narrow_band(
+        fast_fract(u_raw * 47.0 + v_raw * 19.0 + phase * 0.73),
+        0.82,
+        0.035,
+    );
+    let fresnel = (0.18 + glint * 0.42).min(0.55);
+    r = r * (1.0 - fresnel) + (fog_r255 + 38.0).min(255.0) * fresnel;
+    g = g * (1.0 - fresnel) + (fog_g255 + 58.0).min(255.0) * fresnel;
+    b = b * (1.0 - fresnel) + 255.0 * fresnel;
+
+    (r, g, b)
 }
 
 /// Texture sampler using raw pointers to avoid `&CTX` / `&mut CTX` aliasing.
