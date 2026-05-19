@@ -2494,18 +2494,20 @@ fn schedule_inner(from_timer: bool) {
         PER_CPU_IN_SCHEDULER[cpu_id_exit].store(false, Ordering::Release);
     }
 
-    // Re-enable interrupts only when we are returning to a pure kernel thread.
+    // Voluntary scheduling must preserve the caller's IRQ state.
     //
-    // If the current thread is a user thread, we may be resuming into a blocked
-    // syscall on top of an EL0 exception frame that is still parked on this
-    // thread's kernel stack. In that case IRQs must stay masked until the
-    // exception epilogue executes `eret`; otherwise a nested IRQ can land on
-    // the same stack before the saved EL0 frame has been unwound.
+    // SYSCALL clears IF on entry, but `syscall_fast_entry` re-enables IRQs
+    // before calling the Rust dispatcher. If a user/LXE syscall blocks in
+    // `sleep_until()` or yields during IO contention, returning here with IF
+    // still cleared leaves the rest of that syscall running non-preemptibly.
+    // Heavy IO then starves timer IRQs, AHCI completions, watchdog output, and
+    // the compositor. The live user return frame is already safe for nested IRQs:
+    // normal syscall handling runs with IRQs enabled on the same kernel stack.
     //
-    // Timer-path scheduling already relies on the exception frame to restore the
-    // original interrupt state, so we never unmask here for `from_timer=true`.
-    if !from_timer && !PER_CPU_IS_USER[cpu_id_exit].load(Ordering::Relaxed) {
-        crate::arch::hal::enable_interrupts();
+    // Timer-path scheduling is entered from an IRQ frame and must let the
+    // interrupt epilogue restore the original IF state.
+    if !from_timer {
+        crate::arch::hal::restore_interrupt_state(saved_flags);
     }
 }
 
