@@ -6,7 +6,7 @@ use crate::config::LxeConfig;
 use crate::daemon;
 use crate::package::{
     install_deb, install_package, install_resolved_plan, package_installed, prefetch_install_plan,
-    resolve_install_plan, InstallProgress,
+    resolve_install_plan, sync_dpkg_status, InstallProgress,
 };
 use crate::readiness::{shell_availability, LxeShellAvailability};
 use crate::rootfs::{
@@ -142,6 +142,7 @@ fn shell(config: &mut LxeConfig, args: &[&str]) {
         }
     };
     ensure_rootfs_layout(config);
+    sync_dpkg_status(config, &config.rootfs);
     let Some(path) = find_linux_bash(&config.rootfs) else {
         log_error!("lxe shell: bash not found");
         log_warn!("lxe shell: run 'lxe init' or install bash first");
@@ -287,6 +288,7 @@ fn apt(config: &mut LxeConfig, args: &[&str], verbose: bool) {
                 progress.set_overall(done, packages.len() as u32);
             }
             progress.finish();
+            sync_dpkg_status(config, &config.rootfs);
             lease.release();
         }
         _ => log_error!("lxe apt: expected install <package>"),

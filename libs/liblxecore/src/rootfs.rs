@@ -36,23 +36,12 @@ pub(crate) fn ensure_rootfs_layout(config: &LxeConfig) {
     ensure_dir(&alloc::format!("{}/root", rootfs));
     ensure_linux_apt_dirs(rootfs);
     let apt_keyring = "/usr/share/keyrings/debian-archive-keyring.gpg";
-    let apt_security_base = "http://deb.debian.org/debian-security";
     let _ = write_bytes_atomic(
         &alloc::format!("{}/etc/apt/sources.list", rootfs),
         alloc::format!(
-            "deb [signed-by={}] {} {} {}\n\
-             deb [signed-by={}] {} {}-updates {}\n\
-             deb [signed-by={}] {} {}-security {}\n",
+            "deb [signed-by={}] {} {} {}\n",
             apt_keyring,
             config.apt_base,
-            config.apt_dist,
-            config.apt_component,
-            apt_keyring,
-            config.apt_base,
-            config.apt_dist,
-            config.apt_component,
-            apt_keyring,
-            apt_security_base,
             config.apt_dist,
             config.apt_component
         )
@@ -60,7 +49,7 @@ pub(crate) fn ensure_rootfs_layout(config: &LxeConfig) {
     );
     let _ = write_bytes_atomic(
         &alloc::format!("{}/etc/apt/apt.conf.d/99lxe", rootfs),
-        b"APT::Cache-Start \"134217728\";\nAPT::Cache-Grow \"16777216\";\nAPT::Cache-Limit \"0\";\nAcquire::Check-Valid-Until \"false\";\n",
+        b"APT::Cache-Start \"134217728\";\nAPT::Cache-Grow \"16777216\";\nAPT::Cache-Limit \"0\";\nAcquire::Check-Valid-Until \"false\";\nAcquire::Languages \"none\";\nAcquire::PDiffs \"false\";\n",
     );
     ensure_linux_account_files(rootfs);
     ensure_linux_network_files(rootfs);
@@ -132,6 +121,10 @@ fn ensure_linux_apt_dirs(rootfs: &str) {
         "/var/lib",
         "/var/lib/apt",
         "/var/lib/apt/lists",
+        "/var/lib/dpkg",
+        "/var/lib/dpkg/alternatives",
+        "/var/lib/dpkg/info",
+        "/var/lib/dpkg/updates",
         "/var/log",
         "/var/log/apt",
         "/tmp",
@@ -150,6 +143,8 @@ fn ensure_linux_apt_dirs(rootfs: &str) {
         // AnyOS mode bits are RMDC nibbles; keep these writable after apt drops to _apt.
         let _ = fs::chmod(&path, 0xFFF);
     }
+    ensure_rootfs_file(rootfs, "/var/lib/dpkg/status", b"", 0o644);
+    ensure_rootfs_file(rootfs, "/var/lib/dpkg/available", b"", 0o644);
 }
 
 fn ensure_linux_network_files(rootfs: &str) {

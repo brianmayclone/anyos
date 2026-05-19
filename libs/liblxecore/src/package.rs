@@ -269,6 +269,36 @@ pub(crate) fn package_installed(config: &LxeConfig, pkg: &str, rootfs: &str) -> 
     is_installed(config, pkg, rootfs)
 }
 
+pub(crate) fn sync_dpkg_status(config: &LxeConfig, rootfs: &str) {
+    let db_dir = installed_db_dir(config, rootfs);
+    let Ok(entries) = fs::read_dir(&db_dir) else {
+        return;
+    };
+
+    let mut status = String::new();
+    for entry in entries {
+        if entry.name == "." || entry.name == ".." {
+            continue;
+        }
+        let marker_path = alloc::format!("{}/{}", db_dir, entry.name);
+        let Ok(data) = fs::read_to_vec(&marker_path) else {
+            continue;
+        };
+        let Ok(text) = core::str::from_utf8(&data) else {
+            continue;
+        };
+        if let Some(record) = dpkg_status_record_from_marker(config, rootfs, text) {
+            status.push_str(&record);
+            status.push('\n');
+            write_dpkg_info_list(rootfs, text);
+        }
+    }
+
+    let status_path = linux_path_in_rootfs(rootfs, "/var/lib/dpkg/status");
+    ensure_parent_dirs(&status_path);
+    let _ = write_bytes_atomic(&status_path, status.as_bytes());
+}
+
 pub(crate) fn resolve_install_plan(
     config: &LxeConfig,
     packages: &[String],
@@ -2032,6 +2062,146 @@ fn mark_installed(
         manifest
     );
     let _ = write_bytes_atomic(&path, body.as_bytes());
+    update_dpkg_status_from_marker(config, rootfs, &body);
+    write_dpkg_info_list(rootfs, &body);
+}
+
+fn update_dpkg_status_from_marker(config: &LxeConfig, rootfs: &str, marker: &str) {
+    let Some(package) = marker_field(marker, "Package") else {
+        return;
+    };
+    let Some(record) = dpkg_status_record_from_marker(config, rootfs, marker) else {
+        return;
+    };
+    let status_path = linux_path_in_rootfs(rootfs, "/var/lib/dpkg/status");
+    let existing = fs::read_to_vec(&status_path)
+        .ok()
+        .and_then(|data| core::str::from_utf8(&data).ok().map(String::from))
+        .unwrap_or_else(String::new);
+    let mut next = String::new();
+    for paragraph in existing.split("\n\n") {
+        if paragraph.trim().is_empty() {
+            continue;
+        }
+        if marker_field(paragraph, "Package") == Some(package) {
+            continue;
+        }
+        next.push_str(paragraph.trim_end());
+        next.push_str("\n\n");
+    }
+    next.push_str(&record);
+    next.push('\n');
+    let _ = write_bytes_atomic(&status_path, next.as_bytes());
+}
+
+fn dpkg_status_record_from_marker(
+    config: &LxeConfig,
+    rootfs: &str,
+    marker: &str,
+) -> Option<String> {
+    let package = marker_field(marker, "Package")?;
+    let version = marker_field(marker, "Version")?;
+    let filename = marker_field(marker, "Filename").unwrap_or("");
+    let arch = package_arch_from_filename(filename, &config.apt_arch);
+    let installed_size = installed_size_from_marker(rootfs, marker);
+    let mut record = String::new();
+    record.push_str("Package: ");
+    record.push_str(package);
+    record.push('\n');
+    record.push_str("Status: install ok installed\n");
+    record.push_str("Priority: optional\n");
+    record.push_str("Section: unknown\n");
+    record.push_str("Installed-Size: ");
+    push_decimal(&mut record, installed_size);
+    record.push('\n');
+    record.push_str("Maintainer: LXE Bootstrap <root@anyos>\n");
+    record.push_str("Architecture: ");
+    record.push_str(&arch);
+    record.push('\n');
+    record.push_str("Version: ");
+    record.push_str(version);
+    record.push('\n');
+    record.push_str("Description: LXE bootstrapped Debian package ");
+    record.push_str(package);
+    record.push('\n');
+    Some(record)
+}
+
+fn write_dpkg_info_list(rootfs: &str, marker: &str) {
+    let Some(package) = marker_field(marker, "Package") else {
+        return;
+    };
+    let info_dir = linux_path_in_rootfs(rootfs, "/var/lib/dpkg/info");
+    ensure_dir_recursive(&info_dir);
+    let list_path = alloc::format!("{}/{}.list", info_dir, package);
+    let mut list = String::new();
+    for line in marker.lines() {
+        let Some(rel) = line.strip_prefix("Path: ") else {
+            continue;
+        };
+        if !valid_manifest_relative_path(rel) {
+            continue;
+        }
+        list.push('/');
+        list.push_str(rel);
+        list.push('\n');
+    }
+    let _ = write_bytes_atomic(&list_path, list.as_bytes());
+}
+
+fn marker_field<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let mut prefix = String::new();
+    prefix.push_str(name);
+    prefix.push_str(": ");
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix(&prefix) {
+            return Some(value.trim());
+        }
+    }
+    None
+}
+
+fn package_arch_from_filename(filename: &str, default_arch: &str) -> String {
+    let basename = filename.rsplit('/').next().unwrap_or(filename);
+    let stem = basename.strip_suffix(".deb").unwrap_or(basename);
+    if let Some((_, arch)) = stem.rsplit_once('_') {
+        if !arch.is_empty() {
+            return String::from(arch);
+        }
+    }
+    String::from(default_arch)
+}
+
+fn installed_size_from_marker(rootfs: &str, marker: &str) -> usize {
+    let mut total = 0usize;
+    for line in marker.lines() {
+        let Some(rel) = line.strip_prefix("Path: ") else {
+            continue;
+        };
+        if !valid_manifest_relative_path(rel) {
+            continue;
+        }
+        total = total.saturating_add(file_size(&alloc::format!("{}/{}", rootfs, rel)) as usize);
+    }
+    (total.saturating_add(1023)) / 1024
+}
+
+fn push_decimal(out: &mut String, mut value: usize) {
+    if value == 0 {
+        out.push('0');
+        return;
+    }
+    let mut digits = [0u8; 20];
+    let mut len = 0usize;
+    while value != 0 && len < digits.len() {
+        digits[len] = b'0' + (value % 10) as u8;
+        value /= 10;
+        len += 1;
+    }
+    while len != 0 {
+        len -= 1;
+        out.push(digits[len] as char);
+    }
 }
 
 fn is_installed(config: &LxeConfig, pkg: &str, rootfs: &str) -> bool {

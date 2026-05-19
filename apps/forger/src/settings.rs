@@ -102,8 +102,8 @@ impl GameSettings {
 
     pub fn render_divisor(&self) -> u32 {
         match self.graphics_quality {
-            GraphicsQuality::Fast => 3,
-            GraphicsQuality::Balanced => 2,
+            GraphicsQuality::Fast => 2,
+            GraphicsQuality::Balanced => 1,
             GraphicsQuality::Fancy => 1,
         }
     }

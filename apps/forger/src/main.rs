@@ -112,6 +112,8 @@ fn main() {
         fb_h
     );
     gl::gl_init(fb_w, fb_h);
+    gl::set_target_refresh_hz(60);
+    gl::set_cpu_raytrace_mode(true);
     gl::enable(gl::GL_DEPTH_TEST);
     gl::depth_func(gl::GL_LESS);
     gl::enable(gl::GL_CULL_FACE);

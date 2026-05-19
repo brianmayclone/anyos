@@ -72,6 +72,8 @@ EXPORTS
     glColorMask
     gl_set_fxaa
     gl_set_target_refresh_hz
+    gl_set_cpu_raytrace_mode
+    gl_forger_sky_fill
     gl_set_hw_backend
     gl_get_hw_backend
     gl_has_hw_backend

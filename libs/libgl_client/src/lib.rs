@@ -191,6 +191,8 @@ struct LibGl {
     // Anti-Aliasing
     set_fxaa: extern "C" fn(u32),
     set_target_refresh_hz: extern "C" fn(u32),
+    set_cpu_raytrace_mode: extern "C" fn(u32),
+    forger_sky_fill: extern "C" fn(*const f32, u32),
     // Backend selection
     set_hw_backend: extern "C" fn(u32),
     get_hw_backend: extern "C" fn() -> u32,
@@ -344,6 +346,8 @@ pub fn init() -> bool {
             finish: resolve(&handle, "glFinish"),
             set_fxaa: resolve(&handle, "gl_set_fxaa"),
             set_target_refresh_hz: resolve(&handle, "gl_set_target_refresh_hz"),
+            set_cpu_raytrace_mode: resolve(&handle, "gl_set_cpu_raytrace_mode"),
+            forger_sky_fill: resolve(&handle, "gl_forger_sky_fill"),
             set_hw_backend: resolve(&handle, "gl_set_hw_backend"),
             get_hw_backend: resolve(&handle, "gl_get_hw_backend"),
             has_hw_backend: resolve(&handle, "gl_has_hw_backend"),
@@ -777,6 +781,16 @@ pub fn set_fxaa(enabled: bool) {
 /// Set target refresh/frame cadence for adaptive engine LOD.
 pub fn set_target_refresh_hz(refresh_hz: u32) {
     (lib().set_target_refresh_hz)(refresh_hz);
+}
+
+/// Enable CPU-side material ray/raycast polish in specialized software paths.
+pub fn set_cpu_raytrace_mode(enabled: bool) {
+    (lib().set_cpu_raytrace_mode)(if enabled { 1 } else { 0 });
+}
+
+/// Fill the active software render target with Forger's procedural sky.
+pub fn forger_sky_fill(params: &[f32]) {
+    (lib().forger_sky_fill)(params.as_ptr(), params.len() as u32);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

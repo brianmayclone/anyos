@@ -82,20 +82,25 @@ fn run_ingame_tick(s: &mut crate::state::GameState) {
     s.world
         .ensure_chunks_around(px as i32, pz as i32, view_chunks.min(3));
 
-    let mut rebuilt = 0;
-    let keys: alloc::vec::Vec<(i32, i32)> = s.world.chunks.keys().copied().collect();
-    for (cx, cz) in keys {
-        if rebuilt >= 2 {
-            break;
-        }
-        let is_dirty = s.world.chunks.get(&(cx, cz)).map_or(false, |c| c.dirty);
-        if is_dirty {
-            let m = mesh::build_chunk_mesh(&s.world, cx, cz);
-            s.renderer.upload_chunk(cx, cz, &m);
-            if let Some(chunk) = s.world.chunks.get_mut(&(cx, cz)) {
-                chunk.dirty = false;
+    let mut dirty_keys = [None; 2];
+    let mut dirty_count = 0usize;
+    for (&key, chunk) in &s.world.chunks {
+        if chunk.dirty {
+            dirty_keys[dirty_count] = Some(key);
+            dirty_count += 1;
+            if dirty_count >= dirty_keys.len() {
+                break;
             }
-            rebuilt += 1;
+        }
+    }
+    for key in dirty_keys.iter().copied() {
+        let Some((cx, cz)) = key else {
+            break;
+        };
+        let m = mesh::build_chunk_mesh(&s.world, cx, cz);
+        s.renderer.upload_chunk(cx, cz, &m);
+        if let Some(chunk) = s.world.chunks.get_mut(&(cx, cz)) {
+            chunk.dirty = false;
         }
     }
 
@@ -182,20 +187,46 @@ fn blit_frame_to_canvas(s: &mut crate::state::GameState, draw_hud: bool) {
     let ch = s.canvas_h as usize;
     let rw = s.fb_w as usize;
     let rh = s.fb_h as usize;
+    if rw == cw && rh == ch {
+        s.canvas.copy_pixels_from(src);
+        draw_overlay_if_needed(s, draw_hud);
+        return;
+    }
+
     if s.upscale_buffer.len() != cw * ch {
         s.upscale_buffer.resize(cw * ch, 0);
     }
-    for cy in 0..ch {
-        let sy = (cy * rh / ch).min(rh - 1);
-        let src_row = sy * rw;
-        let dst_row = cy * cw;
-        for cx in 0..cw {
-            let sx = (cx * rw / cw).min(rw - 1);
-            s.upscale_buffer[dst_row + cx] = src[src_row + sx];
+
+    if rw * 2 == cw && rh * 2 == ch {
+        for sy in 0..rh {
+            let src_row = sy * rw;
+            let dst_row0 = sy * 2 * cw;
+            let dst_row1 = dst_row0 + cw;
+            for sx in 0..rw {
+                let px = src[src_row + sx];
+                let dx = sx * 2;
+                s.upscale_buffer[dst_row0 + dx] = px;
+                s.upscale_buffer[dst_row0 + dx + 1] = px;
+                s.upscale_buffer[dst_row1 + dx] = px;
+                s.upscale_buffer[dst_row1 + dx + 1] = px;
+            }
+        }
+    } else {
+        for cy in 0..ch {
+            let sy = (cy * rh / ch).min(rh - 1);
+            let src_row = sy * rw;
+            let dst_row = cy * cw;
+            for cx in 0..cw {
+                let sx = (cx * rw / cw).min(rw - 1);
+                s.upscale_buffer[dst_row + cx] = src[src_row + sx];
+            }
         }
     }
     s.canvas.copy_pixels_from(&s.upscale_buffer);
+    draw_overlay_if_needed(s, draw_hud);
+}
 
+fn draw_overlay_if_needed(s: &mut crate::state::GameState, draw_hud: bool) {
     if draw_hud {
         let mining_block = s.mining_target.map(|target| target.block_id);
         crate::ui::draw_hud(

@@ -204,17 +204,7 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
     let fb_w = target_w as i32;
     let fb_h = target_h as i32;
 
-    // Try fast path: trivial FS (≤20 instructions) + bound texture + 2 varyings
-    let fast = if fs_ir.instructions.len() <= 20 && num_varyings == 2 && !ctx.blend {
-        raster::ResolvedTexture::resolve_unit0().map(|tex| FastPathInfo {
-            tex,
-            mat_r: mat_color[0],
-            mat_g: mat_color[1],
-            mat_b: mat_color[2],
-        })
-    } else {
-        None
-    };
+    let fast = detect_fast_path(ctx, program, fs_ir, &uniforms[..], mat_color);
 
     // Pre-allocate fragment shader exec (reused for all pixels in this draw call)
     let mut fs_exec = ShaderExec::new(fs_ir.num_regs, num_varyings);
@@ -447,17 +437,7 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
     let fb_w = target_w as i32;
     let fb_h = target_h as i32;
 
-    // Try fast path (same logic as draw_arrays)
-    let fast = if fs_ir.instructions.len() <= 20 && num_varyings == 2 && !ctx.blend {
-        raster::ResolvedTexture::resolve_unit0().map(|tex| FastPathInfo {
-            tex,
-            mat_r: mat_color[0],
-            mat_g: mat_color[1],
-            mat_b: mat_color[2],
-        })
-    } else {
-        None
-    };
+    let fast = detect_fast_path(ctx, program, fs_ir, &uniforms[..], mat_color);
 
     let mut fs_exec = ShaderExec::new(fs_ir.num_regs, num_varyings);
 
@@ -494,11 +474,110 @@ pub fn read_index(data: &[u8], type_: GLenum, offset: usize, i: usize) -> u32 {
 }
 
 /// Fast-path triangle parameters (resolved once per draw call).
-pub struct FastPathInfo {
-    pub tex: raster::ResolvedTexture,
-    pub mat_r: f32,
-    pub mat_g: f32,
-    pub mat_b: f32,
+pub enum FastPathInfo {
+    /// Generic "texture * vertex light * material color" path used by simple GL demos.
+    Simple {
+        tex: raster::ResolvedTexture,
+        mat_r: f32,
+        mat_g: f32,
+        mat_b: f32,
+    },
+    /// Forger's block shader without active shadow sampling:
+    /// atlas texture, scalar vertex light, fog, and material-aware water polish.
+    ForgerBlocks {
+        tex: raster::ResolvedTexture,
+        fog_r: f32,
+        fog_g: f32,
+        fog_b: f32,
+        fog_start: f32,
+        fog_inv_range: f32,
+    },
+}
+
+fn detect_fast_path(
+    ctx: &GlContext,
+    program: &crate::shader::GlProgram,
+    fs_ir: &crate::compiler::ir::Program,
+    uniforms: &[[f32; 4]],
+    mat_color: [f32; 3],
+) -> Option<FastPathInfo> {
+    if ctx.blend {
+        return None;
+    }
+
+    if is_forger_block_program(program) {
+        let shadow_strength = uniform_scalar(program, uniforms, "uShadowStrength").unwrap_or(1.0);
+        if shadow_strength <= 0.001 {
+            let fog = uniform_vec3(program, uniforms, "uFogColor").unwrap_or([0.55, 0.65, 0.90]);
+            let fog_start = uniform_scalar(program, uniforms, "uFogStart").unwrap_or(32.0);
+            let fog_end = uniform_scalar(program, uniforms, "uFogEnd").unwrap_or(fog_start + 1.0);
+            let fog_range = (fog_end - fog_start).abs().max(0.001);
+            return raster::ResolvedTexture::resolve_unit0().map(|tex| FastPathInfo::ForgerBlocks {
+                tex,
+                fog_r: fog[0],
+                fog_g: fog[1],
+                fog_b: fog[2],
+                fog_start,
+                fog_inv_range: 1.0 / fog_range,
+            });
+        }
+    }
+
+    if fs_ir.instructions.len() <= 20 && program.varyings.len() == 2 {
+        return raster::ResolvedTexture::resolve_unit0().map(|tex| FastPathInfo::Simple {
+            tex,
+            mat_r: mat_color[0],
+            mat_g: mat_color[1],
+            mat_b: mat_color[2],
+        });
+    }
+
+    None
+}
+
+fn is_forger_block_program(program: &crate::shader::GlProgram) -> bool {
+    if program.varyings.len() < 5 {
+        return false;
+    }
+    program.varyings[0].name == "vTexCoord"
+        && program.varyings[1].name == "vLighting"
+        && program.varyings[2].name == "vDist"
+        && program.varyings[3].name == "vShadowCoord"
+        && program.varyings[4].name == "vTranslucency"
+        && find_uniform_slot(program, "uTexture").is_some()
+        && find_uniform_slot(program, "uFogColor").is_some()
+        && find_uniform_slot(program, "uFogStart").is_some()
+        && find_uniform_slot(program, "uFogEnd").is_some()
+        && find_uniform_slot(program, "uShadowStrength").is_some()
+}
+
+fn uniform_scalar(
+    program: &crate::shader::GlProgram,
+    uniforms: &[[f32; 4]],
+    name: &str,
+) -> Option<f32> {
+    let slot = find_uniform_slot(program, name)?;
+    uniforms.get(slot).map(|v| v[0])
+}
+
+fn uniform_vec3(
+    program: &crate::shader::GlProgram,
+    uniforms: &[[f32; 4]],
+    name: &str,
+) -> Option<[f32; 3]> {
+    let slot = find_uniform_slot(program, name)?;
+    uniforms.get(slot).map(|v| [v[0], v[1], v[2]])
+}
+
+fn find_uniform_slot(program: &crate::shader::GlProgram, name: &str) -> Option<usize> {
+    let mut slot = 0usize;
+    for u in &program.uniforms {
+        if u.name == name {
+            return Some(slot);
+        }
+        slot += if u.size == 16 { 4 } else { 1 };
+    }
+    None
 }
 
 fn queue_draw_for_thread_pool(
@@ -556,7 +635,7 @@ fn queue_draw_for_thread_pool(
         ctx.blend,
         ctx.blend_src_rgb,
         ctx.blend_dst_rgb,
-        fast.map(|fp| (&fp.tex, fp.mat_r, fp.mat_g, fp.mat_b)),
+        fast,
         fs_ir as *const _,
         uniforms,
         num_varyings,
@@ -684,10 +763,16 @@ fn process_triangle(
             if cull { return; }
         }
 
-        if let Some(fp) = fast {
-            raster::rasterize_triangle_fast(ctx, &fp.tex, fp.mat_r, fp.mat_g, fp.mat_b, v0, v1, v2, &s0, &s1, &s2, fb_w, fb_h);
-        } else {
-            raster::rasterize_triangle(ctx, fs_ir, uniforms, fs_exec, fs_jit, v0, v1, v2, &s0, &s1, &s2, num_varyings, fb_w, fb_h);
+        match fast {
+            Some(FastPathInfo::Simple { tex, mat_r, mat_g, mat_b }) => {
+                raster::rasterize_triangle_fast(ctx, tex, *mat_r, *mat_g, *mat_b, v0, v1, v2, &s0, &s1, &s2, fb_w, fb_h);
+            }
+            Some(FastPathInfo::ForgerBlocks { tex, fog_r, fog_g, fog_b, fog_start, fog_inv_range }) => {
+                raster::rasterize_triangle_forger_blocks(ctx, tex, *fog_r, *fog_g, *fog_b, *fog_start, *fog_inv_range, v0, v1, v2, &s0, &s1, &s2, fb_w, fb_h);
+            }
+            None => {
+                raster::rasterize_triangle(ctx, fs_ir, uniforms, fs_exec, fs_jit, v0, v1, v2, &s0, &s1, &s2, num_varyings, fb_w, fb_h);
+            }
         }
         return;
     }
@@ -712,10 +797,16 @@ fn process_triangle(
             if cull { continue; }
         }
 
-        if let Some(fp) = fast {
-            raster::rasterize_triangle_fast(ctx, &fp.tex, fp.mat_r, fp.mat_g, fp.mat_b, &t[0], &t[1], &t[2], &s0, &s1, &s2, fb_w, fb_h);
-        } else {
-            raster::rasterize_triangle(ctx, fs_ir, uniforms, fs_exec, fs_jit, &t[0], &t[1], &t[2], &s0, &s1, &s2, t[0].num_varyings, fb_w, fb_h);
+        match fast {
+            Some(FastPathInfo::Simple { tex, mat_r, mat_g, mat_b }) => {
+                raster::rasterize_triangle_fast(ctx, tex, *mat_r, *mat_g, *mat_b, &t[0], &t[1], &t[2], &s0, &s1, &s2, fb_w, fb_h);
+            }
+            Some(FastPathInfo::ForgerBlocks { tex, fog_r, fog_g, fog_b, fog_start, fog_inv_range }) => {
+                raster::rasterize_triangle_forger_blocks(ctx, tex, *fog_r, *fog_g, *fog_b, *fog_start, *fog_inv_range, &t[0], &t[1], &t[2], &s0, &s1, &s2, fb_w, fb_h);
+            }
+            None => {
+                raster::rasterize_triangle(ctx, fs_ir, uniforms, fs_exec, fs_jit, &t[0], &t[1], &t[2], &s0, &s1, &s2, t[0].num_varyings, fb_w, fb_h);
+            }
         }
     }
 }

@@ -72,6 +72,9 @@ pub(crate) static mut DIAG_FRAME: u32 = 0;
 /// Global engine-managed texture LOD bias used by the software rasterizer.
 pub(crate) static mut GLOBAL_LOD_BIAS: f32 = 0.0;
 
+/// Enables CPU material ray/raycast polish in specialized software paths.
+pub(crate) static mut CPU_RAYTRACE_MODE: u32 = 1;
+
 /// Raw pointers to texture state — avoids `&CTX` / `&mut CTX` aliasing UB
 /// during rasterization when `real_tex_sample` needs read access while
 /// `rasterize_triangle` holds `&mut GlContext`.
@@ -1309,6 +1312,108 @@ pub extern "C" fn gl_set_fxaa(enabled: u32) {
 #[no_mangle]
 pub extern "C" fn gl_set_target_refresh_hz(refresh_hz: u32) {
     ctx().target_refresh_hz = refresh_hz.clamp(30, 240);
+}
+
+/// Enable CPU-side material ray/raycast polish for specialized software paths.
+#[no_mangle]
+pub extern "C" fn gl_set_cpu_raytrace_mode(enabled: u32) {
+    unsafe {
+        CPU_RAYTRACE_MODE = if enabled != 0 { 1 } else { 0 };
+    }
+}
+
+/// Fast software sky fill used by voxel scenes.
+///
+/// Parameter layout:
+/// top rgb, horizon rgb, bottom rgb, sun dir rgb, sun color rgb,
+/// sun size, sun opacity, camera fwd rgb, camera right rgb, camera up rgb,
+/// tan half fov, aspect.
+#[no_mangle]
+pub extern "C" fn gl_forger_sky_fill(params: *const f32, len: u32) {
+    if params.is_null() || len < 28 {
+        return;
+    }
+    flush_pending_sw_draws();
+    let p = unsafe { core::slice::from_raw_parts(params, len as usize) };
+    let c = ctx();
+    let Some(target) = framebuffer::current_target(c) else {
+        return;
+    };
+    if !target.has_color || target.width == 0 || target.height == 0 {
+        return;
+    }
+
+    let top = [p[0], p[1], p[2]];
+    let horizon = [p[3], p[4], p[5]];
+    let bottom = [p[6], p[7], p[8]];
+    let sun_dir = [p[9], p[10], p[11]];
+    let sun_color = [p[12], p[13], p[14]];
+    let sun_size = p[15];
+    let sun_opacity = p[16];
+    let cam_fwd = [p[17], p[18], p[19]];
+    let cam_right = [p[20], p[21], p[22]];
+    let cam_up = [p[23], p[24], p[25]];
+    let tan_half_fov = p[26];
+    let aspect = p[27];
+
+    let width = target.width as usize;
+    let height = target.height as usize;
+    let inv_w = 2.0 / target.width as f32;
+    let inv_h = 2.0 / target.height as f32;
+    let color = unsafe { core::slice::from_raw_parts_mut(target.color_ptr, width * height) };
+
+    for y in 0..height {
+        let vpos_y = 1.0 - (y as f32 + 0.5) * inv_h;
+        let row = y * width;
+        for x in 0..width {
+            let vpos_x = (x as f32 + 0.5) * inv_w - 1.0;
+            let mut rx = cam_fwd[0] + vpos_x * cam_right[0] * tan_half_fov * aspect
+                + vpos_y * cam_up[0] * tan_half_fov;
+            let mut ry = cam_fwd[1] + vpos_x * cam_right[1] * tan_half_fov * aspect
+                + vpos_y * cam_up[1] * tan_half_fov;
+            let mut rz = cam_fwd[2] + vpos_x * cam_right[2] * tan_half_fov * aspect
+                + vpos_y * cam_up[2] * tan_half_fov;
+            let len_sq = rx * rx + ry * ry + rz * rz;
+            if len_sq > 1e-12 {
+                let inv_len = 1.0 / rasterizer::math::sqrt(len_sq);
+                rx *= inv_len;
+                ry *= inv_len;
+                rz *= inv_len;
+            }
+
+            let elevation = ry;
+            let t_up = (elevation * 2.5).clamp(0.0, 1.0);
+            let t_down = (-elevation * 4.0).clamp(0.0, 1.0);
+            let mut r = horizon[0] + (top[0] - horizon[0]) * t_up;
+            let mut g = horizon[1] + (top[1] - horizon[1]) * t_up;
+            let mut b = horizon[2] + (top[2] - horizon[2]) * t_up;
+            r = r + (bottom[0] - r) * t_down;
+            g = g + (bottom[1] - g) * t_down;
+            b = b + (bottom[2] - b) * t_down;
+
+            let sun_dot = rx * sun_dir[0] + ry * sun_dir[1] + rz * sun_dir[2];
+            let sun_t = ((sun_dot - sun_size) / (1.0 - sun_size + 0.001) * 3.0)
+                .clamp(0.0, 1.0)
+                * sun_opacity;
+            r = r + (sun_color[0] - r) * sun_t;
+            g = g + (sun_color[1] - g) * sun_t;
+            b = b + (sun_color[2] - b) * sun_t;
+
+            let glow_size = sun_size - 0.04;
+            let glow_t = ((sun_dot - glow_size) / (1.0 - glow_size + 0.001))
+                .clamp(0.0, 1.0)
+                * sun_opacity;
+            let glow = glow_t * glow_t * 0.4;
+            r = r + (sun_color[0] - r) * glow;
+            g = g + (sun_color[1] - g) * glow;
+            b = b + (sun_color[2] - b) * glow;
+
+            let ri = (r.clamp(0.0, 1.0) * 255.0) as u32;
+            let gi = (g.clamp(0.0, 1.0) * 255.0) as u32;
+            let bi = (b.clamp(0.0, 1.0) * 255.0) as u32;
+            color[row + x] = 0xFF000000 | (ri << 16) | (gi << 8) | bi;
+        }
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

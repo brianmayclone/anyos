@@ -83,6 +83,7 @@ pub fn is_light_source(id: u8) -> bool {
 
 pub fn translucency(id: u8) -> f32 {
     match id {
+        WATER => 1.0,
         LEAVES => 0.65,
         _ => 0.0,
     }

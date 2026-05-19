@@ -1,6 +1,5 @@
 extern crate alloc;
 
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::block;
@@ -49,6 +48,10 @@ pub struct ChunkMesh {
 pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
     let mut vertices = Vec::with_capacity(64 * 1024);
     let mut vertex_count: u32 = 0;
+    let mut mask_a: Vec<Option<MaskCell>> = Vec::new();
+    let mut mask_b: Vec<Option<MaskCell>> = Vec::new();
+    let mut used_a: Vec<bool> = Vec::new();
+    let mut used_b: Vec<bool> = Vec::new();
 
     let base_x = cx * CHUNK_X as i32;
     let base_z = cz * CHUNK_Z as i32;
@@ -68,133 +71,183 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
     // Top / bottom faces: scan X/Z for each Y layer.
     for y in 0..max_y {
         let wy = y as i32;
-
-        let mut top_mask = vec![None; CHUNK_X * CHUNK_Z];
-        let mut bottom_mask = vec![None; CHUNK_X * CHUNK_Z];
+        let mask_len = CHUNK_X * CHUNK_Z;
+        prepare_mask(&mut mask_a, &mut used_a, mask_len);
+        prepare_mask(&mut mask_b, &mut used_b, mask_len);
 
         for z in 0..CHUNK_Z {
             for x in 0..CHUNK_X {
                 let wx = base_x + x as i32;
                 let wz = base_z + z as i32;
                 let idx = z * CHUNK_X + x;
-                top_mask[idx] = visible_face_cell(world, wx, wy, wz, 0);
-                bottom_mask[idx] = visible_face_cell(world, wx, wy, wz, 1);
+                mask_a[idx] = visible_face_cell(world, wx, wy, wz, 0);
+                mask_b[idx] = visible_face_cell(world, wx, wy, wz, 1);
             }
         }
 
-        greedy_mask(CHUNK_X, CHUNK_Z, &top_mask, |x, z, w, h, cell| {
-            emit_top_quad(
-                &mut vertices,
-                &mut vertex_count,
-                base_x + x as i32,
-                wy,
-                base_z + z as i32,
-                w,
-                h,
-                cell,
-            );
-        });
-        greedy_mask(CHUNK_X, CHUNK_Z, &bottom_mask, |x, z, w, h, cell| {
-            emit_bottom_quad(
-                &mut vertices,
-                &mut vertex_count,
-                base_x + x as i32,
-                wy,
-                base_z + z as i32,
-                w,
-                h,
-                cell,
-            );
-        });
+        greedy_mask(
+            CHUNK_X,
+            CHUNK_Z,
+            &mask_a[..mask_len],
+            &mut used_a[..mask_len],
+            |x, z, w, h, cell| {
+                emit_top_quad(
+                    &mut vertices,
+                    &mut vertex_count,
+                    base_x + x as i32,
+                    wy,
+                    base_z + z as i32,
+                    w,
+                    h,
+                    cell,
+                );
+            },
+        );
+        greedy_mask(
+            CHUNK_X,
+            CHUNK_Z,
+            &mask_b[..mask_len],
+            &mut used_b[..mask_len],
+            |x, z, w, h, cell| {
+                emit_bottom_quad(
+                    &mut vertices,
+                    &mut vertex_count,
+                    base_x + x as i32,
+                    wy,
+                    base_z + z as i32,
+                    w,
+                    h,
+                    cell,
+                );
+            },
+        );
     }
 
     // East / west faces: scan Z/Y for each X slice.
     for x in 0..CHUNK_X {
         let wx = base_x + x as i32;
-        let mut east_mask = vec![None; CHUNK_Z * max_y];
-        let mut west_mask = vec![None; CHUNK_Z * max_y];
+        let mask_len = CHUNK_Z * max_y;
+        prepare_mask(&mut mask_a, &mut used_a, mask_len);
+        prepare_mask(&mut mask_b, &mut used_b, mask_len);
 
         for y in 0..max_y {
             let wy = y as i32;
             for z in 0..CHUNK_Z {
                 let wz = base_z + z as i32;
                 let idx = y * CHUNK_Z + z;
-                east_mask[idx] = visible_face_cell(world, wx, wy, wz, 2);
-                west_mask[idx] = visible_face_cell(world, wx, wy, wz, 3);
+                mask_a[idx] = visible_face_cell(world, wx, wy, wz, 2);
+                mask_b[idx] = visible_face_cell(world, wx, wy, wz, 3);
             }
         }
 
-        greedy_mask(CHUNK_Z, max_y, &east_mask, |z, y, d, h, cell| {
-            emit_east_quad(
-                &mut vertices,
-                &mut vertex_count,
-                wx,
-                y as i32,
-                base_z + z as i32,
-                d,
-                h,
-                cell,
-            );
-        });
-        greedy_mask(CHUNK_Z, max_y, &west_mask, |z, y, d, h, cell| {
-            emit_west_quad(
-                &mut vertices,
-                &mut vertex_count,
-                wx,
-                y as i32,
-                base_z + z as i32,
-                d,
-                h,
-                cell,
-            );
-        });
+        greedy_mask(
+            CHUNK_Z,
+            max_y,
+            &mask_a[..mask_len],
+            &mut used_a[..mask_len],
+            |z, y, d, h, cell| {
+                emit_east_quad(
+                    &mut vertices,
+                    &mut vertex_count,
+                    wx,
+                    y as i32,
+                    base_z + z as i32,
+                    d,
+                    h,
+                    cell,
+                );
+            },
+        );
+        greedy_mask(
+            CHUNK_Z,
+            max_y,
+            &mask_b[..mask_len],
+            &mut used_b[..mask_len],
+            |z, y, d, h, cell| {
+                emit_west_quad(
+                    &mut vertices,
+                    &mut vertex_count,
+                    wx,
+                    y as i32,
+                    base_z + z as i32,
+                    d,
+                    h,
+                    cell,
+                );
+            },
+        );
     }
 
     // South / north faces: scan X/Y for each Z slice.
     for z in 0..CHUNK_Z {
         let wz = base_z + z as i32;
-        let mut south_mask = vec![None; CHUNK_X * max_y];
-        let mut north_mask = vec![None; CHUNK_X * max_y];
+        let mask_len = CHUNK_X * max_y;
+        prepare_mask(&mut mask_a, &mut used_a, mask_len);
+        prepare_mask(&mut mask_b, &mut used_b, mask_len);
 
         for y in 0..max_y {
             let wy = y as i32;
             for x in 0..CHUNK_X {
                 let wx = base_x + x as i32;
                 let idx = y * CHUNK_X + x;
-                south_mask[idx] = visible_face_cell(world, wx, wy, wz, 4);
-                north_mask[idx] = visible_face_cell(world, wx, wy, wz, 5);
+                mask_a[idx] = visible_face_cell(world, wx, wy, wz, 4);
+                mask_b[idx] = visible_face_cell(world, wx, wy, wz, 5);
             }
         }
 
-        greedy_mask(CHUNK_X, max_y, &south_mask, |x, y, w, h, cell| {
-            emit_south_quad(
-                &mut vertices,
-                &mut vertex_count,
-                base_x + x as i32,
-                y as i32,
-                wz,
-                w,
-                h,
-                cell,
-            );
-        });
-        greedy_mask(CHUNK_X, max_y, &north_mask, |x, y, w, h, cell| {
-            emit_north_quad(
-                &mut vertices,
-                &mut vertex_count,
-                base_x + x as i32,
-                y as i32,
-                wz,
-                w,
-                h,
-                cell,
-            );
-        });
+        greedy_mask(
+            CHUNK_X,
+            max_y,
+            &mask_a[..mask_len],
+            &mut used_a[..mask_len],
+            |x, y, w, h, cell| {
+                emit_south_quad(
+                    &mut vertices,
+                    &mut vertex_count,
+                    base_x + x as i32,
+                    y as i32,
+                    wz,
+                    w,
+                    h,
+                    cell,
+                );
+            },
+        );
+        greedy_mask(
+            CHUNK_X,
+            max_y,
+            &mask_b[..mask_len],
+            &mut used_b[..mask_len],
+            |x, y, w, h, cell| {
+                emit_north_quad(
+                    &mut vertices,
+                    &mut vertex_count,
+                    base_x + x as i32,
+                    y as i32,
+                    wz,
+                    w,
+                    h,
+                    cell,
+                );
+            },
+        );
     }
 
     ChunkMesh {
         vertices,
         vertex_count,
+    }
+}
+
+fn prepare_mask(mask: &mut Vec<Option<MaskCell>>, used: &mut Vec<bool>, len: usize) {
+    if mask.len() < len {
+        mask.resize(len, None);
+    }
+    for cell in mask.iter_mut().take(len) {
+        *cell = None;
+    }
+    if used.len() < len {
+        used.resize(len, false);
     }
 }
 
@@ -226,11 +279,18 @@ fn visible_face_cell(world: &World, wx: i32, wy: i32, wz: i32, face: usize) -> O
     })
 }
 
-fn greedy_mask<F>(width: usize, height: usize, mask: &[Option<MaskCell>], mut emit: F)
-where
+fn greedy_mask<F>(
+    width: usize,
+    height: usize,
+    mask: &[Option<MaskCell>],
+    used: &mut [bool],
+    mut emit: F,
+) where
     F: FnMut(usize, usize, usize, usize, MaskCell),
 {
-    let mut used = vec![false; width * height];
+    for flag in used.iter_mut().take(width * height) {
+        *flag = false;
+    }
 
     for y in 0..height {
         for x in 0..width {

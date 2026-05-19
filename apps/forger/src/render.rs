@@ -489,45 +489,10 @@ impl Renderer {
             }
         }
 
-        // -- Clear --
+        // -- Depth clear + direct sky fill --
         gl::viewport(0, 0, width as i32, height as i32);
-        gl::clear_color(
-            sun.sky_horizon[0],
-            sun.sky_horizon[1],
-            sun.sky_horizon[2],
-            1.0,
-        );
-        gl::clear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
-
-        // -- Sky pass (depth test OFF so sky doesn't write to depth buffer) --
-        gl::disable(gl::GL_DEPTH_TEST);
+        gl::clear(gl::GL_DEPTH_BUFFER_BIT);
         let aspect = width as f32 / height as f32;
-
-        gl::use_program(self.sky_program);
-
-        gl::uniform3f(
-            self.u_sky_top,
-            sun.sky_top[0],
-            sun.sky_top[1],
-            sun.sky_top[2],
-        );
-        gl::uniform3f(
-            self.u_sky_horizon,
-            sun.sky_horizon[0],
-            sun.sky_horizon[1],
-            sun.sky_horizon[2],
-        );
-        gl::uniform3f(
-            self.u_sky_bottom,
-            sun.sky_bottom[0],
-            sun.sky_bottom[1],
-            sun.sky_bottom[2],
-        );
-        gl::uniform3f(self.u_sun_dir, sun.dir[0], sun.dir[1], sun.dir[2]);
-        gl::uniform3f(self.u_sun_color, sun.color[0], sun.color[1], sun.color[2]);
-        gl::uniform1f(self.u_sun_size, sun.visible_size);
-        gl::uniform1f(self.u_sun_opacity, sun.visible_opacity);
-
         let fov_rad = 70.0 * gl::PI / 180.0;
         let tan_half_fov = gl::tan(fov_rad * 0.5);
         let cy = gl::cos(self.yaw);
@@ -541,17 +506,37 @@ impl Renderer {
             right[2] * fwd[0] - right[0] * fwd[2],
             right[0] * fwd[1] - right[1] * fwd[0],
         ];
-        gl::uniform3f(self.u_cam_fwd, fwd[0], fwd[1], fwd[2]);
-        gl::uniform3f(self.u_cam_right, right[0], right[1], right[2]);
-        gl::uniform3f(self.u_cam_up, up[0], up[1], up[2]);
-        gl::uniform1f(self.u_tan_half_fov, tan_half_fov);
-        gl::uniform1f(self.u_aspect, aspect);
-
-        gl::bind_buffer(gl::GL_ARRAY_BUFFER, self.sky_vbo);
-        gl::enable_vertex_attrib_array(self.a_sky_pos as u32);
-        gl::vertex_attrib_pointer(self.a_sky_pos as u32, 2, gl::GL_FLOAT, false, 8, 0);
-        gl::draw_arrays(gl::GL_TRIANGLES, 0, 6);
-        gl::disable_vertex_attrib_array(self.a_sky_pos as u32);
+        let sky_params = [
+            sun.sky_top[0],
+            sun.sky_top[1],
+            sun.sky_top[2],
+            sun.sky_horizon[0],
+            sun.sky_horizon[1],
+            sun.sky_horizon[2],
+            sun.sky_bottom[0],
+            sun.sky_bottom[1],
+            sun.sky_bottom[2],
+            sun.dir[0],
+            sun.dir[1],
+            sun.dir[2],
+            sun.color[0],
+            sun.color[1],
+            sun.color[2],
+            sun.visible_size,
+            sun.visible_opacity,
+            fwd[0],
+            fwd[1],
+            fwd[2],
+            right[0],
+            right[1],
+            right[2],
+            up[0],
+            up[1],
+            up[2],
+            tan_half_fov,
+            aspect,
+        ];
+        gl::forger_sky_fill(&sky_params);
 
         // -- Block pass (depth test ON, draws over sky) --
         gl::enable(gl::GL_DEPTH_TEST);

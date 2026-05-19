@@ -9,6 +9,7 @@
 //! (or when the process exits, if the kernel supports it).
 
 use crate::rasterizer::raster::ResolvedTexture;
+use crate::rasterizer::FastPathInfo;
 use crate::rasterizer::ClipVertex;
 use crate::state::MAX_TEXTURE_UNITS;
 use crate::syscall;
@@ -86,6 +87,12 @@ struct SubBatch {
     fast_mat_r: f32,
     fast_mat_g: f32,
     fast_mat_b: f32,
+    fast_fog_r: f32,
+    fast_fog_g: f32,
+    fast_fog_b: f32,
+    fast_fog_start: f32,
+    fast_fog_inv_range: f32,
+    fast_mode: u32,
     use_fast_path: bool,
 
     // General path shader data
@@ -306,10 +313,10 @@ fn worker_main(id: usize) {
             let sb = &pool.sub_batches[sb_idx];
             let tri = &pool.tri_buf[tri_ref.tri_idx as usize];
             CURRENT_SUB_BATCH[id].store(tri_ref.sb_idx, Ordering::Relaxed);
-            if sb.use_fast_path {
-                rasterize_tri_fast_band(pool, sb, tri, min_y, max_y);
-            } else {
-                rasterize_tri_band(pool, sb, tri, min_y, max_y, id);
+            match sb.fast_mode {
+                1 => rasterize_tri_fast_band(pool, sb, tri, min_y, max_y),
+                2 => rasterize_tri_forger_band(pool, sb, tri, min_y, max_y),
+                _ => rasterize_tri_band(pool, sb, tri, min_y, max_y, id),
             }
         }
         CURRENT_SUB_BATCH[id].store(u32::MAX, Ordering::Relaxed);
@@ -458,7 +465,7 @@ pub fn end_sub_batch(
     blend_enabled: bool,
     blend_src: u32,
     blend_dst: u32,
-    fast: Option<(&ResolvedTexture, f32, f32, f32)>,
+    fast: Option<&FastPathInfo>,
     fs_ir: *const crate::compiler::ir::Program,
     uniforms: &[[f32; 4]],
     num_varyings: usize,
@@ -502,17 +509,35 @@ pub fn end_sub_batch(
     sb.fs_jit = fs_jit;
     sb.bound_textures = *bound_textures;
 
-    if let Some((tex, mr, mg, mb)) = fast {
-        sb.use_fast_path = true;
-        sb.fast_tex_data = tex.data;
-        sb.fast_tex_w = tex.width;
-        sb.fast_tex_h = tex.height;
-        sb.fast_tex_len = tex.len;
-        sb.fast_mat_r = mr;
-        sb.fast_mat_g = mg;
-        sb.fast_mat_b = mb;
-    } else {
-        sb.use_fast_path = false;
+    sb.use_fast_path = false;
+    sb.fast_mode = 0;
+    if let Some(fast) = fast {
+        match fast {
+            FastPathInfo::Simple { tex, mat_r, mat_g, mat_b } => {
+                sb.use_fast_path = true;
+                sb.fast_mode = 1;
+                sb.fast_tex_data = tex.data;
+                sb.fast_tex_w = tex.width;
+                sb.fast_tex_h = tex.height;
+                sb.fast_tex_len = tex.len;
+                sb.fast_mat_r = *mat_r;
+                sb.fast_mat_g = *mat_g;
+                sb.fast_mat_b = *mat_b;
+            }
+            FastPathInfo::ForgerBlocks { tex, fog_r, fog_g, fog_b, fog_start, fog_inv_range } => {
+                sb.use_fast_path = true;
+                sb.fast_mode = 2;
+                sb.fast_tex_data = tex.data;
+                sb.fast_tex_w = tex.width;
+                sb.fast_tex_h = tex.height;
+                sb.fast_tex_len = tex.len;
+                sb.fast_fog_r = *fog_r;
+                sb.fast_fog_g = *fog_g;
+                sb.fast_fog_b = *fog_b;
+                sb.fast_fog_start = *fog_start;
+                sb.fast_fog_inv_range = *fog_inv_range;
+            }
+        }
     }
 
     pool.sub_batch_count = idx + 1;
@@ -973,6 +998,230 @@ fn rasterize_tri_fast_band(
         w1_row += b20;
         w2_row += b01;
     }
+}
+
+fn rasterize_tri_forger_band(
+    pool: &ThreadPool,
+    sb: &SubBatch,
+    tri: &ScreenTri,
+    band_min_y: i32,
+    band_max_y: i32,
+) {
+    let s0 = &tri.s0;
+    let s1 = &tri.s1;
+    let s2 = &tri.s2;
+    let fb_w = pool.fb_w as i32;
+    let fb_h = pool.fb_h as i32;
+
+    let min_x = min3(s0[0], s1[0], s2[0]).max(0.0) as i32;
+    let max_x = (crate::rasterizer::math::ceil(max3(s0[0], s1[0], s2[0])) as i32).min(fb_w - 1);
+    let min_y = (min3(s0[1], s1[1], s2[1]).max(0.0) as i32).max(band_min_y);
+    let max_y = (crate::rasterizer::math::ceil(max3(s0[1], s1[1], s2[1])) as i32)
+        .min(fb_h - 1)
+        .min(band_max_y);
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
+
+    let area = edge_fn(s0, s1, s2);
+    if area.abs() < 1e-6 {
+        return;
+    }
+    let inv_area = 1.0 / area.abs();
+
+    let v0 = &tri.v0;
+    let v1 = &tri.v1;
+    let v2 = &tri.v2;
+    let w0_clip = v0.position[3];
+    let w1_clip = v1.position[3];
+    let w2_clip = v2.position[3];
+    if w0_clip.abs() < 1e-6 || w1_clip.abs() < 1e-6 || w2_clip.abs() < 1e-6 {
+        return;
+    }
+
+    let inv_w0c = 1.0 / w0_clip;
+    let inv_w1c = 1.0 / w1_clip;
+    let inv_w2c = 1.0 / w2_clip;
+    let v0_uv = [v0.varyings[0][0] * inv_w0c, v0.varyings[0][1] * inv_w0c];
+    let v1_uv = [v1.varyings[0][0] * inv_w1c, v1.varyings[0][1] * inv_w1c];
+    let v2_uv = [v2.varyings[0][0] * inv_w2c, v2.varyings[0][1] * inv_w2c];
+    let v0_light = v0.varyings[1][0] * inv_w0c;
+    let v1_light = v1.varyings[1][0] * inv_w1c;
+    let v2_light = v2.varyings[1][0] * inv_w2c;
+    let v0_dist = v0.varyings[2][0] * inv_w0c;
+    let v1_dist = v1.varyings[2][0] * inv_w1c;
+    let v2_dist = v2.varyings[2][0] * inv_w2c;
+    let v0_mat = v0.varyings[4][0] * inv_w0c;
+    let v1_mat = v1.varyings[4][0] * inv_w1c;
+    let v2_mat = v2.varyings[4][0] * inv_w2c;
+
+    let z0 = s0[2];
+    let z1 = s1[2];
+    let z2 = s2[2];
+    let fb_width = pool.fb_w;
+    let tex_data = sb.fast_tex_data;
+    let tex_w = sb.fast_tex_w;
+    let tex_h = sb.fast_tex_h;
+    if tex_data.is_null() || tex_w == 0 || tex_h == 0 {
+        return;
+    }
+    let tex_w_f = tex_w as f32;
+    let tex_h_f = tex_h as f32;
+    let tex_w_max = (tex_w - 1) as i32;
+    let tex_h_max = (tex_h - 1) as i32;
+    let fog_r255 = sb.fast_fog_r.clamp(0.0, 1.0) * 255.0;
+    let fog_g255 = sb.fast_fog_g.clamp(0.0, 1.0) * 255.0;
+    let fog_b255 = sb.fast_fog_b.clamp(0.0, 1.0) * 255.0;
+    let raytrace_materials = unsafe { crate::CPU_RAYTRACE_MODE != 0 };
+
+    let mut a12 = s1[1] - s2[1];
+    let mut b12 = s2[0] - s1[0];
+    let mut a20 = s2[1] - s0[1];
+    let mut b20 = s0[0] - s2[0];
+    let mut a01 = s0[1] - s1[1];
+    let mut b01 = s1[0] - s0[0];
+
+    let p0x = min_x as f32 + 0.5;
+    let p0y = min_y as f32 + 0.5;
+    let mut w0_row = (s2[0] - s1[0]) * (p0y - s1[1]) - (s2[1] - s1[1]) * (p0x - s1[0]);
+    let mut w1_row = (s0[0] - s2[0]) * (p0y - s2[1]) - (s0[1] - s2[1]) * (p0x - s2[0]);
+    let mut w2_row = (s1[0] - s0[0]) * (p0y - s0[1]) - (s1[1] - s0[1]) * (p0x - s0[0]);
+
+    if area < 0.0 {
+        w0_row = -w0_row;
+        w1_row = -w1_row;
+        w2_row = -w2_row;
+        a12 = -a12;
+        b12 = -b12;
+        a20 = -a20;
+        b20 = -b20;
+        a01 = -a01;
+        b01 = -b01;
+    }
+
+    for py in min_y..=max_y {
+        let mut span_left = min_x;
+        let mut span_right = max_x;
+        let mut empty = false;
+
+        macro_rules! edge_clip {
+            ($w:expr, $a:expr) => {
+                if !empty {
+                    let w_val: f32 = $w;
+                    let a_val: f32 = $a;
+                    if a_val > 1e-8 {
+                        if w_val < 0.0 {
+                            let x = min_x + crate::rasterizer::math::ceil((-w_val) / a_val) as i32;
+                            if x > span_left { span_left = x; }
+                        }
+                    } else if a_val < -1e-8 {
+                        if w_val < 0.0 { empty = true; }
+                        else {
+                            let x = min_x + (w_val / (-a_val)) as i32;
+                            if x < span_right { span_right = x; }
+                        }
+                    } else if w_val < -1e-8 {
+                        empty = true;
+                    }
+                }
+            };
+        }
+
+        edge_clip!(w0_row, a12);
+        edge_clip!(w1_row, a20);
+        edge_clip!(w2_row, a01);
+
+        if !empty && span_left <= span_right {
+            let dx = (span_left - min_x) as f32;
+            let mut w0 = w0_row + a12 * dx;
+            let mut w1 = w1_row + a20 * dx;
+            let mut w2 = w2_row + a01 * dx;
+            let row_base = py as u32 * fb_width;
+
+            for px in span_left..=span_right {
+                if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
+                    let bary0 = w0 * inv_area;
+                    let bary1 = w1 * inv_area;
+                    let bary2 = w2 * inv_area;
+                    let depth = bary0 * z0 + bary1 * z1 + bary2 * z2;
+                    let fb_idx = (row_base + px as u32) as usize;
+
+                    if sb.depth_test {
+                        let cur = if pool.has_depth {
+                            unsafe { *pool.depth_ptr.add(fb_idx) }
+                        } else {
+                            1.0
+                        };
+                        if !fragment::depth_test(depth, cur, sb.depth_func) {
+                            w0 += a12; w1 += a20; w2 += a01;
+                            continue;
+                        }
+                    }
+
+                    let inv_w = bary0 * inv_w0c + bary1 * inv_w1c + bary2 * inv_w2c;
+                    let corr = fast_rcp(inv_w);
+                    let u_raw = (bary0 * v0_uv[0] + bary1 * v1_uv[0] + bary2 * v2_uv[0]) * corr;
+                    let v_raw = (bary0 * v0_uv[1] + bary1 * v1_uv[1] + bary2 * v2_uv[1]) * corr;
+                    let light = (bary0 * v0_light + bary1 * v1_light + bary2 * v2_light) * corr;
+                    let dist = (bary0 * v0_dist + bary1 * v1_dist + bary2 * v2_dist) * corr;
+                    let material = (bary0 * v0_mat + bary1 * v1_mat + bary2 * v2_mat) * corr;
+
+                    let u_f = u_raw - (u_raw as i32) as f32;
+                    let u_w = if u_f < 0.0 { u_f + 1.0 } else { u_f };
+                    let v_f = v_raw - (v_raw as i32) as f32;
+                    let v_w = if v_f < 0.0 { v_f + 1.0 } else { v_f };
+                    let tx = ((u_w * tex_w_f) as i32).min(tex_w_max).max(0) as u32;
+                    let ty = ((v_w * tex_h_f) as i32).min(tex_h_max).max(0) as u32;
+                    let texel = unsafe { *tex_data.add((ty * tex_w + tx) as usize) };
+                    let tex_a = ((texel >> 24) & 0xFF) as u32;
+                    let tex_r = ((texel >> 16) & 0xFF) as f32;
+                    let tex_g = ((texel >> 8) & 0xFF) as f32;
+                    let tex_b = (texel & 0xFF) as f32;
+
+                    let mut r = tex_r * light;
+                    let mut g = tex_g * light;
+                    let mut b = tex_b * light;
+                    if raytrace_materials && material > 0.9 && tex_a < 220 {
+                        let wave = fast_fract(u_raw * 43.0 + v_raw * 29.0 + (px as f32 + py as f32) * 0.015);
+                        let glint = if wave > 0.86 { (wave - 0.86) * 2.2 } else { 0.0 };
+                        let reflect = (0.16 + glint).min(0.34);
+                        r = r * (1.0 - reflect) + (fog_r255 + 28.0).min(255.0) * reflect;
+                        g = g * (1.0 - reflect) + (fog_g255 + 36.0).min(255.0) * reflect;
+                        b = b * (1.0 - reflect) + 255.0 * reflect;
+                    }
+
+                    let fog_t = ((dist - sb.fast_fog_start) * sb.fast_fog_inv_range).clamp(0.0, 1.0);
+                    r = r + (fog_r255 - r) * fog_t;
+                    g = g + (fog_g255 - g) * fog_t;
+                    b = b + (fog_b255 - b) * fog_t;
+                    let color = 0xFF000000
+                        | ((r.min(255.0).max(0.0) as u32) << 16)
+                        | ((g.min(255.0).max(0.0) as u32) << 8)
+                        | (b.min(255.0).max(0.0) as u32);
+
+                    unsafe {
+                        if sb.depth_mask && pool.has_depth {
+                            *pool.depth_ptr.add(fb_idx) = depth;
+                        }
+                        if pool.has_color {
+                            *pool.color_ptr.add(fb_idx) = color;
+                        }
+                    }
+                }
+                w0 += a12; w1 += a20; w2 += a01;
+            }
+        }
+        w0_row += b12;
+        w1_row += b20;
+        w2_row += b01;
+    }
+}
+
+#[inline(always)]
+fn fast_fract(x: f32) -> f32 {
+    let i = x as i32;
+    let f = x - i as f32;
+    if f < 0.0 { f + 1.0 } else { f }
 }
 
 /// Rasterize one triangle in general path, restricted to [band_min_y, band_max_y].
