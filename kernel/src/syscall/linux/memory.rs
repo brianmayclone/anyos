@@ -188,6 +188,191 @@ pub(super) fn linux_munmap(addr: u64, len: u64) -> u64 {
     }
 }
 
+pub(super) fn linux_mremap(
+    old_addr: u64,
+    old_size: u64,
+    new_size: u64,
+    flags: u64,
+    new_addr: u64,
+) -> u64 {
+    const PAGE_SIZE: u64 = 4096;
+    const MREMAP_MAYMOVE: u64 = 1;
+    const MREMAP_FIXED: u64 = 2;
+    const MREMAP_DONTUNMAP: u64 = 4;
+    const VALID_FLAGS: u64 = MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP;
+
+    let may_move = (flags & MREMAP_MAYMOVE) != 0;
+    let fixed = (flags & MREMAP_FIXED) != 0;
+
+    if old_addr == 0
+        || old_size == 0
+        || new_size == 0
+        || (old_addr & (PAGE_SIZE - 1)) != 0
+        || (flags & !VALID_FLAGS) != 0
+        || (flags & MREMAP_DONTUNMAP) != 0
+        || (fixed && (!may_move || new_addr == 0 || (new_addr & (PAGE_SIZE - 1)) != 0))
+    {
+        crate::serial_verbose_println!(
+            "lxe linux mremap: reject old={:#x} old_size={:#x} new_size={:#x} flags={:#x} new={:#x}",
+            old_addr,
+            old_size,
+            new_size,
+            flags,
+            new_addr
+        );
+        return linux_err(EINVAL);
+    }
+
+    let old_aligned = match align_page_up(old_size) {
+        Some(size) => size,
+        None => return linux_err(EINVAL),
+    };
+    let new_aligned = match align_page_up(new_size) {
+        Some(size) => size,
+        None => return linux_err(EINVAL),
+    };
+
+    if !handlers::helpers::is_user_range_accessible(old_addr, old_aligned) {
+        crate::serial_verbose_println!(
+            "lxe linux mremap: old range inaccessible old={:#x} old_size={:#x} aligned={:#x}",
+            old_addr,
+            old_size,
+            old_aligned
+        );
+        return linux_err(EFAULT);
+    }
+
+    if fixed && new_addr == old_addr {
+        if new_aligned <= old_aligned {
+            return linux_mremap_shrink_in_place(
+                old_addr,
+                old_size,
+                old_aligned,
+                new_size,
+                new_aligned,
+            );
+        }
+        return linux_err(ENOMEM);
+    }
+
+    if !fixed && new_aligned <= old_aligned {
+        return linux_mremap_shrink_in_place(old_addr, old_size, old_aligned, new_size, new_aligned);
+    }
+
+    if !may_move {
+        crate::serial_verbose_println!(
+            "lxe linux mremap: grow needs move old={:#x} old_size={:#x} new_size={:#x}",
+            old_addr,
+            old_size,
+            new_size
+        );
+        return linux_err(ENOMEM);
+    }
+
+    let target = if fixed {
+        let old_end = match old_addr.checked_add(old_aligned) {
+            Some(end) => end,
+            None => return linux_err(EINVAL),
+        };
+        let new_end = match new_addr.checked_add(new_aligned) {
+            Some(end) => end,
+            None => return linux_err(EINVAL),
+        };
+        if ranges_overlap(old_addr, old_end, new_addr, new_end) {
+            crate::serial_verbose_println!(
+                "lxe linux mremap: reject overlapping fixed move old={:#x}-{:#x} new={:#x}-{:#x}",
+                old_addr,
+                old_end,
+                new_addr,
+                new_end
+            );
+            return linux_err(EINVAL);
+        }
+        match linux_map_fixed(new_addr, new_aligned) {
+            Some(addr) => addr,
+            None => return linux_err(ENOMEM),
+        }
+    } else {
+        let addr = handlers::sys_mmap_u64(new_aligned);
+        if addr == u64::MAX {
+            return linux_err(ENOMEM);
+        }
+        addr
+    };
+
+    let copy_len = old_aligned.min(new_aligned);
+    if !handlers::helpers::is_user_range_accessible(target, copy_len) {
+        let _ = linux_munmap(target, new_aligned);
+        return linux_err(EFAULT);
+    }
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            old_addr as *const u8,
+            target as *mut u8,
+            copy_len as usize,
+        );
+    }
+
+    let ret = linux_munmap(old_addr, old_aligned);
+    if linux_is_err(ret) {
+        let _ = linux_munmap(target, new_aligned);
+        crate::serial_verbose_println!(
+            "lxe linux mremap: old munmap failed old={:#x} old_size={:#x} target={:#x} ret={:#x}",
+            old_addr,
+            old_aligned,
+            target,
+            ret
+        );
+        return ret;
+    }
+
+    crate::serial_verbose_println!(
+        "lxe linux mremap: move old={:#x} old_size={:#x} new_size={:#x} flags={:#x} -> {:#x}",
+        old_addr,
+        old_size,
+        new_size,
+        flags,
+        target
+    );
+    target
+}
+
+fn linux_mremap_shrink_in_place(
+    old_addr: u64,
+    old_size: u64,
+    old_aligned: u64,
+    new_size: u64,
+    new_aligned: u64,
+) -> u64 {
+    if new_aligned <= old_aligned {
+        if new_aligned < old_aligned {
+            let tail = old_addr + new_aligned;
+            let tail_len = old_aligned - new_aligned;
+            let ret = linux_munmap(tail, tail_len);
+            if linux_is_err(ret) {
+                crate::serial_verbose_println!(
+                    "lxe linux mremap: shrink tail munmap failed old={:#x} tail={:#x} tail_len={:#x} ret={:#x}",
+                    old_addr,
+                    tail,
+                    tail_len,
+                    ret
+                );
+                return ret;
+            }
+        }
+        crate::serial_verbose_println!(
+            "lxe linux mremap: shrink/in-place old={:#x} old_size={:#x} new_size={:#x} -> {:#x}",
+            old_addr,
+            old_size,
+            new_size,
+            old_addr
+        );
+        return old_addr;
+    }
+    linux_err(EINVAL)
+}
+
 pub(super) fn linux_mprotect(_addr: u64, len: u64, _prot: u64) -> u64 {
     if len == 0 {
         linux_err(EINVAL)
@@ -287,6 +472,19 @@ pub(super) fn linux_map_fixed(addr: u64, len: u64) -> Option<u64> {
         mapped_until += PAGE_SIZE;
     }
     Some(addr)
+}
+
+fn align_page_up(size: u64) -> Option<u64> {
+    const PAGE_SIZE: u64 = 4096;
+    size.checked_add(PAGE_SIZE - 1).map(|v| v & !(PAGE_SIZE - 1))
+}
+
+fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
+    a_start < b_end && b_start < a_end
+}
+
+fn linux_is_err(ret: u64) -> bool {
+    (ret as i64) < 0
 }
 
 pub(super) fn linux_fill_mapping_from_fd(

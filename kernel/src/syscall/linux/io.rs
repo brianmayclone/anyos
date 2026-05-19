@@ -885,6 +885,7 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
     const TCSETS: u64 = 0x5402;
     const TCSETSW: u64 = 0x5403;
     const TCSETSF: u64 = 0x5404;
+    const TCGETS2: u64 = 0x802c542a;
     const TIOCGPGRP: u64 = 0x540F;
     const TIOCSPGRP: u64 = 0x5410;
     const TIOCGWINSZ: u64 = 0x5413;
@@ -908,6 +909,25 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
                 }
             }
             crate::serial_verbose_println!("lxe linux ioctl: TCGETS fd={} -> ok", fd);
+            0
+        }
+        TCGETS2 => {
+            if !linux_fd_is_tty(fd) {
+                return linux_err(EBADF);
+            }
+            if arg != 0 {
+                if !handlers::helpers::is_user_range_accessible(arg, 44) {
+                    return linux_err(EFAULT);
+                }
+                if let Some(pty_id) = linux_fd_pty_id(fd) {
+                    let termios = crate::ipc::pty::get_termios(pty_id)
+                        .unwrap_or_else(crate::ipc::pty::Termios::default);
+                    linux_write_termios2_value(arg, termios);
+                } else {
+                    linux_write_termios2(arg);
+                }
+            }
+            crate::serial_verbose_println!("lxe linux ioctl: TCGETS2 fd={} -> ok", fd);
             0
         }
         TCSETS | TCSETSW | TCSETSF => {
@@ -1068,6 +1088,22 @@ fn linux_write_termios_value(arg: u64, termios: crate::ipc::pty::Termios) {
             (arg + 17) as *mut u8,
             termios.cc.len(),
         );
+    }
+}
+
+fn linux_write_termios2(arg: u64) {
+    linux_write_termios(arg);
+    unsafe {
+        write_u32(arg, 36, 38400);
+        write_u32(arg, 40, 38400);
+    }
+}
+
+fn linux_write_termios2_value(arg: u64, termios: crate::ipc::pty::Termios) {
+    linux_write_termios_value(arg, termios);
+    unsafe {
+        write_u32(arg, 36, 38400);
+        write_u32(arg, 40, 38400);
     }
 }
 

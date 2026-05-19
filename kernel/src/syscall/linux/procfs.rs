@@ -295,7 +295,16 @@ fuseblk\n"
         LINUX_PROC_PID_COMM => linux_proc_pid_comm(pid).into_bytes(),
         LINUX_PROC_STAT => linux_proc_system_stat().into_bytes(),
         LINUX_PROC_UPTIME => b"0.00 0.00\n".to_vec(),
-        LINUX_PROC_MEMINFO => b"MemTotal:        4174848 kB\nMemFree:         2097152 kB\nMemAvailable:   2097152 kB\n"
+        LINUX_PROC_MEMINFO => b"MemTotal:        4174848 kB\n\
+MemFree:         2097152 kB\n\
+MemAvailable:   2097152 kB\n\
+Buffers:               0 kB\n\
+Cached:           524288 kB\n\
+SwapCached:            0 kB\n\
+Active:                0 kB\n\
+Inactive:              0 kB\n\
+SwapTotal:             0 kB\n\
+SwapFree:              0 kB\n"
             .to_vec(),
         LINUX_PROC_CPUINFO => b"processor\t: 0\nvendor_id\t: anyOS\nmodel name\t: anyOS virtual CPU\n"
             .to_vec(),
@@ -722,7 +731,7 @@ fn linux_proc_pid_stat(pid: u32) -> String {
     let rss = thread.user_pages as u64;
     let vsize = rss.saturating_mul(4096);
     format!(
-        "{} ({}) {} {} {} {} 0 -1 0 0 0 0 0 {} 0 0 20 0 1 0 0 {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+        "{} ({}) {} {} {} {} 0 -1 0 0 0 0 0 {} 0 0 20 0 1 0 0 {} {} 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
         thread.tid,
         name,
         state,
@@ -805,8 +814,10 @@ fn linux_proc_system_stat() -> String {
         .filter(|thread| thread.state == "running" || thread.state == "ready")
         .count();
     format!(
-        "cpu  {} 0 0 0 0 0 0 0 0 0\nbtime 0\nprocesses {}\nprocs_running {}\nprocs_blocked 0\n",
+        "cpu  {} 0 0 0 0 0 0 0 0 0\ncpu0 {} 0 0 0 0 0 0 0 0 0\nintr 0\nctxt {}\nbtime 0\nprocesses {}\nprocs_running {}\nprocs_blocked 0\n",
         ticks,
+        ticks,
+        threads.len(),
         threads.len(),
         running
     )

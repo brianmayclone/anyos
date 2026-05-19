@@ -349,6 +349,7 @@ fn escape_sequence_complete(b: u8) -> bool {
     match escape[0] {
         b'[' => escape.len() > 1 && (0x40..=0x7e).contains(&b),
         b']' => b == 0x07,
+        b'(' | b')' | b'*' | b'+' => escape.len() >= 2,
         _ => true,
     }
 }

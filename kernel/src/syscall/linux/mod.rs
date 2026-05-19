@@ -92,6 +92,7 @@ const LINUX_SYS_ACCESS: u64 = 21;
 const LINUX_SYS_PIPE: u64 = 22;
 const LINUX_SYS_SELECT: u64 = 23;
 const LINUX_SYS_SCHED_YIELD: u64 = 24;
+const LINUX_SYS_MREMAP: u64 = 25;
 const LINUX_SYS_MSYNC: u64 = 26;
 const LINUX_SYS_MADVISE: u64 = 28;
 const LINUX_SYS_SHMGET: u64 = 29;
@@ -327,6 +328,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_MMAP => linux_mmap(a1, a2, a3, a4, a5, a6),
         LINUX_SYS_MPROTECT => linux_mprotect(a1, a2, a3),
         LINUX_SYS_MUNMAP => linux_munmap(a1, a2),
+        LINUX_SYS_MREMAP => linux_mremap(a1, a2, a3, a4, a5),
         LINUX_SYS_SHMGET => linux_shmget(a1, a2, a3),
         LINUX_SYS_SHMAT => linux_shmat(a1, a2, a3),
         LINUX_SYS_SHMCTL => linux_shmctl(a1, a2, a3),
@@ -532,6 +534,7 @@ pub(crate) fn syscall_name(num: u32) -> &'static str {
         LINUX_SYS_MMAP => "mmap",
         LINUX_SYS_MPROTECT => "mprotect",
         LINUX_SYS_MUNMAP => "munmap",
+        LINUX_SYS_MREMAP => "mremap",
         LINUX_SYS_BRK => "brk",
         LINUX_SYS_RT_SIGACTION => "rt_sigaction",
         LINUX_SYS_RT_SIGPROCMASK => "rt_sigprocmask",
