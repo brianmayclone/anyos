@@ -457,6 +457,54 @@ pub fn sys_mmap64(size: u64) -> u64 {
     sys_mmap_impl(size, true)
 }
 
+/// Reserve native 64-bit mmap address space without immediately backing it
+/// with physical frames. Pages are allocated by the user page-fault handler on
+/// first touch. This matches Linux anonymous mmap behaviour closely enough for
+/// large LXE arenas such as APT's DynamicMMap cache.
+pub fn sys_mmap_reserve_u64(size: u64) -> u64 {
+    mmap_diag_mark(b'R');
+
+    if size == 0 {
+        return u64::MAX;
+    }
+
+    const PAGE_SIZE: u64 = 4096;
+    const MMAP64_BASE: u64 = 0x0000_0001_0000_0000;
+    const MMAP64_LIMIT: u64 = 0x0000_4000_0000_0000;
+
+    let aligned_size = match size.checked_add(PAGE_SIZE - 1) {
+        Some(v) => v & !(PAGE_SIZE - 1),
+        None => return u64::MAX,
+    };
+
+    let pd = match crate::task::scheduler::current_thread_page_directory() {
+        Some(pd) => pd,
+        None => return u64::MAX,
+    };
+
+    let base = match crate::memory::vma::alloc_region64(pd, aligned_size) {
+        Some(addr) => addr,
+        None => return u64::MAX,
+    };
+
+    let valid_range = base >= MMAP64_BASE
+        && base
+            .checked_add(aligned_size)
+            .map_or(false, |end| end <= MMAP64_LIMIT);
+    if !valid_range {
+        crate::serial_println!(
+            "sys_mmap_reserve_u64: BUG: VMA returned invalid range base={:#x} size={:#x} pd={:#x}",
+            base,
+            aligned_size,
+            pd.as_u64()
+        );
+        crate::memory::vma::free_region64(pd, base, aligned_size);
+        return u64::MAX;
+    }
+
+    base
+}
+
 fn sys_mmap_impl(size: u64, high: bool) -> u64 {
     use crate::memory::address::VirtAddr;
     use crate::memory::physical;

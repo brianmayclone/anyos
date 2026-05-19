@@ -47,7 +47,7 @@ pub(crate) fn ensure_rootfs_layout(config: &LxeConfig) {
     );
     let _ = write_bytes_atomic(
         &alloc::format!("{}/etc/apt/apt.conf.d/99lxe", rootfs),
-        b"Acquire::Check-Valid-Until \"false\";\n",
+        b"APT::Cache-Start \"134217728\";\nAPT::Cache-Grow \"16777216\";\nAPT::Cache-Limit \"0\";\nAcquire::Check-Valid-Until \"false\";\n",
     );
     ensure_linux_account_files(rootfs);
     ensure_linux_network_files(rootfs);

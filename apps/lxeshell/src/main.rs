@@ -38,6 +38,8 @@ struct LxeShellApp {
     cursor_col: usize,
     in_escape: bool,
     escape: Vec<u8>,
+    pending_echo: Vec<u8>,
+    skip_erase_echo: u8,
     running: bool,
     dirty: bool,
 }
@@ -71,6 +73,8 @@ fn main() {
             cursor_col: 0,
             in_escape: false,
             escape: Vec::new(),
+            pending_echo: Vec::new(),
+            skip_erase_echo: 0,
             running: false,
             dirty: true,
         });
@@ -222,7 +226,32 @@ fn handle_key(ke: &KeyEvent) {
     let mut tmp = [0u8; 8];
     let data = key_bytes(ke, &mut tmp);
     if !data.is_empty() {
+        local_echo(data);
         let _ = ipc::pipe_write(app().stdin_pipe, data);
+    }
+}
+
+fn local_echo(data: &[u8]) {
+    let mut changed = false;
+    for &b in data {
+        match b {
+            0x20..=0x7e => {
+                insert_char(b as char);
+                app().pending_echo.push(b);
+                changed = true;
+            }
+            b'\x7f' | b'\x08' => {
+                backspace();
+                app().skip_erase_echo = 3;
+                changed = true;
+            }
+            _ => {}
+        }
+    }
+    if changed {
+        app().dirty = true;
+        render();
+        app().dirty = false;
     }
 }
 
@@ -277,6 +306,10 @@ fn push_line(text: &str, _color: u32) {
 }
 
 fn feed_output_byte(b: u8) {
+    if consume_local_echo(b) {
+        return;
+    }
+
     if app().in_escape {
         app().escape.push(b);
         if (0x40..=0x7e).contains(&b) {
@@ -302,6 +335,20 @@ fn feed_output_byte(b: u8) {
         _ => {}
     }
     app().dirty = true;
+}
+
+fn consume_local_echo(b: u8) -> bool {
+    if !app().pending_echo.is_empty() && app().pending_echo[0] == b {
+        app().pending_echo.remove(0);
+        return true;
+    }
+
+    if app().skip_erase_echo > 0 && (b == b'\x08' || b == b'\x7f' || b == b' ') {
+        app().skip_erase_echo -= 1;
+        return true;
+    }
+
+    false
 }
 
 fn finish_escape() {

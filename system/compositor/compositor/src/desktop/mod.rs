@@ -37,6 +37,42 @@ const MAX_WINDOW_PIXELS: u64 = 16 * 1024 * 1024;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+pub(crate) fn read_file_bounded(path: &str, max_size: usize) -> Option<Vec<u8>> {
+    use anyos_std::fs;
+
+    let fd = fs::open(path, 0);
+    if fd == u32::MAX {
+        return None;
+    }
+
+    let mut data = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        if data.len() >= max_size {
+            let mut extra = [0u8; 1];
+            let n = fs::read(fd, &mut extra);
+            fs::close(fd);
+            return if n == 0 { Some(data) } else { None };
+        }
+
+        let remaining = max_size - data.len();
+        let read_len = remaining.min(chunk.len());
+        let n = fs::read(fd, &mut chunk[..read_len]);
+        if n == u32::MAX {
+            fs::close(fd);
+            return None;
+        }
+
+        let n = n as usize;
+        if n == 0 {
+            fs::close(fd);
+            return if data.is_empty() { None } else { Some(data) };
+        }
+
+        data.extend_from_slice(&chunk[..n]);
+    }
+}
+
 /// Format a wallpaper preference entry: "UID:PATH\n"
 /// Returns (buffer, length).
 fn format_wallpaper_entry(uid: u32, path: &[u8]) -> ([u8; 160], usize) {
@@ -473,34 +509,18 @@ impl Desktop {
     }
 
     fn load_one_logo(&mut self, path: &str, is_white: bool) {
-        use anyos_std::fs;
+        anyos_std::println!("compositor: load_logo read '{}'", path);
+        let Some(data) = read_file_bounded(path, 32 * 1024) else {
+            return;
+        };
 
-        anyos_std::println!("compositor: load_logo open '{}'", path);
-        let fd = fs::open(path, 0);
-        if fd == u32::MAX {
-            return;
-        }
-        let mut stat_buf = [0u32; 4];
-        if fs::fstat(fd, &mut stat_buf) == u32::MAX {
-            fs::close(fd);
-            return;
-        }
-        let file_size = stat_buf[1] as usize;
-        if file_size == 0 || file_size > 32 * 1024 {
-            fs::close(fd);
-            return;
-        }
-
-        let mut data = vec![0u8; file_size];
-        let n = fs::read(fd, &mut data) as usize;
-        fs::close(fd);
-        if n == 0 {
-            return;
-        }
-
-        anyos_std::println!("compositor: load_logo decode '{}' ({} bytes)", path, n);
+        anyos_std::println!(
+            "compositor: load_logo decode '{}' ({} bytes)",
+            path,
+            data.len()
+        );
         #[cfg(target_arch = "aarch64")]
-        let (pixels, src_w, src_h) = match minipng::decode_png_argb32(&data[..n]) {
+        let (pixels, src_w, src_h) = match minipng::decode_png_argb32(&data) {
             Some(decoded) => decoded,
             None => return,
         };
@@ -516,8 +536,12 @@ impl Desktop {
                 exports.image_decode as usize,
                 exports.scale_image as usize,
             );
-            anyos_std::println!("compositor: load_logo probe '{}' ({} bytes)", path, n);
-            let info = match libimage_client::probe(&data[..n]) {
+            anyos_std::println!(
+                "compositor: load_logo probe '{}' ({} bytes)",
+                path,
+                data.len()
+            );
+            let info = match libimage_client::probe(&data) {
                 Some(i) => i,
                 None => return,
             };
@@ -537,7 +561,7 @@ impl Desktop {
                 src_h,
                 info.scratch_needed
             );
-            if libimage_client::decode(&data[..n], &mut pixels, &mut scratch).is_err() {
+            if libimage_client::decode(&data, &mut pixels, &mut scratch).is_err() {
                 return;
             }
             (pixels, src_w, src_h)
@@ -776,8 +800,6 @@ impl Desktop {
 
     /// Load a wallpaper image and draw it to the background layer.
     pub(crate) fn load_wallpaper(&mut self, path: &str) -> bool {
-        use anyos_std::fs;
-
         anyos_std::println!("compositor: loading wallpaper from '{}'...", path);
 
         // Free old wallpaper cache first to reduce heap pressure before
@@ -787,38 +809,19 @@ impl Desktop {
             self.wallpaper_pixel_cache = Vec::new();
         }
 
-        let fd = fs::open(path, 0);
-        if fd == u32::MAX {
+        let Some(data) = read_file_bounded(path, 8 * 1024 * 1024) else {
             return false;
-        }
-
-        let mut stat_buf = [0u32; 4];
-        if fs::fstat(fd, &mut stat_buf) == u32::MAX {
-            fs::close(fd);
-            return false;
-        }
-        let file_size = stat_buf[1] as usize;
-        if file_size == 0 || file_size > 8 * 1024 * 1024 {
-            fs::close(fd);
-            return false;
-        }
-
-        let mut data = vec![0u8; file_size];
-        let bytes_read = fs::read(fd, &mut data) as usize;
-        fs::close(fd);
-        if bytes_read == 0 {
-            return false;
-        }
+        };
 
         let (src_w, src_h, pixels, format_name) = {
             #[cfg(target_arch = "aarch64")]
             {
                 const PNG_MAGIC: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
                 if data.len() >= PNG_MAGIC.len() && &data[..PNG_MAGIC.len()] == PNG_MAGIC {
-                    if let Some((pixels, w, h)) = minipng::decode_png_argb32(&data[..bytes_read]) {
+                    if let Some((pixels, w, h)) = minipng::decode_png_argb32(&data) {
                         (w, h, pixels, "PNG")
                     } else {
-                        let info = match libimage_client::probe(&data[..bytes_read]) {
+                        let info = match libimage_client::probe(&data) {
                             Some(i) => i,
                             None => return false,
                         };
@@ -828,9 +831,7 @@ impl Desktop {
                         }
                         let mut pixels = vec![0u32; pixel_count];
                         let mut scratch = vec![0u8; info.scratch_needed as usize];
-                        if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch)
-                            .is_err()
-                        {
+                        if libimage_client::decode(&data, &mut pixels, &mut scratch).is_err() {
                             return false;
                         }
                         (
@@ -841,7 +842,7 @@ impl Desktop {
                         )
                     }
                 } else {
-                    let info = match libimage_client::probe(&data[..bytes_read]) {
+                    let info = match libimage_client::probe(&data) {
                         Some(i) => i,
                         None => return false,
                     };
@@ -851,9 +852,7 @@ impl Desktop {
                     }
                     let mut pixels = vec![0u32; pixel_count];
                     let mut scratch = vec![0u8; info.scratch_needed as usize];
-                    if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch)
-                        .is_err()
-                    {
+                    if libimage_client::decode(&data, &mut pixels, &mut scratch).is_err() {
                         return false;
                     }
                     (
@@ -866,7 +865,7 @@ impl Desktop {
             }
             #[cfg(not(target_arch = "aarch64"))]
             {
-                let info = match libimage_client::probe(&data[..bytes_read]) {
+                let info = match libimage_client::probe(&data) {
                     Some(i) => i,
                     None => return false,
                 };
@@ -876,8 +875,7 @@ impl Desktop {
                 }
                 let mut pixels = vec![0u32; pixel_count];
                 let mut scratch = vec![0u8; info.scratch_needed as usize];
-                if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch).is_err()
-                {
+                if libimage_client::decode(&data, &mut pixels, &mut scratch).is_err() {
                     return false;
                 }
                 (

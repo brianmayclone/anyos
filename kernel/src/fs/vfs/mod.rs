@@ -4781,29 +4781,15 @@ pub fn fstat(slot_id: FileDescriptor) -> Result<(FileType, u32, u32, u32), FsErr
         .and_then(|e| e.as_ref())
         .ok_or(FsError::BadFd)?;
 
-    let path = file.path.clone();
     let ft = file.file_type;
     let sz = file.size;
     let pos = file.position;
 
-    // Look up mtime from the filesystem
-    let mtime = if let Some(exfat_drv) = state.exfat_fs.as_ref() {
-        let exfat_guard = exfat_drv.lock_inner();
-        let exfat = &*exfat_guard;
-        resolve_exfat_path(exfat, &path, true)
-            .map(|r| r.mtime)
-            .unwrap_or(0)
-    } else if let Some(ntfs_drv) = state.ntfs_fs.as_ref() {
-        let ntfs_guard = ntfs_drv.lock_inner();
-        let ntfs = &*ntfs_guard;
-        ntfs.stat_path(&path).map(|(_, _, _, m, _)| m).unwrap_or(0)
-    } else if let Some(fat_drv) = state.fat_fs.as_ref() {
-        let fat_guard = fat_drv.lock_inner();
-        let fat = &*fat_guard;
-        fat.stat_path(&path).map(|(_, _, _, m)| m).unwrap_or(0)
-    } else {
-        0
-    };
+    // fstat(fd) is a very hot Linux path.  Do not re-walk the pathname for
+    // mtime here: apt/dpkg call fstat constantly, and the old path-based mtime
+    // lookup held the global VFS lock during disk I/O. Path stat/lstat still
+    // returns filesystem mtimes; fstat reports the cheap open-file snapshot.
+    let mtime = 0;
 
     Ok((ft, sz, pos, mtime))
 }

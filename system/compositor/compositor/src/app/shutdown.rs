@@ -137,31 +137,12 @@ fn draw_shutdown_logo(
     bot_g: i32,
     bot_b: i32,
 ) {
-    use anyos_std::fs;
+    let Some(data) = crate::desktop::read_file_bounded("/System/media/anyos_w.png", 64 * 1024)
+    else {
+        return;
+    };
 
-    let fd = fs::open("/System/media/anyos_w.png", 0);
-    if fd == u32::MAX {
-        return;
-    }
-    let mut stat_buf = [0u32; 4];
-    if fs::fstat(fd, &mut stat_buf) == u32::MAX {
-        fs::close(fd);
-        return;
-    }
-    let file_size = stat_buf[1] as usize;
-    if file_size == 0 || file_size > 64 * 1024 {
-        fs::close(fd);
-        return;
-    }
-
-    let mut data = alloc::vec![0u8; file_size];
-    let n = fs::read(fd, &mut data) as usize;
-    fs::close(fd);
-    if n == 0 {
-        return;
-    }
-
-    let info = match libimage_client::probe(&data[..n]) {
+    let info = match libimage_client::probe(&data) {
         Some(i) => i,
         None => return,
     };
@@ -174,7 +155,7 @@ fn draw_shutdown_logo(
 
     let mut pixels = alloc::vec![0u32; pixel_count];
     let mut scratch = alloc::vec![0u8; info.scratch_needed as usize];
-    if libimage_client::decode(&data[..n], &mut pixels, &mut scratch).is_err() {
+    if libimage_client::decode(&data, &mut pixels, &mut scratch).is_err() {
         return;
     }
 

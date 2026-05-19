@@ -88,10 +88,13 @@ static AHCI_FLUSH_FAILED_MASK: AtomicU32 = AtomicU32::new(0);
 const IO_LOCK_WAIT_WARN_MS: u32 = 50;
 const IO_LOCK_HOLD_WARN_MS: u32 = 250;
 const IO_LOCK_LOG_LIMIT: u32 = 64;
-const MAX_LOCKED_IO_SECTORS: u32 = 512;
-const MAX_LOCKED_READAHEAD_SECTORS: u32 = 512;
-const MAX_LOCKED_WRITE_SECTORS: u32 = 512;
-const MAX_LOCKED_WRITEBACK_SECTORS: u32 = 512;
+// Keep legacy serialized I/O slices short.  Large locked transfers make every
+// waiter resume as a pinned kernel continuation on its previous CPU, which can
+// starve latency-sensitive threads such as the compositor under LXE I/O storms.
+const MAX_LOCKED_IO_SECTORS: u32 = 64;
+const MAX_LOCKED_READAHEAD_SECTORS: u32 = 64;
+const MAX_LOCKED_WRITE_SECTORS: u32 = 64;
+const MAX_LOCKED_WRITEBACK_SECTORS: u32 = 64;
 const MAX_UNLOCKED_AHCI_IO_SECTORS: u32 = 512;
 const IO_OP_UNKNOWN: u32 = 0;
 const IO_OP_READ: u32 = 1;
@@ -345,7 +348,6 @@ fn io_lock_acquire_slow(
     op: IoLockOp,
 ) {
     let can_yield = crate::task::scheduler::current_tid() > 0;
-    let mut attempts = 0u32;
     loop {
         // Brief spin (8 iterations) before yielding — handles very short holds
         for _ in 0..8 {
@@ -367,8 +369,13 @@ fn io_lock_acquire_slow(
             core::hint::spin_loop();
         }
         // Back off so IO_LOCK storms don't turn into hot scheduler loops.
+        // Use an immediate one-tick sleep rather than the generic contention
+        // helper's initial pure yields: these waiters cannot make progress
+        // until the storage owner releases IO_LOCK, and keeping them runnable
+        // just makes the scheduler re-enter pinned kernel continuations.
         if can_yield {
-            crate::task::scheduler::contention_backoff(&mut attempts);
+            let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
+            crate::task::scheduler::sleep_until(wake_at);
         }
     }
 }

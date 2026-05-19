@@ -1827,6 +1827,7 @@ pub fn handle_user_mmap_demand_page(vaddr: u64) -> bool {
     }
 
     DEMAND_PAGE_LOCK.store(false, Ordering::Release);
+    crate::task::scheduler::adjust_current_user_pages(1);
     true
 }
 

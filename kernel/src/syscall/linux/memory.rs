@@ -122,6 +122,8 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
                 return linux_err(ENOMEM);
             }
         }
+    } else if anonymous {
+        handlers::sys_mmap_reserve_u64(len)
     } else {
         handlers::sys_mmap_u64(len)
     };
