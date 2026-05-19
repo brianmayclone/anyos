@@ -87,6 +87,26 @@ pub fn set_termios(id: u32, termios: Termios) -> bool {
     }
 }
 
+/// Called by the named-pipe layer when a terminal master writes input bytes.
+///
+/// This makes PTY echo and canonical editing happen at input time, just like a
+/// real terminal driver.  Previously the input pipe was only pumped when the
+/// slave process called `read()`, so interactive echo could be delayed until the
+/// next completed line.
+pub fn notify_input_pipe_written(input_pipe: u32) {
+    if input_pipe == 0 {
+        return;
+    }
+
+    let Some(mut ptys) = PTYS.try_lock() else {
+        return;
+    };
+
+    for pty in ptys.iter_mut().filter(|pty| pty.input_pipe == input_pipe) {
+        pty.pump_master_input();
+    }
+}
+
 pub fn read_slave(id: u32, buf: &mut [u8], blocking: bool) -> u32 {
     if buf.is_empty() {
         return 0;

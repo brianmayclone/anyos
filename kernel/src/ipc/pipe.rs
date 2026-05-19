@@ -72,21 +72,29 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
         return 0;
     }
 
-    let mut pipes = PIPES.lock();
-    if let Some(pipe) = pipes.iter_mut().find(|p| p.id == pipe_id) {
-        let available = MAX_PIPE_BUFFER.saturating_sub(pipe.buffer.len());
-        if data.len() <= ATOMIC_WRITE_LIMIT && available < data.len() {
-            return 0;
+    let written = {
+        let mut pipes = PIPES.lock();
+        if let Some(pipe) = pipes.iter_mut().find(|p| p.id == pipe_id) {
+            let available = MAX_PIPE_BUFFER.saturating_sub(pipe.buffer.len());
+            if data.len() <= ATOMIC_WRITE_LIMIT && available < data.len() {
+                return 0;
+            }
+            let n = data.len().min(available);
+            if n == 0 {
+                return 0;
+            }
+            pipe.buffer.extend(&data[..n]);
+            n as u32
+        } else {
+            u32::MAX
         }
-        let n = data.len().min(available);
-        if n == 0 {
-            return 0;
-        }
-        pipe.buffer.extend(&data[..n]);
-        n as u32
-    } else {
-        u32::MAX
+    };
+
+    if written != u32::MAX && written != 0 {
+        crate::ipc::pty::notify_input_pipe_written(pipe_id);
     }
+
+    written
 }
 
 /// Read available data from a pipe. Returns bytes read, or u32::MAX if pipe not found.
