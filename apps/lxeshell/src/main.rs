@@ -312,8 +312,11 @@ fn feed_output_byte(b: u8) {
 
     if app().in_escape {
         app().escape.push(b);
-        if (0x40..=0x7e).contains(&b) {
+        if escape_sequence_complete(b) {
             finish_escape();
+        } else if app().escape.len() > 64 {
+            app().in_escape = false;
+            app().escape.clear();
         }
         return;
     }
@@ -328,13 +331,26 @@ fn feed_output_byte(b: u8) {
         b'\x08' => backspace(),
         b'\t' => {
             for _ in 0..4 {
-                insert_char(' ');
+                put_char(' ');
             }
         }
-        0x20..=0x7e => insert_char(b as char),
+        0x20..=0x7e => put_char(b as char),
         _ => {}
     }
     app().dirty = true;
+}
+
+fn escape_sequence_complete(b: u8) -> bool {
+    let escape = &app().escape;
+    if escape.is_empty() {
+        return false;
+    }
+
+    match escape[0] {
+        b'[' => escape.len() > 1 && (0x40..=0x7e).contains(&b),
+        b']' => b == 0x07,
+        _ => true,
+    }
 }
 
 fn consume_local_echo(b: u8) -> bool {
@@ -352,25 +368,45 @@ fn consume_local_echo(b: u8) -> bool {
 }
 
 fn finish_escape() {
+    if app().escape.is_empty() {
+        app().in_escape = false;
+        return;
+    }
+
+    if app().escape[0] != b'[' {
+        app().in_escape = false;
+        app().escape.clear();
+        app().dirty = true;
+        return;
+    }
+
     let final_byte = *app().escape.last().unwrap_or(&0);
     match final_byte {
-        b'K' => clear_to_eol(),
+        b'K' => erase_line(csi_first_number().unwrap_or(0)),
         b'J' => {
-            if app().escape.iter().any(|&b| b == b'2') {
+            if csi_first_number().unwrap_or(0) == 2 {
                 app().lines.clear();
                 app().lines.push(String::new());
                 app().cursor_col = 0;
             }
         }
         b'C' => {
-            let n = escape_number().unwrap_or(1);
+            let n = csi_first_number().unwrap_or(1);
             app().cursor_col = app().cursor_col.saturating_add(n);
         }
         b'D' => {
-            let n = escape_number().unwrap_or(1);
+            let n = csi_first_number().unwrap_or(1);
             app().cursor_col = app().cursor_col.saturating_sub(n);
         }
-        b'H' | b'f' => app().cursor_col = 0,
+        b'G' | b'`' => {
+            let col = csi_first_number().unwrap_or(1);
+            app().cursor_col = col.saturating_sub(1);
+        }
+        b'H' | b'f' => {
+            let col = csi_number_at(1).unwrap_or(1);
+            app().cursor_col = col.saturating_sub(1);
+        }
+        b'm' | b'h' | b'l' | b's' | b'u' => {}
         _ => {}
     }
     app().in_escape = false;
@@ -378,18 +414,35 @@ fn finish_escape() {
     app().dirty = true;
 }
 
-fn escape_number() -> Option<usize> {
+fn csi_first_number() -> Option<usize> {
+    csi_number_at(0)
+}
+
+fn csi_number_at(wanted: usize) -> Option<usize> {
     let mut n = 0usize;
     let mut seen = false;
+    let mut index = 0usize;
     for &b in &app().escape {
         if b.is_ascii_digit() {
             seen = true;
             n = n.saturating_mul(10).saturating_add((b - b'0') as usize);
-        } else if seen {
-            break;
+        } else if b == b';' {
+            if index == wanted {
+                return if seen { Some(n) } else { None };
+            }
+            index += 1;
+            n = 0;
+            seen = false;
+        } else if seen || b == b'?' {
+            if index == wanted && seen {
+                return Some(n);
+            }
+            if b != b'?' {
+                break;
+            }
         }
     }
-    if seen {
+    if index == wanted && seen {
         Some(n)
     } else {
         None
@@ -414,6 +467,23 @@ fn insert_char(ch: char) {
     a.cursor_col = pos + ch.len_utf8();
 }
 
+fn put_char(ch: char) {
+    let a = app();
+    if a.lines.is_empty() {
+        a.lines.push(String::new());
+    }
+    let line = a.lines.last_mut().unwrap();
+    while a.cursor_col > line.len() {
+        line.push(' ');
+    }
+    let pos = a.cursor_col.min(line.len());
+    if pos < line.len() {
+        line.remove(pos);
+    }
+    line.insert(pos, ch);
+    a.cursor_col = pos + ch.len_utf8();
+}
+
 fn backspace() {
     let a = app();
     if a.lines.is_empty() || a.cursor_col == 0 {
@@ -427,14 +497,21 @@ fn backspace() {
     }
 }
 
-fn clear_to_eol() {
+fn erase_line(mode: usize) {
     let a = app();
     if a.lines.is_empty() {
         return;
     }
     let line = a.lines.last_mut().unwrap();
     let pos = a.cursor_col.min(line.len());
-    line.truncate(pos);
+    match mode {
+        1 => {
+            let end = pos.min(line.len());
+            line.replace_range(0..end, &" ".repeat(end));
+        }
+        2 => line.clear(),
+        _ => line.truncate(pos),
+    }
 }
 
 fn trim_lines(a: &mut LxeShellApp) {

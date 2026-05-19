@@ -2,6 +2,54 @@ use super::*;
 
 const LINUX_COPY_CHUNK: usize = 16 * 1024;
 
+pub(super) fn linux_close(fd: u64) -> u64 {
+    if fd > i32::MAX as u64 {
+        return linux_err(EBADF);
+    }
+
+    match handlers::sys_close(fd as u32) {
+        0 => 0,
+        u32::MAX => linux_err(EBADF),
+        ret => anyos_u32_ret(ret),
+    }
+}
+
+pub(super) fn linux_dup(fd: u64) -> u64 {
+    if fd > i32::MAX as u64 {
+        return linux_err(EBADF);
+    }
+    match handlers::sys_dup(fd as u32) {
+        u32::MAX => linux_err(EBADF),
+        ret => ret as u64,
+    }
+}
+
+pub(super) fn linux_dup2(old_fd: u64, new_fd: u64) -> u64 {
+    if old_fd > i32::MAX as u64 || new_fd > i32::MAX as u64 {
+        return linux_err(EBADF);
+    }
+    match handlers::sys_dup2(old_fd as u32, new_fd as u32) {
+        u32::MAX => linux_err(EBADF),
+        ret => ret as u64,
+    }
+}
+
+pub(super) fn linux_dup3(old_fd: u64, new_fd: u64, flags: u64) -> u64 {
+    const O_CLOEXEC: u64 = 0o2000000;
+
+    if (flags & !O_CLOEXEC) != 0 {
+        return linux_err(EINVAL);
+    }
+    if old_fd == new_fd {
+        return linux_err(EINVAL);
+    }
+    let ret = linux_dup2(old_fd, new_fd);
+    if (ret as i64) >= 0 && (flags & O_CLOEXEC) != 0 {
+        crate::task::scheduler::current_fd_set_cloexec(ret as u32, true);
+    }
+    ret
+}
+
 pub(super) fn linux_fcntl(fd: u32, cmd: u32, arg: u64) -> u64 {
     const F_GETLK: u32 = 5;
     const F_SETLK: u32 = 6;
@@ -29,7 +77,10 @@ pub(super) fn linux_fcntl(fd: u32, cmd: u32, arg: u64) -> u64 {
                 0
             }
         }
-        _ => anyos_u32_ret(handlers::sys_fcntl(fd, cmd, arg as u32)),
+        _ => match handlers::sys_fcntl(fd, cmd, arg as u32) {
+            u32::MAX => linux_err(EBADF),
+            ret => anyos_u32_ret(ret),
+        },
     }
 }
 

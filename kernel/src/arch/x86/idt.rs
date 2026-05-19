@@ -848,16 +848,30 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
             unsafe {
                 core::arch::asm!("mov {}, cr2", out(reg) cr2);
             }
-            let reason = match frame.err_code & 0x7 {
-                0b000 => "read from non-present page",
-                0b001 => "read protection violation",
-                0b010 => "write to non-present page",
-                0b011 => "write protection violation",
-                0b100 => "exec from non-present page",
-                0b101 => "exec protection violation",
-                _ => "unknown",
+            let access = if (frame.err_code & 0x10) != 0 {
+                "instruction fetch"
+            } else if (frame.err_code & 0x2) != 0 {
+                "write"
+            } else {
+                "read"
             };
-            crate::serial_println!("  CR2:    {:#018x} ({})", cr2, reason);
+            let mapping = if (frame.err_code & 0x1) != 0 {
+                "protection violation"
+            } else {
+                "non-present page"
+            };
+            let mode = if (frame.err_code & 0x4) != 0 {
+                "user"
+            } else {
+                "kernel"
+            };
+            crate::serial_println!(
+                "  CR2:    {:#018x} ({} {}, {})",
+                cr2,
+                access,
+                mapping,
+                mode
+            );
         }
         // Detect IRETQ fault and dump the return frame
         dump_iretq_frame(frame.rip, frame.rsp);

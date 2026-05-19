@@ -52,6 +52,7 @@ pub(crate) fn ensure_rootfs_layout(config: &LxeConfig) {
     ensure_linux_account_files(rootfs);
     ensure_linux_network_files(rootfs);
     ensure_linux_timezone_files(rootfs);
+    ensure_linux_terminal_files(rootfs);
 }
 
 fn ensure_linux_account_files(rootfs: &str) {
@@ -217,6 +218,30 @@ fn ensure_linux_timezone_files(rootfs: &str) {
         return;
     }
     let _ = fs::symlink("/usr/share/zoneinfo/Etc/UTC", &localtime);
+}
+
+fn ensure_linux_terminal_files(rootfs: &str) {
+    ensure_dir_recursive(&linux_path_in_rootfs(rootfs, "/etc/profile.d"));
+    ensure_rootfs_file(
+        rootfs,
+        "/etc/profile.d/anyos-term.sh",
+        b"case \"$TERM\" in\n  \"\"|anyos|unknown|xterm-256-color) export TERM=xterm-256color ;;\nesac\n",
+        0o644,
+    );
+    ensure_rootfs_line(
+        rootfs,
+        "/etc/bash.bashrc",
+        "# anyOS LXE terminal",
+        "# anyOS LXE terminal\ncase \"$TERM\" in\n  \"\"|anyos|unknown|xterm-256-color) export TERM=xterm-256color ;;\nesac\n",
+        0o644,
+    );
+
+    let canonical = linux_path_in_rootfs(rootfs, "/usr/share/terminfo/x/xterm-256color");
+    let dashed = linux_path_in_rootfs(rootfs, "/usr/share/terminfo/x/xterm-256-color");
+    if path_exists_no_follow(&canonical) && !path_exists_no_follow(&dashed) {
+        ensure_parent_dirs(&dashed);
+        let _ = fs::symlink("xterm-256color", &dashed);
+    }
 }
 
 fn ensure_linux_pam_files(rootfs: &str) {

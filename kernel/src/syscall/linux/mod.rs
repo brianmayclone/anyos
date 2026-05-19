@@ -317,7 +317,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_WRITE => linux_write(a1 as u32, a2, a3),
         LINUX_SYS_OPEN => linux_open(a1, a2),
         LINUX_SYS_OPENAT => linux_openat(linux_i32_arg(a1), a2, a3),
-        LINUX_SYS_CLOSE => anyos_u32_ret(handlers::sys_close(a1 as u32)),
+        LINUX_SYS_CLOSE => linux_close(a1),
         LINUX_SYS_STAT => linux_stat(a1, a2, false),
         LINUX_SYS_LSTAT => linux_stat(a1, a2, true),
         LINUX_SYS_FSTAT => linux_fstat(a1 as u32, a2),
@@ -344,15 +344,9 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_SELECT => linux_select(a1, a2, a3, a4, a5),
         LINUX_SYS_PSELECT6 => linux_pselect6(a1, a2, a3, a4, a5, a6),
         LINUX_SYS_MSYNC => linux_msync(a1, a2, a3),
-        LINUX_SYS_DUP => anyos_u32_ret(handlers::sys_dup(a1 as u32)),
-        LINUX_SYS_DUP2 => anyos_u32_ret(handlers::sys_dup2(a1 as u32, a2 as u32)),
-        LINUX_SYS_DUP3 => {
-            let ret = handlers::sys_dup2(a1 as u32, a2 as u32);
-            if ret != u32::MAX && (a3 & 0o2000000) != 0 {
-                crate::task::scheduler::current_fd_set_cloexec(ret, true);
-            }
-            anyos_u32_ret(ret)
-        }
+        LINUX_SYS_DUP => linux_dup(a1),
+        LINUX_SYS_DUP2 => linux_dup2(a1, a2),
+        LINUX_SYS_DUP3 => linux_dup3(a1, a2, a3),
         LINUX_SYS_MADVISE => 0,
         LINUX_SYS_SCHED_YIELD => linux_sched_yield(),
         LINUX_SYS_PAUSE => linux_err(EINTR),
