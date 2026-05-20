@@ -281,7 +281,7 @@ pub(crate) fn sync_dpkg_status(config: &LxeConfig, rootfs: &str) {
         .ok()
         .and_then(|data| core::str::from_utf8(&data).ok().map(String::from))
         .unwrap_or_else(String::new);
-    let mut status = existing.trim_end().to_string();
+    let mut status = String::from(existing.trim_end());
     let mut changed = false;
 
     for entry in entries {
