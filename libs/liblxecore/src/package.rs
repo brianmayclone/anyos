@@ -275,7 +275,6 @@ pub(crate) fn sync_dpkg_status(config: &LxeConfig, rootfs: &str) {
         return;
     };
 
-    let lookup = package_lookup_for_status_sync(config);
     let status_path = linux_path_in_rootfs(rootfs, "/var/lib/dpkg/status");
     let existing = fs::read_to_vec(&status_path)
         .ok()
@@ -298,17 +297,17 @@ pub(crate) fn sync_dpkg_status(config: &LxeConfig, rootfs: &str) {
         let Some(package) = marker_field(text, "Package") else {
             continue;
         };
-        if dpkg_status_contains_package(&existing, package) {
+        if dpkg_status_contains_non_lxe_package(&status, package) {
             write_dpkg_info_list(rootfs, text);
             continue;
         }
-        if let Some(record) = dpkg_status_record_from_marker(config, rootfs, text, lookup.as_ref()) {
-            if !status.is_empty() {
-                status.push_str("\n\n");
+        if let Some(record) = dpkg_status_record_from_marker(config, rootfs, text) {
+            let next = replace_lxe_dpkg_status_record(&status, package, &record);
+            if next != status {
+                status = next;
+                changed = true;
             }
-            status.push_str(&record);
             write_dpkg_info_list(rootfs, text);
-            changed = true;
         }
     }
 
@@ -2092,7 +2091,7 @@ fn update_dpkg_status_from_marker(config: &LxeConfig, rootfs: &str, marker: &str
     let Some(package) = marker_field(marker, "Package") else {
         return;
     };
-    let Some(record) = dpkg_status_record_from_marker(config, rootfs, marker, None) else {
+    let Some(record) = dpkg_status_record_from_marker(config, rootfs, marker) else {
         return;
     };
     let status_path = linux_path_in_rootfs(rootfs, "/var/lib/dpkg/status");
@@ -2120,20 +2119,10 @@ fn dpkg_status_record_from_marker(
     config: &LxeConfig,
     rootfs: &str,
     marker: &str,
-    lookup: Option<&PackageLookup>,
 ) -> Option<String> {
     let package = marker_field(marker, "Package")?;
     let version = marker_field(marker, "Version")?;
     let filename = marker_field(marker, "Filename").unwrap_or("");
-    let index_info = lookup.and_then(|lookup| lookup.find(package));
-    let depends = marker_field(marker, "Depends")
-        .filter(|value| !value.is_empty())
-        .or_else(|| index_info.as_ref().map(|info| info.depends.as_str()))
-        .unwrap_or("");
-    let pre_depends = marker_field(marker, "Pre-Depends")
-        .filter(|value| !value.is_empty())
-        .or_else(|| index_info.as_ref().map(|info| info.pre_depends.as_str()))
-        .unwrap_or("");
     let arch = package_arch_from_filename(filename, &config.apt_arch);
     let installed_size = installed_size_from_marker(rootfs, marker);
     let mut record = String::new();
@@ -2153,28 +2142,10 @@ fn dpkg_status_record_from_marker(
     record.push_str("Version: ");
     record.push_str(version);
     record.push('\n');
-    if !pre_depends.is_empty() {
-        record.push_str("Pre-Depends: ");
-        record.push_str(pre_depends);
-        record.push('\n');
-    }
-    if !depends.is_empty() {
-        record.push_str("Depends: ");
-        record.push_str(depends);
-        record.push('\n');
-    }
     record.push_str("Description: LXE bootstrapped Debian package ");
     record.push_str(package);
     record.push('\n');
     Some(record)
-}
-
-fn package_lookup_for_status_sync(config: &LxeConfig) -> Option<PackageLookup> {
-    let packages_txt = config.package_index_txt();
-    if let Ok(index) = fs::read_to_vec(&packages_txt) {
-        return Some(package_lookup_from_bytes(config, &index));
-    }
-    read_compressed_package_index(config).map(|index| package_lookup_from_bytes(config, &index))
 }
 
 fn write_dpkg_info_list(rootfs: &str, marker: &str) {
@@ -2211,13 +2182,52 @@ fn marker_field<'a>(text: &'a str, name: &str) -> Option<&'a str> {
     None
 }
 
-fn dpkg_status_contains_package(status: &str, package: &str) -> bool {
+fn dpkg_status_contains_non_lxe_package(status: &str, package: &str) -> bool {
     for paragraph in status.split("\n\n") {
-        if marker_field(paragraph, "Package") == Some(package) {
+        if marker_field(paragraph, "Package") == Some(package) && !dpkg_status_record_is_lxe(paragraph)
+        {
             return true;
         }
     }
     false
+}
+
+fn replace_lxe_dpkg_status_record(status: &str, package: &str, record: &str) -> String {
+    let mut next = String::new();
+    let mut saw_lxe = false;
+    for paragraph in status.split("\n\n") {
+        let paragraph = paragraph.trim_end();
+        if paragraph.is_empty() {
+            continue;
+        }
+        if marker_field(paragraph, "Package") == Some(package) {
+            if !dpkg_status_record_is_lxe(paragraph) {
+                if !next.is_empty() {
+                    next.push_str("\n\n");
+                }
+                next.push_str(paragraph);
+            } else {
+                saw_lxe = true;
+            }
+            continue;
+        }
+        if !next.is_empty() {
+            next.push_str("\n\n");
+        }
+        next.push_str(paragraph);
+    }
+    if !saw_lxe || !record.is_empty() {
+        if !next.is_empty() {
+            next.push_str("\n\n");
+        }
+        next.push_str(record.trim_end());
+    }
+    next
+}
+
+fn dpkg_status_record_is_lxe(paragraph: &str) -> bool {
+    paragraph.contains("Maintainer: LXE Bootstrap")
+        || paragraph.contains("Description: LXE bootstrapped Debian package")
 }
 
 fn package_arch_from_filename(filename: &str, default_arch: &str) -> String {

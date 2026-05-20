@@ -71,6 +71,15 @@ uniform vec4 uMatColor;
 uniform vec3 uLightPos0;
 uniform vec2 uShadowTexelSize;
 uniform float uShadowFlipY;
+uniform float uRaytraceMode;
+uniform float uRaytraceReflective;
+uniform vec3 uRtSpherePos;
+uniform float uRtSphereRadius;
+uniform vec3 uRtCubePos;
+uniform float uRtCubeRadius;
+uniform vec3 uRtBoingPos;
+uniform float uRtBoingRadius;
+uniform float uRtBoingActive;
 void main() {
     vec4 texColor = texture2D(uTexture, vTexCoord);
     vec3 shadowNdc = vShadowCoord.xyz / max(vShadowCoord.w, 0.0001);
@@ -109,8 +118,80 @@ void main() {
         lit += (cmpDepth <= texture2D(uShadowMap, shadowUv + sx + sy).r ? 1.0 : 0.0) * 0.085;
         visibility = 0.30 + 0.70 * lit;
     }
-    gl_FragColor = vec4(vLighting * texColor.rgb * uMatColor.rgb * visibility,
-                        texColor.a * uMatColor.a);
+    vec3 baseColor = vLighting * texColor.rgb * uMatColor.rgb * visibility;
+    if (uRaytraceMode > 0.5 && uRaytraceReflective > 0.5) {
+        vec3 viewDir = normalize(vWorldPos - uEyePos);
+        vec3 rayDir = normalize(viewDir - 2.0 * dot(viewDir, N) * N);
+        vec3 rayOrg = vWorldPos + N * 0.018;
+        float bestT = 9999.0;
+        float hit = 0.0;
+        vec3 reflected = vec3(0.07, 0.08, 0.14) + vec3(0.12, 0.16, 0.22) * max(rayDir.y, 0.0);
+
+        vec3 oc0 = rayOrg - uRtSpherePos;
+        float b0 = dot(oc0, rayDir);
+        float c0 = dot(oc0, oc0) - uRtSphereRadius * uRtSphereRadius;
+        float d0 = b0 * b0 - c0;
+        if (d0 > 0.0) {
+            float t0 = -b0 - sqrt(d0);
+            if (t0 > 0.02 && t0 < bestT) {
+                vec3 hp0 = rayOrg + rayDir * t0;
+                vec3 hn0 = normalize(hp0 - uRtSpherePos);
+                vec3 hl0 = normalize(uLightPos0 - hp0);
+                float hdiff0 = max(dot(hn0, hl0), 0.0);
+                reflected = vec3(0.92, 0.72, 0.38) * (0.18 + 0.82 * hdiff0);
+                bestT = t0;
+                hit = 1.0;
+            }
+        }
+
+        vec3 oc1 = rayOrg - uRtCubePos;
+        float b1 = dot(oc1, rayDir);
+        float c1 = dot(oc1, oc1) - uRtCubeRadius * uRtCubeRadius;
+        float d1 = b1 * b1 - c1;
+        if (d1 > 0.0) {
+            float t1 = -b1 - sqrt(d1);
+            if (t1 > 0.02 && t1 < bestT) {
+                vec3 hp1 = rayOrg + rayDir * t1;
+                vec3 hn1 = normalize(hp1 - uRtCubePos);
+                vec3 hl1 = normalize(uLightPos0 - hp1);
+                float hdiff1 = max(dot(hn1, hl1), 0.0);
+                reflected = vec3(0.55, 0.58, 0.66) * (0.20 + 0.80 * hdiff1);
+                bestT = t1;
+                hit = 1.0;
+            }
+        }
+
+        if (uRtBoingActive > 0.5) {
+            vec3 oc2 = rayOrg - uRtBoingPos;
+            float b2 = dot(oc2, rayDir);
+            float c2 = dot(oc2, oc2) - uRtBoingRadius * uRtBoingRadius;
+            float d2 = b2 * b2 - c2;
+            if (d2 > 0.0) {
+                float t2 = -b2 - sqrt(d2);
+                if (t2 > 0.02 && t2 < bestT) {
+                    vec3 hp2 = rayOrg + rayDir * t2;
+                    vec3 hn2 = normalize(hp2 - uRtBoingPos);
+                    vec3 hl2 = normalize(uLightPos0 - hp2);
+                    float hdiff2 = max(dot(hn2, hl2), 0.0);
+                    float stripe = fract((hn2.x + hn2.z) * 2.0 + hn2.y * 4.0);
+                    vec3 boingColor = vec3(1.0, 0.95, 0.90);
+                    if (stripe > 0.5) {
+                        boingColor = vec3(0.95, 0.08, 0.06);
+                    }
+                    reflected = boingColor * (0.20 + 0.80 * hdiff2);
+                    bestT = t2;
+                    hit = 1.0;
+                }
+            }
+        }
+
+        float lightGlint = pow(max(dot(rayDir, normalize(uLightPos0 - vWorldPos)), 0.0), 48.0);
+        reflected += vec3(1.0, 0.86, 0.55) * lightGlint * 0.45;
+        float facing = max(dot(-viewDir, N), 0.0);
+        float fresnel = clamp(0.14 + pow(1.0 - facing, 3.0) * 0.42, 0.0, 0.56);
+        baseColor = mix(baseColor, reflected, fresnel * (0.64 + hit * 0.30));
+    }
+    gl_FragColor = vec4(baseColor, texColor.a * uMatColor.a);
 }
 ";
 
@@ -731,6 +812,15 @@ struct RenderState {
     loc_main_shadow_map: i32,
     loc_main_shadow_texel_size: i32,
     loc_main_shadow_flip_y: i32,
+    loc_main_raytrace_mode: i32,
+    loc_main_raytrace_reflective: i32,
+    loc_main_rt_sphere_pos: i32,
+    loc_main_rt_sphere_radius: i32,
+    loc_main_rt_cube_pos: i32,
+    loc_main_rt_cube_radius: i32,
+    loc_main_rt_boing_pos: i32,
+    loc_main_rt_boing_radius: i32,
+    loc_main_rt_boing_active: i32,
     loc_main_light_mvp: i32,
     loc_shadow_model: i32,
     loc_shadow_light_mvp: i32,
@@ -762,6 +852,7 @@ struct RenderState {
     // Fullscreen state
     fullscreen: bool,
     shadows_enabled: bool,
+    raytrace_enabled: bool,
 }
 
 static mut STATE: Option<RenderState> = None;
@@ -791,12 +882,13 @@ fn render_frame() {
         }
         if s.fps_serial_log {
             anyos_std::println!(
-                "[gldemo/fps] t={}ms fps={} frame={} shadows={} hw={}",
+                "[gldemo/fps] t={}ms fps={} frame={} shadows={} rt={} hw={}",
                 now_ms,
                 s.fps_display,
                 s.frame,
                 if s.shadows_enabled { 1 } else { 0 },
-                if gl::has_hw_backend() { 1 } else { 0 }
+                if s.raytrace_enabled { 1 } else { 0 },
+                if gl::get_hw_backend() { 1 } else { 0 }
             );
         }
     }
@@ -825,6 +917,10 @@ fn render_frame() {
 
     // ── Step physics ────────────────────────────────────────────────────
     gl::physics_step(0.016); // ~60fps timestep
+    if s.raytrace_enabled && gl::get_hw_backend() {
+        gl::set_hw_backend(false);
+    }
+    gl::set_cpu_raytrace_mode(s.raytrace_enabled);
 
     // ── Setup ────────────────────────────────────────────────────────────
     gl::clear_color(0.05, 0.05, 0.12, 1.0);
@@ -882,6 +978,23 @@ fn render_frame() {
     gl::uniform3f(s.loc_main_light_color0, 1.0, 0.95, 0.8);
     gl::uniform3f(s.loc_main_eye_pos, eye[0], eye[1], eye[2]);
     gl::uniform_matrix4fv(s.loc_main_light_mvp, false, &light_mvp);
+    gl::uniform1f(
+        s.loc_main_raytrace_mode,
+        if s.raytrace_enabled { 1.0 } else { 0.0 },
+    );
+    let (spx, spy, spz) = gl::physics_get_position(s.phys_sphere);
+    let (cpx, cpy, cpz) = gl::physics_get_position(s.phys_cube);
+    let (bpx, bpy, bpz) = gl::physics_get_position(s.phys_boing);
+    gl::uniform3f(s.loc_main_rt_sphere_pos, spx, spy, spz);
+    gl::uniform1f(s.loc_main_rt_sphere_radius, 0.82);
+    gl::uniform3f(s.loc_main_rt_cube_pos, cpx, cpy, cpz);
+    gl::uniform1f(s.loc_main_rt_cube_radius, 0.86);
+    gl::uniform3f(s.loc_main_rt_boing_pos, bpx, bpy, bpz);
+    gl::uniform1f(s.loc_main_rt_boing_radius, 0.62);
+    gl::uniform1f(
+        s.loc_main_rt_boing_active,
+        if s.boing_active { 1.0 } else { 0.0 },
+    );
     let shadow_map_size = if shadows_ready {
         gl::shadow_get_map_size().max(1) as f32
     } else {
@@ -929,6 +1042,7 @@ fn draw_scene_geometry_main(s: &mut RenderState, vp: &Mat4) {
         gl::uniform_matrix4fv(s.loc_main_mvp, false, &mvp);
         gl::uniform_matrix4fv(s.loc_main_model, false, &model);
         gl::uniform4f(s.loc_main_mat_color, 1.0, 1.0, 1.0, 1.0);
+        gl::uniform1f(s.loc_main_raytrace_reflective, 0.0);
 
         gl::active_texture(gl::GL_TEXTURE0);
         gl::bind_texture(gl::GL_TEXTURE_2D, s.gradient_tex);
@@ -959,6 +1073,7 @@ fn draw_scene_geometry_main(s: &mut RenderState, vp: &Mat4) {
         gl::uniform_matrix4fv(s.loc_main_mvp, false, &mvp);
         gl::uniform_matrix4fv(s.loc_main_model, false, &model);
         gl::uniform4f(s.loc_main_mat_color, 1.0, 1.0, 1.0, 1.0);
+        gl::uniform1f(s.loc_main_raytrace_reflective, 0.0);
 
         gl::active_texture(gl::GL_TEXTURE0);
         gl::bind_texture(gl::GL_TEXTURE_2D, s.checker_tex);
@@ -989,6 +1104,7 @@ fn draw_scene_geometry_main(s: &mut RenderState, vp: &Mat4) {
         gl::uniform_matrix4fv(s.loc_main_mvp, false, &mvp);
         gl::uniform_matrix4fv(s.loc_main_model, false, &model);
         gl::uniform4f(s.loc_main_mat_color, 1.0, 1.0, 1.0, 1.0);
+        gl::uniform1f(s.loc_main_raytrace_reflective, 0.0);
 
         gl::active_texture(gl::GL_TEXTURE0);
         gl::bind_texture(gl::GL_TEXTURE_2D, s.boing_tex);
@@ -1019,6 +1135,7 @@ fn draw_scene_geometry_main(s: &mut RenderState, vp: &Mat4) {
         gl::uniform_matrix4fv(s.loc_main_mvp, false, &mvp);
         gl::uniform_matrix4fv(s.loc_main_model, false, &model);
         gl::uniform4f(s.loc_main_mat_color, 1.0, 1.0, 1.0, 1.0);
+        gl::uniform1f(s.loc_main_raytrace_reflective, 1.0);
 
         gl::active_texture(gl::GL_TEXTURE0);
         gl::bind_texture(gl::GL_TEXTURE_2D, s.floor_tex);
@@ -1161,10 +1278,10 @@ fn main() {
     libanyui_client::init();
     anyos_std::i18n::init();
     let window =
-        libanyui_client::Window::new(anyos_std::i18n::t("GL Demo - Phong"), 80, 60, 420, 460);
+        libanyui_client::Window::new(anyos_std::i18n::t("GL Demo - Phong + RT"), 80, 60, 520, 460);
 
     // Canvas fills the entire window client area
-    let canvas = libanyui_client::Canvas::new(400, 400);
+    let canvas = libanyui_client::Canvas::new(500, 400);
     canvas.set_dock(libanyui_client::DOCK_FILL);
     window.add(&canvas);
     window.set_visible(true);
@@ -1190,6 +1307,7 @@ fn main() {
     gl::enable(gl::GL_CULL_FACE);
     gl::cull_face(gl::GL_BACK);
     gl::set_fxaa(false);
+    gl::set_cpu_raytrace_mode(false);
 
     // HW/SW toggle (overlaid on canvas)
     let hw_available = gl::has_hw_backend();
@@ -1206,14 +1324,36 @@ fn main() {
     });
     window.add(&hw_toggle);
 
+    let rt_label = libanyui_client::Label::new("RT");
+    rt_label.set_position(80, 6);
+    rt_label.set_text_color(0xFFCCCCCC);
+    rt_label.set_font_size(13);
+    window.add(&rt_label);
+
+    let rt_toggle = libanyui_client::Toggle::new(false);
+    rt_toggle.set_position(108, 4);
+    rt_toggle.on_checked_changed(|e| {
+        let s = unsafe { STATE.as_mut().unwrap() };
+        s.raytrace_enabled = e.checked;
+        gl::set_cpu_raytrace_mode(e.checked);
+        if e.checked {
+            gl::set_hw_backend(false);
+        }
+        anyos_std::println!(
+            "gldemo: CPU raytracing {}",
+            if e.checked { "enabled" } else { "disabled" }
+        );
+    });
+    window.add(&rt_toggle);
+
     let shadow_label = libanyui_client::Label::new("Shadow");
-    shadow_label.set_position(80, 6);
+    shadow_label.set_position(148, 6);
     shadow_label.set_text_color(0xFFCCCCCC);
     shadow_label.set_font_size(13);
     window.add(&shadow_label);
 
     let shadow_toggle = libanyui_client::Toggle::new(true);
-    shadow_toggle.set_position(132, 4);
+    shadow_toggle.set_position(200, 4);
     shadow_toggle.on_checked_changed(|e| {
         let s = unsafe { STATE.as_mut().unwrap() };
         s.shadows_enabled = e.checked;
@@ -1221,13 +1361,13 @@ fn main() {
     window.add(&shadow_toggle);
 
     let fps_log_label = libanyui_client::Label::new("FPS");
-    fps_log_label.set_position(172, 6);
+    fps_log_label.set_position(240, 6);
     fps_log_label.set_text_color(0xFFCCCCCC);
     fps_log_label.set_font_size(13);
     window.add(&fps_log_label);
 
     let fps_log_toggle = libanyui_client::Toggle::new(fps_serial_log_default);
-    fps_log_toggle.set_position(202, 4);
+    fps_log_toggle.set_position(270, 4);
     fps_log_toggle.on_checked_changed(|e| {
         let s = unsafe { STATE.as_mut().unwrap() };
         s.fps_serial_log = e.checked;
@@ -1301,6 +1441,16 @@ fn main() {
     let loc_main_shadow_map = gl::get_uniform_location(main_program, "uShadowMap");
     let loc_main_shadow_texel_size = gl::get_uniform_location(main_program, "uShadowTexelSize");
     let loc_main_shadow_flip_y = gl::get_uniform_location(main_program, "uShadowFlipY");
+    let loc_main_raytrace_mode = gl::get_uniform_location(main_program, "uRaytraceMode");
+    let loc_main_raytrace_reflective =
+        gl::get_uniform_location(main_program, "uRaytraceReflective");
+    let loc_main_rt_sphere_pos = gl::get_uniform_location(main_program, "uRtSpherePos");
+    let loc_main_rt_sphere_radius = gl::get_uniform_location(main_program, "uRtSphereRadius");
+    let loc_main_rt_cube_pos = gl::get_uniform_location(main_program, "uRtCubePos");
+    let loc_main_rt_cube_radius = gl::get_uniform_location(main_program, "uRtCubeRadius");
+    let loc_main_rt_boing_pos = gl::get_uniform_location(main_program, "uRtBoingPos");
+    let loc_main_rt_boing_radius = gl::get_uniform_location(main_program, "uRtBoingRadius");
+    let loc_main_rt_boing_active = gl::get_uniform_location(main_program, "uRtBoingActive");
     let loc_main_light_mvp = gl::get_uniform_location(main_program, "uLightMVP");
     let loc_shadow_model = gl::get_uniform_location(shadow_program, "uModel");
     let loc_shadow_light_mvp = gl::get_uniform_location(shadow_program, "uLightMVP");
@@ -1488,7 +1638,7 @@ fn main() {
 
     // ── FPS counter label (top-right area) ──────────────────────────────
     let fps_label = libanyui_client::Label::new("-- FPS");
-    fps_label.set_position(232, 6);
+    fps_label.set_position(306, 6);
     fps_label.set_text_color(0xFF00FF88);
     fps_label.set_font_size(13);
     window.add(&fps_label);
@@ -1541,7 +1691,7 @@ fn main() {
 
     // ── Boing Ball button ─────────────────────────────────────────────────
     let boing_btn = libanyui_client::Button::new("Boing!");
-    boing_btn.set_position(292, 2);
+    boing_btn.set_position(356, 2);
     boing_btn.set_size(60, 22);
     boing_btn.on_click(move |_| {
         let s = unsafe { STATE.as_mut().unwrap() };
@@ -1587,7 +1737,7 @@ fn main() {
 
     // ── Zoom buttons ──────────────────────────────────────────────────────
     let zoom_in_btn = libanyui_client::Button::new("+");
-    zoom_in_btn.set_position(356, 2);
+    zoom_in_btn.set_position(420, 2);
     zoom_in_btn.set_size(28, 22);
     zoom_in_btn.on_click(move |_| {
         let s = unsafe { STATE.as_mut().unwrap() };
@@ -1596,7 +1746,7 @@ fn main() {
     window.add(&zoom_in_btn);
 
     let zoom_out_btn = libanyui_client::Button::new("-");
-    zoom_out_btn.set_position(388, 2);
+    zoom_out_btn.set_position(452, 2);
     zoom_out_btn.set_size(28, 22);
     zoom_out_btn.on_click(move |_| {
         let s = unsafe { STATE.as_mut().unwrap() };
@@ -1633,6 +1783,15 @@ fn main() {
             loc_main_shadow_map,
             loc_main_shadow_texel_size,
             loc_main_shadow_flip_y,
+            loc_main_raytrace_mode,
+            loc_main_raytrace_reflective,
+            loc_main_rt_sphere_pos,
+            loc_main_rt_sphere_radius,
+            loc_main_rt_cube_pos,
+            loc_main_rt_cube_radius,
+            loc_main_rt_boing_pos,
+            loc_main_rt_boing_radius,
+            loc_main_rt_boing_active,
             loc_main_light_mvp,
             loc_shadow_model,
             loc_shadow_light_mvp,
@@ -1658,6 +1817,7 @@ fn main() {
             fps_serial_log: fps_serial_log_default,
             fullscreen: false,
             shadows_enabled: true,
+            raytrace_enabled: false,
         });
     }
 

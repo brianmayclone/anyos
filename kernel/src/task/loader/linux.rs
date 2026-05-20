@@ -574,6 +574,9 @@ fn default_envp() -> alloc::vec::Vec<alloc::string::String> {
         alloc::string::String::from("SHELL=/bin/bash"),
         alloc::string::String::from("USER=root"),
         alloc::string::String::from("LOGNAME=root"),
+        alloc::string::String::from("LANG=C"),
+        alloc::string::String::from("LC_ALL=C"),
+        alloc::string::String::from("LD_HWCAP_MASK=0"),
         alloc::string::String::from("PS1=# "),
         alloc::string::String::from("LXE=1"),
     ]

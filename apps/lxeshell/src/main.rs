@@ -8,7 +8,8 @@ use anyos_std::{ipc, process};
 use libanyui_client as anyui;
 use libanyui_client::{
     KeyEvent, KEY_BACKSPACE, KEY_DELETE, KEY_DOWN, KEY_END, KEY_ENTER, KEY_ESCAPE, KEY_HOME,
-    KEY_LEFT, KEY_PAGE_DOWN, KEY_PAGE_UP, KEY_RIGHT, KEY_TAB, KEY_UP,
+    KEY_F1, KEY_F10, KEY_F11, KEY_F12, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6, KEY_F7, KEY_F8,
+    KEY_F9, KEY_LEFT, KEY_PAGE_DOWN, KEY_PAGE_UP, KEY_RIGHT, KEY_TAB, KEY_UP,
 };
 use liblxecore::config::LxeConfig;
 use liblxecore::readiness::{shell_availability, LxeShellAvailability};
@@ -32,19 +33,42 @@ const SCROLL_THUMB: u32 = 0xAA8B8D98;
 const MAX_LINES: usize = 2000;
 const WHEEL_SCROLL_LINES: usize = 3;
 
+#[derive(Clone, Copy)]
+struct Cell {
+    ch: char,
+    fg: u32,
+    bg: u32,
+    bold: bool,
+}
+
+impl Cell {
+    fn blank(fg: u32, bg: u32, bold: bool) -> Self {
+        Self {
+            ch: ' ',
+            fg,
+            bg,
+            bold,
+        }
+    }
+}
+
 struct LxeShellApp {
     win: anyui::Window,
     canvas: anyui::Canvas,
     stdin_pipe: u32,
     stdout_pipe: u32,
     child_tid: u32,
-    lines: Vec<String>,
+    lines: Vec<Vec<Cell>>,
     cursor_row: usize,
     cursor_col: usize,
     scrollback_lines: usize,
     in_escape: bool,
     escape: Vec<u8>,
     line_drawing: bool,
+    app_cursor_keys: bool,
+    current_fg: u32,
+    current_bg: u32,
+    current_bold: bool,
     running: bool,
     dirty: bool,
 }
@@ -81,12 +105,16 @@ fn main() {
             in_escape: false,
             escape: Vec::new(),
             line_drawing: false,
+            app_cursor_keys: false,
+            current_fg: FG,
+            current_bg: BG,
+            current_bold: false,
             running: false,
             dirty: true,
         });
     }
 
-    app().lines.push(String::new());
+    app().lines.push(Vec::new());
     start_lxe_shell();
     render();
     app().canvas.focus();
@@ -294,17 +322,59 @@ fn key_bytes<'a>(ke: &KeyEvent, tmp: &'a mut [u8; 8]) -> &'a [u8] {
     match ke.keycode {
         KEY_ENTER => b"\n",
         KEY_BACKSPACE => b"\x7f",
-        KEY_TAB => b"\t",
+        KEY_TAB => {
+            if ke.shift() {
+                b"\x1b[Z"
+            } else {
+                b"\t"
+            }
+        }
         KEY_ESCAPE => b"\x1b",
-        KEY_UP => b"\x1b[A",
-        KEY_DOWN => b"\x1b[B",
-        KEY_RIGHT => b"\x1b[C",
-        KEY_LEFT => b"\x1b[D",
+        KEY_UP => {
+            if app().app_cursor_keys {
+                b"\x1bOA"
+            } else {
+                b"\x1b[A"
+            }
+        }
+        KEY_DOWN => {
+            if app().app_cursor_keys {
+                b"\x1bOB"
+            } else {
+                b"\x1b[B"
+            }
+        }
+        KEY_RIGHT => {
+            if app().app_cursor_keys {
+                b"\x1bOC"
+            } else {
+                b"\x1b[C"
+            }
+        }
+        KEY_LEFT => {
+            if app().app_cursor_keys {
+                b"\x1bOD"
+            } else {
+                b"\x1b[D"
+            }
+        }
         KEY_HOME => b"\x1b[H",
         KEY_END => b"\x1b[F",
         KEY_DELETE => b"\x1b[3~",
         KEY_PAGE_UP => b"\x1b[5~",
         KEY_PAGE_DOWN => b"\x1b[6~",
+        KEY_F1 => b"\x1bOP",
+        KEY_F2 => b"\x1bOQ",
+        KEY_F3 => b"\x1bOR",
+        KEY_F4 => b"\x1bOS",
+        KEY_F5 => b"\x1b[15~",
+        KEY_F6 => b"\x1b[17~",
+        KEY_F7 => b"\x1b[18~",
+        KEY_F8 => b"\x1b[19~",
+        KEY_F9 => b"\x1b[20~",
+        KEY_F10 => b"\x1b[21~",
+        KEY_F11 => b"\x1b[23~",
+        KEY_F12 => b"\x1b[24~",
         _ => {
             if ke.char_code == 0 || ke.alt() {
                 return &[];
@@ -322,10 +392,19 @@ fn key_bytes<'a>(ke: &KeyEvent, tmp: &'a mut [u8; 8]) -> &'a [u8] {
 fn push_line(text: &str, _color: u32) {
     let a = app();
     if a.lines.is_empty() {
-        a.lines.push(String::new());
+        a.lines.push(Vec::new());
     }
     let keep_view = a.scrollback_lines > 0;
-    a.lines.push(String::from(text));
+    let mut line = Vec::new();
+    for ch in text.chars() {
+        line.push(Cell {
+            ch,
+            fg: _color,
+            bg: BG,
+            bold: false,
+        });
+    }
+    a.lines.push(line);
     if keep_view {
         a.scrollback_lines = a.scrollback_lines.saturating_add(1);
     }
@@ -355,6 +434,8 @@ fn feed_output_byte(b: u8) {
         }
         b'\r' => app().cursor_col = 0,
         b'\n' => newline(),
+        0x0e => app().line_drawing = true,
+        0x0f => app().line_drawing = false,
         b'\x08' => backspace(),
         b'\t' => {
             let next_tab = ((app().cursor_col / 8) + 1) * 8;
@@ -383,6 +464,7 @@ fn escape_sequence_complete(b: u8) -> bool {
 
     match escape[0] {
         b'[' => escape.len() > 1 && (0x40..=0x7e).contains(&b),
+        b'O' => escape.len() >= 2,
         b']' => b == 0x07,
         b'(' | b')' | b'*' | b'+' => escape.len() >= 2,
         _ => true,
@@ -396,12 +478,15 @@ fn finish_escape() {
     }
 
     if app().escape[0] != b'[' {
-        if matches!(app().escape[0], b'(' | b')' | b'*' | b'+') {
-            match app().escape.get(1).copied().unwrap_or(b'B') {
+        match app().escape[0] {
+            b'(' | b')' | b'*' | b'+' => match app().escape.get(1).copied().unwrap_or(b'B') {
                 b'0' => app().line_drawing = true,
                 b'B' | b'A' => app().line_drawing = false,
                 _ => {}
-            }
+            },
+            b'=' => {}
+            b'>' => {}
+            _ => {}
         }
         app().in_escape = false;
         app().escape.clear();
@@ -452,16 +537,154 @@ fn finish_escape() {
             ensure_cursor_line();
         }
         b'h' | b'l' => {
-            if csi_is_private() && csi_has_number(1049) {
-                clear_screen();
+            let set = final_byte == b'h';
+            if csi_is_private() {
+                if csi_has_number(1) {
+                    app().app_cursor_keys = set;
+                }
+                if csi_has_number(1049) && set {
+                    clear_screen();
+                }
             }
         }
-        b'm' | b's' | b'u' => {}
+        b'm' => apply_sgr(),
+        b's' | b'u' => {}
         _ => {}
     }
     app().in_escape = false;
     app().escape.clear();
     app().dirty = true;
+}
+
+fn apply_sgr() {
+    let params = csi_params();
+    if params.is_empty() {
+        reset_attrs();
+        return;
+    }
+
+    let mut i = 0usize;
+    while i < params.len() {
+        let p = params[i].unwrap_or(0);
+        match p {
+            0 => reset_attrs(),
+            1 => app().current_bold = true,
+            2 => app().current_fg = DIM,
+            22 => {
+                app().current_bold = false;
+                app().current_fg = FG;
+            }
+            30..=37 => app().current_fg = ansi_color(p - 30, false),
+            39 => app().current_fg = FG,
+            40..=47 => app().current_bg = ansi_color(p - 40, false),
+            49 => app().current_bg = BG,
+            90..=97 => app().current_fg = ansi_color(p - 90, true),
+            100..=107 => app().current_bg = ansi_color(p - 100, true),
+            38 | 48 => {
+                if i + 2 < params.len() && params[i + 1] == Some(5) {
+                    if let Some(idx) = params[i + 2] {
+                        let color = ansi_256_color(idx);
+                        if p == 38 {
+                            app().current_fg = color;
+                        } else {
+                            app().current_bg = color;
+                        }
+                    }
+                    i += 2;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+}
+
+fn reset_attrs() {
+    let a = app();
+    a.current_fg = FG;
+    a.current_bg = BG;
+    a.current_bold = false;
+}
+
+fn ansi_color(idx: usize, bright: bool) -> u32 {
+    const NORMAL: [u32; 8] = [
+        0xFF0C0D12,
+        0xFFCC5C5C,
+        0xFF7BC67E,
+        0xFFD7C46A,
+        0xFF6FA8DC,
+        0xFFC586C0,
+        0xFF5FC8D7,
+        0xFFE8E8EA,
+    ];
+    const BRIGHT: [u32; 8] = [
+        0xFF555866,
+        0xFFFF7A7A,
+        0xFF9BEA9E,
+        0xFFFFE082,
+        0xFF8FCBFF,
+        0xFFE4A5DF,
+        0xFF83E7F3,
+        0xFFFFFFFF,
+    ];
+    if bright {
+        BRIGHT[idx.min(7)]
+    } else {
+        NORMAL[idx.min(7)]
+    }
+}
+
+fn ansi_256_color(idx: usize) -> u32 {
+    if idx < 8 {
+        return ansi_color(idx, false);
+    }
+    if idx < 16 {
+        return ansi_color(idx - 8, true);
+    }
+    if idx >= 232 {
+        let v = 8 + ((idx.min(255) - 232) as u32 * 10);
+        return 0xFF000000 | (v << 16) | (v << 8) | v;
+    }
+    let n = idx - 16;
+    let r = color_cube_component(n / 36);
+    let g = color_cube_component((n / 6) % 6);
+    let b = color_cube_component(n % 6);
+    0xFF000000 | (r << 16) | (g << 8) | b
+}
+
+fn color_cube_component(v: usize) -> u32 {
+    if v == 0 {
+        0
+    } else {
+        55 + (v.min(5) as u32 * 40)
+    }
+}
+
+fn csi_params() -> Vec<Option<usize>> {
+    let mut out = Vec::new();
+    let mut n = 0usize;
+    let mut seen = false;
+    for &b in app().escape.iter().skip(1) {
+        if b.is_ascii_digit() {
+            seen = true;
+            n = n.saturating_mul(10).saturating_add((b - b'0') as usize);
+        } else if b == b';' {
+            out.push(if seen { Some(n) } else { None });
+            n = 0;
+            seen = false;
+        } else if b == b'?' {
+            n = 0;
+            seen = false;
+        } else {
+            break;
+        }
+    }
+    if seen {
+        out.push(Some(n));
+    } else if app().escape.contains(&b';') {
+        out.push(None);
+    }
+    out
 }
 
 fn csi_first_number() -> Option<usize> {
@@ -530,7 +753,7 @@ fn newline() {
     let keep_view = a.scrollback_lines > 0;
     a.cursor_row = a.cursor_row.saturating_add(1);
     while a.lines.len() <= a.cursor_row {
-        a.lines.push(String::new());
+        a.lines.push(Vec::new());
     }
     if keep_view {
         a.scrollback_lines = a.scrollback_lines.saturating_add(1);
@@ -540,28 +763,26 @@ fn newline() {
     clamp_scrollback(a);
 }
 
-fn insert_char(ch: char) {
-    let a = app();
-    ensure_cursor_line_for(a);
-    let line = &mut a.lines[a.cursor_row];
-    let pos = a.cursor_col.min(line.len());
-    line.insert(pos, ch);
-    a.cursor_col = pos + ch.len_utf8();
-}
-
 fn put_char(ch: char) {
     let a = app();
     ensure_cursor_line_for(a);
+    let cell = Cell {
+        ch,
+        fg: a.current_fg,
+        bg: a.current_bg,
+        bold: a.current_bold,
+    };
+    let blank = Cell::blank(a.current_fg, a.current_bg, a.current_bold);
     let line = &mut a.lines[a.cursor_row];
     while a.cursor_col > line.len() {
-        line.push(' ');
+        line.push(blank);
     }
     let pos = a.cursor_col.min(line.len());
     if pos < line.len() {
         line.remove(pos);
     }
-    line.insert(pos, ch);
-    a.cursor_col = pos + ch.len_utf8();
+    line.insert(pos, cell);
+    a.cursor_col = pos + 1;
 }
 
 fn backspace() {
@@ -584,12 +805,15 @@ fn erase_line(mode: usize) {
         return;
     }
     ensure_cursor_line_for(a);
+    let blank = Cell::blank(a.current_fg, a.current_bg, a.current_bold);
     let line = &mut a.lines[a.cursor_row];
     let pos = a.cursor_col.min(line.len());
     match mode {
         1 => {
             let end = pos.min(line.len());
-            line.replace_range(0..end, &" ".repeat(end));
+            for cell in line.iter_mut().take(end) {
+                *cell = blank;
+            }
         }
         2 => line.clear(),
         _ => line.truncate(pos),
@@ -599,7 +823,7 @@ fn erase_line(mode: usize) {
 fn clear_screen() {
     let a = app();
     a.lines.clear();
-    a.lines.push(String::new());
+    a.lines.push(Vec::new());
     a.cursor_row = 0;
     a.cursor_col = 0;
     a.scrollback_lines = 0;
@@ -623,7 +847,12 @@ fn erase_to_screen_start() {
         line.clear();
     }
     let pos = a.cursor_col.min(a.lines[a.cursor_row].len());
-    a.lines[a.cursor_row].replace_range(0..pos, &" ".repeat(pos));
+    let fg = a.current_fg;
+    let bg = a.current_bg;
+    let bold = a.current_bold;
+    for cell in a.lines[a.cursor_row].iter_mut().take(pos) {
+        *cell = Cell::blank(fg, bg, bold);
+    }
 }
 
 fn ensure_cursor_line() {
@@ -633,12 +862,12 @@ fn ensure_cursor_line() {
 
 fn ensure_cursor_line_for(a: &mut LxeShellApp) {
     if a.lines.is_empty() {
-        a.lines.push(String::new());
+        a.lines.push(Vec::new());
     }
     let max_row = a.cursor_row.min(MAX_LINES.saturating_sub(1));
     a.cursor_row = max_row;
     while a.lines.len() <= a.cursor_row {
-        a.lines.push(String::new());
+        a.lines.push(Vec::new());
     }
 }
 
@@ -728,7 +957,7 @@ fn render() {
     let end = bottom.min(a.lines.len());
     let mut y = PAD_Y;
     for line in a.lines.iter().skip(start).take(end.saturating_sub(start)) {
-        canvas.draw_text(PAD_X, y, FG, 4, FONT_SIZE, line);
+        draw_terminal_line(canvas, PAD_X, y, line);
         y += LINE_H;
     }
 
@@ -743,6 +972,46 @@ fn render() {
             let y = PAD_Y + cursor_row as i32 * LINE_H + LINE_H - 3;
             canvas.fill_rect(x, y, CELL_W as u32, 2, CURSOR);
         }
+    }
+}
+
+fn draw_terminal_line(canvas: anyui::Canvas, x: i32, y: i32, line: &[Cell]) {
+    if line.is_empty() {
+        return;
+    }
+
+    let mut col = 0usize;
+    while col < line.len() {
+        let bg = line[col].bg;
+        if bg != BG {
+            let start = col;
+            while col < line.len() && line[col].bg == bg {
+                col += 1;
+            }
+            canvas.fill_rect(
+                x + (start as i32 * CELL_W),
+                y,
+                ((col - start) as i32 * CELL_W).max(CELL_W) as u32,
+                LINE_H as u32,
+                bg,
+            );
+        } else {
+            col += 1;
+        }
+    }
+
+    col = 0;
+    while col < line.len() {
+        let fg = line[col].fg;
+        let bold = line[col].bold;
+        let start = col;
+        let mut text = String::new();
+        while col < line.len() && line[col].fg == fg && line[col].bold == bold {
+            text.push(line[col].ch);
+            col += 1;
+        }
+        let _ = bold;
+        canvas.draw_text(x + (start as i32 * CELL_W), y, fg, 4, FONT_SIZE, &text);
     }
 }
 

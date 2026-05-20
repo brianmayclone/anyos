@@ -49,14 +49,23 @@ pub(crate) fn ensure_rootfs_layout(config: &LxeConfig) {
     );
     let _ = write_bytes_atomic(
         &alloc::format!("{}/etc/apt/apt.conf.d/99lxe", rootfs),
-        b"APT::Cache-Start \"134217728\";\nAPT::Cache-Grow \"16777216\";\nAPT::Cache-Limit \"0\";\nDir::Cache::pkgcache \"\";\nDir::Cache::srcpkgcache \"\";\nAcquire::Check-Valid-Until \"false\";\nAcquire::Languages \"none\";\nAcquire::PDiffs \"false\";\n",
+        b"APT::Cache-Start \"134217728\";\nAPT::Cache-Grow \"16777216\";\nAPT::Cache-Limit \"0\";\nAcquire::Check-Valid-Until \"false\";\nAcquire::Languages \"none\";\nAcquire::PDiffs \"false\";\n",
     );
-    let _ = fs::unlink(&alloc::format!("{}/var/cache/apt/pkgcache.bin", rootfs));
-    let _ = fs::unlink(&alloc::format!("{}/var/cache/apt/srcpkgcache.bin", rootfs));
+    reset_apt_binary_cache_once(rootfs);
     ensure_linux_account_files(rootfs);
     ensure_linux_network_files(rootfs);
     ensure_linux_timezone_files(rootfs);
     ensure_linux_terminal_files(rootfs);
+}
+
+fn reset_apt_binary_cache_once(rootfs: &str) {
+    let marker = alloc::format!("{}/var/cache/apt/.lxe-cache-reset-v3", rootfs);
+    if path_exists(&marker) {
+        return;
+    }
+    let _ = fs::unlink(&alloc::format!("{}/var/cache/apt/pkgcache.bin", rootfs));
+    let _ = fs::unlink(&alloc::format!("{}/var/cache/apt/srcpkgcache.bin", rootfs));
+    let _ = write_bytes_atomic(&marker, b"ok\n");
 }
 
 fn ensure_linux_account_files(rootfs: &str) {

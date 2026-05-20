@@ -1,5 +1,6 @@
 use super::*;
 use alloc::format;
+use alloc::fmt::Write;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -148,6 +149,7 @@ pub(super) fn linux_proc_node(path: &str) -> Option<(u16, u32)> {
     match rest {
         "filesystems" => Some((LINUX_PROC_FILESYSTEMS, 0)),
         "mounts" => Some((LINUX_PROC_MOUNTS, 0)),
+        "partitions" => Some((LINUX_PROC_PARTITIONS, 0)),
         "stat" => Some((LINUX_PROC_STAT, 0)),
         "uptime" => Some((LINUX_PROC_UPTIME, 0)),
         "meminfo" => Some((LINUX_PROC_MEMINFO, 0)),
@@ -281,13 +283,12 @@ fuseblk\n"
                 .to_vec()
         }
         LINUX_PROC_MOUNTS => {
-            b"rootfs / rootfs rw 0 0\nproc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"
-                .to_vec()
+            linux_proc_mounts().into_bytes()
         }
         LINUX_PROC_MOUNTINFO => {
-            b"1 0 0:1 / / rw,relatime - rootfs rootfs rw\n2 1 0:2 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n"
-                .to_vec()
+            linux_proc_mountinfo().into_bytes()
         }
+        LINUX_PROC_PARTITIONS => linux_proc_partitions().into_bytes(),
         LINUX_PROC_LOGINUID => b"4294967295\n".to_vec(),
         LINUX_PROC_PID_STAT => linux_proc_pid_stat(pid).into_bytes(),
         LINUX_PROC_PID_STATUS | LINUX_PROC_STATUS => linux_proc_pid_status(pid).into_bytes(),
@@ -570,6 +571,12 @@ fn linux_proc_dir_entries(file: u16, pid: u32) -> Vec<ProcDirEntry> {
                 proc_inode(LINUX_PROC_MOUNTS, 0),
                 DT_REG,
             );
+            push_dirent(
+                &mut entries,
+                "partitions",
+                proc_inode(LINUX_PROC_PARTITIONS, 0),
+                DT_REG,
+            );
             push_dirent(&mut entries, "stat", proc_inode(LINUX_PROC_STAT, 0), DT_REG);
             push_dirent(
                 &mut entries,
@@ -836,6 +843,91 @@ fn linux_proc_loadavg() -> String {
         threads.len().max(1),
         last_pid
     )
+}
+
+fn linux_proc_mounts() -> String {
+    let mut out = String::new();
+    let mounts = crate::fs::vfs::list_mounts();
+    if mounts.is_empty() {
+        out.push_str("/dev/root / rootfs rw,relatime 0 0\n");
+    } else {
+        for (path, fs_name, dev_id) in mounts {
+            let linux_path = if path == LXE_ROOTFS { "/" } else { path.as_str() };
+            let dev_name = linux_blockdev_name(dev_id as u8)
+                .map(|name| format!("/dev/{}", name))
+                .unwrap_or_else(|| String::from("/dev/root"));
+            let linux_fs = linux_fs_name(fs_name);
+            let opts = if linux_fs == "iso9660" {
+                "ro,relatime"
+            } else {
+                "rw,relatime"
+            };
+            let _ = writeln!(out, "{} {} {} {} 0 0", dev_name, linux_path, linux_fs, opts);
+        }
+    }
+    out.push_str("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n");
+    out
+}
+
+fn linux_proc_mountinfo() -> String {
+    let mut out = String::new();
+    let mounts = crate::fs::vfs::list_mounts();
+    let mut id = 1u32;
+    if mounts.is_empty() {
+        out.push_str("1 0 0:1 / / rw,relatime - rootfs /dev/root rw\n");
+        id = 2;
+    } else {
+        for (path, fs_name, dev_id) in mounts {
+            let linux_path = if path == LXE_ROOTFS { "/" } else { path.as_str() };
+            let dev_name = linux_blockdev_name(dev_id as u8)
+                .map(|name| format!("/dev/{}", name))
+                .unwrap_or_else(|| String::from("/dev/root"));
+            let linux_fs = linux_fs_name(fs_name);
+            let _ = writeln!(
+                out,
+                "{} 0 8:{} / {} rw,relatime - {} {} rw",
+                id, dev_id, linux_path, linux_fs, dev_name
+            );
+            id = id.saturating_add(1);
+        }
+    }
+    let _ = writeln!(
+        out,
+        "{} 1 0:2 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw",
+        id
+    );
+    out
+}
+
+fn linux_proc_partitions() -> String {
+    let mut out = String::from("major minor  #blocks  name\n\n");
+    for dev in crate::drivers::storage::blockdev::list_devices() {
+        let blocks_1k = dev.size_sectors / 2;
+        let minor = dev.id as u32;
+        let _ = writeln!(
+            out,
+            "   8 {:>5} {:>10} {}",
+            minor,
+            blocks_1k,
+            dev.name()
+        );
+    }
+    out
+}
+
+fn linux_blockdev_name(dev_id: u8) -> Option<String> {
+    crate::drivers::storage::blockdev::get_device(dev_id).map(|dev| dev.name())
+}
+
+fn linux_fs_name(fs_name: &str) -> &str {
+    match fs_name {
+        "corefs" | "exfat" | "fat16" | "ntfs" | "iso9660" => fs_name,
+        "devfs" => "devtmpfs",
+        "fuse" => "fuse",
+        "smb" => "cifs",
+        "overlay" => "overlay",
+        _ => "rootfs",
+    }
 }
 
 fn proc_thread(pid: u32) -> Option<crate::task::scheduler::ThreadInfo> {

@@ -1423,11 +1423,13 @@ pub(super) fn linux_statfs_translated(path: &str, buf_ptr: u64) -> u64 {
     if !super::handlers::helpers::is_user_range_accessible(buf_ptr, 120) {
         return linux_err(EFAULT);
     }
-    let st = crate::fs::vfs::statfs(path).unwrap_or(crate::fs::vfs::StatFs {
-        total_bytes: 64 * 1024 * 1024,
-        used_bytes: 0,
-        free_bytes: 64 * 1024 * 1024,
-    });
+    let st = crate::fs::vfs::statfs(path)
+        .or_else(|| crate::fs::vfs::statfs("/"))
+        .unwrap_or(crate::fs::vfs::StatFs {
+            total_bytes: 64 * 1024 * 1024,
+            used_bytes: 0,
+            free_bytes: 64 * 1024 * 1024,
+        });
     let block_size = 4096u64;
     unsafe {
         core::ptr::write_bytes(buf_ptr as *mut u8, 0, 120);

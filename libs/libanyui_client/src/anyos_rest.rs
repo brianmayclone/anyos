@@ -1846,7 +1846,7 @@ pub fn show_notification(title: &str, message: &str, icon: Option<&[u32; 256]>, 
 //  Key event API
 // ══════════════════════════════════════════════════════════════════════
 
-// Key codes (must match libanyui's control.rs constants)
+// Key codes (must match compositor key constants)
 pub const KEY_ENTER: u32 = 0x100;
 pub const KEY_BACKSPACE: u32 = 0x101;
 pub const KEY_TAB: u32 = 0x102;
@@ -1861,18 +1861,18 @@ pub const KEY_HOME: u32 = 0x121;
 pub const KEY_END: u32 = 0x122;
 pub const KEY_PAGE_UP: u32 = 0x123;
 pub const KEY_PAGE_DOWN: u32 = 0x124;
-pub const KEY_F1: u32 = 0x130;
-pub const KEY_F2: u32 = 0x131;
-pub const KEY_F3: u32 = 0x132;
-pub const KEY_F4: u32 = 0x133;
-pub const KEY_F5: u32 = 0x134;
-pub const KEY_F6: u32 = 0x135;
-pub const KEY_F7: u32 = 0x136;
-pub const KEY_F8: u32 = 0x137;
-pub const KEY_F9: u32 = 0x138;
-pub const KEY_F10: u32 = 0x139;
-pub const KEY_F11: u32 = 0x13A;
-pub const KEY_F12: u32 = 0x13B;
+pub const KEY_F1: u32 = 0x140;
+pub const KEY_F2: u32 = 0x141;
+pub const KEY_F3: u32 = 0x142;
+pub const KEY_F4: u32 = 0x143;
+pub const KEY_F5: u32 = 0x144;
+pub const KEY_F6: u32 = 0x145;
+pub const KEY_F7: u32 = 0x146;
+pub const KEY_F8: u32 = 0x147;
+pub const KEY_F9: u32 = 0x148;
+pub const KEY_F10: u32 = 0x149;
+pub const KEY_F11: u32 = 0x14A;
+pub const KEY_F12: u32 = 0x14B;
 
 // Modifier flags
 pub const MOD_SHIFT: u32 = 1;
