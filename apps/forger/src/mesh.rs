@@ -289,6 +289,16 @@ fn visible_face_cell(world: &World, wx: i32, wy: i32, wz: i32, face: usize) -> O
         return None;
     }
 
+    if id == block::WATER {
+        if face != 0 {
+            return None;
+        }
+        let above = world.get_block(wx, wy + 1, wz);
+        if above == block::WATER || !block::is_transparent(above) {
+            return None;
+        }
+    }
+
     let (dx, dy, dz) = FACE_DIRS[face];
     let neighbor = world.get_block(wx + dx, wy + dy, wz + dz);
     if neighbor == id || !block::is_transparent(neighbor) {

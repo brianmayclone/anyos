@@ -10,19 +10,19 @@
 //! pre-computed perspective correction factors yield ~100–1000× speedup over
 //! the original implementation.
 
-pub mod math;
-pub mod vertex;
 pub mod clipper;
-pub mod raster;
 pub mod fragment;
+pub mod math;
+pub mod raster;
+pub mod vertex;
 
-use alloc::vec::Vec;
-use crate::state::GlContext;
-use crate::types::*;
+use crate::compiler::backend_jit::{JitContext, JitFn};
 use crate::compiler::backend_sw::ShaderExec;
-use crate::compiler::backend_jit::{JitFn, JitContext};
 use crate::serial_println;
+use crate::state::GlContext;
 use crate::thread_pool::{self, ScreenTri};
+use crate::types::*;
+use alloc::vec::Vec;
 
 /// Maximum number of interpolated varyings between vertex and fragment shaders.
 ///
@@ -106,15 +106,22 @@ impl ClipVertex {
 #[inline(always)]
 fn trivially_inside(v: &ClipVertex) -> bool {
     let w = v.position[3];
-    if w <= 0.0 { return false; }
-    v.position[0] >= -w && v.position[0] <= w &&
-    v.position[1] >= -w && v.position[1] <= w &&
-    v.position[2] >= -w && v.position[2] <= w
+    if w <= 0.0 {
+        return false;
+    }
+    v.position[0] >= -w
+        && v.position[0] <= w
+        && v.position[1] >= -w
+        && v.position[1] <= w
+        && v.position[2] >= -w
+        && v.position[2] <= w
 }
 
 /// Render primitives using the software rasterizer.
 pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
-    if count <= 0 { return; }
+    if count <= 0 {
+        return;
+    }
     let prog_id = ctx.current_program;
     let program = match ctx.shaders.get_program(prog_id) {
         Some(p) if p.linked => p,
@@ -134,7 +141,10 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
     let (uniforms, _uni_count) = collect_uniforms_stack(program);
 
     // Extract matColor early (before program borrow ends)
-    let mat_color = program.uniforms.iter().rev()
+    let mat_color = program
+        .uniforms
+        .iter()
+        .rev()
         .find(|u| u.size <= 4 && u.name.contains("MatColor"))
         .map(|u| [u.value[0], u.value[1], u.value[2]])
         .unwrap_or([1.0, 1.0, 1.0]);
@@ -150,7 +160,14 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
         let loc = a.location as usize;
         if loc < ctx.attribs.len() && ctx.attribs[loc].enabled {
             let va = &ctx.attribs[loc];
-            attrib_info[i] = (a.location, va.size, va.typ, va.stride, va.offset, va.buffer_id);
+            attrib_info[i] = (
+                a.location,
+                va.size,
+                va.typ,
+                va.stride,
+                va.offset,
+                va.buffer_id,
+            );
         }
     }
 
@@ -188,9 +205,17 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
                 tex_sample: tex_sample_addr,
                 discarded: 0,
             };
-            unsafe { jit(&mut jit_ctx); }
+            unsafe {
+                jit(&mut jit_ctx);
+            }
         } else {
-            vs_exec.execute(vs_ir, &attrib_buf[..num_attribs], uni_slice, None, raster::real_tex_sample);
+            vs_exec.execute(
+                vs_ir,
+                &attrib_buf[..num_attribs],
+                uni_slice,
+                None,
+                raster::real_tex_sample,
+            );
         }
         clip_verts.push(ClipVertex {
             position: vs_exec.position,
@@ -213,28 +238,86 @@ pub fn draw(ctx: &mut GlContext, mode: GLenum, first: i32, count: i32) {
     static mut DRAW_DBG: u32 = 0;
     let dbg_this = unsafe { DRAW_DBG < 2 };
     if dbg_this {
-        unsafe { DRAW_DBG += 1; }
+        unsafe {
+            DRAW_DBG += 1;
+        }
         if !clip_verts.is_empty() {
             let v0 = &clip_verts[0];
-            serial_println!("[libgl] draw: {} verts, v0.pos=({},{},{},{}), fb={}x{}, fast={}",
+            serial_println!(
+                "[libgl] draw: {} verts, v0.pos=({},{},{},{}), fb={}x{}, fast={}",
                 clip_verts.len(),
-                v0.position[0] as i32, v0.position[1] as i32,
-                v0.position[2] as i32, v0.position[3] as i32,
-                fb_w, fb_h, fast.is_some());
+                v0.position[0] as i32,
+                v0.position[1] as i32,
+                v0.position[2] as i32,
+                v0.position[3] as i32,
+                fb_w,
+                fb_h,
+                fast.is_some()
+            );
             let inside = clip_verts.iter().filter(|v| trivially_inside(v)).count();
-            serial_println!("[libgl] draw: {} of {} verts trivially inside", inside, clip_verts.len());
+            serial_println!(
+                "[libgl] draw: {} of {} verts trivially inside",
+                inside,
+                clip_verts.len()
+            );
             if clip_verts.len() >= 3 {
-                let s0 = to_screen(&clip_verts[0].position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-                let s1 = to_screen(&clip_verts[1].position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-                let s2 = to_screen(&clip_verts[2].position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-                serial_println!("[libgl] draw: screen v0=({},{}), v1=({},{}), v2=({},{})",
-                    s0[0] as i32, s0[1] as i32, s1[0] as i32, s1[1] as i32, s2[0] as i32, s2[1] as i32);
+                let s0 = to_screen(
+                    &clip_verts[0].position,
+                    ctx.viewport_x,
+                    ctx.viewport_y,
+                    ctx.viewport_w,
+                    ctx.viewport_h,
+                );
+                let s1 = to_screen(
+                    &clip_verts[1].position,
+                    ctx.viewport_x,
+                    ctx.viewport_y,
+                    ctx.viewport_w,
+                    ctx.viewport_h,
+                );
+                let s2 = to_screen(
+                    &clip_verts[2].position,
+                    ctx.viewport_x,
+                    ctx.viewport_y,
+                    ctx.viewport_w,
+                    ctx.viewport_h,
+                );
+                serial_println!(
+                    "[libgl] draw: screen v0=({},{}), v1=({},{}), v2=({},{})",
+                    s0[0] as i32,
+                    s0[1] as i32,
+                    s1[0] as i32,
+                    s1[1] as i32,
+                    s2[0] as i32,
+                    s2[1] as i32
+                );
             }
         }
     }
 
-    if !queue_draw_for_thread_pool(ctx, fs_ir, uni_slice, fs_jit, fast.as_ref(), clip_verts, mode, num_varyings) {
-        single_threaded_draw(ctx, fs_ir, uni_slice, &mut fs_exec, fs_jit, fast.as_ref(), clip_verts, mode, num_varyings, fb_w, fb_h);
+    if !queue_draw_for_thread_pool(
+        ctx,
+        fs_ir,
+        uni_slice,
+        fs_jit,
+        fast.as_ref(),
+        clip_verts,
+        mode,
+        num_varyings,
+    ) {
+        single_threaded_draw(
+            ctx,
+            fs_ir,
+            uni_slice,
+            &mut fs_exec,
+            fs_jit,
+            fast.as_ref(),
+            clip_verts,
+            mode,
+            num_varyings,
+            fb_w,
+            fb_h,
+        );
     }
 }
 
@@ -257,9 +340,18 @@ fn single_threaded_draw(
             let mut i = 0;
             while i + 2 < clip_verts.len() {
                 process_triangle(
-                    ctx, fs_ir, uniforms, fs_exec, fs_jit, fast,
-                    &clip_verts[i], &clip_verts[i+1], &clip_verts[i+2],
-                    num_varyings, fb_w, fb_h,
+                    ctx,
+                    fs_ir,
+                    uniforms,
+                    fs_exec,
+                    fs_jit,
+                    fast,
+                    &clip_verts[i],
+                    &clip_verts[i + 1],
+                    &clip_verts[i + 2],
+                    num_varyings,
+                    fb_w,
+                    fb_h,
                 );
                 i += 3;
             }
@@ -267,19 +359,41 @@ fn single_threaded_draw(
         GL_TRIANGLE_STRIP => {
             for i in 0..clip_verts.len().saturating_sub(2) {
                 let (a, b, c) = if i % 2 == 0 {
-                    (&clip_verts[i], &clip_verts[i+1], &clip_verts[i+2])
+                    (&clip_verts[i], &clip_verts[i + 1], &clip_verts[i + 2])
                 } else {
-                    (&clip_verts[i+1], &clip_verts[i], &clip_verts[i+2])
+                    (&clip_verts[i + 1], &clip_verts[i], &clip_verts[i + 2])
                 };
-                process_triangle(ctx, fs_ir, uniforms, fs_exec, fs_jit, fast, a, b, c, num_varyings, fb_w, fb_h);
+                process_triangle(
+                    ctx,
+                    fs_ir,
+                    uniforms,
+                    fs_exec,
+                    fs_jit,
+                    fast,
+                    a,
+                    b,
+                    c,
+                    num_varyings,
+                    fb_w,
+                    fb_h,
+                );
             }
         }
         GL_TRIANGLE_FAN => {
             for i in 1..clip_verts.len().saturating_sub(1) {
                 process_triangle(
-                    ctx, fs_ir, uniforms, fs_exec, fs_jit, fast,
-                    &clip_verts[0], &clip_verts[i], &clip_verts[i+1],
-                    num_varyings, fb_w, fb_h,
+                    ctx,
+                    fs_ir,
+                    uniforms,
+                    fs_exec,
+                    fs_jit,
+                    fast,
+                    &clip_verts[0],
+                    &clip_verts[i],
+                    &clip_verts[i + 1],
+                    num_varyings,
+                    fb_w,
+                    fb_h,
                 );
             }
         }
@@ -289,7 +403,9 @@ fn single_threaded_draw(
 
 /// Render indexed primitives.
 pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenum, offset: usize) {
-    if count <= 0 { return; }
+    if count <= 0 {
+        return;
+    }
     let ebo_id = ctx.bound_element_buffer;
 
     // Use raw pointer to index data — avoid cloning the entire buffer
@@ -322,7 +438,10 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
     let (uniforms, _uni_count) = collect_uniforms_stack(program);
 
     // Extract matColor early (before program borrow ends)
-    let mat_color = program.uniforms.iter().rev()
+    let mat_color = program
+        .uniforms
+        .iter()
+        .rev()
         .find(|u| u.size <= 4 && u.name.contains("MatColor"))
         .map(|u| [u.value[0], u.value[1], u.value[2]])
         .unwrap_or([1.0, 1.0, 1.0]);
@@ -337,7 +456,14 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
         let loc = a.location as usize;
         if loc < ctx.attribs.len() && ctx.attribs[loc].enabled {
             let va = &ctx.attribs[loc];
-            attrib_info[i] = (a.location, va.size, va.typ, va.stride, va.offset, va.buffer_id);
+            attrib_info[i] = (
+                a.location,
+                va.size,
+                va.typ,
+                va.stride,
+                va.offset,
+                va.buffer_id,
+            );
         }
     }
 
@@ -362,7 +488,9 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
         for i in 0..count_usize {
             let idx = read_index(index_data, type_, offset, i);
             stack_indices[i] = idx;
-            if idx > max_idx { max_idx = idx; }
+            if idx > max_idx {
+                max_idx = idx;
+            }
         }
         indices = &stack_indices[..count_usize];
     } else {
@@ -392,7 +520,11 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
 
     let max_idx = indices.iter().copied().max().unwrap_or(0) as usize;
     let use_cache = max_idx < 65536;
-    let cache = if use_cache { reuse_cache(max_idx + 1) } else { reuse_cache(0) };
+    let cache = if use_cache {
+        reuse_cache(max_idx + 1)
+    } else {
+        reuse_cache(0)
+    };
 
     let clip_verts = reuse_clip_verts();
     for &idx in indices {
@@ -417,9 +549,17 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
                 tex_sample: tex_sample_addr,
                 discarded: 0,
             };
-            unsafe { jit(&mut jit_ctx); }
+            unsafe {
+                jit(&mut jit_ctx);
+            }
         } else {
-            vs_exec.execute(vs_ir, &attrib_buf[..num_attribs], uni_slice, None, raster::real_tex_sample);
+            vs_exec.execute(
+                vs_ir,
+                &attrib_buf[..num_attribs],
+                uni_slice,
+                None,
+                raster::real_tex_sample,
+            );
         }
         let cv = ClipVertex {
             position: vs_exec.position,
@@ -441,8 +581,29 @@ pub fn draw_elements(ctx: &mut GlContext, mode: GLenum, count: i32, type_: GLenu
 
     let mut fs_exec = ShaderExec::new(fs_ir.num_regs, num_varyings);
 
-    if !queue_draw_for_thread_pool(ctx, fs_ir, uni_slice, fs_jit, fast.as_ref(), clip_verts, mode, num_varyings) {
-        single_threaded_draw(ctx, fs_ir, uni_slice, &mut fs_exec, fs_jit, fast.as_ref(), clip_verts, mode, num_varyings, fb_w, fb_h);
+    if !queue_draw_for_thread_pool(
+        ctx,
+        fs_ir,
+        uni_slice,
+        fs_jit,
+        fast.as_ref(),
+        clip_verts,
+        mode,
+        num_varyings,
+    ) {
+        single_threaded_draw(
+            ctx,
+            fs_ir,
+            uni_slice,
+            &mut fs_exec,
+            fs_jit,
+            fast.as_ref(),
+            clip_verts,
+            mode,
+            num_varyings,
+            fb_w,
+            fb_h,
+        );
     }
 }
 
@@ -454,20 +615,28 @@ pub fn read_index(data: &[u8], type_: GLenum, offset: usize, i: usize) -> u32 {
             let off = offset + i * 2;
             if off + 1 < data.len() {
                 u32::from(data[off]) | (u32::from(data[off + 1]) << 8)
-            } else { 0 }
+            } else {
+                0
+            }
         }
         GL_UNSIGNED_INT => {
             let off = offset + i * 4;
             if off + 3 < data.len() {
                 u32::from(data[off])
-                | (u32::from(data[off + 1]) << 8)
-                | (u32::from(data[off + 2]) << 16)
-                | (u32::from(data[off + 3]) << 24)
-            } else { 0 }
+                    | (u32::from(data[off + 1]) << 8)
+                    | (u32::from(data[off + 2]) << 16)
+                    | (u32::from(data[off + 3]) << 24)
+            } else {
+                0
+            }
         }
         GL_UNSIGNED_BYTE => {
             let off = offset + i;
-            if off < data.len() { data[off] as u32 } else { 0 }
+            if off < data.len() {
+                data[off] as u32
+            } else {
+                0
+            }
         }
         _ => 0,
     }
@@ -495,6 +664,10 @@ pub enum FastPathInfo {
         shadow_strength: f32,
         shadow_texel_x: f32,
         shadow_texel_y: f32,
+        sun_x: f32,
+        sun_y: f32,
+        sun_z: f32,
+        sun_brightness: f32,
     },
 }
 
@@ -515,7 +688,10 @@ fn detect_fast_path(
         let fog_start = uniform_scalar(program, uniforms, "uFogStart").unwrap_or(32.0);
         let fog_end = uniform_scalar(program, uniforms, "uFogEnd").unwrap_or(fog_start + 1.0);
         let fog_range = (fog_end - fog_start).abs().max(0.001);
-        let texel = uniform_vec2(program, uniforms, "uShadowTexelSize").unwrap_or([1.0 / 1024.0, 1.0 / 1024.0]);
+        let texel = uniform_vec2(program, uniforms, "uShadowTexelSize")
+            .unwrap_or([1.0 / 1024.0, 1.0 / 1024.0]);
+        let sun = uniform_vec3(program, uniforms, "uSunDir").unwrap_or([0.25, 0.85, -0.45]);
+        let sun_brightness = uniform_scalar(program, uniforms, "uSunBrightness").unwrap_or(1.0);
         let shadow_unit = uniform_scalar(program, uniforms, "uShadowMap")
             .map(|v| (v + 0.5).clamp(0.0, (crate::state::MAX_TEXTURE_UNITS - 1) as f32) as usize)
             .unwrap_or(7);
@@ -532,9 +708,17 @@ fn detect_fast_path(
             fog_b: fog[2],
             fog_start,
             fog_inv_range: 1.0 / fog_range,
-            shadow_strength: if shadow.is_some() { shadow_strength } else { 0.0 },
+            shadow_strength: if shadow.is_some() {
+                shadow_strength
+            } else {
+                0.0
+            },
             shadow_texel_x: texel[0],
             shadow_texel_y: texel[1],
+            sun_x: sun[0],
+            sun_y: sun[1],
+            sun_z: sun[2],
+            sun_brightness,
         });
     }
 
@@ -679,7 +863,13 @@ fn collect_screen_tris(
         GL_TRIANGLES => {
             let mut i = 0;
             while i + 2 < clip_verts.len() {
-                collect_triangle_for_pool(ctx, out, &clip_verts[i], &clip_verts[i + 1], &clip_verts[i + 2]);
+                collect_triangle_for_pool(
+                    ctx,
+                    out,
+                    &clip_verts[i],
+                    &clip_verts[i + 1],
+                    &clip_verts[i + 2],
+                );
                 i += 3;
             }
         }
@@ -695,7 +885,13 @@ fn collect_screen_tris(
         }
         GL_TRIANGLE_FAN => {
             for i in 1..clip_verts.len().saturating_sub(1) {
-                collect_triangle_for_pool(ctx, out, &clip_verts[0], &clip_verts[i], &clip_verts[i + 1]);
+                collect_triangle_for_pool(
+                    ctx,
+                    out,
+                    &clip_verts[0],
+                    &clip_verts[i],
+                    &clip_verts[i + 1],
+                );
             }
         }
         _ => {}
@@ -710,13 +906,38 @@ fn collect_triangle_for_pool(
     v2: &ClipVertex,
 ) {
     if trivially_inside(v0) && trivially_inside(v1) && trivially_inside(v2) {
-        let s0 = to_screen(&v0.position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-        let s1 = to_screen(&v1.position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-        let s2 = to_screen(&v2.position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
+        let s0 = to_screen(
+            &v0.position,
+            ctx.viewport_x,
+            ctx.viewport_y,
+            ctx.viewport_w,
+            ctx.viewport_h,
+        );
+        let s1 = to_screen(
+            &v1.position,
+            ctx.viewport_x,
+            ctx.viewport_y,
+            ctx.viewport_w,
+            ctx.viewport_h,
+        );
+        let s2 = to_screen(
+            &v2.position,
+            ctx.viewport_x,
+            ctx.viewport_y,
+            ctx.viewport_w,
+            ctx.viewport_h,
+        );
         if triangle_is_culled(ctx, &s0, &s1, &s2) {
             return;
         }
-        out.push(ScreenTri { v0: *v0, v1: *v1, v2: *v2, s0, s1, s2 });
+        out.push(ScreenTri {
+            v0: *v0,
+            v1: *v1,
+            v2: *v2,
+            s0,
+            s1,
+            s2,
+        });
         return;
     }
 
@@ -726,13 +947,38 @@ fn collect_triangle_for_pool(
         if t.len() < 3 {
             continue;
         }
-        let s0 = to_screen(&t[0].position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-        let s1 = to_screen(&t[1].position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-        let s2 = to_screen(&t[2].position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
+        let s0 = to_screen(
+            &t[0].position,
+            ctx.viewport_x,
+            ctx.viewport_y,
+            ctx.viewport_w,
+            ctx.viewport_h,
+        );
+        let s1 = to_screen(
+            &t[1].position,
+            ctx.viewport_x,
+            ctx.viewport_y,
+            ctx.viewport_w,
+            ctx.viewport_h,
+        );
+        let s2 = to_screen(
+            &t[2].position,
+            ctx.viewport_x,
+            ctx.viewport_y,
+            ctx.viewport_w,
+            ctx.viewport_h,
+        );
         if triangle_is_culled(ctx, &s0, &s1, &s2) {
             continue;
         }
-        out.push(ScreenTri { v0: t[0], v1: t[1], v2: t[2], s0, s1, s2 });
+        out.push(ScreenTri {
+            v0: t[0],
+            v1: t[1],
+            v2: t[2],
+            s0,
+            s1,
+            s2,
+        });
     }
 }
 
@@ -742,7 +988,10 @@ fn triangle_is_culled(ctx: &GlContext, s0: &[f32; 3], s1: &[f32; 3], s2: &[f32; 
         return false;
     }
     let area = edge_function(s0, s1, s2);
-    let front = match ctx.front_face { GL_CCW => area < 0.0, _ => area > 0.0 };
+    let front = match ctx.front_face {
+        GL_CCW => area < 0.0,
+        _ => area > 0.0,
+    };
     match ctx.cull_face_mode {
         GL_FRONT => front,
         GL_BACK => !front,
@@ -771,31 +1020,115 @@ fn process_triangle(
 ) {
     // Fast path: if all vertices are inside the frustum, skip clipping entirely
     if trivially_inside(v0) && trivially_inside(v1) && trivially_inside(v2) {
-        let s0 = to_screen(&v0.position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-        let s1 = to_screen(&v1.position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-        let s2 = to_screen(&v2.position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
+        let s0 = to_screen(
+            &v0.position,
+            ctx.viewport_x,
+            ctx.viewport_y,
+            ctx.viewport_w,
+            ctx.viewport_h,
+        );
+        let s1 = to_screen(
+            &v1.position,
+            ctx.viewport_x,
+            ctx.viewport_y,
+            ctx.viewport_w,
+            ctx.viewport_h,
+        );
+        let s2 = to_screen(
+            &v2.position,
+            ctx.viewport_x,
+            ctx.viewport_y,
+            ctx.viewport_w,
+            ctx.viewport_h,
+        );
 
         if ctx.cull_face {
             let area = edge_function(&s0, &s1, &s2);
-            let front = match ctx.front_face { GL_CCW => area < 0.0, _ => area > 0.0 };
+            let front = match ctx.front_face {
+                GL_CCW => area < 0.0,
+                _ => area > 0.0,
+            };
             let cull = match ctx.cull_face_mode {
                 GL_FRONT => front,
                 GL_BACK => !front,
                 GL_FRONT_AND_BACK => true,
                 _ => false,
             };
-            if cull { return; }
+            if cull {
+                return;
+            }
         }
 
         match fast {
-            Some(FastPathInfo::Simple { tex, mat_r, mat_g, mat_b }) => {
-                raster::rasterize_triangle_fast(ctx, tex, *mat_r, *mat_g, *mat_b, v0, v1, v2, &s0, &s1, &s2, fb_w, fb_h);
+            Some(FastPathInfo::Simple {
+                tex,
+                mat_r,
+                mat_g,
+                mat_b,
+            }) => {
+                raster::rasterize_triangle_fast(
+                    ctx, tex, *mat_r, *mat_g, *mat_b, v0, v1, v2, &s0, &s1, &s2, fb_w, fb_h,
+                );
             }
-            Some(FastPathInfo::ForgerBlocks { tex, shadow, fog_r, fog_g, fog_b, fog_start, fog_inv_range, shadow_strength, shadow_texel_x, shadow_texel_y }) => {
-                raster::rasterize_triangle_forger_blocks(ctx, tex, *fog_r, *fog_g, *fog_b, *fog_start, *fog_inv_range, shadow.as_ref(), *shadow_strength, *shadow_texel_x, *shadow_texel_y, v0, v1, v2, &s0, &s1, &s2, fb_w, fb_h);
+            Some(FastPathInfo::ForgerBlocks {
+                tex,
+                shadow,
+                fog_r,
+                fog_g,
+                fog_b,
+                fog_start,
+                fog_inv_range,
+                shadow_strength,
+                shadow_texel_x,
+                shadow_texel_y,
+                sun_x,
+                sun_y,
+                sun_z,
+                sun_brightness,
+            }) => {
+                raster::rasterize_triangle_forger_blocks(
+                    ctx,
+                    tex,
+                    *fog_r,
+                    *fog_g,
+                    *fog_b,
+                    *fog_start,
+                    *fog_inv_range,
+                    shadow.as_ref(),
+                    *shadow_strength,
+                    *shadow_texel_x,
+                    *shadow_texel_y,
+                    *sun_x,
+                    *sun_y,
+                    *sun_z,
+                    *sun_brightness,
+                    v0,
+                    v1,
+                    v2,
+                    &s0,
+                    &s1,
+                    &s2,
+                    fb_w,
+                    fb_h,
+                );
             }
             None => {
-                raster::rasterize_triangle(ctx, fs_ir, uniforms, fs_exec, fs_jit, v0, v1, v2, &s0, &s1, &s2, num_varyings, fb_w, fb_h);
+                raster::rasterize_triangle(
+                    ctx,
+                    fs_ir,
+                    uniforms,
+                    fs_exec,
+                    fs_jit,
+                    v0,
+                    v1,
+                    v2,
+                    &s0,
+                    &s1,
+                    &s2,
+                    num_varyings,
+                    fb_w,
+                    fb_h,
+                );
             }
         }
         return;
@@ -806,30 +1139,119 @@ fn process_triangle(
     let clipped = clipper::clip_triangle(&tri);
 
     for t in clipped.chunks(3) {
-        if t.len() < 3 { continue; }
-        let s0 = to_screen(&t[0].position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-        let s1 = to_screen(&t[1].position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
-        let s2 = to_screen(&t[2].position, ctx.viewport_x, ctx.viewport_y, ctx.viewport_w, ctx.viewport_h);
+        if t.len() < 3 {
+            continue;
+        }
+        let s0 = to_screen(
+            &t[0].position,
+            ctx.viewport_x,
+            ctx.viewport_y,
+            ctx.viewport_w,
+            ctx.viewport_h,
+        );
+        let s1 = to_screen(
+            &t[1].position,
+            ctx.viewport_x,
+            ctx.viewport_y,
+            ctx.viewport_w,
+            ctx.viewport_h,
+        );
+        let s2 = to_screen(
+            &t[2].position,
+            ctx.viewport_x,
+            ctx.viewport_y,
+            ctx.viewport_w,
+            ctx.viewport_h,
+        );
 
         if ctx.cull_face {
             let area = edge_function(&s0, &s1, &s2);
-            let front = match ctx.front_face { GL_CCW => area < 0.0, _ => area > 0.0 };
-            let cull = match ctx.cull_face_mode {
-                GL_FRONT => front, GL_BACK => !front,
-                GL_FRONT_AND_BACK => true, _ => false,
+            let front = match ctx.front_face {
+                GL_CCW => area < 0.0,
+                _ => area > 0.0,
             };
-            if cull { continue; }
+            let cull = match ctx.cull_face_mode {
+                GL_FRONT => front,
+                GL_BACK => !front,
+                GL_FRONT_AND_BACK => true,
+                _ => false,
+            };
+            if cull {
+                continue;
+            }
         }
 
         match fast {
-            Some(FastPathInfo::Simple { tex, mat_r, mat_g, mat_b }) => {
-                raster::rasterize_triangle_fast(ctx, tex, *mat_r, *mat_g, *mat_b, &t[0], &t[1], &t[2], &s0, &s1, &s2, fb_w, fb_h);
+            Some(FastPathInfo::Simple {
+                tex,
+                mat_r,
+                mat_g,
+                mat_b,
+            }) => {
+                raster::rasterize_triangle_fast(
+                    ctx, tex, *mat_r, *mat_g, *mat_b, &t[0], &t[1], &t[2], &s0, &s1, &s2, fb_w,
+                    fb_h,
+                );
             }
-            Some(FastPathInfo::ForgerBlocks { tex, shadow, fog_r, fog_g, fog_b, fog_start, fog_inv_range, shadow_strength, shadow_texel_x, shadow_texel_y }) => {
-                raster::rasterize_triangle_forger_blocks(ctx, tex, *fog_r, *fog_g, *fog_b, *fog_start, *fog_inv_range, shadow.as_ref(), *shadow_strength, *shadow_texel_x, *shadow_texel_y, &t[0], &t[1], &t[2], &s0, &s1, &s2, fb_w, fb_h);
+            Some(FastPathInfo::ForgerBlocks {
+                tex,
+                shadow,
+                fog_r,
+                fog_g,
+                fog_b,
+                fog_start,
+                fog_inv_range,
+                shadow_strength,
+                shadow_texel_x,
+                shadow_texel_y,
+                sun_x,
+                sun_y,
+                sun_z,
+                sun_brightness,
+            }) => {
+                raster::rasterize_triangle_forger_blocks(
+                    ctx,
+                    tex,
+                    *fog_r,
+                    *fog_g,
+                    *fog_b,
+                    *fog_start,
+                    *fog_inv_range,
+                    shadow.as_ref(),
+                    *shadow_strength,
+                    *shadow_texel_x,
+                    *shadow_texel_y,
+                    *sun_x,
+                    *sun_y,
+                    *sun_z,
+                    *sun_brightness,
+                    &t[0],
+                    &t[1],
+                    &t[2],
+                    &s0,
+                    &s1,
+                    &s2,
+                    fb_w,
+                    fb_h,
+                );
             }
             None => {
-                raster::rasterize_triangle(ctx, fs_ir, uniforms, fs_exec, fs_jit, &t[0], &t[1], &t[2], &s0, &s1, &s2, t[0].num_varyings, fb_w, fb_h);
+                raster::rasterize_triangle(
+                    ctx,
+                    fs_ir,
+                    uniforms,
+                    fs_exec,
+                    fs_jit,
+                    &t[0],
+                    &t[1],
+                    &t[2],
+                    &s0,
+                    &s1,
+                    &s2,
+                    t[0].num_varyings,
+                    fb_w,
+                    fb_h,
+                );
             }
         }
     }
@@ -848,8 +1270,8 @@ fn to_screen(clip: &[f32; 4], vx: i32, vy: i32, vw: i32, vh: i32) -> [f32; 3] {
     let nz = clip[2] * inv_w;
     [
         (nx + 1.0) * 0.5 * vw as f32 + vx as f32,
-        (1.0 - ny) * 0.5 * vh as f32 + vy as f32,  // flip Y
-        (nz + 1.0) * 0.5,  // depth [0, 1]
+        (1.0 - ny) * 0.5 * vh as f32 + vy as f32, // flip Y
+        (nz + 1.0) * 0.5,                         // depth [0, 1]
     ]
 }
 
@@ -861,7 +1283,9 @@ pub fn collect_uniforms(program: &crate::shader::GlProgram) -> Vec<[f32; 4]> {
 
 /// Collect uniform values from program into a fixed-size stack array.
 /// Returns the array and the number of slots used.
-pub fn collect_uniforms_stack(program: &crate::shader::GlProgram) -> ([[f32; 4]; MAX_UNIFORM_SLOTS], usize) {
+pub fn collect_uniforms_stack(
+    program: &crate::shader::GlProgram,
+) -> ([[f32; 4]; MAX_UNIFORM_SLOTS], usize) {
     let mut unis = [[0.0f32; 4]; MAX_UNIFORM_SLOTS];
     let mut n = 0usize;
     for u in &program.uniforms {

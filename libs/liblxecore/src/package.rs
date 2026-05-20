@@ -275,7 +275,15 @@ pub(crate) fn sync_dpkg_status(config: &LxeConfig, rootfs: &str) {
         return;
     };
 
-    let mut status = String::new();
+    let lookup = package_lookup_for_status_sync(config);
+    let status_path = linux_path_in_rootfs(rootfs, "/var/lib/dpkg/status");
+    let existing = fs::read_to_vec(&status_path)
+        .ok()
+        .and_then(|data| core::str::from_utf8(&data).ok().map(String::from))
+        .unwrap_or_else(String::new);
+    let mut status = existing.trim_end().to_string();
+    let mut changed = false;
+
     for entry in entries {
         if entry.name == "." || entry.name == ".." {
             continue;
@@ -287,16 +295,28 @@ pub(crate) fn sync_dpkg_status(config: &LxeConfig, rootfs: &str) {
         let Ok(text) = core::str::from_utf8(&data) else {
             continue;
         };
-        if let Some(record) = dpkg_status_record_from_marker(config, rootfs, text) {
-            status.push_str(&record);
-            status.push('\n');
+        let Some(package) = marker_field(text, "Package") else {
+            continue;
+        };
+        if dpkg_status_contains_package(&existing, package) {
             write_dpkg_info_list(rootfs, text);
+            continue;
+        }
+        if let Some(record) = dpkg_status_record_from_marker(config, rootfs, text, lookup.as_ref()) {
+            if !status.is_empty() {
+                status.push_str("\n\n");
+            }
+            status.push_str(&record);
+            write_dpkg_info_list(rootfs, text);
+            changed = true;
         }
     }
 
-    let status_path = linux_path_in_rootfs(rootfs, "/var/lib/dpkg/status");
-    ensure_parent_dirs(&status_path);
-    let _ = write_bytes_atomic(&status_path, status.as_bytes());
+    if changed {
+        status.push('\n');
+        ensure_parent_dirs(&status_path);
+        let _ = write_bytes_atomic(&status_path, status.as_bytes());
+    }
 }
 
 pub(crate) fn resolve_install_plan(
@@ -2072,7 +2092,7 @@ fn update_dpkg_status_from_marker(config: &LxeConfig, rootfs: &str, marker: &str
     let Some(package) = marker_field(marker, "Package") else {
         return;
     };
-    let Some(record) = dpkg_status_record_from_marker(config, rootfs, marker) else {
+    let Some(record) = dpkg_status_record_from_marker(config, rootfs, marker, None) else {
         return;
     };
     let status_path = linux_path_in_rootfs(rootfs, "/var/lib/dpkg/status");
@@ -2100,11 +2120,12 @@ fn dpkg_status_record_from_marker(
     config: &LxeConfig,
     rootfs: &str,
     marker: &str,
+    lookup: Option<&PackageLookup>,
 ) -> Option<String> {
     let package = marker_field(marker, "Package")?;
     let version = marker_field(marker, "Version")?;
     let filename = marker_field(marker, "Filename").unwrap_or("");
-    let index_info = find_package_in_index(config, package);
+    let index_info = lookup.and_then(|lookup| lookup.find(package));
     let depends = marker_field(marker, "Depends")
         .filter(|value| !value.is_empty())
         .or_else(|| index_info.as_ref().map(|info| info.depends.as_str()))
@@ -2148,6 +2169,14 @@ fn dpkg_status_record_from_marker(
     Some(record)
 }
 
+fn package_lookup_for_status_sync(config: &LxeConfig) -> Option<PackageLookup> {
+    let packages_txt = config.package_index_txt();
+    if let Ok(index) = fs::read_to_vec(&packages_txt) {
+        return Some(package_lookup_from_bytes(config, &index));
+    }
+    read_compressed_package_index(config).map(|index| package_lookup_from_bytes(config, &index))
+}
+
 fn write_dpkg_info_list(rootfs: &str, marker: &str) {
     let Some(package) = marker_field(marker, "Package") else {
         return;
@@ -2180,6 +2209,15 @@ fn marker_field<'a>(text: &'a str, name: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+fn dpkg_status_contains_package(status: &str, package: &str) -> bool {
+    for paragraph in status.split("\n\n") {
+        if marker_field(paragraph, "Package") == Some(package) {
+            return true;
+        }
+    }
+    false
 }
 
 fn package_arch_from_filename(filename: &str, default_arch: &str) -> String {

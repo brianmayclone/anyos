@@ -661,6 +661,7 @@ impl Renderer {
 
         gl::bind_texture(gl::GL_TEXTURE_2D, self.atlas_tex);
         self.draw_chunk_group(cam_x, cam_z, stride, fwd_x, fwd_z, 0.0, f32::MAX, false);
+        gl::flush();
         self.draw_chunk_group(cam_x, cam_z, stride, fwd_x, fwd_z, 0.0, f32::MAX, true);
         gl::disable_vertex_attrib_array(self.a_position as u32);
         gl::disable_vertex_attrib_array(self.a_texcoord as u32);

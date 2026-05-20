@@ -141,7 +141,10 @@ fn shell(config: &mut LxeConfig, args: &[&str]) {
             return;
         }
     };
+    println!("LXE rootfs: {}", config.rootfs);
+    println!("lxe shell: preparing runtime...");
     ensure_rootfs_layout(config);
+    println!("lxe shell: syncing dpkg status...");
     sync_dpkg_status(config, &config.rootfs);
     let Some(path) = find_linux_bash(&config.rootfs) else {
         log_error!("lxe shell: bash not found");
@@ -154,6 +157,8 @@ fn shell(config: &mut LxeConfig, args: &[&str]) {
     } else {
         join_args(args)
     };
+    println!("lxe shell: starting bash {}", child_args);
+    println!();
     run_linux_process(config, "lxe shell", &path, &child_args);
     lease.release();
 }

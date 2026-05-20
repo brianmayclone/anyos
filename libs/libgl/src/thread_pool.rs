@@ -99,6 +99,10 @@ struct SubBatch {
     fast_shadow_strength: f32,
     fast_shadow_texel_x: f32,
     fast_shadow_texel_y: f32,
+    fast_sun_x: f32,
+    fast_sun_y: f32,
+    fast_sun_z: f32,
+    fast_sun_brightness: f32,
     fast_mode: u32,
     use_fast_path: bool,
 
@@ -547,6 +551,10 @@ pub fn end_sub_batch(
                 shadow_strength,
                 shadow_texel_x,
                 shadow_texel_y,
+                sun_x,
+                sun_y,
+                sun_z,
+                sun_brightness,
             } => {
                 sb.use_fast_path = true;
                 sb.fast_mode = 2;
@@ -563,9 +571,17 @@ pub fn end_sub_batch(
                 sb.fast_shadow_len = shadow.map(|s| s.len).unwrap_or(0);
                 sb.fast_shadow_w = shadow.map(|s| s.width).unwrap_or(0);
                 sb.fast_shadow_h = shadow.map(|s| s.height).unwrap_or(0);
-                sb.fast_shadow_strength = if shadow.is_some() { *shadow_strength } else { 0.0 };
+                sb.fast_shadow_strength = if shadow.is_some() {
+                    *shadow_strength
+                } else {
+                    0.0
+                };
                 sb.fast_shadow_texel_x = *shadow_texel_x;
                 sb.fast_shadow_texel_y = *shadow_texel_y;
+                sb.fast_sun_x = *sun_x;
+                sb.fast_sun_y = *sun_y;
+                sb.fast_sun_z = *sun_z;
+                sb.fast_sun_brightness = *sun_brightness;
             }
         }
     }
@@ -1234,10 +1250,18 @@ fn rasterize_tri_forger_band(
                     let tex_b = (texel & 0xFF) as f32;
 
                     let visibility = if sb.fast_shadow_strength > 0.001 {
-                        let sh_x = (bary0 * v0_shadow[0] + bary1 * v1_shadow[0] + bary2 * v2_shadow[0]) * corr;
-                        let sh_y = (bary0 * v0_shadow[1] + bary1 * v1_shadow[1] + bary2 * v2_shadow[1]) * corr;
-                        let sh_z = (bary0 * v0_shadow[2] + bary1 * v1_shadow[2] + bary2 * v2_shadow[2]) * corr;
-                        let sh_w = (bary0 * v0_shadow[3] + bary1 * v1_shadow[3] + bary2 * v2_shadow[3]) * corr;
+                        let sh_x =
+                            (bary0 * v0_shadow[0] + bary1 * v1_shadow[0] + bary2 * v2_shadow[0])
+                                * corr;
+                        let sh_y =
+                            (bary0 * v0_shadow[1] + bary1 * v1_shadow[1] + bary2 * v2_shadow[1])
+                                * corr;
+                        let sh_z =
+                            (bary0 * v0_shadow[2] + bary1 * v1_shadow[2] + bary2 * v2_shadow[2])
+                                * corr;
+                        let sh_w =
+                            (bary0 * v0_shadow[3] + bary1 * v1_shadow[3] + bary2 * v2_shadow[3])
+                                * corr;
                         raster::forger_shadow_visibility(
                             sb.fast_shadow_depth,
                             sb.fast_shadow_len,
@@ -1277,6 +1301,10 @@ fn rasterize_tri_forger_band(
                             fog_r255,
                             fog_g255,
                             fog_b255,
+                            sb.fast_sun_x,
+                            sb.fast_sun_y,
+                            sb.fast_sun_z,
+                            sb.fast_sun_brightness,
                             water_phase,
                         );
                         r = shaded.0;
