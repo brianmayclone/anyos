@@ -61,6 +61,8 @@ const AUTO_HIDE_TRIGGER_PX: u32 = 18;
 const AUTO_HIDE_TRIGGER_BAND_PX: u32 = 28;
 /// How long the dock stays visible after the mouse leaves it.
 const AUTO_HIDE_HIDE_DELAY_MS: u32 = 2500;
+/// How long stale dock hover is tolerated after a missed MouseLeave event.
+const HOVER_STALE_TIMEOUT_MS: u32 = 3000;
 
 /// Extra width for vertical dock windows (tooltip display area).
 const TOOLTIP_EXTRA_W: u32 = 200;
@@ -72,6 +74,13 @@ fn unscale_cursor_coord(v: i32) -> i32 {
     } else {
         -((-v * 100 + scale / 2) / scale)
     }
+}
+
+fn hover_stale_timeout_ticks() -> u32 {
+    anyos_std::sys::tick_hz()
+        .max(1)
+        .saturating_mul(HOVER_STALE_TIMEOUT_MS)
+        / 1000
 }
 
 struct DockApp {
@@ -135,6 +144,7 @@ struct DockApp {
     trigger_visible: bool,
     screen_mouse_x: i32,
     screen_mouse_y: i32,
+    last_cursor_in_dock_window: u32,
 }
 
 anyos_std::global_app_state!(DockApp);
@@ -487,6 +497,7 @@ fn main() {
             trigger_visible: initial_trigger_visible,
             screen_mouse_x: 0,
             screen_mouse_y: 0,
+            last_cursor_in_dock_window: anyos_std::sys::uptime(),
         });
     }
 
@@ -554,6 +565,7 @@ fn main() {
 
     app().canvas.on_mouse_enter(|_| {
         let a = app();
+        a.last_cursor_in_dock_window = anyos_std::sys::uptime();
         a.auto_hide_hot = true;
         a.trigger_hot = false;
         a.hold_open_until = 0;
@@ -563,10 +575,18 @@ fn main() {
 
     app().canvas.on_mouse_leave(|_| {
         let a = app();
+        let now = anyos_std::sys::uptime();
+        a.last_cursor_in_dock_window = now.wrapping_sub(hover_stale_timeout_ticks().max(1));
+        a.hovered_idx = None;
+        a.mouse_in_dock = false;
+        a.mag_start_val = a.mag_progress;
+        a.mag_target = 0;
+        a.mag_start_time = now;
         a.auto_hide_hot = false;
         start_hide_delay();
         ensure_slide_target(desired_slide_target() != 0);
         a.needs_redraw = true;
+        ensure_fast_timer();
     });
 
     app().trigger_canvas.on_mouse_enter(|_| {
@@ -673,14 +693,23 @@ fn tick() {
         a.fb.width,
         a.fb.height,
     );
-    let mx = a.screen_mouse_x - a.win_x;
-    let my = a.screen_mouse_y - a.win_y;
+    if cursor_in_window {
+        a.last_cursor_in_dock_window = now;
+    }
+    let cursor_recently_in_window = cursor_in_window
+        || now.wrapping_sub(a.last_cursor_in_dock_window) < hover_stale_timeout_ticks();
+    let (mx, my) = if cursor_in_window || !cursor_recently_in_window {
+        (a.screen_mouse_x - a.win_x, a.screen_mouse_y - a.win_y)
+    } else {
+        let (stale_x, stale_y, _) = a.canvas.get_mouse();
+        (stale_x, stale_y)
+    };
     let mouse_along = match geometry().position {
         POS_BOTTOM => mx,
         _ => my,
     };
 
-    let new_hover = if a.drag_active || !cursor_in_window {
+    let new_hover = if a.drag_active || !cursor_recently_in_window {
         None // Suppress hover tooltip during drag
     } else {
         dock_hit_test(
@@ -700,7 +729,7 @@ fn tick() {
     let in_zone = !a.items.is_empty()
         && a.settings.magnification
         && !a.drag_active
-        && cursor_in_window
+        && cursor_recently_in_window
         && mouse_in_dock_zone(mx, my, a.fb.width);
 
     if in_zone != a.mouse_in_dock {

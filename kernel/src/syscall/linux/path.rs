@@ -2,6 +2,7 @@ use super::*;
 use crate::sync::spinlock::Spinlock;
 
 const LXE_RESOLVE_CACHE_MAX: usize = 256;
+const LXE_NEGATIVE_PATH_CACHE_MAX: usize = 512;
 
 #[derive(Clone)]
 struct LxeResolveCacheEntry {
@@ -12,7 +13,14 @@ struct LxeResolveCacheEntry {
     result: Result<String, i32>,
 }
 
+#[derive(Clone)]
+struct LxeNegativePathEntry {
+    rootfs: String,
+    path: String,
+}
+
 static LXE_RESOLVE_CACHE: Spinlock<Vec<LxeResolveCacheEntry>> = Spinlock::new(Vec::new());
+static LXE_NEGATIVE_PATH_CACHE: Spinlock<Vec<LxeNegativePathEntry>> = Spinlock::new(Vec::new());
 
 pub(super) fn linux_translate_user_path(path_ptr: u64) -> Result<String, i32> {
     let path = super::handlers::helpers::read_user_str_safe(path_ptr).ok_or(EFAULT)?;
@@ -132,6 +140,15 @@ pub(super) fn linux_resolve_cache_invalidate_path(path: &str) {
         }
         !linux_cache_path_affected(&entry.path, &normalized)
     });
+    drop(cache);
+
+    let mut negative = LXE_NEGATIVE_PATH_CACHE.lock();
+    negative.retain(|entry| {
+        if entry.rootfs != rootfs {
+            return true;
+        }
+        !linux_cache_path_affected(&entry.path, &normalized)
+    });
 }
 
 fn linux_cache_path_affected(cached: &str, changed: &str) -> bool {
@@ -190,6 +207,30 @@ fn linux_resolve_cache_put(
     });
 }
 
+fn linux_negative_path_cache_contains(rootfs: &str, path: &str) -> bool {
+    let cache = LXE_NEGATIVE_PATH_CACHE.lock();
+    cache
+        .iter()
+        .any(|entry| entry.rootfs == rootfs && entry.path == path)
+}
+
+fn linux_negative_path_cache_put(rootfs: &str, path: &str) {
+    let mut cache = LXE_NEGATIVE_PATH_CACHE.lock();
+    if cache
+        .iter()
+        .any(|entry| entry.rootfs == rootfs && entry.path == path)
+    {
+        return;
+    }
+    if cache.len() >= LXE_NEGATIVE_PATH_CACHE_MAX {
+        cache.remove(0);
+    }
+    cache.push(LxeNegativePathEntry {
+        rootfs: String::from(rootfs),
+        path: String::from(path),
+    });
+}
+
 pub(super) fn linux_resolve_translated_path_inner(
     rootfs: &str,
     path: &str,
@@ -214,6 +255,12 @@ pub(super) fn linux_resolve_translated_path_inner(
     for (idx, component) in components.iter().enumerate() {
         let is_last = idx == components.len() - 1;
         let candidate = linux_join_path(&current, component);
+        if linux_negative_path_cache_contains(rootfs, &candidate) {
+            if is_last && allow_missing_final {
+                return Ok(candidate);
+            }
+            return Err(ENOENT);
+        }
         match crate::fs::vfs::lstat(&candidate) {
             Ok(st) if st.is_symlink && (!is_last || follow_last) => {
                 let target = crate::fs::vfs::readlink(&candidate).map_err(fs_errno)?;
@@ -232,7 +279,12 @@ pub(super) fn linux_resolve_translated_path_inner(
                 current = candidate;
             }
             Err(crate::fs::vfs::FsError::NotFound) if is_last && allow_missing_final => {
+                linux_negative_path_cache_put(rootfs, &candidate);
                 return Ok(candidate);
+            }
+            Err(crate::fs::vfs::FsError::NotFound) => {
+                linux_negative_path_cache_put(rootfs, &candidate);
+                return Err(ENOENT);
             }
             Err(e) => return Err(fs_errno(e)),
         }

@@ -495,15 +495,13 @@ pub(super) fn linux_fill_mapping_from_fd(
 ) -> Result<(), i32> {
     let mut copied = 0usize;
     let len = len as usize;
-    let mut tmp = [0u8; 4096];
+    const FILE_MAP_CHUNK: usize = 64 * 1024;
     while copied < len {
-        let want = (len - copied).min(tmp.len());
-        let n = linux_read_fd_at(fd, tmp.as_mut_ptr() as u64, want, offset + copied as u64)?;
+        let dst = addr + copied as u64;
+        let want = (len - copied).min(FILE_MAP_CHUNK);
+        let n = linux_read_fd_at(fd, dst, want, offset + copied as u64)?;
         if n == 0 {
             break;
-        }
-        unsafe {
-            core::ptr::copy_nonoverlapping(tmp.as_ptr(), (addr as usize + copied) as *mut u8, n);
         }
         copied += n;
     }
