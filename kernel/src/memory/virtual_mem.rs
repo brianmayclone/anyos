@@ -1151,7 +1151,8 @@ static CLONE_TEMP_LOCKS: [core::sync::atomic::AtomicBool; MAX_CLONE_CPUS] = {
 ///
 /// Creates a new PML4 with copied kernel mappings (like create_user_page_directory),
 /// then walks the parent's user-space page tables and copies all user pages:
-/// - Identity-map entries (PD[0..31]): skipped (shared with kernel)
+/// - Identity-map entries (PD[0..31]): skipped only for native anyOS tasks
+///   that actually have the low compatibility window mapped.
 /// - DLL RO pages (PD[32..63], no PAGE_WRITABLE): shared (same physical frame)
 /// - DLL writable pages (.data/.bss): copied (new frame)
 /// - All other user pages: copied (new frame)
@@ -1246,8 +1247,12 @@ fn clone_user_page_directory_inner(
                         continue;
                     }
 
-                    // Skip identity-map entries (kernel-owned)
-                    let is_identity_map = pml4i == 0 && pdpti == 0 && pdi < 32;
+                    // Skip identity-map entries only when this clone was
+                    // created with the native anyOS low compatibility window.
+                    // Linux ET_EXEC binaries legitimately map text/data in
+                    // this range (for example Debian cpp at 0x400000), so the
+                    // no-low-identity fork path must copy those pages.
+                    let is_identity_map = map_low_identity && pml4i == 0 && pdpti == 0 && pdi < 32;
                     if is_identity_map {
                         continue;
                     }

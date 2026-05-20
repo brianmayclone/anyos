@@ -65,6 +65,15 @@ const AUTO_HIDE_HIDE_DELAY_MS: u32 = 2500;
 /// Extra width for vertical dock windows (tooltip display area).
 const TOOLTIP_EXTRA_W: u32 = 200;
 
+fn unscale_cursor_coord(v: i32) -> i32 {
+    let scale = anyui::theme::get_scale_factor().max(1) as i32;
+    if v >= 0 {
+        (v * 100 + scale / 2) / scale
+    } else {
+        -((-v * 100 + scale / 2) / scale)
+    }
+}
+
 struct DockApp {
     win: anyui::Window,
     canvas: anyui::Canvas,
@@ -300,8 +309,8 @@ fn poll_compositor_cursor() {
     while anyos_std::ipc::evt_chan_poll(a.compositor_reply_chan, a.compositor_sub, &mut buf) {
         if buf[0] == EVT_CURSOR_POS {
             let a = app();
-            a.screen_mouse_x = buf[1] as i32;
-            a.screen_mouse_y = buf[2] as i32;
+            a.screen_mouse_x = unscale_cursor_coord(buf[1] as i32);
+            a.screen_mouse_y = unscale_cursor_coord(buf[2] as i32);
         }
     }
 }
@@ -652,14 +661,26 @@ fn tick() {
     poll_compositor_cursor();
     update_auto_hide_hot_from_cursor();
 
-    // Check hover via mouse position
-    let (mx, my, _) = a.canvas.get_mouse();
+    // Check hover via the compositor cursor position.  `canvas.get_mouse()`
+    // can be stale if a rapid exit skips MouseLeave, so this timer tick acts
+    // as a watchdog and collapses magnification/tooltip state when the global
+    // cursor is no longer over the dock window.
+    let cursor_in_window = point_in_rect(
+        a.screen_mouse_x,
+        a.screen_mouse_y,
+        a.win_x,
+        a.win_y,
+        a.fb.width,
+        a.fb.height,
+    );
+    let mx = a.screen_mouse_x - a.win_x;
+    let my = a.screen_mouse_y - a.win_y;
     let mouse_along = match geometry().position {
         POS_BOTTOM => mx,
         _ => my,
     };
 
-    let new_hover = if a.drag_active {
+    let new_hover = if a.drag_active || !cursor_in_window {
         None // Suppress hover tooltip during drag
     } else {
         dock_hit_test(
@@ -679,6 +700,7 @@ fn tick() {
     let in_zone = !a.items.is_empty()
         && a.settings.magnification
         && !a.drag_active
+        && cursor_in_window
         && mouse_in_dock_zone(mx, my, a.fb.width);
 
     if in_zone != a.mouse_in_dock {
@@ -787,11 +809,10 @@ fn tick() {
     // Redraw if needed
     if a.needs_redraw {
         let drag = if a.drag_active {
-            let (dmx, dmy, _) = a.canvas.get_mouse();
             Some(DragInfo {
                 source_idx: a.drag_idx,
-                mouse_x: dmx,
-                mouse_y: dmy,
+                mouse_x: mx,
+                mouse_y: my,
             })
         } else {
             None

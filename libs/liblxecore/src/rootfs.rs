@@ -36,12 +36,23 @@ pub(crate) fn ensure_rootfs_layout(config: &LxeConfig) {
     ensure_dir(&alloc::format!("{}/root", rootfs));
     ensure_linux_apt_dirs(rootfs);
     let apt_keyring = "/usr/share/keyrings/debian-archive-keyring.gpg";
+    let apt_security_base = debian_security_base(&config.apt_base);
     let _ = write_bytes_atomic(
         &alloc::format!("{}/etc/apt/sources.list", rootfs),
         alloc::format!(
-            "deb [signed-by={}] {} {} {}\n",
+            "deb [signed-by={}] {} {} {}\n\
+deb [signed-by={}] {} {}-updates {}\n\
+deb [signed-by={}] {} {}-security {}\n",
             apt_keyring,
             config.apt_base,
+            config.apt_dist,
+            config.apt_component,
+            apt_keyring,
+            config.apt_base,
+            config.apt_dist,
+            config.apt_component,
+            apt_keyring,
+            apt_security_base,
             config.apt_dist,
             config.apt_component
         )
@@ -59,13 +70,22 @@ pub(crate) fn ensure_rootfs_layout(config: &LxeConfig) {
 }
 
 fn reset_apt_binary_cache_once(rootfs: &str) {
-    let marker = alloc::format!("{}/var/cache/apt/.lxe-cache-reset-v3", rootfs);
+    let marker = alloc::format!("{}/var/cache/apt/.lxe-cache-reset-v4", rootfs);
     if path_exists(&marker) {
         return;
     }
     let _ = fs::unlink(&alloc::format!("{}/var/cache/apt/pkgcache.bin", rootfs));
     let _ = fs::unlink(&alloc::format!("{}/var/cache/apt/srcpkgcache.bin", rootfs));
     let _ = write_bytes_atomic(&marker, b"ok\n");
+}
+
+fn debian_security_base(apt_base: &str) -> String {
+    let base = apt_base.trim_end_matches('/');
+    if let Some(prefix) = base.strip_suffix("/debian") {
+        alloc::format!("{}/debian-security", prefix)
+    } else {
+        alloc::format!("{}/debian-security", base)
+    }
 }
 
 fn ensure_linux_account_files(rootfs: &str) {

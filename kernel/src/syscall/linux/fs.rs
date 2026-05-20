@@ -561,12 +561,14 @@ pub(super) fn linux_chdir(path_ptr: u64) -> u64 {
     }
     let linux_path = linux_absolute_path(raw_path);
     let host_path = linux_translate_path(&linux_path);
-    match crate::fs::vfs::read_dir(&host_path) {
+    let resolved = match linux_resolve_translated_path(&host_path, true, false) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    match crate::fs::vfs::read_dir(&resolved) {
         Ok(_) => {
-            crate::task::scheduler::set_thread_cwd(
-                crate::task::scheduler::current_tid(),
-                &linux_path,
-            );
+            let cwd = linux_strip_rootfs(&resolved);
+            crate::task::scheduler::set_thread_cwd(crate::task::scheduler::current_tid(), &cwd);
             0
         }
         Err(e) => linux_fs_err(e),
@@ -578,9 +580,13 @@ pub(super) fn linux_fchdir(fd: u32) -> u64 {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
-    match crate::fs::vfs::read_dir(&path) {
+    let resolved = match linux_resolve_translated_path(&path, true, false) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    match crate::fs::vfs::read_dir(&resolved) {
         Ok(_) => {
-            let linux_path = linux_strip_rootfs(&path);
+            let linux_path = linux_strip_rootfs(&resolved);
             crate::task::scheduler::set_thread_cwd(
                 crate::task::scheduler::current_tid(),
                 &linux_path,

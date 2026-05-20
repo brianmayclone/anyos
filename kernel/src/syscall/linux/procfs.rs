@@ -1,6 +1,6 @@
 use super::*;
-use alloc::format;
 use alloc::fmt::Write;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -254,8 +254,7 @@ pub(super) fn linux_proc_readlink(path: &str) -> Option<Result<String, i32>> {
 
 pub(super) fn linux_proc_content(file: u16, pid: u32) -> Vec<u8> {
     match file {
-        LINUX_PROC_FILESYSTEMS => {
-            b"nodev\tsysfs\n\
+        LINUX_PROC_FILESYSTEMS => b"nodev\tsysfs\n\
 nodev\trootfs\n\
 nodev\tbdev\n\
 nodev\tproc\n\
@@ -280,14 +279,9 @@ iso9660\n\
 udf\n\
 squashfs\n\
 fuseblk\n"
-                .to_vec()
-        }
-        LINUX_PROC_MOUNTS => {
-            linux_proc_mounts().into_bytes()
-        }
-        LINUX_PROC_MOUNTINFO => {
-            linux_proc_mountinfo().into_bytes()
-        }
+            .to_vec(),
+        LINUX_PROC_MOUNTS => linux_proc_mounts().into_bytes(),
+        LINUX_PROC_MOUNTINFO => linux_proc_mountinfo().into_bytes(),
         LINUX_PROC_PARTITIONS => linux_proc_partitions().into_bytes(),
         LINUX_PROC_LOGINUID => b"4294967295\n".to_vec(),
         LINUX_PROC_PID_STAT => linux_proc_pid_stat(pid).into_bytes(),
@@ -295,7 +289,7 @@ fuseblk\n"
         LINUX_PROC_PID_CMDLINE => linux_proc_pid_cmdline(pid),
         LINUX_PROC_PID_COMM => linux_proc_pid_comm(pid).into_bytes(),
         LINUX_PROC_STAT => linux_proc_system_stat().into_bytes(),
-        LINUX_PROC_UPTIME => b"0.00 0.00\n".to_vec(),
+        LINUX_PROC_UPTIME => linux_proc_uptime().into_bytes(),
         LINUX_PROC_MEMINFO => b"MemTotal:        4174848 kB\n\
 MemFree:         2097152 kB\n\
 MemAvailable:   2097152 kB\n\
@@ -307,8 +301,7 @@ Inactive:              0 kB\n\
 SwapTotal:             0 kB\n\
 SwapFree:              0 kB\n"
             .to_vec(),
-        LINUX_PROC_CPUINFO => b"processor\t: 0\nvendor_id\t: anyOS\nmodel name\t: anyOS virtual CPU\n"
-            .to_vec(),
+        LINUX_PROC_CPUINFO => linux_proc_cpuinfo().into_bytes(),
         LINUX_PROC_LOADAVG => linux_proc_loadavg().into_bytes(),
         LINUX_PROC_VERSION => b"Linux version 6.1.0-anyos (lxe)\n".to_vec(),
         LINUX_PROC_PID_STATM => linux_proc_pid_statm(pid).into_bytes(),
@@ -820,14 +813,45 @@ fn linux_proc_system_stat() -> String {
         .iter()
         .filter(|thread| thread.state == "running" || thread.state == "ready")
         .count();
-    format!(
-        "cpu  {} 0 0 0 0 0 0 0 0 0\ncpu0 {} 0 0 0 0 0 0 0 0 0\nintr 0\nctxt {}\nbtime 0\nprocesses {}\nprocs_running {}\nprocs_blocked 0\n",
-        ticks,
-        ticks,
-        threads.len(),
-        threads.len(),
-        running
-    )
+    let cpu_count = crate::arch::hal::cpu_count().max(1);
+    let per_cpu_ticks = ticks / cpu_count as u64;
+    let mut out = format!("cpu  {} 0 0 0 0 0 0 0 0 0\n", ticks,);
+    for cpu in 0..cpu_count {
+        let cpu_ticks = if cpu + 1 == cpu_count {
+            ticks.saturating_sub(per_cpu_ticks * (cpu_count.saturating_sub(1) as u64))
+        } else {
+            per_cpu_ticks
+        };
+        let _ = writeln!(out, "cpu{} {} 0 0 0 0 0 0 0 0 0", cpu, cpu_ticks);
+    }
+    let _ = writeln!(out, "intr 0");
+    let _ = writeln!(out, "ctxt {}", threads.len());
+    let _ = writeln!(out, "btime 0");
+    let _ = writeln!(out, "processes {}", threads.len());
+    let _ = writeln!(out, "procs_running {}", running);
+    let _ = writeln!(out, "procs_blocked 0");
+    out
+}
+
+fn linux_proc_uptime() -> String {
+    let ms = crate::syscall::handlers::sys_uptime_ms() as u64;
+    let seconds = ms / 1000;
+    let centis = (ms % 1000) / 10;
+    format!("{}.{:02} {}.{:02}\n", seconds, centis, seconds, centis)
+}
+
+fn linux_proc_cpuinfo() -> String {
+    let mut out = String::new();
+    let cpu_count = crate::arch::hal::cpu_count().max(1);
+    for cpu in 0..cpu_count {
+        let _ = writeln!(out, "processor\t: {}", cpu);
+        let _ = writeln!(out, "vendor_id\t: anyOS");
+        let _ = writeln!(out, "model name\t: anyOS virtual CPU");
+        let _ = writeln!(out, "cpu cores\t: {}", cpu_count);
+        let _ = writeln!(out, "siblings\t: {}", cpu_count);
+        let _ = writeln!(out);
+    }
+    out
 }
 
 fn linux_proc_loadavg() -> String {
@@ -852,7 +876,11 @@ fn linux_proc_mounts() -> String {
         out.push_str("/dev/root / rootfs rw,relatime 0 0\n");
     } else {
         for (path, fs_name, dev_id) in mounts {
-            let linux_path = if path == LXE_ROOTFS { "/" } else { path.as_str() };
+            let linux_path = if path == LXE_ROOTFS {
+                "/"
+            } else {
+                path.as_str()
+            };
             let dev_name = linux_blockdev_name(dev_id as u8)
                 .map(|name| format!("/dev/{}", name))
                 .unwrap_or_else(|| String::from("/dev/root"));
@@ -878,7 +906,11 @@ fn linux_proc_mountinfo() -> String {
         id = 2;
     } else {
         for (path, fs_name, dev_id) in mounts {
-            let linux_path = if path == LXE_ROOTFS { "/" } else { path.as_str() };
+            let linux_path = if path == LXE_ROOTFS {
+                "/"
+            } else {
+                path.as_str()
+            };
             let dev_name = linux_blockdev_name(dev_id as u8)
                 .map(|name| format!("/dev/{}", name))
                 .unwrap_or_else(|| String::from("/dev/root"));
@@ -904,13 +936,7 @@ fn linux_proc_partitions() -> String {
     for dev in crate::drivers::storage::blockdev::list_devices() {
         let blocks_1k = dev.size_sectors / 2;
         let minor = dev.id as u32;
-        let _ = writeln!(
-            out,
-            "   8 {:>5} {:>10} {}",
-            minor,
-            blocks_1k,
-            dev.name()
-        );
+        let _ = writeln!(out, "   8 {:>5} {:>10} {}", minor, blocks_1k, dev.name());
     }
     out
 }
