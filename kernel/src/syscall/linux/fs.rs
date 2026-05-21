@@ -357,6 +357,7 @@ pub(super) fn linux_fstat(fd: u32, stat_ptr: u64) -> u64 {
             FdKind::File { global_id } => match crate::fs::vfs::fstat(global_id) {
                 Ok((file_type, size, _position, mtime)) => {
                     let (dev, ino) = linux_fd_identity(global_id);
+                    let mtime = linux_fd_metadata_mtime(global_id).unwrap_or(mtime);
                     write_linux_stat(
                         stat_ptr,
                         dev,
@@ -460,6 +461,7 @@ fn linux_fstatx(fd: u32, statx_ptr: u64) -> u64 {
             FdKind::File { global_id } => match crate::fs::vfs::fstat(global_id) {
                 Ok((file_type, size, _position, mtime)) => {
                     let (dev, ino) = linux_fd_identity(global_id);
+                    let mtime = linux_fd_metadata_mtime(global_id).unwrap_or(mtime);
                     write_linux_statx(
                         statx_ptr,
                         dev,
@@ -1296,9 +1298,10 @@ pub(super) fn linux_getdents64(fd: u32, dirent_ptr: u64, count: u64) -> u64 {
         if written + reclen > count as usize {
             break;
         }
+        let ino = linux_dirent_inode(&path, &entry.name);
         let base = dirent_ptr + written as u64;
         unsafe {
-            write_u64(base, 0, (idx + 1) as u64);
+            write_u64(base, 0, ino);
             write_u64(base, 8, (idx + 1) as u64);
             *((base + 16) as *mut u16) = reclen as u16;
             *((base + 18) as *mut u8) = linux_dir_type(entry.file_type);
@@ -1364,9 +1367,10 @@ pub(super) fn linux_getdents(fd: u32, dirent_ptr: u64, count: u64) -> u64 {
         if written + reclen > count as usize {
             break;
         }
+        let ino = linux_dirent_inode(&path, &entry.name);
         let base = dirent_ptr + written as u64;
         unsafe {
-            write_u64(base, 0, (idx + 1) as u64);
+            write_u64(base, 0, ino);
             write_u64(base, 8, (idx + 1) as u64);
             *((base + 16) as *mut u16) = reclen as u16;
             core::ptr::copy_nonoverlapping(name.as_ptr(), (base + 18) as *mut u8, name.len());
@@ -1385,6 +1389,33 @@ pub(super) fn linux_getdents(fd: u32, dirent_ptr: u64, count: u64) -> u64 {
     }
     let _ = crate::fs::vfs::lseek(global_id, next_index as i32, 0);
     written as u64
+}
+
+fn linux_dirent_inode(parent: &str, name: &str) -> u64 {
+    if name == "." {
+        return linux_path_inode(parent).max(1);
+    }
+    if name == ".." {
+        let parent_path = match parent.rfind('/') {
+            Some(0) | None => "/",
+            Some(pos) => &parent[..pos],
+        };
+        return linux_path_inode(parent_path).max(1);
+    }
+    let full = if parent == "/" {
+        alloc::format!("/{}", name)
+    } else {
+        alloc::format!("{}/{}", parent, name)
+    };
+    linux_path_inode(&full).max(1)
+}
+
+fn linux_fd_metadata_mtime(global_id: u32) -> Option<u32> {
+    let path = crate::fs::vfs::get_fd_path(global_id).ok()?;
+    if !trace::path_interesting(&path) {
+        return None;
+    }
+    crate::fs::vfs::stat(&path).ok().map(|st| st.mtime)
 }
 
 pub(super) fn linux_statfs(path_ptr: u64, buf_ptr: u64) -> u64 {

@@ -60,7 +60,7 @@ deb [signed-by={}] {} {}-security {}\n",
     );
     let _ = write_bytes_atomic(
         &alloc::format!("{}/etc/apt/apt.conf.d/99lxe", rootfs),
-        b"APT::Cache-Start \"134217728\";\nAPT::Cache-Grow \"16777216\";\nAPT::Cache-Limit \"0\";\nAcquire::Check-Valid-Until \"false\";\nAcquire::Languages \"none\";\nAcquire::PDiffs \"false\";\n",
+        b"APT::Cache-Start \"134217728\";\nAPT::Cache-Grow \"16777216\";\nAPT::Cache-Limit \"0\";\nAcquire::Check-Valid-Until \"false\";\nAcquire::Languages \"none\";\nAcquire::PDiffs \"false\";\nAcquire::Queue-Mode \"access\";\nAcquire::http::Pipeline-Depth \"0\";\nAcquire::http::No-Cache \"true\";\nAcquire::http::No-Store \"true\";\n",
     );
     reset_apt_binary_cache_once(rootfs);
     ensure_linux_account_files(rootfs);
@@ -70,7 +70,7 @@ deb [signed-by={}] {} {}-security {}\n",
 }
 
 fn reset_apt_binary_cache_once(rootfs: &str) {
-    let marker = alloc::format!("{}/var/cache/apt/.lxe-cache-reset-v5", rootfs);
+    let marker = alloc::format!("{}/var/cache/apt/.lxe-cache-reset-v7", rootfs);
     if path_exists(&marker) {
         return;
     }
@@ -83,28 +83,37 @@ fn reset_apt_binary_cache_once(rootfs: &str) {
 
 fn clear_apt_list_files(path: &str) {
     let mut buf = [0u8; fs::READDIR_LONG_ENTRY_SIZE * 96];
-    let count = fs::readdir_long(path, &mut buf);
-    if count == u32::MAX {
-        return;
-    }
+    loop {
+        let count = fs::readdir_long(path, &mut buf);
+        if count == u32::MAX {
+            return;
+        }
 
-    let max_entries = (count as usize).min(buf.len() / fs::READDIR_LONG_ENTRY_SIZE);
-    for idx in 0..max_entries {
-        let off = idx * fs::READDIR_LONG_ENTRY_SIZE;
-        let entry_type = buf[off];
-        let name_len = u16::from_le_bytes([buf[off + 2], buf[off + 3]]) as usize;
-        if name_len == 0 || name_len > 256 {
-            continue;
+        let mut removed = 0u32;
+        let max_entries = (count as usize).min(buf.len() / fs::READDIR_LONG_ENTRY_SIZE);
+        for idx in 0..max_entries {
+            let off = idx * fs::READDIR_LONG_ENTRY_SIZE;
+            let entry_type = buf[off];
+            let name_len = u16::from_le_bytes([buf[off + 2], buf[off + 3]]) as usize;
+            if name_len == 0 || name_len > 256 {
+                continue;
+            }
+            let name_start = off + 8;
+            let name_end = name_start + name_len;
+            let Ok(name) = core::str::from_utf8(&buf[name_start..name_end]) else {
+                continue;
+            };
+            if name == "." || name == ".." || entry_type as u32 == FS_TYPE_DIRECTORY {
+                continue;
+            }
+            if fs::unlink(&alloc::format!("{}/{}", path, name)) == 0 {
+                removed += 1;
+            }
         }
-        let name_start = off + 8;
-        let name_end = name_start + name_len;
-        let Ok(name) = core::str::from_utf8(&buf[name_start..name_end]) else {
-            continue;
-        };
-        if name == "." || name == ".." || entry_type as u32 == FS_TYPE_DIRECTORY {
-            continue;
+
+        if removed == 0 || count as usize <= max_entries {
+            break;
         }
-        let _ = fs::unlink(&alloc::format!("{}/{}", path, name));
     }
 }
 

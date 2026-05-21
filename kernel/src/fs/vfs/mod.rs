@@ -249,6 +249,57 @@ fn commit_open_exfat_entry(
     Ok(Some(disk_id))
 }
 
+fn sync_open_exfat_path(path: &str, durable: bool) -> Result<(), FsError> {
+    let slots: Vec<usize> = {
+        let vfs = vfs_lock();
+        let state = vfs.as_ref().ok_or(FsError::IoError)?;
+        state
+            .open_files
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, entry)| {
+                let file = entry.as_ref()?;
+                if (file.fs_id == 3 || file.fs_id == 6)
+                    && file.path == path
+                    && (!file.append_buffer.is_empty() || file.entry_dirty)
+                {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    if slots.is_empty() {
+        return Ok(());
+    }
+
+    let mut disks_to_flush = Vec::new();
+    for slot in slots {
+        flush_exfat_append_buffer(slot as FileDescriptor)?;
+        let commit = {
+            let vfs = vfs_lock();
+            let state = vfs.as_ref().ok_or(FsError::IoError)?;
+            snapshot_open_exfat_commit(state, slot, durable)?
+        };
+        if let Some(commit) = commit {
+            let disk_id = finish_detached_exfat_commit(&commit)?;
+            queue_disk_flush(&mut disks_to_flush, disk_id);
+            let mut vfs = vfs_lock();
+            if let Some(state) = vfs.as_mut() {
+                mark_detached_exfat_commit_clean(state, slot, &commit);
+            }
+        }
+    }
+
+    flush_blockcache_for_disks(&disks_to_flush);
+    if durable {
+        flush_hardware_for_disks(&disks_to_flush);
+    }
+    Ok(())
+}
+
 /// Set the root partition LBA (called from main.rs after partition scanning).
 pub fn set_root_partition_lba(lba: u32) {
     ROOT_PARTITION_LBA.store(lba, core::sync::atomic::Ordering::Relaxed);
@@ -1984,6 +2035,7 @@ pub fn has_overlay() -> bool {
 
 /// Open a file by path with the given flags. Returns a file descriptor on success.
 pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
+    sync_open_exfat_path(path, false)?;
     if let Some(plan) = prepare_detached_open(path, flags)? {
         let result = execute_detached_open(plan)?;
         return insert_detached_open(result);
@@ -4328,6 +4380,8 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
         return Err(FsError::PermissionDenied);
     }
 
+    sync_open_exfat_path(path, false)?;
+
     // Try mount point path (e.g. /mnt/cdrom0/..., /mnt/share/...)
     {
         let mut vfs = vfs_lock();
@@ -4565,6 +4619,8 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
     if is_dev_path(old_path) || is_dev_path(new_path) {
         return Err(FsError::PermissionDenied);
     }
+    sync_open_exfat_path(old_path, false)?;
+    sync_open_exfat_path(new_path, false)?;
     if let Some(plan) = prepare_detached_rename(old_path, new_path)? {
         return execute_detached_rename(plan);
     }
@@ -4830,6 +4886,7 @@ pub fn lstat(path: &str) -> Result<StatResult, FsError> {
 }
 
 fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
+    sync_open_exfat_path(path, false)?;
     if let Some(plan) = prepare_detached_stat(path, follow_last) {
         return execute_detached_stat(&plan);
     }
