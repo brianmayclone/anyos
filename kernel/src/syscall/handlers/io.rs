@@ -661,6 +661,9 @@ pub fn sys_fcntl(fd: u32, cmd: u32, arg: u32) -> u32 {
             None => u32::MAX,
         },
         F_SETFD => {
+            if crate::task::scheduler::current_fd_get(fd).is_none() {
+                return u32::MAX;
+            }
             crate::task::scheduler::current_fd_set_cloexec(fd, (arg & FD_CLOEXEC) != 0);
             0
         }
@@ -679,6 +682,9 @@ pub fn sys_fcntl(fd: u32, cmd: u32, arg: u32) -> u32 {
         }
         F_SETFL => {
             const O_NONBLOCK: u32 = 0x800;
+            if crate::task::scheduler::current_fd_get(fd).is_none() {
+                return u32::MAX;
+            }
             crate::task::scheduler::current_fd_set_nonblock(fd, (arg & O_NONBLOCK) != 0);
             0
         }

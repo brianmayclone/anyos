@@ -146,6 +146,8 @@ pub(super) fn linux_open_linux_path(path: &str, linux_flags: u64) -> u64 {
 }
 
 pub(super) fn linux_open_translated(path: &str, linux_flags: u64, linux_path: &str) -> u64 {
+    const LINUX_O_DIRECTORY: u64 = 0o200000;
+
     let flags = map_open_flags(linux_flags);
     let accmode = linux_flags & 0x3;
     let cloexec = (flags & 0x10) != 0;
@@ -164,6 +166,23 @@ pub(super) fn linux_open_translated(path: &str, linux_flags: u64, linux_path: &s
             return linux_err(errno);
         }
     };
+
+    if (linux_flags & LINUX_O_DIRECTORY) != 0 || file_flags.write || file_flags.truncate {
+        match crate::fs::vfs::stat(&resolved_path) {
+            Ok(st) => {
+                let is_dir = st.file_type == crate::fs::file::FileType::Directory && !st.is_symlink;
+                if (linux_flags & LINUX_O_DIRECTORY) != 0 && !is_dir {
+                    return linux_err(ENOTDIR);
+                }
+                if is_dir && (file_flags.write || file_flags.truncate) {
+                    return linux_err(EISDIR);
+                }
+            }
+            Err(crate::fs::vfs::FsError::NotFound) if file_flags.create => {}
+            Err(e) => return linux_fs_err(e),
+        }
+    }
+
     let global_id = match crate::fs::vfs::open(&resolved_path, file_flags) {
         Ok(id) => id,
         Err(e) => {
@@ -191,6 +210,18 @@ pub(super) fn linux_open_translated(path: &str, linux_flags: u64, linux_path: &s
     trace::trace_open(linux_path, &resolved_path, local_fd, global_id, linux_flags);
     linux_log_library_open(linux_path, &resolved_path, local_fd, global_id);
     local_fd as u64
+}
+
+fn linux_visible_mode(anyos_type: u32, mode: u32) -> u32 {
+    if mode == 0 || mode == 0xFFF {
+        return match anyos_type {
+            1 => 0o755,
+            2 => 0o666,
+            3 => 0o777,
+            _ => 0o644,
+        };
+    }
+    mode & 0o777
 }
 
 pub(super) fn linux_fsync(fd: u32) -> u64 {
@@ -336,7 +367,7 @@ pub(super) fn linux_stat_translated(path: &str, stat_ptr: u64, nofollow: bool) -
                 st.size as u64,
                 uid,
                 st.gid as u32,
-                st.mode as u32,
+                linux_visible_mode(type_val, st.mode as u32),
                 st.mtime,
             );
             0
@@ -366,7 +397,7 @@ pub(super) fn linux_fstat(fd: u32, stat_ptr: u64) -> u64 {
                         size as u64,
                         handlers::sys_getuid(),
                         handlers::sys_getgid(),
-                        0o777,
+                        linux_visible_mode(anyos_file_type(file_type), 0),
                         mtime,
                     );
                     0
@@ -470,7 +501,7 @@ fn linux_fstatx(fd: u32, statx_ptr: u64) -> u64 {
                         size as u64,
                         handlers::sys_getuid(),
                         handlers::sys_getgid(),
-                        0o777,
+                        linux_visible_mode(anyos_file_type(file_type), 0),
                         mtime,
                     );
                     0
@@ -531,7 +562,7 @@ fn linux_statx_translated(path: &str, statx_ptr: u64, nofollow: bool) -> u64 {
                 st.size as u64,
                 uid,
                 st.gid as u32,
-                st.mode as u32,
+                linux_visible_mode(type_val, st.mode as u32),
                 st.mtime,
             );
             0
