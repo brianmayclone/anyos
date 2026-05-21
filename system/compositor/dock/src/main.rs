@@ -522,6 +522,7 @@ fn main() {
     // Mouse move — immediate magnification render for smooth swiping
     app().canvas.on_mouse_move(|mx, my| {
         let a = app();
+        a.last_cursor_in_dock_window = anyos_std::sys::uptime();
         // Mouse movement exits keyboard navigation mode
         if a.kb_focus {
             a.kb_focus = false;
@@ -698,12 +699,7 @@ fn tick() {
     }
     let cursor_recently_in_window = cursor_in_window
         || now.wrapping_sub(a.last_cursor_in_dock_window) < hover_stale_timeout_ticks();
-    let (mx, my) = if cursor_in_window || !cursor_recently_in_window {
-        (a.screen_mouse_x - a.win_x, a.screen_mouse_y - a.win_y)
-    } else {
-        let (stale_x, stale_y, _) = a.canvas.get_mouse();
-        (stale_x, stale_y)
-    };
+    let (mx, my, _) = a.canvas.get_mouse();
     let mouse_along = match geometry().position {
         POS_BOTTOM => mx,
         _ => my,
