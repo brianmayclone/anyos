@@ -191,6 +191,29 @@ pub fn current_thread_page_directory() -> Option<PhysAddr> {
     None
 }
 
+/// Return the page-table value the current thread should actually run with.
+///
+/// On x86_64 this includes the PCID bits stored in the saved context. Using the
+/// bare PML4 physical address after execve would make the process run as PCID 0;
+/// with no-flush context switches that can leave stale translations from another
+/// address space visible under the same PCID.
+#[cfg(target_arch = "x86_64")]
+pub fn current_thread_context_page_table() -> Option<u64> {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            return Some(sched.threads[idx].context.get_page_table());
+        }
+    }
+    None
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn current_thread_context_page_table() -> Option<u64> {
+    current_thread_page_directory().map(|pd| pd.as_u64())
+}
+
 /// Get the page directory for a thread by TID.
 pub fn thread_page_directory(tid: u32) -> Option<PhysAddr> {
     let guard = SCHEDULER.lock();

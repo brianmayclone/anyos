@@ -788,7 +788,10 @@ pub fn exec_current_linux_process(
     crate::task::scheduler::set_thread_abi(tid, crate::task::abi::AbiPersonality::LinuxX86_64);
     crate::task::scheduler::set_thread_linux_rootfs(tid, linux_rootfs);
     crate::task::scheduler::set_thread_linux_fs_base(tid, 0);
-    let exec_name = load_path.rfind('/').map(|pos| &load_path[pos + 1..]).unwrap_or(load_path);
+    let exec_name = load_path
+        .rfind('/')
+        .map(|pos| &load_path[pos + 1..])
+        .unwrap_or(load_path);
     crate::task::scheduler::set_thread_name(tid, exec_name);
     if let Some(arg0) = argv.first() {
         crate::task::scheduler::set_thread_args(tid, arg0);
@@ -798,8 +801,12 @@ pub fn exec_current_linux_process(
     unsafe {
         #[cfg(target_arch = "x86_64")]
         {
+            let new_cr3 = match crate::task::scheduler::current_thread_context_page_table() {
+                Some(cr3) if cr3 != 0 => cr3,
+                _ => new_pd.as_u64(),
+            };
             core::arch::asm!("cli", options(nomem, nostack));
-            core::arch::asm!("mov cr3, {}", in(reg) new_pd.as_u64());
+            core::arch::asm!("mov cr3, {}", in(reg) new_cr3);
             crate::arch::x86::power::wrmsr(0xC000_0100, 0);
         }
         #[cfg(target_arch = "aarch64")]

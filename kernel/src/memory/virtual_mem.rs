@@ -47,20 +47,23 @@ pub static mut PCID_NOFLUSH_MASK: u64 = 0;
 
 /// Next PCID to allocate. 0 = kernel, 1-4095 = user processes.
 static NEXT_PCID: AtomicU16 = AtomicU16::new(1);
+static PCID_EXHAUSTED: AtomicBool = AtomicBool::new(false);
 
 /// Allocate a PCID for a new user process. Returns 0 if PCID is disabled.
 pub fn allocate_pcid() -> u16 {
-    if !PCID_ACTIVE.load(Ordering::Relaxed) {
+    if !PCID_ACTIVE.load(Ordering::Relaxed) || PCID_EXHAUSTED.load(Ordering::Relaxed) {
         return 0;
     }
-    loop {
-        let pcid = NEXT_PCID.fetch_add(1, Ordering::Relaxed);
-        if pcid > 0 && pcid < 4096 {
-            return pcid;
-        }
-        // Wrapped — reset to 1 (PCID 0 reserved for kernel)
-        NEXT_PCID.store(1, Ordering::Relaxed);
+    let pcid = NEXT_PCID.fetch_add(1, Ordering::Relaxed);
+    if pcid > 0 && pcid < 4096 {
+        return pcid;
     }
+
+    // Reusing a PCID without a global INVPCID/shootdown can resurrect stale
+    // user translations on another CPU. Fall back to PCID 0 once the finite
+    // hardware tag space is exhausted; context_switch flushes PCID 0 loads.
+    PCID_EXHAUSTED.store(true, Ordering::Release);
+    0
 }
 
 /// Check if PCID is active.

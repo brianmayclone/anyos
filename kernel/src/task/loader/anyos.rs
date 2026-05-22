@@ -177,8 +177,12 @@ pub fn exec_current_process(data: &[u8], args: &str) -> &'static str {
     unsafe {
         #[cfg(target_arch = "x86_64")]
         {
+            let new_cr3 = match crate::task::scheduler::current_thread_context_page_table() {
+                Some(cr3) if cr3 != 0 => cr3,
+                _ => new_pd.as_u64(),
+            };
             core::arch::asm!("cli", options(nomem, nostack));
-            core::arch::asm!("mov cr3, {}", in(reg) new_pd.as_u64());
+            core::arch::asm!("mov cr3, {}", in(reg) new_cr3);
         }
         #[cfg(target_arch = "aarch64")]
         {

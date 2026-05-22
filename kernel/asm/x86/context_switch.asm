@@ -179,6 +179,8 @@ context_switch:
     ; Load CR3 if different (avoid TLB flush if same address space).
     ; With PCID enabled, context.cr3 = PML4_phys | pcid (bits 0-11).
     ; PCID_NOFLUSH_MASK is (1<<63) when PCID active, 0 otherwise.
+    ; PCID 0 is the fallback/temporary tag; never use no-flush with it or stale
+    ; user translations can survive across unrelated address spaces.
     ; Setting bit 63 tells the CPU to preserve TLB entries tagged with
     ; other PCIDs, so switching between processes doesn't destroy each
     ; other's cached translations.
@@ -186,7 +188,10 @@ context_switch:
     mov rcx, cr3
     cmp rax, rcx
     je .skip_cr3
+    test rax, 0xfff
+    jz .load_cr3
     or  rax, [rel PCID_NOFLUSH_MASK]
+.load_cr3:
     mov cr3, rax
 .skip_cr3:
 
