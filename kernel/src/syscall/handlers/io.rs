@@ -4,7 +4,8 @@
 //! isatty, ftruncate, and POSIX FD duplication (pipe2, dup, dup2, fcntl).
 
 use super::helpers::{
-    copy_user_bytes, fs_err, is_valid_user_ptr, read_user_str_safe, resolve_path,
+    copy_to_user_bytes, copy_user_bytes, fs_err, is_valid_user_ptr, read_user_str_safe,
+    resolve_path,
 };
 use crate::fs::permissions::{check_permission, PERM_CREATE};
 
@@ -14,6 +15,7 @@ use crate::fs::permissions::{check_permission, PERM_CREATE};
 const WRITE_COPY_CHUNK: usize = 16 * 1024;
 const MAX_FILE_WRITE_COPY_CHUNK: usize = 128 * 1024;
 const FILE_READ_COPY_CHUNK: usize = 128 * 1024;
+const PIPE_READ_COPY_CHUNK: usize = 16 * 1024;
 
 /// sys_write - Write to a file descriptor
 /// fd=1 -> stdout (pipe if configured, else serial), fd=2 -> stderr (same), fd>=3 -> VFS file
@@ -156,17 +158,22 @@ pub fn sys_read(fd: u32, buf_ptr: u64, len: u32) -> u32 {
     // Look up the FD in the per-process table
     match crate::task::scheduler::current_fd_get(fd) {
         Some(entry) => {
-            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
             match entry.kind {
                 FdKind::File { global_id } => {
                     let mut total = 0usize;
                     while total < len as usize {
                         let chunk_len = ((len as usize) - total).min(FILE_READ_COPY_CHUNK);
-                        let end = (total + chunk_len).min(buf.len());
-                        let chunk = &mut buf[total..end];
-                        match crate::fs::vfs::read(global_id, chunk) {
+                        let mut chunk = alloc::vec![0u8; chunk_len];
+                        match crate::fs::vfs::read(global_id, &mut chunk) {
                             Ok(0) => break,
                             Ok(n) => {
+                                if !copy_to_user_bytes(
+                                    buf_ptr.wrapping_add(total as u64),
+                                    &chunk[..n],
+                                    FILE_READ_COPY_CHUNK,
+                                ) {
+                                    return if total > 0 { total as u32 } else { u32::MAX };
+                                }
                                 crate::task::scheduler::record_io_read(n as u64);
                                 total += n;
                                 if n < chunk_len {
@@ -188,19 +195,19 @@ pub fn sys_read(fd: u32, buf_ptr: u64, len: u32) -> u32 {
                             return u32::MAX - 10; // EAGAIN sentinel
                         }
                     }
-                    crate::ipc::anon_pipe::read(pipe_id, buf)
+                    read_anon_pipe_to_user(pipe_id, buf_ptr, len as usize)
                 }
                 FdKind::Tty => {
                     // Terminal I/O: read from named stdin pipe
                     let pipe = crate::task::scheduler::current_thread_stdin_pipe();
                     if pipe != 0 {
-                        read_tty_pipe(pipe, buf, !entry.flags.nonblock)
+                        read_tty_pipe_to_user(pipe, buf_ptr, len as usize, !entry.flags.nonblock)
                     } else {
                         0 // no stdin
                     }
                 }
                 FdKind::PtySlave { pty_id } => {
-                    crate::ipc::pty::read_slave(pty_id, buf, !entry.flags.nonblock)
+                    read_pty_to_user(pty_id, buf_ptr, len as usize, !entry.flags.nonblock)
                 }
                 FdKind::PipeWrite { .. }
                 | FdKind::LinuxProc { .. }
@@ -213,10 +220,7 @@ pub fn sys_read(fd: u32, buf_ptr: u64, len: u32) -> u32 {
             if fd == 0 {
                 let pipe = crate::task::scheduler::current_thread_stdin_pipe();
                 if pipe != 0 {
-                    let buf = unsafe {
-                        core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize)
-                    };
-                    return read_tty_pipe(pipe, buf, true);
+                    return read_tty_pipe_to_user(pipe, buf_ptr, len as usize, true);
                 }
                 0 // no stdin pipe
             } else {
@@ -224,6 +228,45 @@ pub fn sys_read(fd: u32, buf_ptr: u64, len: u32) -> u32 {
             }
         }
     }
+}
+
+fn read_anon_pipe_to_user(pipe_id: u32, buf_ptr: u64, len: usize) -> u32 {
+    let copy_len = len.min(PIPE_READ_COPY_CHUNK);
+    let mut chunk = alloc::vec![0u8; copy_len];
+    let n = crate::ipc::anon_pipe::read(pipe_id, &mut chunk);
+    if n == 0 {
+        return 0;
+    }
+    if !copy_to_user_bytes(buf_ptr, &chunk[..n as usize], PIPE_READ_COPY_CHUNK) {
+        return u32::MAX;
+    }
+    n
+}
+
+fn read_pty_to_user(pty_id: u32, buf_ptr: u64, len: usize, blocking: bool) -> u32 {
+    let copy_len = len.min(PIPE_READ_COPY_CHUNK);
+    let mut chunk = alloc::vec![0u8; copy_len];
+    let n = crate::ipc::pty::read_slave(pty_id, &mut chunk, blocking);
+    if n == 0 {
+        return 0;
+    }
+    if !copy_to_user_bytes(buf_ptr, &chunk[..n as usize], PIPE_READ_COPY_CHUNK) {
+        return u32::MAX;
+    }
+    n
+}
+
+fn read_tty_pipe_to_user(pipe: u32, buf_ptr: u64, len: usize, blocking: bool) -> u32 {
+    let copy_len = len.min(PIPE_READ_COPY_CHUNK);
+    let mut chunk = alloc::vec![0u8; copy_len];
+    let n = read_tty_pipe(pipe, &mut chunk, blocking);
+    if n == 0 || n == u32::MAX - 10 {
+        return n;
+    }
+    if !copy_to_user_bytes(buf_ptr, &chunk[..n as usize], PIPE_READ_COPY_CHUNK) {
+        return u32::MAX;
+    }
+    n
 }
 
 fn read_tty_pipe(pipe: u32, buf: &mut [u8], blocking: bool) -> u32 {

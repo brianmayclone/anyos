@@ -237,13 +237,16 @@ pub fn deliver_pending_signal_linux64(regs: &mut super::super::SyscallRegs, resu
     crate::task::scheduler::current_signal_set_blocked(new_blocked);
 
     crate::serial_verbose_println!(
-        "lxe linux signal: deliver abi=v2 tid={} sig={} handler={:#x} restorer={:#x} frame={:#x} result={:#x}",
+        "lxe linux signal: deliver abi=v2 tid={} sig={} handler={:#x} restorer={:#x} frame={:#x} result={:#x} saved_rip={:#x} saved_rsp={:#x} saved_rbp={:#x}",
         crate::task::scheduler::current_tid(),
         sig,
         handler,
         restorer,
         frame_base,
-        result
+        result,
+        regs.rip,
+        regs.rsp,
+        regs.rbp
     );
 
     regs.rip = handler;
@@ -302,11 +305,12 @@ pub fn linux_rt_sigreturn(regs: &mut super::super::SyscallRegs) -> u64 {
     }
 
     crate::serial_verbose_println!(
-        "lxe linux rt_sigreturn: ok tid={} restore rax={:#x} rip={:#x} rsp={:#x} blocked={:#x}",
+        "lxe linux rt_sigreturn: ok tid={} restore rax={:#x} rip={:#x} rsp={:#x} rbp={:#x} blocked={:#x}",
         crate::task::scheduler::current_tid(),
         regs.rax,
         regs.rip,
         regs.rsp,
+        regs.rbp,
         old_blocked
     );
 

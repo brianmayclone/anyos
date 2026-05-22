@@ -142,6 +142,17 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
         return linux_err(ENOMEM);
     }
 
+    let mapped_path = if !anonymous {
+        crate::task::scheduler::current_fd_get(fd as u32).and_then(|entry| match entry.kind {
+            crate::fs::fd_table::FdKind::File { global_id } => {
+                crate::fs::vfs::get_fd_path(global_id).ok()
+            }
+            _ => None,
+        })
+    } else {
+        None
+    };
+
     if !anonymous {
         if let Err(errno) = linux_fill_mapping_from_fd(fd as u32, mapped, len, offset) {
             let _ = handlers::sys_munmap_u64(mapped, len);
@@ -158,16 +169,30 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
             return linux_err(errno);
         }
     }
-    crate::serial_verbose_println!(
-        "lxe linux mmap: ok addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x} -> {:#x}",
-        addr,
-        len,
-        prot,
-        flags,
-        fd,
-        offset,
-        mapped
-    );
+    if let Some(path) = mapped_path {
+        crate::serial_verbose_println!(
+            "lxe linux mmap: ok addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x} -> {:#x} path='{}'",
+            addr,
+            len,
+            prot,
+            flags,
+            fd,
+            offset,
+            mapped,
+            path
+        );
+    } else {
+        crate::serial_verbose_println!(
+            "lxe linux mmap: ok addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x} -> {:#x}",
+            addr,
+            len,
+            prot,
+            flags,
+            fd,
+            offset,
+            mapped
+        );
+    }
     mapped
 }
 

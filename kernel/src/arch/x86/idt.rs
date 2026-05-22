@@ -98,6 +98,59 @@ fn uart_put_labeled_hex(label: &[u8], value: u64) {
     uart_put_hex(value);
 }
 
+fn uart_put_u64_ascii_le(label: &[u8], value: u64) {
+    uart_puts(label);
+    uart_putc(b'\'');
+    for i in 0..8 {
+        let b = ((value >> (i * 8)) & 0xff) as u8;
+        if (0x20..=0x7e).contains(&b) {
+            uart_putc(b);
+        } else {
+            uart_putc(b'.');
+        }
+    }
+    uart_puts(b"'\n");
+}
+
+fn dump_user_qwords(label: &[u8], addr: u64, count: usize) {
+    let len = (count as u64).saturating_mul(8);
+    uart_puts(label);
+    uart_puts(b" @");
+    uart_put_hex(addr);
+    uart_puts(b":");
+    if !crate::syscall::handlers::helpers::is_user_range_accessible(addr, len) {
+        uart_puts(b" unavailable\n");
+        return;
+    }
+    let words = addr as *const u64;
+    unsafe {
+        for i in 0..count {
+            uart_putc(b' ');
+            uart_put_hex(core::ptr::read_unaligned(words.add(i)));
+        }
+    }
+    uart_putc(b'\n');
+}
+
+fn dump_user_bytes(label: &[u8], addr: u64, count: usize) {
+    uart_puts(label);
+    uart_puts(b" @");
+    uart_put_hex(addr);
+    uart_puts(b":");
+    if !crate::syscall::handlers::helpers::is_user_range_accessible(addr, count as u64) {
+        uart_puts(b" unavailable\n");
+        return;
+    }
+    let bytes = addr as *const u8;
+    unsafe {
+        for i in 0..count {
+            uart_putc(b' ');
+            uart_put_hex(core::ptr::read_unaligned(bytes.add(i)) as u64);
+        }
+    }
+    uart_putc(b'\n');
+}
+
 fn dump_reentrant_fault_context(frame: &InterruptFrame, cr2: Option<u64>) {
     uart_puts(b"  ctx: RIP=");
     uart_put_hex(frame.rip);
@@ -865,13 +918,7 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
             } else {
                 "kernel"
             };
-            crate::serial_println!(
-                "  CR2:    {:#018x} ({} {}, {})",
-                cr2,
-                access,
-                mapping,
-                mode
-            );
+            crate::serial_println!("  CR2:    {:#018x} ({} {}, {})", cr2, access, mapping, mode);
         }
         // Detect IRETQ fault and dump the return frame
         dump_iretq_frame(frame.rip, frame.rsp);
@@ -1544,6 +1591,86 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             );
             crate::serial_println!("  FATAL: unrecoverable — halting");
             crate::drivers::rsod::show_exception(frame, "Double Fault (#DF)");
+            loop {
+                unsafe {
+                    core::arch::asm!("cli; hlt");
+                }
+            }
+        }
+        12 => {
+            let tid = crate::task::scheduler::debug_current_tid();
+            if is_user_mode {
+                let (saved_ds, saved_es) = unsafe { (SAVED_FAULT_DS, SAVED_FAULT_ES) };
+                crate::serial_println!(
+                    "EXCEPTION: Stack-Segment Fault (#SS) err={:#x} RIP={:#018x} CS={:#x} TID={}",
+                    frame.err_code,
+                    frame.rip,
+                    frame.cs,
+                    tid
+                );
+                crate::serial_println!(
+                    "  RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
+                    frame.rax,
+                    frame.rbx,
+                    frame.rcx,
+                    frame.rdx
+                );
+                crate::serial_println!(
+                    "  RSI={:#018x} RDI={:#018x} RBP={:#018x} RSP={:#018x}",
+                    frame.rsi,
+                    frame.rdi,
+                    frame.rbp,
+                    frame.rsp
+                );
+                crate::serial_println!(
+                    "  R8={:#018x} R9={:#018x} R10={:#018x} R11={:#018x}",
+                    frame.r8,
+                    frame.r9,
+                    frame.r10,
+                    frame.r11
+                );
+                crate::serial_println!(
+                    "  R12={:#018x} R13={:#018x} R14={:#018x} R15={:#018x}",
+                    frame.r12,
+                    frame.r13,
+                    frame.r14,
+                    frame.r15
+                );
+                crate::serial_println!(
+                    "  User SS={:#x} DS={:#06x} ES={:#06x}",
+                    frame.ss,
+                    saved_ds,
+                    saved_es
+                );
+                uart_put_u64_ascii_le(b"  RBP bytes(le)=", frame.rbp);
+                dump_user_bytes(b"  RIP bytes", frame.rip, 16);
+                dump_user_qwords(b"  user RSP qwords", frame.rsp, 8);
+                dump_user_qwords(b"  user RSI qwords", frame.rsi, 4);
+                dump_user_qwords(b"  user RDI qwords", frame.rdi, 4);
+                {
+                    let crash_cpu = crate::arch::x86::smp::current_cpu_id() as usize;
+                    let (last_sc, last_abi, last_name) = last_syscall_diag(crash_cpu);
+                    crate::serial_println!("  LastSC: {}:{} ({})", last_abi, last_sc, last_name);
+                }
+                dump_iretq_frame(frame.rip, frame.rsp);
+                crate::serial_println!("  User process fault — terminating thread");
+                crate::task::crash_info::store_crash(tid, 139, frame);
+                if try_kill_faulting_thread(139, frame) {
+                    return;
+                }
+            }
+            if try_kill_faulting_thread(139, frame) {
+                return;
+            }
+            crate::drivers::serial::enter_panic_mode();
+            crate::serial_println!(
+                "EXCEPTION: Stack-Segment Fault (#SS) err={:#x} RIP={:#018x} CS={:#x}",
+                frame.err_code,
+                frame.rip,
+                frame.cs
+            );
+            crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
+            crate::drivers::rsod::show_exception(frame, "Stack-Segment Fault (#SS)");
             loop {
                 unsafe {
                     core::arch::asm!("cli; hlt");

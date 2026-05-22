@@ -3,15 +3,61 @@ use super::*;
 const LINUX_COPY_CHUNK: usize = 16 * 1024;
 
 pub(super) fn linux_close(fd: u64) -> u64 {
+    let tid = crate::task::scheduler::current_tid();
     if fd > i32::MAX as u64 {
+        crate::serial_verbose_println!("lxe linux close: tid={} fd={:#x} -> EBADF", tid, fd);
         return linux_err(EBADF);
     }
 
-    match handlers::sys_close(fd as u32) {
+    let fd_u32 = fd as u32;
+    let before = crate::task::scheduler::current_fd_get(fd_u32).map(|entry| entry.kind);
+    let ret = handlers::sys_close(fd_u32);
+    let linux_ret = match ret {
         0 => 0,
         u32::MAX => linux_err(EBADF),
         ret => anyos_u32_ret(ret),
+    };
+    match before {
+        Some(crate::fs::fd_table::FdKind::File { global_id }) => {
+            let path = crate::fs::vfs::get_fd_path(global_id).ok();
+            if let Some(path) = path {
+                crate::serial_verbose_println!(
+                    "lxe linux close: tid={} fd={} file global={} path='{}' -> {:#x}",
+                    tid,
+                    fd_u32,
+                    global_id,
+                    path,
+                    linux_ret
+                );
+            } else {
+                crate::serial_verbose_println!(
+                    "lxe linux close: tid={} fd={} file global={} -> {:#x}",
+                    tid,
+                    fd_u32,
+                    global_id,
+                    linux_ret
+                );
+            }
+        }
+        Some(kind) => {
+            crate::serial_verbose_println!(
+                "lxe linux close: tid={} fd={} kind={:?} -> {:#x}",
+                tid,
+                fd_u32,
+                kind,
+                linux_ret
+            );
+        }
+        None => {
+            crate::serial_verbose_println!(
+                "lxe linux close: tid={} fd={} missing -> {:#x}",
+                tid,
+                fd_u32,
+                linux_ret
+            );
+        }
     }
+    linux_ret
 }
 
 pub(super) fn linux_dup(fd: u64) -> u64 {
@@ -900,6 +946,7 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
     const TIOCGWINSZ: u64 = 0x5413;
     const TIOCSWINSZ: u64 = 0x5414;
     const FIONREAD: u64 = 0x541B;
+    const TIOCLINUX: u64 = 0x541C;
     match request {
         TCGETS => {
             if !linux_fd_is_tty(fd) {
@@ -1051,6 +1098,27 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
             unsafe {
                 write_u32(arg, 0, 0);
             }
+            0
+        }
+        TIOCLINUX => {
+            if !linux_fd_is_tty(fd) {
+                return linux_err(ENOTTY);
+            }
+
+            let subcode = if arg != 0 {
+                if !handlers::helpers::is_user_range_accessible(arg, 1) {
+                    return linux_err(EFAULT);
+                }
+                unsafe { *(arg as *const u8) }
+            } else {
+                0
+            };
+
+            crate::serial_verbose_println!(
+                "lxe linux ioctl: TIOCLINUX fd={} sub={} -> noop",
+                fd,
+                subcode
+            );
             0
         }
         _ => {

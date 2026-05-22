@@ -299,15 +299,6 @@ pub(super) fn linux_log_library_open(
     if !linux_path.contains(".so") && !resolved_path.contains(".so") {
         return;
     }
-    if !(linux_path.contains("libpam")
-        || linux_path.contains("libc.so")
-        || linux_path.contains("ld-linux")
-        || resolved_path.contains("libpam")
-        || resolved_path.contains("libc.so")
-        || resolved_path.contains("ld-linux"))
-    {
-        return;
-    }
     match crate::fs::vfs::fstat(global_id) {
         Ok((_file_type, size, _position, _mtime)) => {
             let (dev, ino) = linux_fd_identity(global_id);
