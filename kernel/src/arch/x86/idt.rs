@@ -1647,6 +1647,13 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 dump_user_qwords(b"  user RSP qwords", frame.rsp, 8);
                 dump_user_qwords(b"  user RSI qwords", frame.rsi, 4);
                 dump_user_qwords(b"  user RDI qwords", frame.rdi, 4);
+                dump_user_qwords(b"  user RBX qwords", frame.rbx, 6);
+                if crate::syscall::handlers::helpers::is_user_range_accessible(frame.rsp + 8, 8) {
+                    let saved_rbx =
+                        unsafe { core::ptr::read_unaligned((frame.rsp + 8) as *const u64) };
+                    dump_user_qwords(b"  user saved-RBX qwords", saved_rbx, 6);
+                    dump_user_qwords(b"  user saved-RBX+0x1000 qwords", saved_rbx + 0x1000, 6);
+                }
                 {
                     let crash_cpu = crate::arch::x86::smp::current_cpu_id() as usize;
                     let (last_sc, last_abi, last_name) = last_syscall_diag(crash_cpu);

@@ -1313,6 +1313,26 @@ fn clone_user_page_directory_inner(
         crate::arch::x86::smp::tlb_shootdown_mask(u64::MAX, cpu_mask);
     }
 
+    // If a live private parent frame has accidentally reached the allocator's
+    // free lists, a fork copy can hand that exact frame back to the child.
+    // That creates a parent/child physical alias even though the PTEs differ,
+    // so later helper-process writes corrupt the parent's heap. Keep a sorted
+    // list of every private parent frame and reject such allocations below.
+    let mut parent_private_frames: alloc::vec::Vec<u64> = pages_to_copy
+        .iter()
+        .filter_map(
+            |(_, parent_phys, _, shared)| {
+                if *shared {
+                    None
+                } else {
+                    Some(*parent_phys)
+                }
+            },
+        )
+        .collect();
+    parent_private_frames.sort_unstable();
+    parent_private_frames.dedup();
+
     // Phase B: Copy page contents and map in child PD
     for &(vaddr, parent_phys, pte_flags, shared) in pages_to_copy.iter() {
         if shared {
@@ -1324,14 +1344,43 @@ fn clone_user_page_directory_inner(
                 pte_flags,
             );
         } else {
-            // Allocate new frame for child
-            let child_phys = match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
-                Some(f) => f,
-                None => {
-                    // OOM — clean up child PD and release lock
-                    CLONE_TEMP_LOCKS[cpu].store(false, Ordering::Release);
-                    destroy_user_page_directory(child_pd);
-                    return None;
+            // Allocate a new frame for the child. If the allocator offers a
+            // frame still present in the parent's private page set, consume it
+            // as quarantine and keep going; freeing it again would leave the
+            // double-free entry in circulation.
+            let mut quarantined_parent_frames = 0u32;
+            let child_phys = loop {
+                let candidate = match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
+                    Some(f) => f,
+                    None => {
+                        // OOM — clean up child PD and release lock
+                        CLONE_TEMP_LOCKS[cpu].store(false, Ordering::Release);
+                        destroy_user_page_directory(child_pd);
+                        return None;
+                    }
+                };
+
+                if parent_private_frames
+                    .binary_search(&candidate.as_u64())
+                    .is_err()
+                {
+                    if quarantined_parent_frames != 0 {
+                        crate::serial_println!(
+                            "fork: quarantined {} live parent frame(s) while copying vaddr={:#x}",
+                            quarantined_parent_frames,
+                            vaddr
+                        );
+                    }
+                    break candidate;
+                }
+
+                quarantined_parent_frames += 1;
+                if quarantined_parent_frames <= 8 || quarantined_parent_frames % 64 == 0 {
+                    crate::serial_println!(
+                        "fork: allocator returned live parent frame phys={:#x} while copying vaddr={:#x}; quarantining",
+                        candidate.as_u64(),
+                        vaddr
+                    );
                 }
             };
 

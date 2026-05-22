@@ -99,9 +99,11 @@ pub fn decref_read(pipe_id: u32) {
             }
             if pipe.read_refs == 0 {
                 // No more readers — wake blocked writers so they see EPIPE
-                wake_count = pipe.blocked_writer_count;
-                writers_to_wake[..wake_count].copy_from_slice(&pipe.blocked_writers[..wake_count]);
-                pipe.blocked_writer_count = 0;
+                wake_count = drain_waiters(
+                    &mut pipe.blocked_writers,
+                    &mut pipe.blocked_writer_count,
+                    &mut writers_to_wake,
+                );
             }
             if pipe.read_refs == 0 && pipe.write_refs == 0 {
                 *slot.unwrap() = None; // SAFETY: slot is Some from the if-let
@@ -131,9 +133,11 @@ pub fn decref_write(pipe_id: u32) {
             }
             if pipe.write_refs == 0 {
                 // No more writers — wake blocked readers so they see EOF
-                wake_count = pipe.blocked_reader_count;
-                readers_to_wake[..wake_count].copy_from_slice(&pipe.blocked_readers[..wake_count]);
-                pipe.blocked_reader_count = 0;
+                wake_count = drain_waiters(
+                    &mut pipe.blocked_readers,
+                    &mut pipe.blocked_reader_count,
+                    &mut readers_to_wake,
+                );
             }
             if pipe.read_refs == 0 && pipe.write_refs == 0 {
                 *slot.unwrap() = None;
@@ -184,9 +188,11 @@ pub fn read(pipe_id: u32, buf: &mut [u8]) -> u32 {
                 drop(back);
                 pipe.buffer.drain(..n);
                 // Wake any blocked writers since we freed buffer space
-                w_wake = pipe.blocked_writer_count;
-                writers_to_wake[..w_wake].copy_from_slice(&pipe.blocked_writers[..w_wake]);
-                pipe.blocked_writer_count = 0;
+                w_wake = drain_waiters(
+                    &mut pipe.blocked_writers,
+                    &mut pipe.blocked_writer_count,
+                    &mut writers_to_wake,
+                );
                 Ok(n as u32)
             } else if pipe.write_refs == 0 {
                 // EOF — no writers left
@@ -196,17 +202,14 @@ pub fn read(pipe_id: u32, buf: &mut [u8]) -> u32 {
                 // thread Blocked while still holding PIPES; writers also take
                 // PIPES before waking readers, so the wake cannot be lost.
                 let tid = crate::task::scheduler::current_tid();
-                if pipe.blocked_reader_count < MAX_BLOCKED {
-                    pipe.blocked_readers[pipe.blocked_reader_count] = tid;
-                    pipe.blocked_reader_count += 1;
-                    let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
-                    crate::task::scheduler::prepare_to_block_until(wake_at);
-                    Err(false) // signal: must block (no overflow)
-                } else {
-                    let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
-                    crate::task::scheduler::prepare_to_block_until(wake_at);
-                    Err(true) // signal: must block + blocked_readers full
-                }
+                let registered = add_waiter(
+                    &mut pipe.blocked_readers,
+                    &mut pipe.blocked_reader_count,
+                    tid,
+                );
+                let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
+                crate::task::scheduler::prepare_to_block_until(wake_at);
+                Err(!registered) // signal: must block; true = waiter list full
             }
         };
 
@@ -224,7 +227,7 @@ pub fn read(pipe_id: u32, buf: &mut [u8]) -> u32 {
                 if overflow {
                     // Log OUTSIDE the lock — safe now
                     crate::serial_verbose_println!(
-                        "[anon_pipe] WARNING: pipe {} blocked_readers full ({}/{}), tid gets silent EOF",
+                        "[anon_pipe] WARNING: pipe {} blocked_readers full ({}/{}), timed retry only",
                         pipe_id, MAX_BLOCKED, MAX_BLOCKED
                     );
                 }
@@ -273,9 +276,11 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
                 written += n;
 
                 // Wake blocked readers since we added data
-                r_wake = pipe.blocked_reader_count;
-                readers_to_wake[..r_wake].copy_from_slice(&pipe.blocked_readers[..r_wake]);
-                pipe.blocked_reader_count = 0;
+                r_wake = drain_waiters(
+                    &mut pipe.blocked_readers,
+                    &mut pipe.blocked_reader_count,
+                    &mut readers_to_wake,
+                );
 
                 if written >= data.len() {
                     Ok(written as u32)
@@ -284,32 +289,26 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
                     // mark the thread Blocked while still holding PIPES; readers
                     // also take PIPES before waking writers.
                     let tid = crate::task::scheduler::current_tid();
-                    if pipe.blocked_writer_count < MAX_BLOCKED {
-                        pipe.blocked_writers[pipe.blocked_writer_count] = tid;
-                        pipe.blocked_writer_count += 1;
-                        let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
-                        crate::task::scheduler::prepare_to_block_until(wake_at);
-                        Err(false) // signal: must block to write more
-                    } else {
-                        let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
-                        crate::task::scheduler::prepare_to_block_until(wake_at);
-                        Err(true) // signal: must block + overflow
-                    }
+                    let registered = add_waiter(
+                        &mut pipe.blocked_writers,
+                        &mut pipe.blocked_writer_count,
+                        tid,
+                    );
+                    let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
+                    crate::task::scheduler::prepare_to_block_until(wake_at);
+                    Err(!registered) // signal: must block to write more; true = full
                 }
             } else {
                 // Buffer completely full — block
                 let tid = crate::task::scheduler::current_tid();
-                if pipe.blocked_writer_count < MAX_BLOCKED {
-                    pipe.blocked_writers[pipe.blocked_writer_count] = tid;
-                    pipe.blocked_writer_count += 1;
-                    let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
-                    crate::task::scheduler::prepare_to_block_until(wake_at);
-                    Err(false) // signal: must block
-                } else {
-                    let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
-                    crate::task::scheduler::prepare_to_block_until(wake_at);
-                    Err(true) // signal: must block + overflow
-                }
+                let registered = add_waiter(
+                    &mut pipe.blocked_writers,
+                    &mut pipe.blocked_writer_count,
+                    tid,
+                );
+                let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
+                crate::task::scheduler::prepare_to_block_until(wake_at);
+                Err(!registered) // signal: must block; true = full
             }
         };
 
@@ -324,7 +323,7 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
                 if overflow {
                     // Log OUTSIDE the lock — safe now
                     crate::serial_verbose_println!(
-                        "[anon_pipe] WARNING: pipe {} blocked_writers full ({}/{}), tid gets silent EPIPE",
+                        "[anon_pipe] WARNING: pipe {} blocked_writers full ({}/{}), timed retry only",
                         pipe_id, MAX_BLOCKED, MAX_BLOCKED
                     );
                 }
@@ -400,4 +399,35 @@ fn find_pipe_slot<'a>(
     slots
         .iter_mut()
         .find(|slot| slot.as_ref().map_or(false, |p| p.id == id))
+}
+
+fn add_waiter(waiters: &mut [u32; MAX_BLOCKED], count: &mut usize, tid: u32) -> bool {
+    if tid == 0 {
+        return true;
+    }
+    for existing in waiters[..*count].iter() {
+        if *existing == tid {
+            return true;
+        }
+    }
+    if *count >= MAX_BLOCKED {
+        return false;
+    }
+    waiters[*count] = tid;
+    *count += 1;
+    true
+}
+
+fn drain_waiters(
+    waiters: &mut [u32; MAX_BLOCKED],
+    count: &mut usize,
+    out: &mut [u32; MAX_BLOCKED],
+) -> usize {
+    let n = (*count).min(MAX_BLOCKED);
+    out[..n].copy_from_slice(&waiters[..n]);
+    for waiter in waiters[..n].iter_mut() {
+        *waiter = 0;
+    }
+    *count = 0;
+    n
 }
