@@ -164,6 +164,9 @@ pub struct Thread {
     /// 64-bit virtual address; current user space still lives below 4 GiB
     /// but the field is widened to permit a future upper-half user layout.
     pub brk: u64,
+    /// Lowest legal program break for this image. brk() may shrink back to this
+    /// point, but not into the program's data/text mappings.
+    pub brk_start: u64,
     /// Command-line arguments (null-terminated string, set at spawn time).
     pub args: [u8; 256],
     /// Pipe ID for stdout redirection (0 = no pipe, write to serial).
@@ -373,6 +376,7 @@ impl Thread {
             is_user: false,
             page_directory: None,
             brk: 0,
+            brk_start: 0,
             args: [0u8; 256],
             stdout_pipe: 0,
             stdin_pipe: 0,

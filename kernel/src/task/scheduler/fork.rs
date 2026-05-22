@@ -9,6 +9,7 @@ pub struct ForkSnapshot {
     pub pd: PhysAddr,
     pub abi: crate::task::abi::AbiPersonality,
     pub brk: u64,
+    pub brk_start: u64,
     pub args: [u8; 256],
     pub cwd: [u8; 512],
     pub linux_rootfs: [u8; 512],
@@ -48,6 +49,7 @@ pub fn current_thread_fork_snapshot() -> Option<ForkSnapshot> {
         pd,
         abi: thread.abi,
         brk: thread.brk,
+        brk_start: thread.brk_start,
         args: thread.args,
         cwd: thread.cwd,
         linux_rootfs: thread.linux_rootfs,
@@ -129,6 +131,7 @@ pub fn exec_update_thread(tid: u32, new_pd: PhysAddr, brk: u64, user_pages: u32)
         #[cfg(target_arch = "aarch64")]
         thread.context.set_page_table(new_pd.as_u64());
         thread.brk = brk;
+        thread.brk_start = brk;
         // Linux clears clear_child_tid across execve; otherwise the exiting
         // replacement image can corrupt four bytes at a stale TLS address.
         thread.linux_clear_child_tid = 0;

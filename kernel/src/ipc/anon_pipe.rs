@@ -5,7 +5,8 @@
 //!
 //! **SMP safety:**
 //! - All operations go through the `PIPES` Spinlock.
-//! - Blocking uses `save_complete = 0` before `Blocked` (per save_complete race fix).
+//! - Blocking publishes the waiter and marks the thread `Blocked` while holding
+//!   `PIPES`, matching the TCP receive path's missed-wakeup fix.
 //! - Never hold the lock during `serial_println!` or `schedule()`.
 
 use crate::sync::spinlock::Spinlock;
@@ -191,13 +192,19 @@ pub fn read(pipe_id: u32, buf: &mut [u8]) -> u32 {
                 // EOF — no writers left
                 Ok(0)
             } else {
-                // Buffer empty, writers exist — need to block
+                // Buffer empty, writers exist. Publish the waiter and mark the
+                // thread Blocked while still holding PIPES; writers also take
+                // PIPES before waking readers, so the wake cannot be lost.
                 let tid = crate::task::scheduler::current_tid();
                 if pipe.blocked_reader_count < MAX_BLOCKED {
                     pipe.blocked_readers[pipe.blocked_reader_count] = tid;
                     pipe.blocked_reader_count += 1;
+                    let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
+                    crate::task::scheduler::prepare_to_block_until(wake_at);
                     Err(false) // signal: must block (no overflow)
                 } else {
+                    let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
+                    crate::task::scheduler::prepare_to_block_until(wake_at);
                     Err(true) // signal: must block + blocked_readers full
                 }
             }
@@ -221,8 +228,8 @@ pub fn read(pipe_id: u32, buf: &mut [u8]) -> u32 {
                         pipe_id, MAX_BLOCKED, MAX_BLOCKED
                     );
                 }
-                // Block this thread and retry after wake
-                crate::task::scheduler::block_current_thread();
+                // Block state was already published while holding PIPES above.
+                crate::task::scheduler::schedule();
             }
         }
     }
@@ -273,13 +280,19 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
                 if written >= data.len() {
                     Ok(written as u32)
                 } else {
-                    // Buffer full but still have data — need to block and retry
+                    // Buffer full but still have data. Publish the waiter and
+                    // mark the thread Blocked while still holding PIPES; readers
+                    // also take PIPES before waking writers.
                     let tid = crate::task::scheduler::current_tid();
                     if pipe.blocked_writer_count < MAX_BLOCKED {
                         pipe.blocked_writers[pipe.blocked_writer_count] = tid;
                         pipe.blocked_writer_count += 1;
+                        let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
+                        crate::task::scheduler::prepare_to_block_until(wake_at);
                         Err(false) // signal: must block to write more
                     } else {
+                        let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
+                        crate::task::scheduler::prepare_to_block_until(wake_at);
                         Err(true) // signal: must block + overflow
                     }
                 }
@@ -289,8 +302,12 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
                 if pipe.blocked_writer_count < MAX_BLOCKED {
                     pipe.blocked_writers[pipe.blocked_writer_count] = tid;
                     pipe.blocked_writer_count += 1;
+                    let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
+                    crate::task::scheduler::prepare_to_block_until(wake_at);
                     Err(false) // signal: must block
                 } else {
+                    let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
+                    crate::task::scheduler::prepare_to_block_until(wake_at);
                     Err(true) // signal: must block + overflow
                 }
             }
@@ -311,8 +328,8 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
                         pipe_id, MAX_BLOCKED, MAX_BLOCKED
                     );
                 }
-                // Block this thread and retry after wake
-                crate::task::scheduler::block_current_thread();
+                // Block state was already published while holding PIPES above.
+                crate::task::scheduler::schedule();
             }
         }
     }

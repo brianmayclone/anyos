@@ -239,7 +239,7 @@ fn busy_wait_us(us: u32) {
 /// addresses can live anywhere in the canonical-low half (including
 /// above 4 GiB, once programs are relinked into the upper half).
 pub fn sys_sbrk_u64(increment: i64) -> u64 {
-    use crate::memory::address::VirtAddr;
+    use crate::memory::address::{PhysAddr, VirtAddr};
     use crate::memory::physical;
     use crate::memory::user_vmap::{DLIB_REGION_START, HEAP_LIMIT};
     use crate::memory::virtual_mem;
@@ -397,8 +397,66 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
         crate::task::scheduler::set_current_thread_brk(new_brk);
         old_brk
     } else {
-        let decrement = (-increment) as u64;
-        let new_brk = old_brk.saturating_sub(decrement);
+        let decrement = match increment.checked_neg() {
+            Some(v) => v as u64,
+            None => return u64::MAX,
+        };
+        let new_brk = match old_brk.checked_sub(decrement) {
+            Some(v) => v,
+            None => return u64::MAX,
+        };
+        let brk_start = crate::task::scheduler::current_thread_brk_start();
+        if brk_start != 0 && new_brk < brk_start {
+            if crate::task::scheduler::current_thread_abi()
+                == crate::task::abi::AbiPersonality::LinuxX86_64
+            {
+                crate::serial_verbose_println!(
+                    "lxe linux sbrk: reject below-start old={:#x} new={:#x} inc={} start={:#x}",
+                    old_brk,
+                    new_brk,
+                    increment,
+                    brk_start
+                );
+            }
+            return u64::MAX;
+        }
+
+        let old_page_end = match old_brk.checked_add(PAGE_SIZE - 1) {
+            Some(v) => v & !(PAGE_SIZE - 1),
+            None => return u64::MAX,
+        };
+        let new_page_end = match new_brk.checked_add(PAGE_SIZE - 1) {
+            Some(v) => v & !(PAGE_SIZE - 1),
+            None => return u64::MAX,
+        };
+
+        let mut freed = 0u32;
+        let mut addr = new_page_end;
+        while addr < old_page_end {
+            let pte = virtual_mem::read_pte(VirtAddr::new(addr));
+            if pte & 1 != 0 {
+                let phys = PhysAddr::new(pte & 0x000F_FFFF_FFFF_F000);
+                virtual_mem::unmap_page(VirtAddr::new(addr));
+                physical::free_frame(phys);
+                freed += 1;
+            }
+            addr += PAGE_SIZE;
+        }
+
+        if freed > 0 {
+            virtual_mem::reclaim_empty_user_tables(
+                VirtAddr::new(new_page_end),
+                old_page_end - new_page_end,
+            );
+            crate::task::scheduler::adjust_current_user_pages(-(freed as i32));
+
+            #[cfg(target_arch = "x86_64")]
+            if crate::task::scheduler::has_live_pd_siblings() {
+                let cpu_mask = crate::task::scheduler::current_pd_active_cpu_mask();
+                crate::arch::x86::smp::tlb_shootdown_mask(u64::MAX, cpu_mask);
+            }
+        }
+
         crate::task::scheduler::set_current_thread_brk(new_brk);
         old_brk
     }
@@ -1110,6 +1168,7 @@ pub fn sys_fork_with_child_tidptr(
 
     // 5. Copy thread metadata to child
     scheduler::set_thread_user_info(child_tid, child_pd, snap.brk);
+    scheduler::set_thread_brk_start(child_tid, snap.brk_start);
 
     // CWD
     let cwd_len = snap.cwd.iter().position(|&b| b == 0).unwrap_or(0);
@@ -1313,6 +1372,7 @@ pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
     }
 
     scheduler::set_thread_user_info(child_tid, child_pd, snap.brk);
+    scheduler::set_thread_brk_start(child_tid, snap.brk_start);
 
     let cwd_len = snap.cwd.iter().position(|&b| b == 0).unwrap_or(0);
     if cwd_len > 0 {

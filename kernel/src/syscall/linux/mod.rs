@@ -308,6 +308,7 @@ fn linux_u32_arg(value: u64) -> u32 {
 
 pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
     let nr = regs.rax;
+    let rbp_before = regs.rbp;
     let a1 = regs.rdi;
     let a2 = regs.rsi;
     let a3 = regs.rdx;
@@ -317,7 +318,19 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
 
     crate::task::scheduler::set_last_linux_syscall(crate::arch::hal::cpu_id(), nr as u32);
 
-    match nr {
+    if is_noncanonical(rbp_before) && looks_like_inline_ascii(rbp_before) {
+        crate::serial_verbose_println!(
+            "lxe linux regs: suspicious RBP before syscall tid={} sys={}({}) rip={:#x} rsp={:#x} rbp={:#x}",
+            crate::task::scheduler::current_tid(),
+            nr,
+            syscall_name(nr as u32),
+            regs.rip,
+            regs.rsp,
+            rbp_before
+        );
+    }
+
+    let result = match nr {
         LINUX_SYS_READ => linux_read(a1 as u32, a2, a3),
         LINUX_SYS_WRITE => linux_write(a1 as u32, a2, a3),
         LINUX_SYS_OPEN => linux_open(a1, a2),
@@ -521,7 +534,36 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_STATX => linux_statx(linux_i32_arg(a1), a2, a3, a4, a5),
         LINUX_SYS_RSEQ => linux_err(ENOSYS),
         _ => linux_unsupported_syscall(regs, a1, a2, a3, a4, a5, a6),
+    };
+
+    if nr != LINUX_SYS_RT_SIGRETURN && regs.rbp != rbp_before {
+        crate::serial_verbose_println!(
+            "lxe linux regs: RBP changed across syscall tid={} sys={}({}) rip={:#x} before={:#x} after={:#x}",
+            crate::task::scheduler::current_tid(),
+            nr,
+            syscall_name(nr as u32),
+            regs.rip,
+            rbp_before,
+            regs.rbp
+        );
     }
+
+    result
+}
+
+fn is_noncanonical(value: u64) -> bool {
+    let sign = (value >> 47) & 1;
+    let high = value >> 48;
+    (sign == 0 && high != 0) || (sign == 1 && high != 0xffff)
+}
+
+fn looks_like_inline_ascii(value: u64) -> bool {
+    let bytes = value.to_le_bytes();
+    bytes
+        .iter()
+        .filter(|&&b| b == b'\n' || b == b'\r' || b == b'\t' || (0x20..=0x7e).contains(&b))
+        .count()
+        >= 6
 }
 
 pub(crate) fn syscall_name(num: u32) -> &'static str {

@@ -255,6 +255,7 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
                             tcb.fin_received = true;
                             tcb.state = TcpState::TimeWait;
                             tcb.time_wait_start = now;
+                            tcb.release_buffers();
                             Some(ack_current(tcb))
                         } else {
                             Some(ack_current(tcb))
@@ -272,6 +273,7 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
                             tcb.fin_received = true;
                             tcb.state = TcpState::TimeWait;
                             tcb.time_wait_start = now;
+                            tcb.release_buffers();
                             Some(ack_current(tcb))
                         } else {
                             Some(ack_current(tcb))
@@ -830,6 +832,7 @@ fn handle_fin_states(tcb: &mut Tcb, seg: &TcpSegment) -> Option<DeferredSend> {
                     tcb.fin_received = true;
                     tcb.state = TcpState::TimeWait;
                     tcb.time_wait_start = now;
+                    tcb.release_buffers();
                     Some(ack_current(tcb))
                 } else {
                     Some(ack_current(tcb))
@@ -846,6 +849,7 @@ fn handle_fin_states(tcb: &mut Tcb, seg: &TcpSegment) -> Option<DeferredSend> {
                     tcb.fin_received = true;
                     tcb.state = TcpState::TimeWait;
                     tcb.time_wait_start = now;
+                    tcb.release_buffers();
                     Some(ack_current(tcb))
                 } else {
                     Some(ack_current(tcb))

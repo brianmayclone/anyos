@@ -1084,12 +1084,12 @@ impl Scheduler {
 
     /// Reap terminated threads whose exit code has been consumed or auto-reaped.
     ///
-    /// Returns up to 8 reaped `ThreadBox` objects so the reaper can drop
+    /// Returns up to 32 reaped `ThreadBox` objects so the reaper can drop
     /// them **outside** the SCHEDULER lock and outside IRQ/scheduler context.
     /// Dropping `ThreadBox` runs the thread destructor and returns the object to
     /// the slab cache.
-    fn reap_terminated(&mut self) -> [Option<ThreadBox>; 8] {
-        let mut reaped: [Option<ThreadBox>; 8] = Default::default();
+    fn reap_terminated(&mut self) -> [Option<ThreadBox>; 32] {
+        let mut reaped: [Option<ThreadBox>; 32] = Default::default();
         let mut reap_count = 0usize;
         let current_tick = crate::arch::hal::timer_current_ticks();
         let mut i = 0;
@@ -1104,11 +1104,17 @@ impl Scheduler {
                     i += 1;
                     continue;
                 }
-                // Grace period for any in-flight context_switch. User threads
-                // can still be unwinding a syscall/IRQ frame on another CPU
-                // after their exit status was consumed, so keep their stack
-                // around longer than kernel helper threads.
-                let min_reap_delay_ms = if self.threads[i].is_user { 1_000 } else { 250 };
+                // Grace period for any in-flight context_switch. Once waitpid
+                // consumed a user thread's status, only the conservative stack
+                // reference checks below need more time before dropping it.
+                let consumed = self.threads[i].exit_code.is_none();
+                let min_reap_delay_ms = if consumed {
+                    100
+                } else if self.threads[i].is_user {
+                    1_000
+                } else {
+                    250
+                };
                 let min_elapsed = self.threads[i]
                     .terminated_at_tick
                     .map(|t| current_tick.wrapping_sub(t) > min_reap_delay_ms)
@@ -1117,7 +1123,6 @@ impl Scheduler {
                     i += 1;
                     continue;
                 }
-                let consumed = self.threads[i].exit_code.is_none();
                 let auto_reap_delay_ms = if self.threads[i].is_user { 5_000 } else { 200 };
                 // Linux wait semantics require a dead child to remain as a
                 // waitable zombie until its parent consumes the exit status.
@@ -1130,7 +1135,7 @@ impl Scheduler {
                         .map(|t| current_tick.wrapping_sub(t) > auto_reap_delay_ms)
                         .unwrap_or(false);
                 if consumed || auto_reap {
-                    if reap_count >= 8 {
+                    if reap_count >= reaped.len() {
                         break;
                     }
                     let tid = self.threads[i].tid;
@@ -1916,6 +1921,7 @@ pub extern "C" fn deferred_reaper_thread() {
         let sleep_ticks = (hz / 100).max(1);
         let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(sleep_ticks);
         sleep_until(wake_at);
+        crate::net::tcp::check_retransmissions();
         drain_deferred_scheduler_work();
         run_deferred_scheduler_maintenance();
         reap_terminated_threads();

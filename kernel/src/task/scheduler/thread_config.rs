@@ -28,6 +28,7 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u64) {
         thread.context.checksum = thread.context.compute_checksum();
         thread.is_user = true;
         thread.brk = brk;
+        thread.brk_start = brk;
         // Reserve fd 0/1/2 so pipe()/open() start at fd 3.
         let stdio = if thread.pty_id != 0 {
             FdKind::PtySlave {
@@ -305,6 +306,19 @@ pub fn current_thread_brk() -> u64 {
     0
 }
 
+/// Get the lowest legal program break for the current process image.
+pub fn current_thread_brk_start() -> u64 {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_BRK);
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            return sched.threads[idx].brk_start;
+        }
+    }
+    0
+}
+
 /// Set the current thread's program break, syncing across sibling threads.
 pub fn set_current_thread_brk(brk: u64) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_BRK);
@@ -321,6 +335,17 @@ pub fn set_current_thread_brk(brk: u64) {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Set the initial/minimum program break for a thread.
+pub fn set_thread_brk_start(tid: u32, brk_start: u64) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_BRK);
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+            thread.brk_start = brk_start;
         }
     }
 }

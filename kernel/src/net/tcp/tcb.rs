@@ -262,6 +262,14 @@ impl Tcb {
         let scaled = available >> self.rcv_wnd_shift;
         scaled.min(65535) as u16
     }
+
+    /// Drop heavyweight per-connection buffers once the socket no longer needs
+    /// payload storage. TIME_WAIT only needs tuple/sequence metadata.
+    pub fn release_buffers(&mut self) {
+        self.recv_buf = VecDeque::new();
+        self.ooo_buf = Vec::new();
+        self.send_buf = VecDeque::new();
+    }
 }
 
 // ── Parsing ─────────────────────────────────────────────────────────

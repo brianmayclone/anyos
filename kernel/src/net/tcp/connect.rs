@@ -643,24 +643,30 @@ pub fn close(socket_id: u32) -> u32 {
                 Some(t) => t,
                 None => return 0,
             };
-            if let Some(tcb) = &table[id] {
-                match tcb.state {
-                    TcpState::Closed | TcpState::TimeWait => {
-                        if tcb.state == TcpState::Closed {
-                            remove_slot_hash(table, id);
-                            table[id] = None;
-                        }
-                        return 0;
-                    }
-                    _ => {}
+            let state = table[id].as_ref().map(|tcb| tcb.state);
+            match state {
+                Some(TcpState::Closed) => {
+                    remove_slot_hash(table, id);
+                    table[id] = None;
+                    return 0;
                 }
+                Some(TcpState::TimeWait) => {
+                    if let Some(tcb) = table[id].as_mut() {
+                        tcb.release_buffers();
+                    }
+                    return 0;
+                }
+                Some(_) => {}
+                None => {
+                    return 0;
+                }
+            }
+            if let Some(tcb) = &table[id] {
                 if tcb.reset_received {
                     remove_slot_hash(table, id);
                     table[id] = None;
                     return 0;
                 }
-            } else {
-                return 0;
             }
         }
 
