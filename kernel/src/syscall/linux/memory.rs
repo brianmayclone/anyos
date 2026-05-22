@@ -1,5 +1,8 @@
 use super::*;
 
+const FILE_MAP_COPY_CHUNK: usize = 64 * 1024;
+const MREMAP_COPY_CHUNK: usize = 64 * 1024;
+
 pub(super) fn linux_brk(new_brk: u64) -> u64 {
     let current = crate::task::scheduler::current_thread_brk();
     if new_brk == 0 {
@@ -341,12 +344,21 @@ pub(super) fn linux_mremap(
         return linux_err(EFAULT);
     }
 
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            old_addr as *const u8,
-            target as *mut u8,
-            copy_len as usize,
-        );
+    let mut copied = 0u64;
+    while copied < copy_len {
+        let chunk_len = ((copy_len - copied) as usize).min(MREMAP_COPY_CHUNK);
+        let src = old_addr.wrapping_add(copied);
+        let dst = target.wrapping_add(copied);
+        let Some(chunk) = handlers::helpers::copy_user_bytes(src, chunk_len, MREMAP_COPY_CHUNK)
+        else {
+            let _ = linux_munmap(target, new_aligned);
+            return linux_err(EFAULT);
+        };
+        if !handlers::helpers::copy_to_user_bytes(dst, &chunk, MREMAP_COPY_CHUNK) {
+            let _ = linux_munmap(target, new_aligned);
+            return linux_err(EFAULT);
+        }
+        copied += chunk_len as u64;
     }
 
     let ret = linux_munmap(old_addr, old_aligned);
@@ -530,10 +542,9 @@ pub(super) fn linux_fill_mapping_from_fd(
 ) -> Result<(), i32> {
     let mut copied = 0usize;
     let len = len as usize;
-    const FILE_MAP_CHUNK: usize = 64 * 1024;
     while copied < len {
         let dst = addr + copied as u64;
-        let want = (len - copied).min(FILE_MAP_CHUNK);
+        let want = (len - copied).min(FILE_MAP_COPY_CHUNK);
         let n = linux_read_fd_at(fd, dst, want, offset + copied as u64)?;
         if n == 0 {
             break;
@@ -552,12 +563,51 @@ pub(super) fn linux_read_fd_at(
     if offset > i32::MAX as u64 {
         return Err(EINVAL);
     }
+    if len == 0 {
+        return Ok(0);
+    }
+    if !handlers::helpers::is_user_range_accessible(buf_ptr, len as u64) {
+        return Err(EFAULT);
+    }
+
     let entry = crate::task::scheduler::current_fd_get(fd).ok_or(EBADF)?;
     let global_id = match entry.kind {
         crate::fs::fd_table::FdKind::File { global_id } => global_id,
         _ => return Err(EBADF),
     };
-    let out = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
+
+    let mut total = 0usize;
+    while total < len {
+        let chunk_len = (len - total).min(FILE_MAP_COPY_CHUNK);
+        let mut chunk = alloc::vec![0u8; chunk_len];
+        let chunk_offset = offset.checked_add(total as u64).ok_or(EINVAL)?;
+        if chunk_offset > i32::MAX as u64 {
+            return Err(EINVAL);
+        }
+        let n = linux_read_global_chunk_at(global_id, chunk_offset, &mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        if !handlers::helpers::copy_to_user_bytes(
+            buf_ptr.wrapping_add(total as u64),
+            &chunk[..n],
+            FILE_MAP_COPY_CHUNK,
+        ) {
+            return if total > 0 { Ok(total) } else { Err(EFAULT) };
+        }
+        total += n;
+        if n < chunk_len {
+            break;
+        }
+    }
+    Ok(total)
+}
+
+fn linux_read_global_chunk_at(
+    global_id: u32,
+    offset: u64,
+    out: &mut [u8],
+) -> Result<usize, i32> {
     match crate::fs::vfs::read_at(global_id, offset as u32, out) {
         Ok(n) => return Ok(n),
         Err(crate::fs::vfs::FsError::NotSupported) => {}

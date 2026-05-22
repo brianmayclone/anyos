@@ -362,16 +362,26 @@ pub fn sys_open(path_ptr: u64, flags: u32, _arg3: u32) -> u32 {
 
 /// sys_close - Close a file descriptor (local FD from per-process table).
 pub fn sys_close(fd: u32) -> u32 {
+    sys_close_with_kind(fd).0
+}
+
+/// Close a local FD and return the kind that was actually removed.
+///
+/// LXE uses this for precise diagnostics: logging a separately sampled FD kind
+/// before `close()` made repeated-close traces look successful even when the
+/// second syscall should be EBADF.
+pub fn sys_close_with_kind(fd: u32) -> (u32, Option<crate::fs::fd_table::FdKind>) {
     // Some userspace libraries still propagate negative errno-style sentinels
     // through `u32`-typed FDs. Treat those as inert invalid handles instead of
     // surfacing noisy EBADF failures during startup.
     if (fd as i32) < 0 {
-        return 0;
+        return (0, None);
     }
 
     use crate::fs::fd_table::FdKind;
     // Close the local FD entry — returns the old FdKind for resource cleanup
-    match crate::task::scheduler::current_fd_close(fd) {
+    let closed = crate::task::scheduler::current_fd_close(fd);
+    let ret = match closed {
         Some(FdKind::File { global_id }) => match crate::fs::vfs::close(global_id) {
             Ok(()) => 0,
             Err(e) => fs_err(e),
@@ -398,7 +408,8 @@ pub fn sys_close(fd: u32) -> u32 {
             // directly with global slot IDs — they don't go through this syscall.
             u32::MAX
         }
-    }
+    };
+    (ret, closed)
 }
 
 /// sys_lseek - Seek within an open file.

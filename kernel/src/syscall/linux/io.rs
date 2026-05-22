@@ -1,6 +1,11 @@
 use super::*;
 
 const LINUX_COPY_CHUNK: usize = 16 * 1024;
+static TIOCL_VESA_BLANK_MODE: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(0);
+static TIOCL_KMSG_REDIRECT: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+static TIOCL_BLANKED_CONSOLE: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(0);
 
 pub(super) fn linux_close(fd: u64) -> u64 {
     let tid = crate::task::scheduler::current_tid();
@@ -10,17 +15,22 @@ pub(super) fn linux_close(fd: u64) -> u64 {
     }
 
     let fd_u32 = fd as u32;
-    let before = crate::task::scheduler::current_fd_get(fd_u32).map(|entry| entry.kind);
-    let ret = handlers::sys_close(fd_u32);
+    let before_path =
+        crate::task::scheduler::current_fd_get(fd_u32).and_then(|entry| match entry.kind {
+            crate::fs::fd_table::FdKind::File { global_id } => {
+                crate::fs::vfs::get_fd_path(global_id).ok()
+            }
+            _ => None,
+        });
+    let (ret, closed_kind) = handlers::sys_close_with_kind(fd_u32);
     let linux_ret = match ret {
         0 => 0,
         u32::MAX => linux_err(EBADF),
         ret => anyos_u32_ret(ret),
     };
-    match before {
+    match closed_kind {
         Some(crate::fs::fd_table::FdKind::File { global_id }) => {
-            let path = crate::fs::vfs::get_fd_path(global_id).ok();
-            if let Some(path) = path {
+            if let Some(path) = before_path {
                 crate::serial_verbose_println!(
                     "lxe linux close: tid={} fd={} file global={} path='{}' -> {:#x}",
                     tid,
@@ -1123,25 +1133,7 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
             0
         }
         TIOCLINUX => {
-            if !linux_fd_is_tty(fd) {
-                return linux_err(ENOTTY);
-            }
-
-            let subcode = if arg != 0 {
-                if !handlers::helpers::is_user_range_accessible(arg, 1) {
-                    return linux_err(EFAULT);
-                }
-                unsafe { *(arg as *const u8) }
-            } else {
-                0
-            };
-
-            crate::serial_verbose_println!(
-                "lxe linux ioctl: TIOCLINUX fd={} sub={} -> noop",
-                fd,
-                subcode
-            );
-            0
+            linux_tioclinux(fd, arg)
         }
         _ => {
             crate::serial_verbose_println!(
@@ -1152,6 +1144,129 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
             linux_err(ENOTTY)
         }
     }
+}
+
+fn linux_tioclinux(fd: u32, arg: u64) -> u64 {
+    const TIOCL_SETSEL: u8 = 2;
+    const TIOCL_PASTESEL: u8 = 3;
+    const TIOCL_UNBLANKSCREEN: u8 = 4;
+    const TIOCL_SELLOADLUT: u8 = 5;
+    const TIOCL_GETSHIFTSTATE: u8 = 6;
+    const TIOCL_GETMOUSEREPORTING: u8 = 7;
+    const TIOCL_SETVESABLANK: u8 = 10;
+    const TIOCL_SETKMSGREDIRECT: u8 = 11;
+    const TIOCL_GETFGCONSOLE: u8 = 12;
+    const TIOCL_SCROLLCONSOLE: u8 = 13;
+    const TIOCL_BLANKSCREEN: u8 = 14;
+    const TIOCL_BLANKEDSCREEN: u8 = 15;
+    const TIOCL_GETKMSGREDIRECT: u8 = 17;
+    const TIOCL_GETBRACKETEDPASTE: u8 = 18;
+
+    if !linux_fd_is_tty(fd) {
+        return linux_err(ENOTTY);
+    }
+    if arg == 0 || !handlers::helpers::is_user_range_accessible(arg, 1) {
+        return linux_err(EINVAL);
+    }
+
+    let subcode = unsafe { *(arg as *const u8) };
+    let ret = match subcode {
+        // Removed by Linux 1.1.92; modern kernels reject them.
+        0 | 1 | 8 | 9 | 16 => linux_err(EINVAL),
+
+        TIOCL_SETSEL => {
+            if !handlers::helpers::is_user_range_accessible(arg, 12) {
+                linux_err(EINVAL)
+            } else {
+                let mode = unsafe { core::ptr::read_unaligned((arg + 10) as *const u16) };
+                // Mouse-reporting selection requires console mouse tracking.
+                // We expose no Linux virtual-console mouse reporter yet, so
+                // this submode must fail like Linux does when reporting is off.
+                if (mode & 0x10) != 0 {
+                    linux_err(EINVAL)
+                } else {
+                    0
+                }
+            }
+        }
+        TIOCL_PASTESEL => {
+            // No virtual-console selection buffer is maintained. Pasting an
+            // empty selection is a successful zero-byte operation.
+            0
+        }
+        TIOCL_UNBLANKSCREEN => {
+            TIOCL_BLANKED_CONSOLE.store(0, core::sync::atomic::Ordering::Relaxed);
+            0
+        }
+        TIOCL_SELLOADLUT => {
+            if handlers::helpers::is_user_range_accessible(arg, 36) {
+                0
+            } else {
+                linux_err(EINVAL)
+            }
+        }
+        TIOCL_GETSHIFTSTATE => {
+            unsafe {
+                *(arg as *mut u8) = 0;
+            }
+            0
+        }
+        TIOCL_GETMOUSEREPORTING => {
+            unsafe {
+                *(arg as *mut u8) = 0;
+            }
+            0
+        }
+        TIOCL_SETVESABLANK => {
+            if !handlers::helpers::is_user_range_accessible(arg, 2) {
+                linux_err(EINVAL)
+            } else {
+                let mode = unsafe { *((arg + 1) as *const u8) };
+                if mode <= 2 {
+                    TIOCL_VESA_BLANK_MODE.store(mode, core::sync::atomic::Ordering::Relaxed);
+                    0
+                } else {
+                    linux_err(EINVAL)
+                }
+            }
+        }
+        TIOCL_SETKMSGREDIRECT => {
+            if !handlers::helpers::is_user_range_accessible(arg, 2) {
+                linux_err(EINVAL)
+            } else {
+                let vt = unsafe { *((arg + 1) as *const u8) };
+                TIOCL_KMSG_REDIRECT.store(vt, core::sync::atomic::Ordering::Relaxed);
+                0
+            }
+        }
+        TIOCL_GETFGCONSOLE => 0,
+        TIOCL_SCROLLCONSOLE => {
+            if handlers::helpers::is_user_range_accessible(arg, 8) {
+                0
+            } else {
+                linux_err(EINVAL)
+            }
+        }
+        TIOCL_BLANKSCREEN => {
+            TIOCL_BLANKED_CONSOLE.store(1, core::sync::atomic::Ordering::Relaxed);
+            0
+        }
+        TIOCL_BLANKEDSCREEN => TIOCL_BLANKED_CONSOLE.load(core::sync::atomic::Ordering::Relaxed)
+            as u64,
+        TIOCL_GETKMSGREDIRECT => {
+            TIOCL_KMSG_REDIRECT.load(core::sync::atomic::Ordering::Relaxed) as u64
+        }
+        TIOCL_GETBRACKETEDPASTE => 0,
+        _ => linux_err(EINVAL),
+    };
+
+    crate::serial_verbose_println!(
+        "lxe linux ioctl: TIOCLINUX fd={} sub={} -> {:#x}",
+        fd,
+        subcode,
+        ret
+    );
+    ret
 }
 
 pub(super) fn linux_fd_is_tty(fd: u32) -> bool {
