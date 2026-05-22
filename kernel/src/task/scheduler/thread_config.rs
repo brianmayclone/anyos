@@ -374,6 +374,22 @@ pub fn set_thread_args(tid: u32, args: &str) {
     }
 }
 
+/// Set thread name.
+pub fn set_thread_name(tid: u32, name: &str) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_ARGS);
+    let mut guard = SCHEDULER.lock();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        let bytes = name.as_bytes();
+        let len = bytes.len().min(31);
+        thread.name[..len].copy_from_slice(&bytes[..len]);
+        thread.name[len] = 0;
+    }
+}
+
 /// Get the current thread's args.
 pub fn current_thread_args(buf: &mut [u8]) -> usize {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);

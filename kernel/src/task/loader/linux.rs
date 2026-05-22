@@ -788,6 +788,8 @@ pub fn exec_current_linux_process(
     crate::task::scheduler::set_thread_abi(tid, crate::task::abi::AbiPersonality::LinuxX86_64);
     crate::task::scheduler::set_thread_linux_rootfs(tid, linux_rootfs);
     crate::task::scheduler::set_thread_linux_fs_base(tid, 0);
+    let exec_name = load_path.rfind('/').map(|pos| &load_path[pos + 1..]).unwrap_or(load_path);
+    crate::task::scheduler::set_thread_name(tid, exec_name);
     if let Some(arg0) = argv.first() {
         crate::task::scheduler::set_thread_args(tid, arg0);
     }

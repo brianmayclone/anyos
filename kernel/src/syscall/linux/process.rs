@@ -1152,13 +1152,29 @@ pub(super) fn linux_prctl(option: u64, arg2: u64) -> u64 {
     match option {
         3 => 1,  // PR_GET_DUMPABLE
         4 => 0,  // PR_SET_DUMPABLE
-        15 => 0, // PR_SET_NAME
+        15 => {
+            if arg2 == 0 {
+                return linux_err(EFAULT);
+            }
+            if let Some(name) = handlers::helpers::read_user_str_safe(arg2) {
+                let tid = crate::task::scheduler::current_tid();
+                crate::task::scheduler::set_thread_name(tid, name);
+                0
+            } else {
+                linux_err(EFAULT)
+            }
+        }
         16 => {
             if arg2 == 0 {
                 return linux_err(EFAULT);
             }
-            let name = b"lxe\0";
-            if !super::handlers::helpers::copy_to_user_bytes(arg2, name, name.len()) {
+            let name_buf = crate::task::scheduler::current_thread_name();
+            let len = name_buf.iter().position(|&b| b == 0).unwrap_or(32);
+            let limit = len.min(15);
+            let mut write_buf = [0u8; 16];
+            write_buf[..limit].copy_from_slice(&name_buf[..limit]);
+            write_buf[limit] = 0;
+            if !super::handlers::helpers::copy_to_user_bytes(arg2, &write_buf, limit + 1) {
                 return linux_err(EFAULT);
             }
             0
