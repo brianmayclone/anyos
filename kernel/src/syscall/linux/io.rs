@@ -164,6 +164,9 @@ pub(super) fn linux_read(fd: u32, buf_ptr: u64, len: u64) -> u64 {
         crate::fs::fd_table::FdKind::LinuxSocket { .. } => {
             return socket_read(fd, buf_ptr, len);
         }
+        crate::fs::fd_table::FdKind::LinuxFramebuffer { position } => {
+            return linux_fb_read(fd, position, buf_ptr, len);
+        }
         _ => {}
     }
     let ret = anyos_u32_ret(handlers::sys_read(fd, buf_ptr, len as u32));
@@ -182,6 +185,9 @@ pub(super) fn linux_write(fd: u32, buf_ptr: u64, len: u64) -> u64 {
     };
     if let crate::fs::fd_table::FdKind::LinuxSocket { .. } = entry.kind {
         return socket_write(fd, buf_ptr, len);
+    }
+    if let crate::fs::fd_table::FdKind::LinuxFramebuffer { position } = entry.kind {
+        return linux_fb_write(fd, position, buf_ptr, len);
     }
     let ret = anyos_u32_ret(handlers::sys_write(fd, buf_ptr, len as u32));
     if let crate::fs::fd_table::FdKind::File { global_id } = entry.kind {
@@ -246,6 +252,9 @@ pub(super) fn linux_lseek(fd: u32, offset: u64, whence: u64) -> u64 {
             }
             return next as u64;
         }
+        if let crate::fs::fd_table::FdKind::LinuxFramebuffer { position } = entry.kind {
+            return linux_fb_lseek(fd, position, offset, whence);
+        }
     }
     anyos_u32_ret(handlers::sys_lseek(fd, offset as u32, whence as u32))
 }
@@ -261,6 +270,9 @@ pub(super) fn linux_pread64(fd: u32, buf_ptr: u64, len: u64, offset: u64) -> u64
             }
             return linux_copy_proc_content(file, pid, offset as u32, buf_ptr, len as u32);
         }
+        if let crate::fs::fd_table::FdKind::LinuxFramebuffer { .. } = entry.kind {
+            return linux_fb_pread(buf_ptr, len, offset);
+        }
     }
     match linux_read_fd_at(fd, buf_ptr, len as usize, offset) {
         Ok(n) => n as u64,
@@ -274,6 +286,11 @@ pub(super) fn linux_pwrite64(fd: u32, buf_ptr: u64, len: u64, offset: u64) -> u6
     }
     if buf_ptr == 0 || len > u32::MAX as u64 {
         return linux_err(EFAULT);
+    }
+    if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
+        if let crate::fs::fd_table::FdKind::LinuxFramebuffer { .. } = entry.kind {
+            return linux_fb_pwrite(buf_ptr, len, offset);
+        }
     }
     match linux_write_fd_at(fd, buf_ptr, len as usize, offset) {
         Ok(n) => n as u64,
@@ -885,7 +902,8 @@ fn linux_fd_poll_revents(kind: crate::fs::fd_table::FdKind, events: i16) -> i16 
         }
         crate::fs::fd_table::FdKind::File { .. }
         | crate::fs::fd_table::FdKind::Tty
-        | crate::fs::fd_table::FdKind::LinuxProc { .. } => events & (POLLIN | POLLOUT),
+        | crate::fs::fd_table::FdKind::LinuxProc { .. }
+        | crate::fs::fd_table::FdKind::LinuxFramebuffer { .. } => events & (POLLIN | POLLOUT),
         crate::fs::fd_table::FdKind::None => POLLERR,
     }
 }
@@ -936,6 +954,10 @@ fn ms_to_ticks(ms: u64) -> u32 {
 }
 
 pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
+    if let Some(ret) = linux_fb_ioctl(fd, request, arg) {
+        return ret;
+    }
+
     const TCGETS: u64 = 0x5401;
     const TCSETS: u64 = 0x5402;
     const TCSETSW: u64 = 0x5403;

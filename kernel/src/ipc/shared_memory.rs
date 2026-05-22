@@ -130,6 +130,49 @@ pub fn create(size: usize, owner_tid: u32) -> Option<u32> {
     Some(id)
 }
 
+/// Create a kernel-owned shared memory region.
+///
+/// This is used for pseudo-devices that need to expose an anyOS SHM backing
+/// store to user processes without tying the region lifetime to the first
+/// opener. The region is freed when its last mapping is removed and the caller
+/// drops its own global reference by replacing the region id.
+pub fn create_kernel(size: usize) -> Option<u32> {
+    let pages = (size + FRAME_SIZE - 1) / FRAME_SIZE;
+    if pages == 0 {
+        return None;
+    }
+
+    let mut frames = Vec::new();
+    for _ in 0..pages {
+        match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
+            Some(frame) => frames.push(frame),
+            None => {
+                for f in &frames {
+                    physical::free_frame(*f);
+                }
+                return None;
+            }
+        }
+    }
+
+    let id = {
+        let mut guard = NEXT_REGION_ID.lock();
+        let id = *guard;
+        *guard += 1;
+        id
+    };
+
+    SHARED_REGIONS.lock().push(SharedRegion {
+        id,
+        physical_frames: frames,
+        size: pages * FRAME_SIZE,
+        owner_tid: 0,
+        mappings: Vec::new(),
+        needs_zeroing: true,
+    });
+    Some(id)
+}
+
 /// Map a shared memory region into the calling process's address space.
 ///
 /// Uses recursive mapping on the current CR3 (which is the caller's PD during
@@ -214,6 +257,51 @@ pub fn unmap_from_current(region_id: u32) -> bool {
     // Free region if no mappings and no owner
     maybe_free_region(&mut regions, idx);
 
+    true
+}
+
+/// Unmap a full shared memory region from the current process by address.
+///
+/// Linux `munmap()` only knows the virtual address returned from `mmap()`, not
+/// the anyOS SHM id. This helper keeps pseudo-device mappings compatible with
+/// Linux callers while still using the normal SHM region ownership model.
+pub fn unmap_from_current_by_addr(region_id: u32, addr: u64, len: u64) -> bool {
+    const PAGE_SIZE: u64 = FRAME_SIZE as u64;
+    if addr & (PAGE_SIZE - 1) != 0 || len == 0 {
+        return false;
+    }
+    let aligned_len = match len.checked_add(PAGE_SIZE - 1) {
+        Some(v) => v & !(PAGE_SIZE - 1),
+        None => return false,
+    };
+
+    let tid = crate::task::scheduler::current_tid();
+    let mut regions = SHARED_REGIONS.lock();
+
+    let idx = match regions.iter().position(|r| r.id == region_id) {
+        Some(i) => i,
+        None => return false,
+    };
+    if aligned_len < regions[idx].size as u64 {
+        return false;
+    }
+
+    let mapping_pos = match regions[idx]
+        .mappings
+        .iter()
+        .position(|m| m.tid == tid && m.vaddr == addr)
+    {
+        Some(p) => p,
+        None => return false,
+    };
+
+    let pages = regions[idx].physical_frames.len();
+    for i in 0..pages {
+        virtual_mem::unmap_page(VirtAddr::new(addr + (i * FRAME_SIZE) as u64));
+    }
+
+    regions[idx].mappings.remove(mapping_pos);
+    maybe_free_region(&mut regions, idx);
     true
 }
 

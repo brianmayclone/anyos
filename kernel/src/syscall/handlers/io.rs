@@ -113,6 +113,7 @@ pub fn sys_write(fd: u32, buf_ptr: u64, len: u32) -> u32 {
                 FdKind::PipeRead { .. }
                 | FdKind::LinuxProc { .. }
                 | FdKind::LinuxSocket { .. }
+                | FdKind::LinuxFramebuffer { .. }
                 | FdKind::None => u32::MAX,
             }
         }
@@ -212,6 +213,7 @@ pub fn sys_read(fd: u32, buf_ptr: u64, len: u32) -> u32 {
                 FdKind::PipeWrite { .. }
                 | FdKind::LinuxProc { .. }
                 | FdKind::LinuxSocket { .. }
+                | FdKind::LinuxFramebuffer { .. }
                 | FdKind::None => u32::MAX,
             }
         }
@@ -385,7 +387,7 @@ pub fn sys_close(fd: u32) -> u32 {
         Some(FdKind::Tty) | Some(FdKind::PtySlave { .. }) => {
             0 // Tty slot cleared, no resource to decref
         }
-        Some(FdKind::LinuxProc { .. }) => 0,
+        Some(FdKind::LinuxProc { .. }) | Some(FdKind::LinuxFramebuffer { .. }) => 0,
         Some(FdKind::LinuxSocket { socket_id }) => {
             crate::syscall::linux::socket_decref(socket_id);
             0
@@ -440,7 +442,8 @@ pub fn sys_fstat(fd: u32, buf_ptr: u64) -> u32 {
             | FdKind::Tty
             | FdKind::PtySlave { .. }
             | FdKind::LinuxProc { .. }
-            | FdKind::LinuxSocket { .. } => {
+            | FdKind::LinuxSocket { .. }
+            | FdKind::LinuxFramebuffer { .. } => {
                 // Pipe/Tty FDs: report as character device, size 0
                 unsafe {
                     let buf = buf_ptr as *mut u32;
@@ -505,7 +508,8 @@ pub fn sys_isatty(fd: u32) -> u32 {
             | FdKind::PipeRead { .. }
             | FdKind::PipeWrite { .. }
             | FdKind::LinuxProc { .. }
-            | FdKind::LinuxSocket { .. } => 0,
+            | FdKind::LinuxSocket { .. }
+            | FdKind::LinuxFramebuffer { .. } => 0,
             FdKind::None => 0,
         },
         None => {
@@ -743,7 +747,11 @@ fn incref_fd_kind(kind: crate::fs::fd_table::FdKind) {
         FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::incref_read(pipe_id),
         FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::incref_write(pipe_id),
         FdKind::LinuxSocket { socket_id } => crate::syscall::linux::socket_incref(socket_id),
-        FdKind::Tty | FdKind::PtySlave { .. } | FdKind::LinuxProc { .. } | FdKind::None => {}
+        FdKind::Tty
+        | FdKind::PtySlave { .. }
+        | FdKind::LinuxProc { .. }
+        | FdKind::LinuxFramebuffer { .. }
+        | FdKind::None => {}
     }
 }
 
@@ -755,6 +763,10 @@ fn decref_fd_kind(kind: crate::fs::fd_table::FdKind) {
         FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::decref_read(pipe_id),
         FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::decref_write(pipe_id),
         FdKind::LinuxSocket { socket_id } => crate::syscall::linux::socket_decref(socket_id),
-        FdKind::Tty | FdKind::PtySlave { .. } | FdKind::LinuxProc { .. } | FdKind::None => {}
+        FdKind::Tty
+        | FdKind::PtySlave { .. }
+        | FdKind::LinuxProc { .. }
+        | FdKind::LinuxFramebuffer { .. }
+        | FdKind::None => {}
     }
 }

@@ -27,6 +27,8 @@ pub enum FdKind {
     LinuxProc { file: u16, pid: u32, position: u32 },
     /// Socket exposed by the lxe Linux ABI.
     LinuxSocket { socket_id: u32 },
+    /// Linux framebuffer compatibility device (/dev/fb0).
+    LinuxFramebuffer { position: u32 },
 }
 
 /// Per-FD flags (POSIX).
@@ -184,6 +186,20 @@ impl FdTable {
         }
         match &mut self.entries[fd as usize].kind {
             FdKind::LinuxProc { position: pos, .. } => {
+                *pos = position;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Update the read/write cursor for the lxe /dev/fb0 pseudo-device.
+    pub fn set_linux_fb_position(&mut self, fd: u32, position: u32) -> bool {
+        if (fd as usize) >= MAX_FDS {
+            return false;
+        }
+        match &mut self.entries[fd as usize].kind {
+            FdKind::LinuxFramebuffer { position: pos } => {
                 *pos = position;
                 true
             }

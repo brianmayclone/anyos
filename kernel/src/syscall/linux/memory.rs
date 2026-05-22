@@ -58,6 +58,13 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
         );
         return linux_err(ENOSYS);
     }
+    if !anonymous && fd <= u32::MAX as u64 {
+        if let Some(entry) = crate::task::scheduler::current_fd_get(fd as u32) {
+            if let crate::fs::fd_table::FdKind::LinuxFramebuffer { .. } = entry.kind {
+                return linux_fb_mmap(addr, len, prot, flags, offset);
+            }
+        }
+    }
     if shared && (prot & LINUX_PROT_WRITE) != 0 {
         crate::serial_verbose_println!(
             "lxe linux mmap: reject shared-write addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
@@ -201,6 +208,9 @@ pub(super) fn linux_fd_is_minus_one(fd: u64) -> bool {
 }
 
 pub(super) fn linux_munmap(addr: u64, len: u64) -> u64 {
+    if linux_fb_munmap(addr, len) {
+        return 0;
+    }
     let ret = if addr <= u32::MAX as u64 {
         handlers::sys_munmap(addr as u32, len as u32) as u64
     } else {

@@ -8,6 +8,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 mod abi;
+mod fb;
 mod fs;
 mod io;
 mod ipc;
@@ -19,6 +20,7 @@ mod socket;
 mod trace;
 
 use abi::*;
+use fb::*;
 use fs::*;
 use io::*;
 use ipc::*;
@@ -45,6 +47,7 @@ const EAGAIN: i32 = 11;
 const ENOTDIR: i32 = 20;
 const EISDIR: i32 = 21;
 const ENOTTY: i32 = 25;
+const ENODEV: i32 = 19;
 const EFBIG: i32 = 27;
 const EPERM: i32 = 1;
 const ESRCH: i32 = 3;

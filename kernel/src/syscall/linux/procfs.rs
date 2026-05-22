@@ -1050,6 +1050,7 @@ fn linux_proc_fd_link_target(packed: u32) -> Option<String> {
         crate::fs::fd_table::FdKind::LinuxSocket { socket_id } => {
             Some(format!("socket:[{}]", socket_id))
         }
+        crate::fs::fd_table::FdKind::LinuxFramebuffer { .. } => Some(String::from("/dev/fb0")),
         crate::fs::fd_table::FdKind::None => None,
     }
 }

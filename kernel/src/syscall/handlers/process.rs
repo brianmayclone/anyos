@@ -50,8 +50,11 @@ pub fn sys_exit(status: u32) -> u32 {
                 FdKind::LinuxSocket { socket_id } => {
                     crate::syscall::linux::socket_decref(*socket_id);
                 }
-                FdKind::Tty | FdKind::PtySlave { .. } | FdKind::LinuxProc { .. } | FdKind::None => {
-                }
+                FdKind::Tty
+                | FdKind::PtySlave { .. }
+                | FdKind::LinuxProc { .. }
+                | FdKind::LinuxFramebuffer { .. }
+                | FdKind::None => {}
             }
         }
     }
@@ -1190,8 +1193,11 @@ pub fn sys_fork_with_child_tidptr(
                 FdKind::LinuxSocket { socket_id } => {
                     crate::syscall::linux::socket_incref(socket_id);
                 }
-                FdKind::Tty | FdKind::PtySlave { .. } | FdKind::LinuxProc { .. } | FdKind::None => {
-                }
+                FdKind::Tty
+                | FdKind::PtySlave { .. }
+                | FdKind::LinuxProc { .. }
+                | FdKind::LinuxFramebuffer { .. }
+                | FdKind::None => {}
             }
         }
         scheduler::set_thread_fd_table(child_tid, fd_table);
@@ -1377,8 +1383,11 @@ pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
                 FdKind::LinuxSocket { socket_id } => {
                     crate::syscall::linux::socket_incref(socket_id)
                 }
-                FdKind::Tty | FdKind::PtySlave { .. } | FdKind::LinuxProc { .. } | FdKind::None => {
-                }
+                FdKind::Tty
+                | FdKind::PtySlave { .. }
+                | FdKind::LinuxProc { .. }
+                | FdKind::LinuxFramebuffer { .. }
+                | FdKind::None => {}
             }
         }
         scheduler::set_thread_fd_table(child_tid, fd_table);

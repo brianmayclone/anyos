@@ -47,6 +47,9 @@ pub(super) fn linux_stat(path_ptr: u64, stat_ptr: u64, nofollow: bool) -> u64 {
         return linux_err(ENOENT);
     }
     let abs = linux_absolute_path(raw_path);
+    if linux_fb_is_path(&abs) {
+        return linux_fb_stat(stat_ptr);
+    }
     if let Some((file, pid)) = linux_proc_node(&abs) {
         return linux_write_proc_stat(stat_ptr, file, pid);
     }
@@ -71,6 +74,9 @@ pub(super) fn linux_newfstatat(dirfd: i32, path_ptr: u64, stat_ptr: u64, flags: 
     }
     if raw_path.starts_with('/') || dirfd == LINUX_AT_FDCWD {
         let abs = linux_absolute_path(&raw_path);
+        if linux_fb_is_path(&abs) {
+            return linux_fb_stat(stat_ptr);
+        }
         if let Some((file, pid)) = linux_proc_node(&abs) {
             return linux_write_proc_stat(stat_ptr, file, pid);
         }
@@ -101,6 +107,9 @@ pub(super) fn linux_access(path_ptr: u64, _mode: u64) -> u64 {
         return linux_err(ENOENT);
     }
     let abs = linux_absolute_path(raw_path);
+    if linux_fb_is_path(&abs) {
+        return 0;
+    }
     if linux_proc_node(&abs).is_some() {
         return 0;
     }
@@ -134,6 +143,9 @@ pub(super) fn linux_open_linux_path(path: &str, linux_flags: u64) -> u64 {
             crate::task::scheduler::current_fd_set_cloexec(fd, true);
         }
         return fd as u64;
+    }
+    if linux_fb_is_path(&abs) {
+        return linux_fb_open(linux_flags);
     }
     if let Some((proc_file, pid)) = linux_proc_node(&abs) {
         if let Some(ret) = linux_open_proc_fd_entry(&abs, proc_file, pid, linux_flags) {
@@ -283,7 +295,8 @@ fn linux_sync_fd(fd: u32, flush_hardware: bool) -> u64 {
             | FdKind::Tty
             | FdKind::PtySlave { .. }
             | FdKind::LinuxSocket { .. }
-            | FdKind::LinuxProc { .. } => 0,
+            | FdKind::LinuxProc { .. }
+            | FdKind::LinuxFramebuffer { .. } => 0,
             FdKind::None => linux_err(EBADF),
         },
         None => linux_err(EBADF),
@@ -404,6 +417,7 @@ pub(super) fn linux_fstat(fd: u32, stat_ptr: u64) -> u64 {
                 0
             }
             FdKind::LinuxProc { file, pid, .. } => linux_write_proc_stat(stat_ptr, file, pid),
+            FdKind::LinuxFramebuffer { .. } => linux_fb_stat(stat_ptr),
             FdKind::None => linux_err(EBADF),
         },
         None if fd < 3 => {
@@ -454,6 +468,9 @@ pub(super) fn linux_statx(
 
     if raw_path.starts_with('/') || dirfd == LINUX_AT_FDCWD {
         let abs = linux_absolute_path(&raw_path);
+        if linux_fb_is_path(&abs) {
+            return linux_fb_statx(statx_ptr);
+        }
         if let Some((file, pid)) = linux_proc_node(&abs) {
             return linux_write_proc_statx(statx_ptr, file, pid);
         }
@@ -508,6 +525,7 @@ fn linux_fstatx(fd: u32, statx_ptr: u64) -> u64 {
                 0
             }
             FdKind::LinuxProc { file, pid, .. } => linux_write_proc_statx(statx_ptr, file, pid),
+            FdKind::LinuxFramebuffer { .. } => linux_fb_statx(statx_ptr),
             FdKind::None => linux_err(EBADF),
         },
         None if fd < 3 => {

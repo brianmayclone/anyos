@@ -132,6 +132,19 @@ pub fn current_fd_set_nonblock(fd: u32, nonblock: bool) {
     }
 }
 
+/// Update the read/write cursor for an lxe Linux framebuffer FD.
+pub fn current_fd_set_linux_fb_position(fd: u32, position: u32) -> bool {
+    let mut guard = SCHEDULER.lock();
+    let Some(sched) = guard.as_mut() else {
+        return false;
+    };
+    let cpu = get_cpu_id();
+    let Some(idx) = sched.current_idx(cpu) else {
+        return false;
+    };
+    sched.threads[idx].fd_table.set_linux_fb_position(fd, position)
+}
+
 /// Update the cursor for a lxe Linux proc pseudo-file in the current FD table.
 pub fn current_fd_set_linux_proc_position(fd: u32, position: u32) -> bool {
     let mut guard = SCHEDULER.lock();
