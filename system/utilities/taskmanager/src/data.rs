@@ -1,9 +1,10 @@
 use crate::types::*;
 use alloc::vec::Vec;
+use anyos_std::net;
 use anyos_std::sys;
 
 pub fn fetch_tasks(
-    buf: &mut [u8; THREAD_ENTRY_SIZE * 64],
+    buf: &mut [u8; THREAD_ENTRY_SIZE * MAX_TASKS],
     prev: &mut PrevTicks,
     total_sched_ticks: u32,
     result: &mut Vec<TaskEntry>,
@@ -71,6 +72,15 @@ pub fn fetch_tasks(
             u32::from_le_bytes([buf[off + 60], buf[off + 61], buf[off + 62], buf[off + 63]]);
         let is_child_thread = buf[off + 7] != 0; // pd_shared flag from kernel
 
+        // I/O rates: delta bytes over the 1s refresh interval.
+        let (prev_read, prev_write) = prev.io_entries[..prev.count]
+            .iter()
+            .find(|e| e.0 == tid)
+            .map(|e| (e.1, e.2))
+            .unwrap_or((io_read_bytes, io_write_bytes));
+        let io_read_bps = io_read_bytes.wrapping_sub(prev_read).min(u32::MAX as u64) as u32;
+        let io_write_bps = io_write_bytes.wrapping_sub(prev_write).min(u32::MAX as u64) as u32;
+
         // Network bytes (tx at offset 64, rx at offset 72)
         let net_tx = u64::from_le_bytes([
             buf[off + 64],
@@ -92,20 +102,22 @@ pub fn fetch_tasks(
             buf[off + 78],
             buf[off + 79],
         ]);
-        let net_total = net_tx.wrapping_add(net_rx);
-
-        // Network rate: delta bytes over 1000ms → kbit/s
-        let prev_net = prev.net_entries[..prev.count]
+        // Network rate: delta bytes over 1000ms -> kbit/s.
+        let (prev_tx, prev_rx) = prev.net_entries[..prev.count]
             .iter()
             .find(|e| e.0 == tid)
-            .map(|e| e.1)
-            .unwrap_or(net_total);
-        let d_net = net_total.wrapping_sub(prev_net);
+            .map(|e| (e.1, e.2))
+            .unwrap_or((net_tx, net_rx));
+        let d_tx = net_tx.wrapping_sub(prev_tx);
+        let d_rx = net_rx.wrapping_sub(prev_rx);
+        let d_net = d_tx.wrapping_add(d_rx);
         let net_kbit = if d_net > 0 {
             (d_net * 8 / 1000).min(u32::MAX as u64) as u32 // 1000ms refresh
         } else {
             0
         };
+        let net_tx_bps = d_tx.min(u32::MAX as u64) as u32;
+        let net_rx_bps = d_rx.min(u32::MAX as u64) as u32;
 
         result.push(TaskEntry {
             tid,
@@ -119,9 +131,13 @@ pub fn fetch_tasks(
             cpu_pct_x10,
             io_read_bytes,
             io_write_bytes,
+            io_read_bps,
+            io_write_bps,
             parent_tid,
             is_child_thread,
             net_kbit,
+            net_rx_bps,
+            net_tx_bps,
         });
     }
 
@@ -158,10 +174,48 @@ pub fn fetch_tasks(
             buf[off + 79],
         ]);
         prev.entries[prev.count] = (tid, cpu_ticks);
-        prev.net_entries[prev.count] = (tid, net_tx.wrapping_add(net_rx));
+        prev.net_entries[prev.count] = (tid, net_tx, net_rx);
+        let io_read_bytes = u64::from_le_bytes([
+            buf[off + 40],
+            buf[off + 41],
+            buf[off + 42],
+            buf[off + 43],
+            buf[off + 44],
+            buf[off + 45],
+            buf[off + 46],
+            buf[off + 47],
+        ]);
+        let io_write_bytes = u64::from_le_bytes([
+            buf[off + 48],
+            buf[off + 49],
+            buf[off + 50],
+            buf[off + 51],
+            buf[off + 52],
+            buf[off + 53],
+            buf[off + 54],
+            buf[off + 55],
+        ]);
+        prev.io_entries[prev.count] = (tid, io_read_bytes, io_write_bytes);
         prev.count += 1;
     }
     prev.prev_total = total_sched_ticks;
+}
+
+pub fn sort_tasks_by_activity(tasks: &mut Vec<TaskEntry>) {
+    for i in 1..tasks.len() {
+        let mut j = i;
+        while j > 0 && task_rank(&tasks[j]) > task_rank(&tasks[j - 1]) {
+            tasks.swap(j, j - 1);
+            j -= 1;
+        }
+    }
+}
+
+fn task_rank(t: &TaskEntry) -> u64 {
+    let cpu = (t.cpu_pct_x10 as u64) << 40;
+    let io = ((t.io_read_bps as u64 + t.io_write_bps as u64).min(0xFFFFF)) << 20;
+    let mem = (t.user_pages as u64).min(0xFFFFF);
+    cpu | io | mem
 }
 
 /// Build the flat display list from grouped tasks.
@@ -233,17 +287,26 @@ pub fn build_display_list(tasks: &[TaskEntry], expanded: &[u32], display: &mut V
                 thread_count: 0,
                 agg_cpu: tasks[l].cpu_pct_x10,
                 agg_net: tasks[l].net_kbit,
+                agg_pages: tasks[l].user_pages,
+                agg_read_bps: tasks[l].io_read_bps,
+                agg_write_bps: tasks[l].io_write_bps,
                 agg_state: tasks[l].state,
             });
         } else {
             // Multi-thread process: compute aggregates
             let mut agg_cpu = 0u32;
             let mut agg_net = 0u32;
+            let mut agg_pages = 0u32;
+            let mut agg_read_bps = 0u32;
+            let mut agg_write_bps = 0u32;
             let mut best_state = 2u8; // default blocked
             for j in 0..n {
                 if leader[j] as usize == l {
                     agg_cpu += tasks[j].cpu_pct_x10;
                     agg_net += tasks[j].net_kbit;
+                    agg_pages = agg_pages.saturating_add(tasks[j].user_pages);
+                    agg_read_bps = agg_read_bps.saturating_add(tasks[j].io_read_bps);
+                    agg_write_bps = agg_write_bps.saturating_add(tasks[j].io_write_bps);
                     match tasks[j].state {
                         1 => best_state = 1,                    // Running
                         0 if best_state != 1 => best_state = 0, // Ready
@@ -258,6 +321,9 @@ pub fn build_display_list(tasks: &[TaskEntry], expanded: &[u32], display: &mut V
                 thread_count: count,
                 agg_cpu,
                 agg_net,
+                agg_pages,
+                agg_read_bps,
+                agg_write_bps,
                 agg_state: best_state,
             });
 
@@ -272,6 +338,9 @@ pub fn build_display_list(tasks: &[TaskEntry], expanded: &[u32], display: &mut V
                             thread_count: 0,
                             agg_cpu: 0,
                             agg_net: 0,
+                            agg_pages: 0,
+                            agg_read_bps: 0,
+                            agg_write_bps: 0,
                             agg_state: 0,
                         });
                     }
@@ -279,6 +348,19 @@ pub fn build_display_list(tasks: &[TaskEntry], expanded: &[u32], display: &mut V
             }
         }
     }
+}
+
+pub fn fetch_net_totals() -> Option<NetTotals> {
+    net::net_stats().map(|s| NetTotals {
+        rx_bytes: s.rx_bytes,
+        tx_bytes: s.tx_bytes,
+        rx_packets: s.rx_packets,
+        tx_packets: s.tx_packets,
+        rx_errors: s.rx_errors,
+        tx_errors: s.tx_errors,
+        tcp_curr_established: s.tcp_curr_established,
+        tcp_conn_errors: s.tcp_conn_errors,
+    })
 }
 
 pub fn fetch_memory() -> Option<MemInfo> {

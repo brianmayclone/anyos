@@ -8,19 +8,28 @@ use libanyui_client as anyui;
 
 anyos_std::entry!(main);
 
-const DIALOG_W: u32 = 660;
-const DIALOG_H: u32 = 540;
+const DIALOG_W: u32 = 720;
+const DIALOG_H_EXPANDED: u32 = 600;
+const DIALOG_H_COLLAPSED: u32 = 370;
 
-const CONTENT_W: u32 = 612;
-const CONTENT_H: u32 = 860;
-const VIEWPORT_H: u32 = 460;
+const LEFT_X: i32 = 34;
+const CONTENT_X: i32 = 150;
+const CONTENT_W: u32 = 536;
+const FOOTER_H: u32 = 64;
+const FOOTER_Y_EXPANDED: i32 = 536;
+const FOOTER_Y_COLLAPSED: i32 = 306;
 
-const HEADER_H: u32 = 120;
-const SUMMARY_H: u32 = 126;
-const SECTION_HEADER_H: u32 = 32;
-const SUMMARY_TEXT_H: u32 = 108;
-const REG_TEXT_H: u32 = 190;
-const TRACE_TEXT_H: u32 = 132;
+const DARK_BG: u32 = 0xFF0D1117;
+const DARK_PANEL: u32 = 0xFF161B22;
+const DARK_TEXT: u32 = 0xFFE6EDF3;
+const DARK_TEXT_SECONDARY: u32 = 0xFF8B949E;
+const DARK_CONTROL_BG: u32 = 0xFF21262D;
+const DARK_CONTROL_HOVER: u32 = 0xFF30363D;
+const DARK_INPUT_BG: u32 = 0xFF0D1117;
+const DARK_INPUT_BORDER: u32 = 0xFF30363D;
+const DARK_SEPARATOR: u32 = 0xFF21262D;
+const DARK_ACCENT: u32 = 0xFF2563EB;
+const DARK_WARNING: u32 = 0xFFF59E0B;
 
 #[repr(C)]
 struct CrashReport {
@@ -53,6 +62,58 @@ struct CrashReport {
     name: [u8; 32],
     valid: bool,
 }
+
+#[derive(Clone, Copy)]
+struct DialogPalette {
+    bg: u32,
+    panel: u32,
+    text: u32,
+    secondary: u32,
+    control: u32,
+    control_hover: u32,
+    input: u32,
+    input_border: u32,
+    separator: u32,
+    accent: u32,
+    warning: u32,
+}
+
+impl DialogPalette {
+    fn current_dark() -> Self {
+        let tc = anyui::theme::colors();
+        if anyui::theme::is_light() {
+            Self {
+                bg: DARK_BG,
+                panel: DARK_PANEL,
+                text: DARK_TEXT,
+                secondary: DARK_TEXT_SECONDARY,
+                control: DARK_CONTROL_BG,
+                control_hover: DARK_CONTROL_HOVER,
+                input: DARK_INPUT_BG,
+                input_border: DARK_INPUT_BORDER,
+                separator: DARK_SEPARATOR,
+                accent: DARK_ACCENT,
+                warning: DARK_WARNING,
+            }
+        } else {
+            Self {
+                bg: tc.window_bg,
+                panel: tc.sidebar_bg,
+                text: tc.text,
+                secondary: tc.text_secondary,
+                control: tc.control_bg,
+                control_hover: tc.control_hover,
+                input: tc.input_bg,
+                input_border: tc.input_border,
+                separator: tc.separator,
+                accent: tc.accent,
+                warning: tc.warning,
+            }
+        }
+    }
+}
+
+static mut DETAILS_VISIBLE: bool = true;
 
 fn signal_name(sig: u32) -> &'static str {
     match sig {
@@ -105,112 +166,124 @@ fn trim_cstr(bytes: &[u8]) -> &str {
     core::str::from_utf8(&bytes[..len]).unwrap_or("")
 }
 
-fn format_summary(report: Option<&CrashReport>, fallback_tid: u32, fallback_sig: u32, fallback_rip: u64) -> String {
-    if let Some(r) = report {
-        let fault_addr = if r.cr2 != 0 {
-            format!("Fault address: {:#018x}\n", r.cr2)
-        } else {
-            String::new()
-        };
-        return format!(
-            "The process crashed while running in user mode.\n\nThread: {} (TID {})\nSignal: {} ({})\nInstruction pointer: {:#018x}\nStack pointer: {:#018x}\nError code: {:#018x}\n{}CS={:#x}  SS={:#x}  RFLAGS={:#018x}\n",
-            trim_cstr(&r.name),
-            r.tid,
-            signal_name(r.signal),
-            signal_detail(r.signal),
-            r.rip,
-            r.rsp,
-            r.err_code,
-            fault_addr,
-            r.cs,
-            r.ss,
-            r.rflags,
-        );
-    }
-
-    format!(
-        "The process crashed, but no extended crash report was available.\n\nTID: {}\nSignal: {} ({})\nInstruction pointer: {:#018x}\n",
-        fallback_tid,
-        signal_name(fallback_sig),
-        signal_detail(fallback_sig),
-        fallback_rip,
-    )
-}
-
 fn format_registers(report: Option<&CrashReport>) -> String {
     if let Some(r) = report {
         return format!(
-            "RAX {:#018x}\nRBX {:#018x}\nRCX {:#018x}\nRDX {:#018x}\nRSI {:#018x}\nRDI {:#018x}\nRBP {:#018x}\nRSP {:#018x}\n\nR8  {:#018x}\nR9  {:#018x}\nR10 {:#018x}\nR11 {:#018x}\nR12 {:#018x}\nR13 {:#018x}\nR14 {:#018x}\nR15 {:#018x}\n",
-            r.rax, r.rbx, r.rcx, r.rdx, r.rsi, r.rdi, r.rbp, r.rsp,
-            r.r8, r.r9, r.r10, r.r11, r.r12, r.r13, r.r14, r.r15,
+            "    rax: {:#018x}    rbx: {:#018x}\n    rcx: {:#018x}    rdx: {:#018x}\n    rdi: {:#018x}    rsi: {:#018x}\n    rbp: {:#018x}    rsp: {:#018x}\n     r8: {:#018x}     r9: {:#018x}\n    r10: {:#018x}    r11: {:#018x}\n    r12: {:#018x}    r13: {:#018x}\n    r14: {:#018x}    r15: {:#018x}\n    rip: {:#018x} rflags: {:#018x}\n     cs: {:#018x}     ss: {:#018x}\n",
+            r.rax,
+            r.rbx,
+            r.rcx,
+            r.rdx,
+            r.rdi,
+            r.rsi,
+            r.rbp,
+            r.rsp,
+            r.r8,
+            r.r9,
+            r.r10,
+            r.r11,
+            r.r12,
+            r.r13,
+            r.r14,
+            r.r15,
+            r.rip,
+            r.rflags,
+            r.cs,
+            r.ss,
         );
     }
 
-    String::from("No register dump was available for this crash.")
+    String::from("    No register dump was available for this crash.\n")
 }
 
 fn format_backtrace(report: Option<&CrashReport>) -> String {
     if let Some(r) = report {
         if r.num_frames == 0 {
-            return String::from("No stack frames were captured.");
+            return String::from("    No stack frames were captured.\n");
         }
+
         let mut out = String::new();
         let frames = (r.num_frames as usize).min(r.stack_frames.len());
         for i in 0..frames {
-            let line = format!("#{:<2}  {:#018x}\n", i, r.stack_frames[i]);
-            out.push_str(&line);
+            out.push_str(&format!("    {:>2}  {:#018x}\n", i, r.stack_frames[i]));
         }
         return out;
     }
 
-    String::from("No backtrace was available for this crash.")
+    String::from("    No backtrace was available for this crash.\n")
 }
 
-fn section_height(text_h: u32, expanded: bool) -> u32 {
-    if expanded {
-        SECTION_HEADER_H + text_h + 10
-    } else {
-        SECTION_HEADER_H
+fn format_problem_details(
+    report: Option<&CrashReport>,
+    fallback_tid: u32,
+    fallback_signal: u32,
+    fallback_rip: u64,
+    process_name: &str,
+) -> String {
+    let tid = report.map(|r| r.tid).unwrap_or(fallback_tid);
+    let signal = report.map(|r| r.signal).unwrap_or(fallback_signal);
+    let rip = report.map(|r| r.rip).unwrap_or(fallback_rip);
+    let rsp = report.map(|r| r.rsp).unwrap_or(0);
+    let fault_addr = report.map(|r| r.cr2).unwrap_or(0);
+    let err_code = report.map(|r| r.err_code).unwrap_or(0);
+
+    let mut out = String::new();
+    out.push_str("----------------------------------------\n");
+    out.push_str("Translated Report (Full Report Below)\n");
+    out.push_str("----------------------------------------\n\n");
+    out.push_str(&format!(
+        "Incident Identifier: TID-{}-RIP-{:#x}\n",
+        tid, rip
+    ));
+    out.push_str("CrashReporter Key:  anyOS CrashReporter\n");
+    out.push_str("Hardware Model:     anyOS x86_64\n");
+    out.push_str(&format!("Process:            {} [{}]\n", process_name, tid));
+    out.push_str("Path:               unknown\n");
+    out.push_str("Identifier:         anyOS.user-process\n\n");
+    out.push_str(&format!(
+        "Exception Type:     {} ({})\n",
+        signal_name(signal),
+        signal_detail(signal)
+    ));
+    out.push_str(&format!("Exception Codes:    error {:#018x}\n", err_code));
+    if fault_addr != 0 {
+        out.push_str(&format!("Fault Address:      {:#018x}\n", fault_addr));
     }
+    out.push_str(&format!("Instruction:        {:#018x}\n", rip));
+    if rsp != 0 {
+        out.push_str(&format!("Stack Pointer:      {:#018x}\n", rsp));
+    }
+    out.push_str("\nThread State (x86_64):\n");
+    out.push_str(&format_registers(report));
+    out.push_str("\nBacktrace:\n");
+    out.push_str(&format_backtrace(report));
+    out
 }
 
-fn update_section_layout(
-    win: &anyui::Window,
-    content: &anyui::View,
-    summary_exp: &anyui::Expander,
-    summary_editor: &anyui::TextEditor,
-    regs_exp: &anyui::Expander,
-    regs_editor: &anyui::TextEditor,
-    trace_exp: &anyui::Expander,
-    trace_editor: &anyui::TextEditor,
-) {
-    let mut y = HEADER_H as i32 + SUMMARY_H as i32 + 12;
+fn draw_warning_icon(canvas: &anyui::Canvas, p: DialogPalette) {
+    canvas.clear(p.bg);
 
-    let summary_open = summary_exp.is_expanded();
-    let summary_h = section_height(SUMMARY_TEXT_H, summary_open);
-    summary_exp.set_position(0, y);
-    summary_exp.set_size(CONTENT_W, summary_h);
-    summary_editor.set_visible(summary_open);
-    y += summary_h as i32 + 8;
+    let top_x = 40i32;
+    let top_y = 8i32;
+    let left_x = 8i32;
+    let right_x = 72i32;
+    let bottom_y = 70i32;
+    let height = bottom_y - top_y;
 
-    let regs_open = regs_exp.is_expanded();
-    let regs_h = section_height(REG_TEXT_H, regs_open);
-    regs_exp.set_position(0, y);
-    regs_exp.set_size(CONTENT_W, regs_h);
-    regs_editor.set_visible(regs_open);
-    y += regs_h as i32 + 8;
+    let mut y = top_y;
+    while y <= bottom_y {
+        let dy = y - top_y;
+        let lx = top_x - ((top_x - left_x) * dy / height);
+        let rx = top_x + ((right_x - top_x) * dy / height);
+        canvas.fill_rect(lx, y, (rx - lx + 1) as u32, 1, p.warning);
+        y += 1;
+    }
 
-    let trace_open = trace_exp.is_expanded();
-    let trace_h = section_height(TRACE_TEXT_H, trace_open);
-    trace_exp.set_position(0, y);
-    trace_exp.set_size(CONTENT_W, trace_h);
-    trace_editor.set_visible(trace_open);
-    y += trace_h as i32 + 14;
-
-    let total_h = y.max(VIEWPORT_H as i32 + 4) as u32;
-    content.set_size(CONTENT_W, total_h);
-    let current_w = win.get_size().0;
-    win.resize(current_w.max(DIALOG_W), DIALOG_H.max(340));
+    canvas.draw_thick_line(top_x, top_y, left_x, bottom_y, p.input_border, 3);
+    canvas.draw_thick_line(top_x, top_y, right_x, bottom_y, p.input_border, 3);
+    canvas.draw_thick_line(left_x, bottom_y, right_x, bottom_y, p.input_border, 3);
+    canvas.fill_rect(37, 25, 6, 26, 0xFFFFFFFF);
+    canvas.fill_circle(40, 59, 4, 0xFFFFFFFF);
 }
 
 fn main() {
@@ -243,253 +316,201 @@ fn main() {
 
     let thread_name = if let Some(r) = report {
         let from_report = trim_cstr(&r.name);
-        if from_report.is_empty() { thread_name_arg } else { from_report }
+        if from_report.is_empty() {
+            thread_name_arg
+        } else {
+            from_report
+        }
     } else {
         thread_name_arg
     };
 
-    let signal_line = format!("{} ({})", signal_name(signal), signal_detail(signal));
-    let summary_text = format_summary(report, tid, signal, rip);
-    let register_text = format_registers(report);
-    let trace_text = format_backtrace(report);
+    let crash_signal = report.map(|r| r.signal).unwrap_or(signal);
+    let problem_title = format!("Problem Report for {}", thread_name);
+    let headline_text = format!("{} quit unexpectedly.", thread_name);
+    let detail_text = format_problem_details(report, tid, signal, rip, thread_name);
 
     if !anyui::init() {
         println!("crashdialog: failed to init anyui");
         return;
     }
 
+    let palette = DialogPalette::current_dark();
+    unsafe {
+        DETAILS_VISIBLE = true;
+    }
+
     let (screen_w, screen_h) = anyui::screen_size();
     let wx = (screen_w.saturating_sub(DIALOG_W) / 2) as i32;
-    let wy = (screen_h.saturating_sub(DIALOG_H) / 2) as i32;
+    let wy = (screen_h.saturating_sub(DIALOG_H_EXPANDED) / 2) as i32;
 
     let win = anyui::Window::new_with_flags(
-        "Application Crash",
+        &problem_title,
         wx,
         wy,
         DIALOG_W,
-        DIALOG_H,
-        anyui::WIN_FLAG_ALWAYS_ON_TOP | anyui::WIN_FLAG_SHADOW,
+        DIALOG_H_EXPANDED,
+        anyui::WIN_FLAG_ALWAYS_ON_TOP | anyui::WIN_FLAG_SHADOW | anyui::WIN_FLAG_NOT_RESIZABLE,
     );
 
     let root = anyui::View::new();
     root.set_dock(anyui::DOCK_FILL);
-    root.set_color(0xFFF4F0EA);
+    root.set_color(palette.bg);
     win.add(&root);
 
-    let header = anyui::Card::new();
-    header.set_position(16, 16);
-    header.set_size(CONTENT_W, HEADER_H);
-    header.set_color(0xFF221A18);
-    root.add(&header);
+    let top_rule = anyui::View::new();
+    top_rule.set_position(0, 0);
+    top_rule.set_size(DIALOG_W, 1);
+    top_rule.set_color(palette.separator);
+    root.add(&top_rule);
 
-    let badge = anyui::Label::new("Crash Report");
-    badge.set_position(18, 16);
-    badge.set_size(116, 24);
-    badge.set_color(0xFFE45D48);
-    badge.set_text_color(0xFFFFFFFF);
-    badge.set_text_align(anyui::TEXT_ALIGN_CENTER);
-    header.add(&badge);
+    let icon = anyui::Canvas::new(80, 80);
+    icon.set_position(LEFT_X, 42);
+    draw_warning_icon(&icon, palette);
+    root.add(&icon);
 
-    let title = anyui::Label::new("This application stopped unexpectedly");
-    title.set_position(18, 48);
-    title.set_size(530, 30);
-    title.set_font(1);
-    title.set_font_size(18);
-    title.set_text_color(0xFFF7F2EC);
-    header.add(&title);
+    let headline = anyui::Label::new(&headline_text);
+    headline.set_position(CONTENT_X, 34);
+    headline.set_size(CONTENT_W, 30);
+    headline.set_font(1);
+    headline.set_font_size(18);
+    headline.set_text_color(palette.text);
+    root.add(&headline);
 
-    let subtitle = anyui::Label::new("You can close this dialog or inspect the captured crash details below.");
-    subtitle.set_position(18, 80);
-    subtitle.set_size(560, 22);
-    subtitle.set_text_color(0xFFD9CBC2);
-    header.add(&subtitle);
+    let message = anyui::Label::new("anyOS captured a diagnostic report for this process.");
+    message.set_position(CONTENT_X, 70);
+    message.set_size(CONTENT_W, 22);
+    message.set_font_size(14);
+    message.set_text_color(palette.text);
+    root.add(&message);
 
-    let close_hint = anyui::PlainButton::new("Dismiss");
-    close_hint.set_position(506, 18);
-    close_hint.set_size(86, 26);
-    close_hint.on_click(|_| anyui::quit());
-    header.add(&close_hint);
-
-    let summary = anyui::Card::new();
-    summary.set_position(16, 148);
-    summary.set_size(CONTENT_W, SUMMARY_H);
-    summary.set_color(0xFFFFFBF7);
-    root.add(&summary);
-
-    let name_lbl = anyui::Label::new(thread_name);
-    name_lbl.set_position(18, 14);
-    name_lbl.set_size(360, 24);
-    name_lbl.set_font(1);
-    name_lbl.set_font_size(16);
-    name_lbl.set_text_color(0xFF2A211F);
-    summary.add(&name_lbl);
-
-    let signal_lbl = anyui::Label::new(&signal_line);
-    signal_lbl.set_position(18, 42);
-    signal_lbl.set_size(260, 20);
-    signal_lbl.set_color(0xFFFCE4DE);
-    signal_lbl.set_text_color(0xFFC44536);
-    summary.add(&signal_lbl);
-
-    let tid_lbl = anyui::Label::new(&format!("Thread ID: {}", tid));
-    tid_lbl.set_position(18, 72);
-    tid_lbl.set_size(180, 20);
-    tid_lbl.set_text_color(0xFF655854);
-    summary.add(&tid_lbl);
-
-    let rip_lbl = anyui::Label::new(&format!("Instruction: {:#018x}", report.map(|r| r.rip).unwrap_or(rip)));
-    rip_lbl.set_position(220, 72);
-    rip_lbl.set_size(340, 20);
-    rip_lbl.set_text_color(0xFF655854);
-    summary.add(&rip_lbl);
-
-    let note_lbl = anyui::Label::new("If the app keeps crashing, inspect registers and stack frames before retrying.");
-    note_lbl.set_position(18, 96);
-    note_lbl.set_size(560, 18);
-    note_lbl.set_text_color(0xFF8A7A74);
-    summary.add(&note_lbl);
-
-    let scroll = anyui::ScrollView::new();
-    scroll.set_position(16, 286);
-    scroll.set_size(CONTENT_W, VIEWPORT_H);
-    scroll.set_color(0xFFF4F0EA);
-    root.add(&scroll);
-
-    let content = anyui::View::new();
-    content.set_position(0, 0);
-    content.set_size(CONTENT_W, CONTENT_H);
-    content.set_color(0xFFF4F0EA);
-    scroll.add(&content);
-
-    let summary_exp = anyui::Expander::new("Summary");
-    summary_exp.set_expanded(true);
-    content.add(&summary_exp);
-
-    let summary_editor = anyui::TextEditor::new(CONTENT_W - 20, SUMMARY_TEXT_H);
-    summary_editor.set_position(10, 32);
-    summary_editor.set_read_only(true);
-    summary_editor.set_show_line_numbers(false);
-    summary_editor.set_editor_font(2, 12);
-    summary_editor.set_text(&summary_text);
-    summary_exp.add(&summary_editor);
-
-    let regs_exp = anyui::Expander::new("Registers");
-    regs_exp.set_expanded(false);
-    content.add(&regs_exp);
-
-    let regs_editor = anyui::TextEditor::new(CONTENT_W - 20, REG_TEXT_H);
-    regs_editor.set_position(10, 32);
-    regs_editor.set_read_only(true);
-    regs_editor.set_show_line_numbers(false);
-    regs_editor.set_editor_font(2, 12);
-    regs_editor.set_text(&register_text);
-    regs_exp.add(&regs_editor);
-
-    let trace_exp = anyui::Expander::new("Backtrace");
-    trace_exp.set_expanded(false);
-    content.add(&trace_exp);
-
-    let trace_editor = anyui::TextEditor::new(CONTENT_W - 20, TRACE_TEXT_H);
-    trace_editor.set_position(10, 32);
-    trace_editor.set_read_only(true);
-    trace_editor.set_show_line_numbers(false);
-    trace_editor.set_editor_font(2, 12);
-    trace_editor.set_text(&trace_text);
-    trace_exp.add(&trace_editor);
-
-    update_section_layout(
-        &win,
-        &content,
-        &summary_exp,
-        &summary_editor,
-        &regs_exp,
-        &regs_editor,
-        &trace_exp,
-        &trace_editor,
+    let signal_line = format!(
+        "{} ({})",
+        signal_name(crash_signal),
+        signal_detail(crash_signal)
     );
+    let signal_label = anyui::Label::new(&signal_line);
+    signal_label.set_position(CONTENT_X, 94);
+    signal_label.set_size(CONTENT_W, 20);
+    signal_label.set_font_size(12);
+    signal_label.set_text_color(palette.secondary);
+    root.add(&signal_label);
+
+    let comments_header = anyui::Label::new("Comments");
+    comments_header.set_position(CONTENT_X, 132);
+    comments_header.set_size(CONTENT_W, 24);
+    comments_header.set_font_size(15);
+    comments_header.set_text_color(palette.text);
+    root.add(&comments_header);
+
+    let comments = anyui::TextArea::new();
+    comments.set_position(CONTENT_X, 160);
+    comments.set_size(CONTENT_W, 92);
+    comments.set_color(palette.input);
+    comments.set_text_color(palette.secondary);
+    comments.set_font_size(14);
+    comments.set_max_length(2048);
+    root.add(&comments);
+
+    let comment_placeholder =
+        anyui::Label::new("Provide any steps necessary to reproduce the problem.");
+    comment_placeholder.set_position(CONTENT_X + 10, 168);
+    comment_placeholder.set_size(CONTENT_W - 20, 20);
+    comment_placeholder.set_font_size(14);
+    comment_placeholder.set_text_color(palette.secondary);
+    root.add(&comment_placeholder);
 
     {
-        let win = win;
-        let content = content;
-        let summary_exp = summary_exp;
-        let summary_editor = summary_editor;
-        let regs_exp = regs_exp;
-        let regs_editor = regs_editor;
-        let trace_exp = trace_exp;
-        let trace_editor = trace_editor;
-        summary_exp.on_toggled(move |_| {
-            update_section_layout(
-                &win,
-                &content,
-                &summary_exp,
-                &summary_editor,
-                &regs_exp,
-                &regs_editor,
-                &trace_exp,
-                &trace_editor,
-            );
+        let comments = comments;
+        let comment_placeholder = comment_placeholder;
+        comments.on_text_changed(move |_| {
+            let mut first = [0u8; 1];
+            comment_placeholder.set_visible(comments.get_text(&mut first) == 0);
         });
     }
 
-    {
-        let win = win;
-        let content = content;
-        let summary_exp = summary_exp;
-        let summary_editor = summary_editor;
-        let regs_exp = regs_exp;
-        let regs_editor = regs_editor;
-        let trace_exp = trace_exp;
-        let trace_editor = trace_editor;
-        regs_exp.on_toggled(move |_| {
-            update_section_layout(
-                &win,
-                &content,
-                &summary_exp,
-                &summary_editor,
-                &regs_exp,
-                &regs_editor,
-                &trace_exp,
-                &trace_editor,
-            );
-        });
-    }
+    let details_label = anyui::Label::new("Problem Details and System Configuration");
+    details_label.set_position(CONTENT_X, 274);
+    details_label.set_size(CONTENT_W, 24);
+    details_label.set_font_size(15);
+    details_label.set_text_color(palette.text);
+    root.add(&details_label);
+
+    let details = anyui::TextArea::new();
+    details.set_position(CONTENT_X, 302);
+    details.set_size(CONTENT_W, 206);
+    details.set_color(palette.input);
+    details.set_text_color(palette.text);
+    details.set_font(4);
+    details.set_font_size(12);
+    details.set_read_only(true);
+    details.set_text(&detail_text);
+    details.set_cursor(0);
+    root.add(&details);
+
+    let footer_rule = anyui::View::new();
+    footer_rule.set_position(0, FOOTER_Y_EXPANDED - 12);
+    footer_rule.set_size(DIALOG_W, 1);
+    footer_rule.set_color(palette.separator);
+    root.add(&footer_rule);
+
+    let footer = anyui::View::new();
+    footer.set_position(0, FOOTER_Y_EXPANDED);
+    footer.set_size(DIALOG_W, FOOTER_H);
+    footer.set_color(palette.panel);
+    root.add(&footer);
+
+    let help = anyui::Label::new("?");
+    help.set_position(28, 16);
+    help.set_size(32, 32);
+    help.set_color(palette.control_hover);
+    help.set_text_align(anyui::TEXT_ALIGN_CENTER);
+    help.set_font(1);
+    help.set_font_size(18);
+    help.set_text_color(palette.accent);
+    footer.add(&help);
+
+    let details_toggle = anyui::Button::new("Hide Details");
+    details_toggle.set_position(CONTENT_X, 17);
+    details_toggle.set_size(124, 30);
+    details_toggle.set_color(palette.control);
+    footer.add(&details_toggle);
+
+    let ok = anyui::Button::new("OK");
+    ok.set_position(582, 17);
+    ok.set_size(104, 30);
+    ok.set_color(palette.accent);
+    ok.on_click(|_| anyui::quit());
+    footer.add(&ok);
 
     {
         let win = win;
-        let content = content;
-        let summary_exp = summary_exp;
-        let summary_editor = summary_editor;
-        let regs_exp = regs_exp;
-        let regs_editor = regs_editor;
-        let trace_exp = trace_exp;
-        let trace_editor = trace_editor;
-        trace_exp.on_toggled(move |_| {
-            update_section_layout(
-                &win,
-                &content,
-                &summary_exp,
-                &summary_editor,
-                &regs_exp,
-                &regs_editor,
-                &trace_exp,
-                &trace_editor,
-            );
+        let details = details;
+        let details_label = details_label;
+        let footer = footer;
+        let footer_rule = footer_rule;
+        let details_toggle = details_toggle;
+        details_toggle.on_click(move |_| {
+            let visible = unsafe {
+                DETAILS_VISIBLE = !DETAILS_VISIBLE;
+                DETAILS_VISIBLE
+            };
+            details.set_visible(visible);
+            details_label.set_visible(visible);
+
+            if visible {
+                footer_rule.set_position(0, FOOTER_Y_EXPANDED - 12);
+                footer.set_position(0, FOOTER_Y_EXPANDED);
+                details_toggle.set_text("Hide Details");
+                win.resize(DIALOG_W, DIALOG_H_EXPANDED);
+            } else {
+                footer_rule.set_position(0, FOOTER_Y_COLLAPSED - 12);
+                footer.set_position(0, FOOTER_Y_COLLAPSED);
+                details_toggle.set_text("Show Details");
+                win.resize(DIALOG_W, DIALOG_H_COLLAPSED);
+            }
         });
     }
-
-    let dismiss_btn = anyui::Button::new("Close");
-    dismiss_btn.set_position(504, 494);
-    dismiss_btn.set_size(124, 30);
-    dismiss_btn.set_color(0xFF201A18);
-    dismiss_btn.on_click(|_| anyui::quit());
-    root.add(&dismiss_btn);
-
-    let secondary = anyui::Label::new("Esc, Enter or window close also dismiss this dialog.");
-    secondary.set_position(20, 500);
-    secondary.set_size(360, 18);
-    secondary.set_text_color(0xFF7D6E68);
-    secondary.on_click(|_| anyui::quit());
-    root.add(&secondary);
 
     win.on_close(|_| anyui::quit());
     win.on_key_down(|e| {

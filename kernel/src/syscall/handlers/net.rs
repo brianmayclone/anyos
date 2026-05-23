@@ -777,9 +777,19 @@ pub fn sys_net_stats(buf_ptr: u64, buf_size: u32) -> u32 {
 
     // NIC stats
     #[cfg(target_arch = "x86_64")]
-    let (rxp, txp, rxb, txb, rxe, txe) = crate::drivers::network::get_stats();
+    let (mut rxp, mut txp, mut rxb, mut txb, rxe, txe) = crate::drivers::network::get_stats();
     #[cfg(target_arch = "aarch64")]
-    let (rxp, txp, rxb, txb, rxe, txe): (u64, u64, u64, u64, u64, u64) = (0, 0, 0, 0, 0, 0);
+    let (mut rxp, mut txp, mut rxb, mut txb, rxe, txe): (u64, u64, u64, u64, u64, u64) =
+        (0, 0, 0, 0, 0, 0);
+    let io = crate::net::io_stats();
+    if rxb == 0 && io.rx_bytes > 0 {
+        rxp = io.rx_packets;
+        rxb = io.rx_bytes;
+    }
+    if txb == 0 && io.tx_bytes > 0 {
+        txp = io.tx_packets;
+        txb = io.tx_bytes;
+    }
     buf[0..8].copy_from_slice(&rxp.to_le_bytes());
     buf[8..16].copy_from_slice(&txp.to_le_bytes());
     buf[16..24].copy_from_slice(&rxb.to_le_bytes());

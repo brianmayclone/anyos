@@ -21,11 +21,43 @@ pub mod wifi;
 use crate::sync::spinlock::Spinlock;
 #[allow(unused_imports)]
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use types::{Ipv4Addr, Ipv6Addr, MacAddr, NetConfig};
 
 /// Global network configuration protected by a spinlock.
 static NET_CONFIG: Spinlock<NetConfig> = Spinlock::new(NetConfig::new());
+
+static RX_PACKETS: AtomicU64 = AtomicU64::new(0);
+static TX_PACKETS: AtomicU64 = AtomicU64::new(0);
+static RX_BYTES: AtomicU64 = AtomicU64::new(0);
+static TX_BYTES: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy)]
+pub struct NetIoStats {
+    pub rx_packets: u64,
+    pub tx_packets: u64,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+}
+
+pub fn record_rx_frame(bytes: usize) {
+    RX_PACKETS.fetch_add(1, Ordering::Relaxed);
+    RX_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
+}
+
+pub fn record_tx_frame(bytes: usize) {
+    TX_PACKETS.fetch_add(1, Ordering::Relaxed);
+    TX_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
+}
+
+pub fn io_stats() -> NetIoStats {
+    NetIoStats {
+        rx_packets: RX_PACKETS.load(Ordering::Relaxed),
+        tx_packets: TX_PACKETS.load(Ordering::Relaxed),
+        rx_bytes: RX_BYTES.load(Ordering::Relaxed),
+        tx_bytes: TX_BYTES.load(Ordering::Relaxed),
+    }
+}
 
 /// Initialize the network stack. Call after NIC driver is initialized.
 pub fn init() {
