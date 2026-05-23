@@ -1473,8 +1473,13 @@ fn current_step() -> u32 {
 }
 
 static BENCH_STATE: AtomicU32 = AtomicU32::new(0); // 0=ready, 1=running
+static SHOWCASE_ACTIVE: AtomicU32 = AtomicU32::new(0);
 
 fn tick_benchmark() {
+    if SHOWCASE_ACTIVE.load(Ordering::SeqCst) != 0 {
+        return;
+    }
+
     let a = app();
     if !a.running {
         return;
@@ -1617,8 +1622,10 @@ fn tick_benchmark() {
                 if !a.gl3d_showcase_done {
                     a.gl3d_showcase_done = true;
                     a.lbl_status.set_text("Running 3D showcase scene...");
+                    SHOWCASE_ACTIVE.store(1, Ordering::SeqCst);
                     workloads::run_gl3d_showcase_window();
-                    a.lbl_status.set_text("Starting 3D benchmark tests...");
+                    SHOWCASE_ACTIVE.store(0, Ordering::SeqCst);
+                    app().lbl_status.set_text("Starting 3D benchmark tests...");
                     return;
                 }
                 if a.current_test >= NUM_GL3D_TESTS {

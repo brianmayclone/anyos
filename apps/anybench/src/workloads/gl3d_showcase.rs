@@ -6,6 +6,7 @@
 use super::gl3d_common::*;
 use alloc::format;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 use libanyui_client as anyui;
 use libgl_client as gl;
 
@@ -16,6 +17,8 @@ const FLOOR_Y: f32 = -1.7;
 const MAX_BALLS: usize = 640;
 const ADD_INTERVAL_MS: u32 = 420;
 const MIN_RUNTIME_MS: u32 = 1800;
+
+static SHOWCASE_OPEN: AtomicU32 = AtomicU32::new(0);
 
 const VS_SRC: &str = "attribute vec3 aPosition;
 attribute vec3 aNormal;
@@ -64,9 +67,13 @@ struct Ball {
 
 /// Opens a temporary window, runs the ball-room stress scene, and closes it.
 pub fn run_gl3d_showcase_window() {
+    SHOWCASE_OPEN.store(1, Ordering::SeqCst);
+
     let win = anyui::Window::new("anyBench 3D Ball Room", -1, -1, W, H);
     win.set_color(0xFF0D1017);
-    win.on_close(|_| {});
+    win.on_close(|_| {
+        SHOWCASE_OPEN.store(0, Ordering::SeqCst);
+    });
 
     let canvas = anyui::Canvas::new(W, H);
     canvas.set_position(0, 0);
@@ -81,15 +88,19 @@ pub fn run_gl3d_showcase_window() {
     label.set_text_color(0xFFE8EEF7);
     win.add(&label);
     win.set_visible(true);
+    pump_ui_frame();
 
     run_scene(&canvas, &label);
-    win.destroy();
+    if SHOWCASE_OPEN.load(Ordering::SeqCst) != 0 {
+        win.destroy();
+    }
+    SHOWCASE_OPEN.store(0, Ordering::SeqCst);
 }
 
 fn run_scene(canvas: &anyui::Canvas, label: &anyui::Label) {
     if !ensure_gl_init(W, H) {
         label.set_text("3D stress: libgl unavailable");
-        anyos_std::process::sleep(900);
+        sleep_with_ui(900);
         return;
     }
 
@@ -97,7 +108,7 @@ fn run_scene(canvas: &anyui::Canvas, label: &anyui::Label) {
         Some(p) => p,
         None => {
             label.set_text("3D stress: shader compile failed");
-            anyos_std::process::sleep(900);
+            sleep_with_ui(900);
             return;
         }
     };
@@ -174,7 +185,7 @@ fn run_scene(canvas: &anyui::Canvas, label: &anyui::Label) {
     let mut frames = 0u32;
     let mut done_below_one = false;
 
-    while balls.len() < MAX_BALLS && !done_below_one {
+    while showcase_is_open() && balls.len() < MAX_BALLS && !done_below_one {
         let now = anyos_std::sys::uptime_ms();
         let elapsed_total = now.wrapping_sub(start);
 
@@ -210,6 +221,9 @@ fn run_scene(canvas: &anyui::Canvas, label: &anyui::Label) {
         );
         frames = frames.wrapping_add(1);
         fps_frames = fps_frames.wrapping_add(1);
+        if !pump_ui_frame() {
+            break;
+        }
 
         let fps_elapsed = now.wrapping_sub(fps_window);
         if fps_elapsed >= 1000 {
@@ -236,13 +250,31 @@ fn run_scene(canvas: &anyui::Canvas, label: &anyui::Label) {
         fps10 / 10,
         fps10 % 10
     ));
-    anyos_std::process::sleep(850);
+    sleep_with_ui(850);
 
     gl::delete_buffers(&sphere_vbo);
     gl::delete_buffers(&sphere_ebo);
     gl::delete_buffers(&cube_vbo);
     gl::delete_buffers(&cube_ebo);
     cleanup_program(program, vs, fs);
+}
+
+fn showcase_is_open() -> bool {
+    SHOWCASE_OPEN.load(Ordering::SeqCst) != 0
+}
+
+fn pump_ui_frame() -> bool {
+    anyui::run_once()
+}
+
+fn sleep_with_ui(ms: u32) {
+    let start = anyos_std::sys::uptime_ms();
+    while showcase_is_open() && anyos_std::sys::uptime_ms().wrapping_sub(start) < ms {
+        if !pump_ui_frame() {
+            break;
+        }
+        anyos_std::process::sleep(16);
+    }
 }
 
 fn add_room_planes() {

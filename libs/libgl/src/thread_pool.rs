@@ -1136,8 +1136,8 @@ fn rasterize_tri_forger_band(
     let fog_r255 = sb.fast_fog_r.clamp(0.0, 1.0) * 255.0;
     let fog_g255 = sb.fast_fog_g.clamp(0.0, 1.0) * 255.0;
     let fog_b255 = sb.fast_fog_b.clamp(0.0, 1.0) * 255.0;
-    let raytrace_materials = unsafe { crate::CPU_RAYTRACE_MODE != 0 };
-    let water_phase = (syscall::uptime_ms() & 0xFFFF) as f32 * 0.001;
+    let raytrace_materials = crate::cpu_raytrace_enabled();
+    let water_phase = 0.0;
 
     let mut a12 = s1[1] - s2[1];
     let mut b12 = s2[0] - s1[0];

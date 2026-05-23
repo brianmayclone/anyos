@@ -944,8 +944,8 @@ pub fn rasterize_triangle_forger_blocks(
     let fog_r255 = fog_r.clamp(0.0, 1.0) * 255.0;
     let fog_g255 = fog_g.clamp(0.0, 1.0) * 255.0;
     let fog_b255 = fog_b.clamp(0.0, 1.0) * 255.0;
-    let raytrace_materials = unsafe { crate::CPU_RAYTRACE_MODE != 0 };
-    let water_phase = (crate::syscall::uptime_ms() & 0xFFFF) as f32 * 0.001;
+    let raytrace_materials = crate::cpu_raytrace_enabled();
+    let water_phase = 0.0;
     let shadow_data = shadow.map(|s| s.data).unwrap_or(core::ptr::null());
     let shadow_len = shadow.map(|s| s.len).unwrap_or(0);
     let shadow_w = shadow.map(|s| s.width).unwrap_or(0);

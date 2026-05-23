@@ -238,7 +238,7 @@ fn format_problem_details(
     out.push_str("CrashReporter Key:  anyOS CrashReporter\n");
     out.push_str("Hardware Model:     anyOS x86_64\n");
     out.push_str(&format!("Process:            {} [{}]\n", process_name, tid));
-    out.push_str("Path:               unknown\n");
+    out.push_str("Path:               not captured\n");
     out.push_str("Identifier:         anyOS.user-process\n\n");
     out.push_str(&format!(
         "Exception Type:     {} ({})\n",

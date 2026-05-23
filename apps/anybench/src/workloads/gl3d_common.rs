@@ -32,6 +32,7 @@ pub fn ensure_gl_init(w: u32, h: u32) -> bool {
             GL_FB_H = h;
         }
     }
+    gl::set_hw_backend(false);
     // Sane defaults for 3D rendering
     gl::viewport(0, 0, w as i32, h as i32);
     gl::enable(gl::GL_DEPTH_TEST);

@@ -1229,6 +1229,7 @@ list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/fontd)
 # Sessionhost (standalone workspace, kernel target)
 set(SESSIONHOST_SRC_DIR ${CMAKE_SOURCE_DIR}/system/compositor/sessionhost)
 set(SESSIONHOST_ELF "${CMAKE_BINARY_DIR}/kernel/${KERNEL_TARGET_TRIPLE}/release/sessionhost.elf")
+file(GLOB SESSIONHOST_RS CONFIGURE_DEPENDS "${SESSIONHOST_SRC_DIR}/src/*.rs")
 add_custom_command(
   OUTPUT ${SESSIONHOST_ELF}
   COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
@@ -1240,7 +1241,7 @@ add_custom_command(
   DEPENDS
     ${SESSIONHOST_SRC_DIR}/Cargo.toml
     ${SESSIONHOST_SRC_DIR}/build.rs
-    ${SESSIONHOST_SRC_DIR}/src/main.rs
+    ${SESSIONHOST_RS}
     ${STDLIB_DEPS}
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   COMMENT "Building system program: sessionhost"

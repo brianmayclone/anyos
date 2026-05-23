@@ -72,8 +72,13 @@ pub(crate) static mut DIAG_FRAME: u32 = 0;
 /// Global engine-managed texture LOD bias used by the software rasterizer.
 pub(crate) static mut GLOBAL_LOD_BIAS: f32 = 0.0;
 
-/// Enables CPU material ray/raycast polish in specialized software paths.
-pub(crate) static mut CPU_RAYTRACE_MODE: u32 = 1;
+/// CPU material ray/raycast polish is temporarily disabled globally.
+pub(crate) static mut CPU_RAYTRACE_MODE: u32 = 0;
+
+#[inline(always)]
+pub(crate) fn cpu_raytrace_enabled() -> bool {
+    false
+}
 
 /// Raw pointers to texture state — avoids `&CTX` / `&mut CTX` aliasing UB
 /// during rasterization when `real_tex_sample` needs read access while
@@ -1315,10 +1320,13 @@ pub extern "C" fn gl_set_target_refresh_hz(refresh_hz: u32) {
 }
 
 /// Enable CPU-side material ray/raycast polish for specialized software paths.
+///
+/// Temporarily a no-op: the raytrace path is disabled globally until it is
+/// stable enough to re-enable.
 #[no_mangle]
-pub extern "C" fn gl_set_cpu_raytrace_mode(enabled: u32) {
+pub extern "C" fn gl_set_cpu_raytrace_mode(_enabled: u32) {
     unsafe {
-        CPU_RAYTRACE_MODE = if enabled != 0 { 1 } else { 0 };
+        CPU_RAYTRACE_MODE = 0;
     }
 }
 

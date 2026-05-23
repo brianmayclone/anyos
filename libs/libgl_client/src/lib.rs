@@ -784,6 +784,8 @@ pub fn set_target_refresh_hz(refresh_hz: u32) {
 }
 
 /// Enable CPU-side material ray/raycast polish in specialized software paths.
+///
+/// Currently a compatibility no-op while the libgl raytrace path is disabled.
 pub fn set_cpu_raytrace_mode(enabled: bool) {
     (lib().set_cpu_raytrace_mode)(if enabled { 1 } else { 0 });
 }
