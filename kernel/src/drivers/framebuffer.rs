@@ -25,11 +25,18 @@ static mut ON_CHANGE: Option<fn(u64, u32, u32, u32)> = None;
 
 /// Initialize framebuffer from boot info
 pub fn init(boot_info: &BootInfo) {
-    let addr = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_addr).read_unaligned() };
+    let addr32 = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_addr).read_unaligned() };
+    let addr64 = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_addr64).read_unaligned() };
     let pitch = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_pitch).read_unaligned() };
     let width = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_width).read_unaligned() };
     let height = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_height).read_unaligned() };
     let bpp = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_bpp).read_unaligned() };
+    let boot_mode = unsafe { core::ptr::addr_of!((*boot_info).boot_mode).read_unaligned() };
+    let addr = if boot_mode == 1 && addr64 != 0 {
+        addr64
+    } else {
+        addr32 as u64
+    };
 
     if addr == 0 || width == 0 || height == 0 {
         crate::serial_verbose_println!("  Framebuffer: not available (no VESA mode set)");
@@ -38,7 +45,7 @@ pub fn init(boot_info: &BootInfo) {
 
     unsafe {
         FB_INFO = Some(FramebufferInfo {
-            addr: addr as u64,
+            addr,
             pitch,
             width,
             height,
@@ -47,7 +54,7 @@ pub fn init(boot_info: &BootInfo) {
     }
 
     crate::serial_verbose_println!(
-        "[OK] Framebuffer: {}x{}x{} at {:#010x}, pitch={}",
+        "[OK] Framebuffer: {}x{}x{} at {:#014x}, pitch={}",
         width,
         height,
         bpp,

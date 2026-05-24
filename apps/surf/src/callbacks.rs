@@ -26,7 +26,7 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
     match _event_type {
         libanyui_client::EVENT_MOUSE_MOVE => {
             if tab.webview.handle_mouse_move_for_control(ctrl_id) {
-                crate::request_image_refresh(st.active_tab);
+                crate::ensure_anim_timer();
             }
             return;
         }
@@ -35,13 +35,13 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
             let changed =
                 tab.webview.set_active_node(active) | tab.webview.set_hovered_node(active);
             if changed {
-                crate::request_image_refresh(st.active_tab);
+                crate::ensure_anim_timer();
             }
             return;
         }
         libanyui_client::EVENT_MOUSE_ENTER => {
             if tab.webview.handle_mouse_move_for_control(ctrl_id) {
-                crate::request_image_refresh(st.active_tab);
+                crate::ensure_anim_timer();
             }
             return;
         }
@@ -49,27 +49,27 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
             let hovered = control_node.or_else(|| tab.webview.hit_test_node_canvas(ctrl_id));
             let changed = tab.webview.set_active_node(None) | tab.webview.set_hovered_node(hovered);
             if changed {
-                crate::request_image_refresh(st.active_tab);
+                crate::ensure_anim_timer();
             }
             return;
         }
         libanyui_client::EVENT_FOCUS => {
             let focused = control_node;
             if tab.webview.set_focused_node(focused, true) {
-                crate::request_image_refresh(st.active_tab);
+                crate::ensure_anim_timer();
             }
             return;
         }
         libanyui_client::EVENT_BLUR => {
             if tab.webview.set_focused_node(None, false) {
-                crate::request_image_refresh(st.active_tab);
+                crate::ensure_anim_timer();
             }
             return;
         }
         libanyui_client::EVENT_MOUSE_LEAVE => {
             let changed = tab.webview.set_hovered_node(None) | tab.webview.set_active_node(None);
             if changed {
-                crate::request_image_refresh(st.active_tab);
+                crate::ensure_anim_timer();
             }
             return;
         }

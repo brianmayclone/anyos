@@ -18,6 +18,8 @@
 //!
 //! Reference: <https://developers.google.com/speed/webp/docs/webp_lossless_bitstream_specification>
 
+#![allow(dead_code)]
+
 use crate::types::*;
 use alloc::vec::Vec;
 use alloc::vec;
@@ -34,7 +36,7 @@ pub fn probe(data: &[u8]) -> Option<ImageInfo> {
 pub fn decode(data: &[u8], out: &mut [u32], _scratch: &mut [u8]) -> i32 {
     if data.len() < 12 { return ERR_INVALID_DATA; }
     if &data[0..4] != b"RIFF" || &data[8..12] != b"WEBP" { return ERR_INVALID_DATA; }
-    let (width, height) = match container_dimensions(data) {
+    let (_width, _height) = match container_dimensions(data) {
         Some(dims) => dims,
         None => return ERR_INVALID_DATA,
     };
@@ -43,7 +45,7 @@ pub fn decode(data: &[u8], out: &mut [u32], _scratch: &mut [u8]) -> i32 {
     let mut pos = 12usize;
     let mut vp8_chunk: Option<&[u8]> = None;
     let mut vp8l_chunk: Option<&[u8]> = None;
-    let mut alph_chunk: Option<&[u8]> = None;
+    let mut _alph_chunk: Option<&[u8]> = None;
     let mut is_animated = false;
 
     while pos + 8 <= data.len() {
@@ -56,7 +58,7 @@ pub fn decode(data: &[u8], out: &mut [u32], _scratch: &mut [u8]) -> i32 {
             b"VP8L" => { vp8l_chunk = Some(chunk); }
             b"VP8 " => { vp8_chunk = Some(chunk); }
             b"VP8X" => {}
-            b"ALPH" => { alph_chunk = Some(chunk); }
+            b"ALPH" => { _alph_chunk = Some(chunk); }
             b"ANIM" | b"ANMF" => { is_animated = true; }
             _ => {}
         }
@@ -73,18 +75,11 @@ pub fn decode(data: &[u8], out: &mut [u32], _scratch: &mut [u8]) -> i32 {
         return decode_vp8l(chunk, out);
     }
 
-    // VP8 (lossy), optionally with separate alpha chunk
-    if let Some(chunk) = vp8_chunk {
-        let rc = decode_vp8_lossy(chunk, out);
-        if rc != ERR_OK { return rc; }
-        // Apply separate alpha plane if present
-        if let Some(alph) = alph_chunk {
-            let rc = apply_alpha_chunk(alph, out, width as usize, height as usize);
-            if rc != ERR_OK {
-                return rc;
-            }
-        }
-        return ERR_OK;
+    // VP8 lossy needs a fully conforming entropy/residual path. Returning
+    // success with visibly corrupted pixels is worse than negotiating JPEG/PNG
+    // fallbacks, so keep lossy WebP disabled until that decoder is complete.
+    if vp8_chunk.is_some() {
+        return ERR_UNSUPPORTED;
     }
 
     ERR_UNSUPPORTED
@@ -1716,6 +1711,7 @@ fn lf_sub_v(hev_thr: u8, il: u8, el: u8, p: &mut [u8], pt: usize, s: usize) {
 
 // ── Main VP8 lossy decoder ──────────────────────────────────────────────────
 
+#[allow(unused_variables)]
 fn decode_vp8_lossy(data: &[u8], out: &mut [u32]) -> i32 {
     let hdr = match parse_vp8_frame_header(data) {
         Some(h) => h,

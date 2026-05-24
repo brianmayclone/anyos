@@ -113,6 +113,8 @@ pub struct LayoutBox {
     pub overflow_hidden: bool,
     /// If true, this box is invisible but still takes up space.
     pub visibility_hidden: bool,
+    /// If true, this box is skipped as a mouse/pointer event target.
+    pub pointer_events_none: bool,
     /// Opacity: 0..255 (255 = fully opaque).
     pub opacity: i32,
     /// If true, this box is `position:fixed` and its x/y are viewport-relative.
@@ -418,6 +420,7 @@ impl LayoutBox {
             form_datalist: None,
             overflow_hidden: false,
             visibility_hidden: false,
+            pointer_events_none: false,
             opacity: 255,
             is_fixed: false,
             is_out_of_flow: false,
@@ -1402,6 +1405,8 @@ pub fn layout_with_budget(
 
     let mut root = LayoutBox::new(Some(body_id), BoxType::Block);
     root.is_positioned = style.position != Position::Static;
+    root.pointer_events_none =
+        matches!(style.pointer_events, crate::style::PointerEventsVal::None);
     // Body width: explicit width if set, else viewport width.
     root.width = if let Some(w) = style.width {
         w

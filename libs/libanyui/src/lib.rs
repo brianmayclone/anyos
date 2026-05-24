@@ -2229,9 +2229,16 @@ pub extern "C" fn anyui_datagrid_set_selected_row(id: ControlId, row: u32) {
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(dg) = as_data_grid(ctrl) {
             dg.clear_selection();
-            dg.set_row_selected(row as usize, true);
+            if row == u32::MAX || row as usize >= dg.row_count {
+                dg.base.state = u32::MAX;
+                dg.clamp_scroll();
+                dg.base.mark_dirty();
+                return;
+            }
+            let row_usize = row as usize;
+            dg.set_row_selected(row_usize, true);
             dg.base.state = row;
-            dg.scroll_to_row(row as usize);
+            dg.scroll_to_row(row_usize);
             dg.base.mark_dirty();
         }
     }

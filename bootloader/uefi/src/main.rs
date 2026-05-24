@@ -1,12 +1,12 @@
 //! anyOS UEFI Bootloader
 //!
 //! Loads `/System/kernel.bin` from the EFI System Partition, sets up page tables,
-//! fills the BootInfo struct (identical to the BIOS Stage 2 format), and jumps
+//! fills the BootInfo struct (BIOS-compatible with UEFI extensions), and jumps
 //! to the kernel entry point.
 //!
 //! Boot flow:
 //!   1. UEFI firmware loads this EFI application from ESP
-//!   2. Query/set GOP framebuffer (1024x768x32)
+//!   2. Query/set GOP framebuffer
 //!   3. Find data partition, read kernel.bin (fallback: kernel.bak)
 //!   4. Copy flat binary to a low physical address compatible with the kernel LMA
 //!   5. Convert UEFI memory map -> E820 format
@@ -144,6 +144,7 @@ struct BootInfo {
     edid_data: [u8; 128],
     edid_valid: u8,
     _padding2: [u8; 3],
+    framebuffer_addr64: u64,
 }
 
 struct KernelImage {
@@ -307,7 +308,7 @@ fn main() -> Status {
     serial_print("[UEFI] Querying GOP...\n");
     let (fb_addr, fb_width, fb_height, fb_pitch, fb_bpp, fb_format) = setup_gop();
     serial_print("[UEFI] Framebuffer: ");
-    serial_print_hex(fb_addr as u64);
+    serial_print_hex(fb_addr);
     serial_print(" ");
     serial_print_hex(fb_width as u64);
     serial_print("x");
@@ -350,7 +351,7 @@ fn main() -> Status {
     boot_info.magic = BOOT_INFO_MAGIC;
     boot_info.memory_map_addr = MEMORY_MAP_ADDR as u32;
     boot_info.memory_map_count = 0; // filled after ExitBootServices
-    boot_info.framebuffer_addr = fb_addr;
+    boot_info.framebuffer_addr = fb_addr as u32;
     boot_info.framebuffer_pitch = fb_pitch;
     boot_info.framebuffer_width = fb_width;
     boot_info.framebuffer_height = fb_height;
@@ -369,6 +370,7 @@ fn main() -> Status {
     boot_info.edid_data = [0u8; 128];
     boot_info.edid_valid = 0;
     boot_info._padding2 = [0u8; 3];
+    boot_info.framebuffer_addr64 = fb_addr;
 
     // -- Step 4: ExitBootServices ---------------------------------------------
     serial_print("[UEFI] Calling ExitBootServices...\n");
@@ -426,7 +428,7 @@ fn main() -> Status {
 
     // -- Step 6: Build page tables --------------------------------------------
     serial_print("[UEFI] Building page tables...\n");
-    build_page_tables(fb_addr, kernel.phys_start);
+    build_page_tables(fb_addr, fb_pitch, fb_height, kernel.phys_start);
 
     // -- Step 7: Enable FPU/SSE, load CR3, jump to kernel ---------------------
     serial_print("[UEFI] Jumping to kernel...\n");
@@ -437,7 +439,7 @@ fn main() -> Status {
 
 // -- GOP setup ----------------------------------------------------------------
 
-fn setup_gop() -> (u32, u32, u32, u32, u8, FramebufferFormat) {
+fn setup_gop() -> (u64, u32, u32, u32, u8, FramebufferFormat) {
     let gop_handle = boot::get_handle_for_protocol::<GraphicsOutput>().expect("GOP not available");
 
     let mut gop =
@@ -476,20 +478,13 @@ fn setup_gop() -> (u32, u32, u32, u32, u8, FramebufferFormat) {
         _ => FramebufferFormat::Bgr,
     };
 
-    (
-        fb_base as u32,
-        w as u32,
-        h as u32,
-        stride as u32 * 4,
-        bpp,
-        format,
-    )
+    (fb_base, w as u32, h as u32, stride as u32 * 4, bpp, format)
 }
 
 // -- Boot menu ----------------------------------------------------------------
 
 fn run_boot_menu(
-    fb_addr: u32,
+    fb_addr: u64,
     fb_width: u32,
     fb_height: u32,
     fb_pitch: u32,
@@ -516,7 +511,7 @@ fn run_boot_menu(
 }
 
 fn wait_for_splash_choice(
-    fb_addr: u32,
+    fb_addr: u64,
     fb_width: u32,
     fb_height: u32,
     fb_pitch: u32,
@@ -553,7 +548,7 @@ fn poll_splash_key() -> Option<BootDecision> {
 }
 
 fn show_interactive_menu(
-    fb_addr: u32,
+    fb_addr: u64,
     fb_width: u32,
     fb_height: u32,
     fb_pitch: u32,
@@ -622,7 +617,7 @@ fn flush_keyboard() {
 }
 
 fn draw_boot_background(
-    fb_addr: u32,
+    fb_addr: u64,
     fb_width: u32,
     fb_height: u32,
     fb_pitch: u32,
@@ -632,7 +627,7 @@ fn draw_boot_background(
     draw_logo(fb_addr, fb_width, fb_height, fb_pitch, fb_format);
 }
 
-fn clear_framebuffer(fb_addr: u32, fb_width: u32, fb_height: u32, fb_pitch: u32) {
+fn clear_framebuffer(fb_addr: u64, fb_width: u32, fb_height: u32, fb_pitch: u32) {
     for y in 0..fb_height as usize {
         let row = (fb_addr as usize + y * fb_pitch as usize) as *mut u32;
         for x in 0..fb_width as usize {
@@ -644,7 +639,7 @@ fn clear_framebuffer(fb_addr: u32, fb_width: u32, fb_height: u32, fb_pitch: u32)
 }
 
 fn draw_logo(
-    fb_addr: u32,
+    fb_addr: u64,
     fb_width: u32,
     fb_height: u32,
     fb_pitch: u32,
@@ -709,7 +704,7 @@ fn pack_pixel(format: FramebufferFormat, r: u8, g: u8, b: u8) -> u32 {
 }
 
 fn draw_splash_text(
-    fb_addr: u32,
+    fb_addr: u64,
     fb_width: u32,
     fb_height: u32,
     fb_pitch: u32,
@@ -762,7 +757,7 @@ fn draw_splash_text(
 }
 
 fn draw_menu_text(
-    fb_addr: u32,
+    fb_addr: u64,
     fb_width: u32,
     fb_height: u32,
     fb_pitch: u32,
@@ -831,7 +826,7 @@ fn draw_menu_text(
 }
 
 fn draw_centered_text(
-    fb_addr: u32,
+    fb_addr: u64,
     fb_width: u32,
     fb_pitch: u32,
     fb_format: FramebufferFormat,
@@ -845,7 +840,7 @@ fn draw_centered_text(
 }
 
 fn draw_text(
-    fb_addr: u32,
+    fb_addr: u64,
     fb_width: u32,
     fb_pitch: u32,
     fb_format: FramebufferFormat,
@@ -864,7 +859,7 @@ fn draw_text(
 }
 
 fn draw_char(
-    fb_addr: u32,
+    fb_addr: u64,
     fb_pitch: u32,
     fb_format: FramebufferFormat,
     x: u32,
@@ -896,7 +891,7 @@ fn draw_char(
 }
 
 fn fill_rect(
-    fb_addr: u32,
+    fb_addr: u64,
     fb_pitch: u32,
     fb_format: FramebufferFormat,
     x: u32,
@@ -1086,7 +1081,7 @@ fn align_kernel_load_addr(addr: u64) -> u64 {
 
 // -- Page table construction --------------------------------------------------
 
-fn build_page_tables(fb_addr: u32, kernel_phys_start: u64) {
+fn build_page_tables(fb_addr: u64, fb_pitch: u32, fb_height: u32, kernel_phys_start: u64) {
     let kernel_high_phys_base = kernel_phys_start - KERNEL_LINK_PHYS_BASE;
     if (kernel_high_phys_base & 0x1F_FFFF) != 0 {
         panic!("Kernel physical load address is not compatible with 2 MiB higher-half mapping");
@@ -1132,19 +1127,27 @@ fn build_page_tables(fb_addr: u32, kernel_phys_start: u64) {
         );
     }
 
-    // Framebuffer mapping: dynamically determine the correct PDPT entry.
-    // BIOS VBE typically returns ~0xFD000000 (PDPT[3], 3-4 GiB range),
-    // but OVMF GOP returns 0x80000000 (PDPT[2], 2-3 GiB range).
+    // Framebuffer mapping: dynamically determine the correct PDPT entry and
+    // map enough 2 MiB pages for the active GOP mode. The old fixed 16 MiB
+    // window was too small for larger modes and also truncated UEFI framebuffers
+    // that firmware placed above 4 GiB.
     if fb_addr != 0 {
-        let pdpt_index = (fb_addr as u64) >> 30; // which 1 GiB block
+        let pdpt_index = fb_addr >> 30; // which 1 GiB block
+        if pdpt_index >= 512 {
+            return;
+        }
 
         // Link PD_FB to the correct PDPT entry (skip if PDPT[0] — PD_LOW is there)
         if pdpt_index > 0 {
             write64(PDPT_LOW_ADDR + pdpt_index * 8, PD_FB_ADDR | PT_BASE_FLAGS);
         }
 
-        let fb_aligned = (fb_addr as u64) & 0xFFE0_0000; // 2 MiB align down
-        let pd_index = ((fb_addr as u64) & 0x3FFF_FFFF) >> 21;
+        let fb_aligned = fb_addr & !0x1F_FFFF; // 2 MiB align down
+        let pd_index = (fb_addr & 0x3FFF_FFFF) >> 21;
+        let fb_bytes = (fb_pitch as u64).saturating_mul(fb_height as u64);
+        let fb_offset = fb_addr.saturating_sub(fb_aligned);
+        let pages_2m =
+            ((fb_offset.saturating_add(fb_bytes).saturating_add(0x1F_FFFF)) / 0x20_0000).max(1);
 
         // Use PD_FB for non-zero PDPT entries, PD_LOW for PDPT[0]
         let target_pd = if pdpt_index == 0 {
@@ -1153,8 +1156,7 @@ fn build_page_tables(fb_addr: u32, kernel_phys_start: u64) {
             PD_FB_ADDR
         };
 
-        // Map 8 × 2 MiB = 16 MiB of VRAM
-        for i in 0u64..8 {
+        for i in 0u64..pages_2m {
             let idx = pd_index + i;
             if idx < 512 {
                 write64(

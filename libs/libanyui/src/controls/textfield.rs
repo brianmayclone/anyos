@@ -315,7 +315,11 @@ impl Control for TextField {
         } else {
             self.text_base.effective_text_color()
         };
-        let accent = if b.style.accent != 0 { b.style.accent } else { tc.accent };
+        let accent = if b.style.accent != 0 {
+            b.style.accent
+        } else {
+            tc.accent
+        };
         let font_size = crate::draw::scale_font(self.text_base.text_style.font_size);
         let text_y = y + ((h as i32 - font_size as i32) / 2).max(0);
         let scaled_scroll_x = crate::theme::scale_i32(self.scroll_x);

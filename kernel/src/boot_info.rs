@@ -33,6 +33,12 @@ pub struct BootInfo {
     /// 1 if EDID was successfully read by the bootloader, 0 otherwise.
     pub edid_valid: u8,
     pub _padding2: [u8; 3],
+    /// Full 64-bit framebuffer physical address for UEFI GOP.
+    ///
+    /// `framebuffer_addr` remains for the legacy BIOS layout and old low
+    /// framebuffers; UEFI fills this field so GOP buffers above 4 GiB are not
+    /// truncated during kernel handoff.
+    pub framebuffer_addr64: u64,
 }
 
 /// Magic value (`"ANYO"` in ASCII) used to validate the boot info struct.

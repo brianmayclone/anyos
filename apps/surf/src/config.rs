@@ -186,7 +186,13 @@ pub fn fetch_favicon(bookmark_url: &str) -> Option<(Vec<u32>, u32, u32)> {
     let favicon_url = crate::http::parse_url(&favicon_path).ok()?;
 
     let st = crate::state();
-    let resp = crate::http::fetch(&favicon_url, &mut st.cookies, &mut st.conn_pool).ok()?;
+    let resp = crate::http::fetch_with_destination(
+        &favicon_url,
+        &mut st.cookies,
+        &mut st.conn_pool,
+        crate::http::FetchDestination::Image,
+    )
+    .ok()?;
     if resp.status != 200 || resp.body.is_empty() {
         return None;
     }

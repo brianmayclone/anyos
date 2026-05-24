@@ -41,7 +41,7 @@ fn dispi_read(index: u16) -> u16 {
 
 /// Bochs VGA GPU driver state, tracking framebuffer address and double-buffer page.
 pub struct BochsVgaGpu {
-    fb_phys: u32,
+    fb_phys: u64,
     width: u32,
     height: u32,
     pitch: u32,
@@ -50,7 +50,7 @@ pub struct BochsVgaGpu {
 }
 
 impl BochsVgaGpu {
-    fn new(fb_phys: u32, width: u32, height: u32, pitch: u32) -> Self {
+    fn new(fb_phys: u64, width: u32, height: u32, pitch: u32) -> Self {
         // Try to set up double buffering via virtual height
         let virt_height = dispi_read(VBE_DISPI_INDEX_VIRT_HEIGHT) as u32;
         let double_buffered = virt_height >= height * 2;
@@ -121,11 +121,28 @@ impl GpuDriver for BochsVgaGpu {
             self.double_buffered
         );
 
-        Some((actual_w, actual_h, pitch, self.fb_phys))
+        Some((actual_w, actual_h, pitch, self.fb_phys as u32))
     }
 
     fn get_mode(&self) -> (u32, u32, u32, u32) {
-        (self.width, self.height, self.pitch, self.fb_phys)
+        (self.width, self.height, self.pitch, self.fb_phys as u32)
+    }
+
+    fn framebuffer_kernel_addr(&self) -> u64 {
+        self.fb_phys
+    }
+
+    fn framebuffer_pages(&self) -> alloc::vec::Vec<u64> {
+        if self.fb_phys == 0 {
+            return alloc::vec::Vec::new();
+        }
+        let bytes = (self.height as usize) * (self.pitch as usize);
+        let n = (bytes + crate::memory::FRAME_SIZE - 1) / crate::memory::FRAME_SIZE;
+        let mut v = alloc::vec::Vec::with_capacity(n);
+        for i in 0..n {
+            v.push(self.fb_phys + (i as u64) * crate::memory::FRAME_SIZE as u64);
+        }
+        v
     }
 
     fn has_double_buffer(&self) -> bool {
@@ -149,7 +166,7 @@ impl GpuDriver for BochsVgaGpu {
         // Back buffer is the page NOT currently displayed
         let back_page = self.front_page ^ 1;
         let offset = back_page * self.height * self.pitch;
-        Some(self.fb_phys + offset)
+        Some((self.fb_phys + offset as u64) as u32)
     }
 }
 
@@ -159,14 +176,14 @@ impl GpuDriver for BochsVgaGpu {
 
 /// Initialize and register the Bochs VGA GPU driver.
 /// Called from HAL factory or main.rs during Phase 9.
-pub fn init_and_register(fb_phys: u32, width: u32, height: u32, pitch: u32) -> bool {
+pub fn init_and_register(fb_phys: u64, width: u32, height: u32, pitch: u32) -> bool {
     let gpu = BochsVgaGpu::new(fb_phys, width, height, pitch);
     super::register(Box::new(gpu));
     true
 }
 
 /// Legacy init function — calls init_and_register.
-pub fn init(fb_phys: u32, width: u32, height: u32, pitch: u32) {
+pub fn init(fb_phys: u64, width: u32, height: u32, pitch: u32) {
     init_and_register(fb_phys, width, height, pitch);
 }
 

@@ -74,6 +74,72 @@ pub use layout::{FormFieldKind, LayoutBox};
 pub use renderer::{FormControl, HitKind, ImageCache, ImageEntry};
 use style::{Display, FloatVal, Position, TextAlignVal};
 
+#[cfg(all(test, feature = "host"))]
+#[no_mangle]
+pub extern "C" fn font_init() {}
+
+#[cfg(all(test, feature = "host"))]
+#[no_mangle]
+pub extern "C" fn font_load(_path_ptr: *const u8, _path_len: u32) -> u32 {
+    0
+}
+
+#[cfg(all(test, feature = "host"))]
+#[no_mangle]
+pub extern "C" fn font_load_data(_data_ptr: *const u8, _data_len: u32) -> u32 {
+    0
+}
+
+#[cfg(all(test, feature = "host"))]
+#[no_mangle]
+pub extern "C" fn font_unload(_font_id: u32) {}
+
+#[cfg(all(test, feature = "host"))]
+#[no_mangle]
+pub extern "C" fn font_measure_string(
+    _font_id: u32,
+    size: u16,
+    _text: *const u8,
+    len: u32,
+    out_w: *mut u32,
+    out_h: *mut u32,
+) {
+    unsafe {
+        if !out_w.is_null() {
+            *out_w = len.saturating_mul(size as u32).saturating_div(2);
+        }
+        if !out_h.is_null() {
+            *out_h = size as u32;
+        }
+    }
+}
+
+#[cfg(all(test, feature = "host"))]
+#[no_mangle]
+pub extern "C" fn font_draw_string_buf(
+    _buf: *mut u32,
+    _buf_w: u32,
+    _buf_h: u32,
+    _x: i32,
+    _y: i32,
+    _color: u32,
+    _font_id: u32,
+    _size: u16,
+    _text: *const u8,
+    _len: u32,
+) {
+}
+
+#[cfg(all(test, feature = "host"))]
+#[no_mangle]
+pub extern "C" fn font_line_height(_font_id: u32, size: u16) -> u32 {
+    size as u32
+}
+
+#[cfg(all(test, feature = "host"))]
+#[no_mangle]
+pub extern "C" fn font_set_subpixel(_enabled: u32) {}
+
 /// Detached JavaScript execution state.
 ///
 /// Surf can temporarily move this bundle to a background worker so large
@@ -396,6 +462,8 @@ pub struct WebView {
     resolved_styles_viewport_height: u32,
     /// Pseudo styles that match `resolved_styles_cache`.
     resolved_pseudo_styles: style::PseudoStyles,
+    /// Dynamic selector state that matches `resolved_styles_cache`.
+    resolved_selector_state: style::SelectorState,
     /// Pending animation/transition overrides to apply during the next relayout.
     /// Each entry is (node_id, declarations_to_overlay).
     anim_overrides: Vec<(usize, Vec<css::Declaration>)>,
@@ -473,6 +541,7 @@ impl WebView {
             resolved_styles_viewport_width: 0,
             resolved_styles_viewport_height: 0,
             resolved_pseudo_styles: style::PseudoStyles::empty(0),
+            resolved_selector_state: style::SelectorState::default(),
             anim_overrides: Vec::new(),
             scroll_offsets: Vec::new(),
             smooth_scrolls: Vec::new(),
@@ -661,6 +730,7 @@ impl WebView {
         self.resolved_styles_viewport_width = 0;
         self.resolved_styles_viewport_height = 0;
         self.resolved_pseudo_styles = style::PseudoStyles::empty(0);
+        self.resolved_selector_state = style::SelectorState::default();
         // Clear web fonts from the previous page.
         self.web_fonts.clear();
         // Reset JS runtime (fresh engine, no timers/listeners/websockets).
@@ -2773,7 +2843,9 @@ impl WebView {
 
         if doc_x >= abs_x && doc_x < abs_x + bx.width && doc_y >= abs_y && doc_y < abs_y + bx.height
         {
-            return bx.node_id;
+            if !bx.pointer_events_none {
+                return bx.node_id;
+            }
         }
 
         None
@@ -4395,6 +4467,7 @@ impl WebView {
             && self.resolved_pseudo_styles.after.len() == dom.nodes.len()
             && self.resolved_styles_viewport_width == self.viewport_width
             && self.resolved_styles_viewport_height == self.viewport_height
+            && self.resolved_selector_state == self.selector_state
     }
 
     fn can_reuse_cached_styles_for_full_relayout(&self, dom: &dom::Dom) -> bool {
@@ -4414,6 +4487,7 @@ impl WebView {
         self.resolved_pseudo_styles.clone_from(pseudo_styles);
         self.resolved_styles_viewport_width = self.viewport_width;
         self.resolved_styles_viewport_height = self.viewport_height;
+        self.resolved_selector_state = self.selector_state;
     }
 
     fn rebuild_keyframes_if_dirty(&mut self) {
@@ -5973,6 +6047,92 @@ mod tests {
         assert!(matches!(bx.form_field, Some(FormFieldKind::TextInput)));
         assert!(!bx.form_is_search);
         assert!(bx.height <= 40);
+    }
+
+    #[test]
+    fn dynamic_hover_state_restyles_cache_and_matches_ancestors() {
+        let mut wv = WebView::new(800, 600);
+        wv.set_url("https://example.test/");
+        wv.set_html_no_js(
+            r#"
+            <html><body>
+              <div id="menu">
+                <span id="item">Products</span>
+                <div id="panel">Mega menu</div>
+              </div>
+            </body></html>
+            "#,
+        );
+        wv.add_stylesheet(
+            r#"
+            #panel { display: none; }
+            #menu:hover #panel { display: block; }
+            "#,
+        );
+        wv.relayout();
+
+        let (item, panel) = {
+            let dom = wv.dom().expect("dom");
+            (find_node_by_id(dom, "item"), find_node_by_id(dom, "panel"))
+        };
+
+        assert!(matches!(
+            wv.resolved_style_ref(panel).expect("panel before").display,
+            Display::None
+        ));
+
+        assert!(wv.set_hovered_node(Some(item)));
+
+        assert!(matches!(
+            wv.resolved_style_ref(panel).expect("panel after").display,
+            Display::Block
+        ));
+    }
+
+    #[test]
+    fn pointer_events_none_hit_testing_passes_through_overlay() {
+        let mut wv = WebView::new(800, 600);
+        wv.set_url("https://example.test/");
+        wv.set_html_no_js(
+            r#"
+            <html><body>
+              <div id="under"></div>
+              <div id="cover"><span id="cover-child"></span></div>
+            </body></html>
+            "#,
+        );
+        wv.add_stylesheet(
+            r#"
+            body { margin: 0; }
+            #under, #cover {
+              position: absolute;
+              left: 0;
+              top: 0;
+              width: 120px;
+              height: 120px;
+            }
+            #under { background: #0a0; }
+            #cover { pointer-events: none; z-index: 10; background: rgba(0, 0, 0, .4); }
+            #cover-child { display: block; width: 100%; height: 100%; }
+            "#,
+        );
+        wv.relayout();
+
+        let (under, cover_child) = {
+            let dom = wv.dom().expect("dom");
+            (
+                find_node_by_id(dom, "under"),
+                find_node_by_id(dom, "cover-child"),
+            )
+        };
+
+        assert!(matches!(
+            wv.resolved_style_ref(cover_child)
+                .expect("cover child style")
+                .pointer_events,
+            style::PointerEventsVal::None
+        ));
+        assert_eq!(wv.hit_test_node_viewport(10, 10, 0), Some(under));
     }
 }
 

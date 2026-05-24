@@ -19,7 +19,7 @@ pub(super) fn start_userspace(_boot_info: &BootInfo, nogui: bool) -> ! {
 
     if !drivers::gpu::is_available() {
         drivers::gpu::bochs_vga::init(
-            framebuffer.addr as u32,
+            framebuffer.addr,
             framebuffer.width,
             framebuffer.height,
             framebuffer.pitch,

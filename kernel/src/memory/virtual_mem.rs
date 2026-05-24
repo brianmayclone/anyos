@@ -375,8 +375,16 @@ pub fn init(boot_info: &BootInfo) {
     }
 
     // Identity-map framebuffer region
-    let fb_addr =
+    let fb_addr32 =
         unsafe { core::ptr::addr_of!((*boot_info).framebuffer_addr).read_unaligned() } as u64;
+    let fb_addr64 =
+        unsafe { core::ptr::addr_of!((*boot_info).framebuffer_addr64).read_unaligned() };
+    let boot_mode = unsafe { core::ptr::addr_of!((*boot_info).boot_mode).read_unaligned() };
+    let fb_addr = if boot_mode == 1 && fb_addr64 != 0 {
+        fb_addr64
+    } else {
+        fb_addr32
+    };
     let fb_pitch =
         unsafe { core::ptr::addr_of!((*boot_info).framebuffer_pitch).read_unaligned() } as u64;
     let fb_height =

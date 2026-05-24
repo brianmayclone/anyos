@@ -53,6 +53,10 @@ pub fn layout_table(
     bx.bold = is_bold(style);
     bx.text_align = style.text_align;
     bx.visibility_hidden = matches!(style.visibility, Visibility::Hidden | Visibility::Collapse);
+    bx.pointer_events_none = matches!(
+        style.pointer_events,
+        crate::style::PointerEventsVal::None
+    );
     let (margin_top, margin_right, margin_bottom, margin_left) =
         resolve_margins(style, available_width);
     bx.margin = edges_from(margin_top, margin_right, margin_bottom, margin_left);
@@ -643,6 +647,10 @@ fn layout_cell(
     bx.bold = is_bold(style);
     bx.text_align = style.text_align;
     bx.visibility_hidden = matches!(style.visibility, Visibility::Hidden | Visibility::Collapse);
+    bx.pointer_events_none = matches!(
+        style.pointer_events,
+        crate::style::PointerEventsVal::None
+    );
     bx.width = cell_width;
     bx.padding = Edges {
         top: style.padding_top.max(cellpadding),

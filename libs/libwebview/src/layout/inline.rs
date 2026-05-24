@@ -107,6 +107,10 @@ fn apply_inline_control_style(bx: &mut LayoutBox, style: Option<&ComputedStyle>)
     bx.accent_color = style.accent_color;
     bx.uses_dark_color_scheme = style.color_scheme == crate::style::ColorSchemeVal::Dark;
     bx.appearance_none = style.appearance == crate::style::AppearanceVal::None;
+    bx.pointer_events_none = matches!(
+        style.pointer_events,
+        crate::style::PointerEventsVal::None
+    );
     bx.font_size = font_size_px(style);
     bx.bold = is_bold(style);
     bx.italic = is_italic(style);
@@ -206,6 +210,10 @@ fn build_empty_inline_visual_box(node_id: NodeId, style: &ComputedStyle) -> Layo
     let mut bx = LayoutBox::new(Some(node_id), BoxType::Inline);
     bx.is_positioned = style.position != Position::Static;
     bx.visibility_hidden = matches!(style.visibility, Visibility::Hidden | Visibility::Collapse);
+    bx.pointer_events_none = matches!(
+        style.pointer_events,
+        crate::style::PointerEventsVal::None
+    );
     bx.color = style.color;
     bx.bg_color = if style.background_color_is_current {
         style.color

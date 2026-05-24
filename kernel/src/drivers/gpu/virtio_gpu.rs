@@ -418,11 +418,10 @@ pub struct VirtioGpu {
     // Display state for output 0 (primary scanout). See ScanoutState
     // comment above for why these inline fields stay in place.
     //
-    // `fb_phys` is the first physical frame's address. For the primary
-    // scanout we keep the allocation physically contiguous because several
-    // legacy kernel paths still use this as a linear framebuffer pointer.
-    // `fb_page_list` is reserved for any future scatter-gather primary path;
-    // when it is empty, framebuffer_pages() synthesizes a contiguous list.
+    // `fb_phys` is the first physical frame's address. For contiguous
+    // primary scanouts the whole framebuffer follows it physically; for
+    // scatter-gather scanouts `fb_page_list` carries the exact page order and
+    // `fb_kernel_virt` provides the linear CPU drawing address.
     width: u32,
     height: u32,
     pitch: u32,
@@ -1109,28 +1108,47 @@ impl VirtioGpu {
         let fb_size = (width as usize) * (height as usize) * 4;
         let num_pages = (fb_size + 4095) / 4096;
 
-        // Allocate contiguous physical pages for framebuffer (identity-mapped)
-        let fb_phys = match physical::alloc_contiguous(num_pages) {
-            Some(p) => p.as_u64(),
+        let mut fb_page_list = alloc::vec::Vec::new();
+        let (fb_phys, fb_kernel_virt) = match physical::alloc_contiguous(num_pages) {
+            Some(p) => {
+                let phys = p.as_u64();
+                unsafe {
+                    core::ptr::write_bytes(Self::dma_ptr(phys), 0, num_pages * 4096);
+                }
+                (phys, phys)
+            }
             None => {
                 crate::serial_verbose_println!(
-                    "  VirtIO GPU: failed to allocate {} pages for framebuffer",
+                    "  VirtIO GPU: contiguous fb alloc failed ({} pages, trying scatter-gather)",
                     num_pages
                 );
-                return false;
+                let pages = match Self::alloc_scatter_gather_fb(num_pages) {
+                    Some(pages) => pages,
+                    None => {
+                        crate::serial_verbose_println!(
+                            "  VirtIO GPU: scatter-gather fb alloc failed ({} pages)",
+                            num_pages
+                        );
+                        return false;
+                    }
+                };
+                Self::zero_page_list(&pages);
+                let kernel_virt = match Self::map_primary_fb_pages(&pages) {
+                    Some(v) => v,
+                    None => {
+                        crate::serial_verbose_println!(
+                            "  VirtIO GPU: failed to map scatter-gather fb ({} pages)",
+                            num_pages
+                        );
+                        Self::free_page_list(&pages);
+                        return false;
+                    }
+                };
+                let first = pages[0];
+                fb_page_list = pages;
+                (first, kernel_virt)
             }
         };
-
-        // Zero the framebuffer
-        unsafe {
-            core::ptr::write_bytes(Self::dma_ptr(fb_phys), 0, num_pages * 4096);
-        }
-
-        self.fb_phys = fb_phys;
-        self.fb_pages = num_pages;
-        self.fb_kernel_virt = fb_phys;
-        self.scanout_backing_offset = 0;
-        self.scanout_uses_dma_backbuffer = false;
 
         // Create 2D resource
         let res_id = self.next_resource_id;
@@ -1138,32 +1156,79 @@ impl VirtioGpu {
 
         if !self.cmd_resource_create_2d(res_id, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, width, height) {
             crate::serial_verbose_println!("  VirtIO GPU: RESOURCE_CREATE_2D failed");
+            if !fb_page_list.is_empty() {
+                if fb_kernel_virt == PRIMARY_FB_VMAP_BASE {
+                    Self::unmap_primary_fb_pages(fb_page_list.len());
+                }
+                Self::free_page_list(&fb_page_list);
+            } else {
+                for i in 0..num_pages {
+                    physical::free_frame(PhysAddr::new(fb_phys + (i as u64) * 4096));
+                }
+            }
             return false;
         }
 
         // Attach backing store
-        if !self.cmd_attach_backing(res_id, fb_phys, num_pages) {
+        let attached = if fb_page_list.is_empty() {
+            self.cmd_attach_backing(res_id, fb_phys, num_pages)
+        } else {
+            self.cmd_attach_backing_pages(res_id, &fb_page_list)
+        };
+        if !attached {
             crate::serial_verbose_println!("  VirtIO GPU: RESOURCE_ATTACH_BACKING failed");
             self.cmd_resource_unref(res_id);
+            if !fb_page_list.is_empty() {
+                if fb_kernel_virt == PRIMARY_FB_VMAP_BASE {
+                    Self::unmap_primary_fb_pages(fb_page_list.len());
+                }
+                Self::free_page_list(&fb_page_list);
+            } else {
+                for i in 0..num_pages {
+                    physical::free_frame(PhysAddr::new(fb_phys + (i as u64) * 4096));
+                }
+            }
             return false;
         }
 
         // Set scanout
         if !self.cmd_set_scanout(0, res_id, width, height) {
             crate::serial_verbose_println!("  VirtIO GPU: SET_SCANOUT failed");
+            self.cmd_detach_backing(res_id);
             self.cmd_resource_unref(res_id);
+            if !fb_page_list.is_empty() {
+                if fb_kernel_virt == PRIMARY_FB_VMAP_BASE {
+                    Self::unmap_primary_fb_pages(fb_page_list.len());
+                }
+                Self::free_page_list(&fb_page_list);
+            } else {
+                for i in 0..num_pages {
+                    physical::free_frame(PhysAddr::new(fb_phys + (i as u64) * 4096));
+                }
+            }
             return false;
         }
 
+        self.fb_phys = fb_phys;
+        self.fb_pages = num_pages;
+        self.fb_page_list = fb_page_list;
+        self.fb_kernel_virt = fb_kernel_virt;
+        self.scanout_backing_offset = 0;
+        self.scanout_uses_dma_backbuffer = false;
         self.scanout_resource_id = res_id;
 
         crate::serial_verbose_println!(
-            "  VirtIO GPU: display {}x{} resource={} fb={:#x} ({} pages)",
+            "  VirtIO GPU: display {}x{} resource={} fb={:#x} ({} pages, {})",
             width,
             height,
             res_id,
             fb_phys,
-            num_pages
+            num_pages,
+            if self.fb_page_list.is_empty() {
+                "contiguous"
+            } else {
+                "scatter-gather"
+            }
         );
 
         true
@@ -1722,13 +1787,11 @@ impl GpuDriver for VirtioGpu {
         // the old scanout stays fully functional and we just report
         // failure to the caller.
         //
-        // Keep the primary framebuffer physically contiguous. Several
-        // legacy boot/runtime paths still treat get_mode().fb_phys and
-        // framebuffer::info().addr as a linear framebuffer (boot splash,
-        // text/error consoles, screen capture, and the current VirtIO
-        // fill/copy helpers). A scatter-gather primary resource is valid
-        // for virtio-gpu itself, but exposing only its first page through
-        // those APIs lets CPU writes run into unrelated physical pages.
+        // Prefer a contiguous primary framebuffer, but fall back to
+        // scatter-gather when larger modes cannot get one big low-memory
+        // block. `fb_kernel_virt` is the linear CPU drawing address in both
+        // cases, and `framebuffer_pages()` exposes the true physical backing
+        // to userspace/compositor mapping code.
         let fb_size = (width as usize) * (height as usize) * 4;
         let num_pages = (fb_size + 4095) / 4096;
         let mut new_fb_page_list = alloc::vec::Vec::new();
@@ -1914,9 +1977,8 @@ impl GpuDriver for VirtioGpu {
     }
 
     fn framebuffer_pages(&self) -> alloc::vec::Vec<u64> {
-        // If a future mode path allocates scatter-gather pages, return the
-        // exact list. The current primary path keeps pages physically
-        // contiguous, so synthesize a Vec from fb_phys + i*4096.
+        // For scatter-gather modes return the exact list. For contiguous
+        // modes synthesize a Vec from fb_phys + i*4096.
         if !self.fb_page_list.is_empty() {
             return self.fb_page_list.clone();
         }
@@ -3057,7 +3119,7 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     // Update canonical framebuffer info to point at VirtIO's guest RAM buffer.
     // This triggers the boot_console change hook which re-renders the splash
     // logo centered for the new resolution — no manual copy needed.
-    crate::drivers::framebuffer::update(gpu.fb_phys as u64, gpu.pitch, width, height, 32);
+    crate::drivers::framebuffer::update(gpu.fb_kernel_virt, gpu.pitch, width, height, 32);
 
     // Initial transfer + flush
     gpu.cmd_transfer_to_host_2d(gpu.scanout_resource_id, 0, 0, width, height);

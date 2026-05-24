@@ -63,6 +63,41 @@ struct CrashReport {
     valid: bool,
 }
 
+impl CrashReport {
+    const fn empty() -> Self {
+        Self {
+            tid: 0,
+            signal: 0,
+            rip: 0,
+            rsp: 0,
+            rbp: 0,
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            cr2: 0,
+            cs: 0,
+            ss: 0,
+            rflags: 0,
+            err_code: 0,
+            stack_frames: [0; 16],
+            num_frames: 0,
+            name: [0; 32],
+            valid: false,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct DialogPalette {
     bg: u32,
@@ -306,10 +341,16 @@ fn main() {
     let signal = parse_u32(sig_str);
     let rip = parse_hex(rip_str);
 
-    let mut crash_buf = [0u8; core::mem::size_of::<CrashReport>()];
-    let crash_len = anyos_std::sys::get_crash_info(tid, &mut crash_buf) as usize;
+    let mut crash_report = CrashReport::empty();
+    let crash_buf = unsafe {
+        core::slice::from_raw_parts_mut(
+            (&mut crash_report as *mut CrashReport).cast::<u8>(),
+            core::mem::size_of::<CrashReport>(),
+        )
+    };
+    let crash_len = anyos_std::sys::get_crash_info(tid, crash_buf) as usize;
     let report = if crash_len >= core::mem::size_of::<CrashReport>() {
-        Some(unsafe { &*(crash_buf.as_ptr() as *const CrashReport) })
+        Some(&crash_report)
     } else {
         None
     };

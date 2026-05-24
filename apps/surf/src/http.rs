@@ -65,6 +65,53 @@ pub enum FetchError {
     TlsHandshakeFailed,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FetchDestination {
+    Document,
+    Style,
+    Image,
+    Font,
+    Script,
+}
+
+impl FetchDestination {
+    fn accept_header(self) -> &'static str {
+        match self {
+            FetchDestination::Document => {
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/png,image/jpeg,image/gif,image/svg+xml,*/*;q=0.8"
+            }
+            FetchDestination::Style => "text/css,*/*;q=0.1",
+            FetchDestination::Image => {
+                "image/png,image/jpeg,image/gif,image/svg+xml,image/bmp,image/x-icon,image/vnd.microsoft.icon,*/*;q=0.5"
+            }
+            FetchDestination::Font => {
+                "font/ttf,font/otf,font/woff,application/font-woff,application/octet-stream;q=0.8,*/*;q=0.5"
+            }
+            FetchDestination::Script => "*/*",
+        }
+    }
+
+    fn sec_fetch_dest(self) -> &'static str {
+        match self {
+            FetchDestination::Document => "document",
+            FetchDestination::Style => "style",
+            FetchDestination::Image => "image",
+            FetchDestination::Font => "font",
+            FetchDestination::Script => "script",
+        }
+    }
+
+    fn sec_fetch_mode(self) -> &'static str {
+        match self {
+            FetchDestination::Document => "navigate",
+            FetchDestination::Style
+            | FetchDestination::Image
+            | FetchDestination::Font
+            | FetchDestination::Script => "no-cors",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Cookie jar
 // ---------------------------------------------------------------------------
@@ -895,6 +942,15 @@ pub fn fetch(
     cookies: &mut CookieJar,
     pool: &mut ConnPool,
 ) -> Result<Response, FetchError> {
+    fetch_with_destination(url, cookies, pool, FetchDestination::Document)
+}
+
+pub fn fetch_with_destination(
+    url: &Url,
+    cookies: &mut CookieJar,
+    pool: &mut ConnPool,
+    destination: FetchDestination,
+) -> Result<Response, FetchError> {
     let mut current = clone_url(url);
     let mut timing = RequestTiming {
         start_ms: anyos_std::sys::uptime_ms(),
@@ -932,7 +988,7 @@ pub fn fetch(
         timing.reused_connection = timing.reused_connection || from_pool;
 
         // 2. Build and send GET request.
-        let request = build_request(&current, cookies);
+        let request = build_request(&current, cookies, destination);
         let send_start = anyos_std::sys::uptime_ms();
         let mut send_ok = send_data(sock, tls_handle, request.as_bytes());
         timing.send_ms = timing
@@ -1176,7 +1232,7 @@ pub fn fetch_post(
         let request = if redirect_n == 0 {
             build_post_request(&current, body, cookies)
         } else {
-            build_request(&current, cookies)
+            build_request(&current, cookies, FetchDestination::Document)
         };
 
         let send_start = anyos_std::sys::uptime_ms();
@@ -1637,12 +1693,12 @@ fn parse_content_length(headers: &str) -> Option<u32> {
     parse_u32(val)
 }
 
-fn build_request(url: &Url, cookies: &CookieJar) -> String {
-    build_request_with_method(url, "GET", None, cookies)
+fn build_request(url: &Url, cookies: &CookieJar, destination: FetchDestination) -> String {
+    build_request_with_method(url, "GET", None, cookies, destination)
 }
 
 fn build_post_request(url: &Url, body: &str, cookies: &CookieJar) -> String {
-    build_request_with_method(url, "POST", Some(body), cookies)
+    build_request_with_method(url, "POST", Some(body), cookies, FetchDestination::Document)
 }
 
 fn build_request_with_method(
@@ -1650,6 +1706,7 @@ fn build_request_with_method(
     method: &str,
     body: Option<&str>,
     cookies: &CookieJar,
+    destination: FetchDestination,
 ) -> String {
     let mut req = String::new();
     req.push_str(method);
@@ -1669,14 +1726,21 @@ fn build_request_with_method(
     } else {
         req.push_str("\r\nUser-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36");
     }
-    req.push_str("\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,image/png,image/jpeg,image/gif,image/svg+xml,*/*;q=0.8");
+    req.push_str("\r\nAccept: ");
+    req.push_str(destination.accept_header());
     req.push_str("\r\nAccept-Language: de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7");
     req.push_str("\r\nAccept-Encoding: gzip, deflate");
-    req.push_str("\r\nUpgrade-Insecure-Requests: 1");
-    req.push_str("\r\nSec-Fetch-Dest: document");
-    req.push_str("\r\nSec-Fetch-Mode: navigate");
+    if destination == FetchDestination::Document {
+        req.push_str("\r\nUpgrade-Insecure-Requests: 1");
+    }
+    req.push_str("\r\nSec-Fetch-Dest: ");
+    req.push_str(destination.sec_fetch_dest());
+    req.push_str("\r\nSec-Fetch-Mode: ");
+    req.push_str(destination.sec_fetch_mode());
     req.push_str("\r\nSec-Fetch-Site: none");
-    req.push_str("\r\nSec-Fetch-User: ?1");
+    if destination == FetchDestination::Document {
+        req.push_str("\r\nSec-Fetch-User: ?1");
+    }
     req.push_str("\r\nConnection: keep-alive");
 
     if let Some(body) = body {

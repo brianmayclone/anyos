@@ -553,7 +553,7 @@ impl DataGrid {
     }
 
     /// Clamp scroll offsets so the viewport doesn't extend past the content.
-    fn clamp_scroll(&mut self) {
+    pub(crate) fn clamp_scroll(&mut self) {
         let content_h = self.row_count as i32 * self.row_height as i32;
         let viewport_h = self.data_viewport_height() as i32;
         let max_scroll = (content_h - viewport_h).max(0);
@@ -734,6 +734,65 @@ impl DataGrid {
 
     pub(crate) fn clear_selection(&mut self) {
         self.selected_rows.fill(0);
+    }
+
+    fn selected_count(&self) -> usize {
+        let mut count = 0usize;
+        for row in 0..self.row_count {
+            if self.is_row_selected(row) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    fn apply_row_selection(&mut self, data_row: usize, modifiers: u32) -> bool {
+        if data_row >= self.row_count {
+            return false;
+        }
+
+        let ctrl = modifiers & crate::control::MOD_CTRL != 0;
+        let shift = modifiers & crate::control::MOD_SHIFT != 0;
+        let changed_before = self.selected_count() != 1
+            || !self.is_row_selected(data_row)
+            || self.base.state != data_row as u32;
+
+        match self.selection_mode {
+            SelectionMode::Single => {
+                self.clear_selection();
+                self.set_row_selected(data_row, true);
+                self.anchor_row = Some(data_row);
+                self.base.state = data_row as u32;
+                changed_before
+            }
+            SelectionMode::Multi => {
+                if ctrl {
+                    let was = self.is_row_selected(data_row);
+                    self.set_row_selected(data_row, !was);
+                    if !was {
+                        self.anchor_row = Some(data_row);
+                    }
+                    self.base.state = data_row as u32;
+                    true
+                } else if shift {
+                    let anchor = self.anchor_row.unwrap_or(data_row);
+                    let lo = anchor.min(data_row);
+                    let hi = anchor.max(data_row);
+                    self.clear_selection();
+                    for r in lo..=hi {
+                        self.set_row_selected(r, true);
+                    }
+                    self.base.state = data_row as u32;
+                    true
+                } else {
+                    self.clear_selection();
+                    self.set_row_selected(data_row, true);
+                    self.anchor_row = Some(data_row);
+                    self.base.state = data_row as u32;
+                    changed_before
+                }
+            }
+        }
     }
 
     // ── Sort ───────────────────────────────────────────────────────
@@ -1470,6 +1529,22 @@ impl Control for DataGrid {
             }
         }
 
+        // Select on mouse-down, not mouse-up. This makes first-click selection
+        // stable even if a tiny pointer movement starts a drag before click.
+        if button & 0x01 != 0 {
+            if let Some(vis_row) = self.row_at_y(ly) {
+                let data_row = self.data_row(vis_row);
+                let mods = crate::state().last_modifiers;
+                let changed = self.apply_row_selection(data_row, mods);
+                self.base.mark_dirty();
+                return if changed {
+                    EventResponse::CHANGED
+                } else {
+                    EventResponse::CONSUMED
+                };
+            }
+        }
+
         EventResponse::CONSUMED
     }
 
@@ -1588,50 +1663,7 @@ impl Control for DataGrid {
         } else {
             // Track clicked column
             self.last_click_col = self.column_at_x(lx).map(|c| c as i32).unwrap_or(-1);
-
-            // Row selection
-            if let Some(vis_row) = self.row_at_y(ly) {
-                let data_row = self.data_row(vis_row);
-                let mods = crate::state().last_modifiers;
-                let ctrl = mods & 2 != 0;
-                let shift = mods & 1 != 0;
-
-                match self.selection_mode {
-                    SelectionMode::Single => {
-                        self.clear_selection();
-                        self.set_row_selected(data_row, true);
-                        self.anchor_row = Some(data_row);
-                        self.base.state = data_row as u32;
-                    }
-                    SelectionMode::Multi => {
-                        if ctrl {
-                            // Ctrl+Click: toggle individual row
-                            let was = self.is_row_selected(data_row);
-                            self.set_row_selected(data_row, !was);
-                            if !was {
-                                self.anchor_row = Some(data_row);
-                            }
-                        } else if shift {
-                            // Shift+Click: range select from anchor
-                            let anchor = self.anchor_row.unwrap_or(0);
-                            let lo = anchor.min(data_row);
-                            let hi = anchor.max(data_row);
-                            self.clear_selection();
-                            for r in lo..=hi {
-                                self.set_row_selected(r, true);
-                            }
-                        } else {
-                            // Plain click: select only this row
-                            self.clear_selection();
-                            self.set_row_selected(data_row, true);
-                            self.anchor_row = Some(data_row);
-                        }
-                        self.base.state = data_row as u32;
-                    }
-                }
-                self.base.mark_dirty();
-            }
-            EventResponse::CHANGED
+            EventResponse::CONSUMED
         }
     }
 

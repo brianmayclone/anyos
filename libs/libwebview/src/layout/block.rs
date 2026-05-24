@@ -282,6 +282,10 @@ fn build_block_internal(
     bx.overflow_hidden = !matches!(style.overflow_x, OverflowVal::Visible)
         || !matches!(style.overflow_y, OverflowVal::Visible);
     bx.visibility_hidden = matches!(style.visibility, Visibility::Hidden | Visibility::Collapse);
+    bx.pointer_events_none = matches!(
+        style.pointer_events,
+        crate::style::PointerEventsVal::None
+    );
     bx.opacity = style.opacity;
     bx.backdrop_filter_blur = style.backdrop_filter.blur_px;
     bx.is_positioned = style.position != Position::Static;

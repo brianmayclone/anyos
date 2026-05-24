@@ -210,7 +210,7 @@ pub fn try_parse_dimension_pub(s: &str) -> Option<CssValue> {
 }
 
 #[cfg(test)]
-mod tests {
+mod primitive_tests {
     use super::*;
 
     #[test]

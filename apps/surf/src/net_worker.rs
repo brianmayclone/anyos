@@ -1589,7 +1589,12 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
 
             surf_net_log!("fetching CSS: {}", href);
             let mut css_cookies = CookieJar::new();
-            match http::fetch(&url, &mut css_cookies, pool) {
+            match http::fetch_with_destination(
+                &url,
+                &mut css_cookies,
+                pool,
+                http::FetchDestination::Style,
+            ) {
                 Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
                     stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
                     // Cache the response for future requests.
@@ -1690,7 +1695,12 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                 return;
             }
 
-            match http::fetch(&url, &mut CookieJar::new(), pool) {
+            match http::fetch_with_destination(
+                &url,
+                &mut CookieJar::new(),
+                pool,
+                http::FetchDestination::Image,
+            ) {
                 Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
                     stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
                     let is_svg = crate::resources::is_svg(&src, &resp.headers);
@@ -1795,7 +1805,12 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                 return;
             }
 
-            match http::fetch(&url, &mut CookieJar::new(), pool) {
+            match http::fetch_with_destination(
+                &url,
+                &mut CookieJar::new(),
+                pool,
+                http::FetchDestination::Font,
+            ) {
                 Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
                     stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
                     cache_put(key, resp.body.clone(), resp.headers.clone());
@@ -1880,7 +1895,12 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
             }
 
             surf_net_log!("fetching script: {}", src);
-            match http::fetch(&url, &mut CookieJar::new(), pool) {
+            match http::fetch_with_destination(
+                &url,
+                &mut CookieJar::new(),
+                pool,
+                http::FetchDestination::Script,
+            ) {
                 Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
                     stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
                     surf_net_log!(
@@ -1968,7 +1988,12 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
             }
 
             surf_net_log!("fetching module script: {}", specifier);
-            match http::fetch(&url, &mut CookieJar::new(), pool) {
+            match http::fetch_with_destination(
+                &url,
+                &mut CookieJar::new(),
+                pool,
+                http::FetchDestination::Script,
+            ) {
                 Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
                     stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
                     cache_put(key, resp.body.clone(), resp.headers.clone());
