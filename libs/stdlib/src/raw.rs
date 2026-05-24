@@ -38,6 +38,7 @@ pub(crate) const SYS_MUNMAP: u32 = 15;
 pub(crate) const SYS_MMAP64: u32 = 631;
 pub(crate) const SYS_MUNMAP64: u32 = 632;
 pub(crate) const SYS_LXE_SPAWN: u32 = 710;
+pub(crate) const SYS_WXE_SPAWN: u32 = 711;
 pub(crate) const SYS_KILL: u32 = 13;
 pub(crate) const SYS_SPAWN: u32 = 27;
 pub(crate) const SYS_DETACH: u32 = 314;

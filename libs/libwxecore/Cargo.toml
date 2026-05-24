@@ -1,0 +1,15 @@
+[package]
+name = "libwxecore"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../stdlib" }
+libconf_schema = { path = "../libconf_schema" }
+
+[features]
+default = []
+host = ["anyos_std/host", "libconf_schema/host"]
+
+[lib]
+name = "libwxecore"

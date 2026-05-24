@@ -1080,6 +1080,44 @@ pub fn sys_lxe_spawn(path_ptr: u64, args_ptr: u64) -> u32 {
     }
 }
 
+/// sys_wxe_spawn - Spawn a Windows x86_64 process through wxe.
+/// arg1=path_ptr, arg2=args_ptr (0=none). Returns TID or u32::MAX on error.
+pub fn sys_wxe_spawn(path_ptr: u64, args_ptr: u64) -> u32 {
+    let path = match read_user_str_safe(path_ptr) {
+        Some(path) if !path.is_empty() => path,
+        _ => return u32::MAX,
+    };
+    let args = if args_ptr != 0 {
+        read_user_str_safe(args_ptr).unwrap_or("")
+    } else {
+        ""
+    };
+    let name = path
+        .rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or("windows");
+
+    let stdout_pipe = crate::task::scheduler::current_thread_stdout_pipe();
+    let stdin_pipe = crate::task::scheduler::current_thread_stdin_pipe();
+    let (stdio, created_pty) = create_spawn_stdio(stdout_pipe, stdin_pipe, true);
+
+    match crate::task::loader::load_and_run_windows_with_args_stdio(path, name, args, stdio) {
+        Ok(tid) => {
+            if let Some(parent_pd) = crate::task::scheduler::current_thread_page_directory() {
+                if let Some(child_pd) = crate::task::scheduler::thread_page_directory(tid) {
+                    crate::task::env::clone_env(parent_pd.0, child_pd.0);
+                }
+            }
+            tid
+        }
+        Err(e) => {
+            destroy_created_spawn_stdio(stdio, created_pty);
+            crate::serial_verbose_println!("sys_wxe_spawn: FAILED path='{}': {}", path, e);
+            u32::MAX
+        }
+    }
+}
+
 /// sys_getargs - Get command-line arguments for the current process.
 /// arg1=buf_ptr, arg2=buf_size. Returns bytes written.
 pub fn sys_getargs(buf_ptr: u64, buf_size: u32) -> u32 {

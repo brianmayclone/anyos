@@ -411,6 +411,46 @@ mod layout_regression_tests {
     }
 
     #[test]
+    fn font_family_inherit_copies_parent_family() {
+        let dom = crate::html::parse(
+            r#"
+            <body data-color-brand="bild">
+                <a class="nav_btn">
+                    <span id="nav-text" class="nav_btn__text">KAUFBERATER SPORT</span>
+                </a>
+            </body>
+            "#,
+        );
+        let stylesheet = crate::css::parse_stylesheet(
+            r#"
+            body[data-color-brand=bild] {
+                --label-font: Gotham XNarrow, Arial Narrow, sans-serif;
+            }
+            .nav_btn { font-family: var(--label-font); }
+            .nav_btn__text { font-family: inherit; }
+            "#,
+        );
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles(&dom, &[&stylesheet], 1365, 700, &mut inline_style_cache);
+        let nav_text = dom
+            .nodes
+            .iter()
+            .position(|node| {
+                matches!(
+                    &node.node_type,
+                    NodeType::Element { attrs, .. }
+                        if attrs.iter().any(|a| a.name == "id" && a.value == "nav-text")
+                )
+            })
+            .expect("nav text");
+
+        assert_eq!(
+            styles[nav_text].font_family.as_deref(),
+            Some("Gotham XNarrow, Arial Narrow, sans-serif")
+        );
+    }
+
+    #[test]
     fn custom_element_property_var_resolves_for_overflow_x() {
         let dom = crate::html::parse(
             r#"

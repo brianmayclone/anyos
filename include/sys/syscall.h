@@ -31,6 +31,7 @@
 #define SYS_MMAP64         631
 #define SYS_MUNMAP64       632
 #define SYS_LXE_SPAWN    710
+#define SYS_WXE_SPAWN    711
 
 /* ---- Device management ---- */
 #define SYS_DEVLIST         16

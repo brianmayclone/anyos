@@ -1183,8 +1183,16 @@ pub fn apply_declaration(
             }
         }
         Property::FontFamily => {
-            if let CssValue::Keyword(ref kw) = decl.value {
-                style.font_family = Some(kw.clone());
+            match decl.value {
+                CssValue::Keyword(ref kw) => {
+                    style.font_family = Some(kw.clone());
+                }
+                CssValue::Inherit => {
+                    if let Some(parent) = parent_style {
+                        style.font_family = parent.font_family.clone();
+                    }
+                }
+                _ => {}
             }
         }
         Property::LetterSpacing => {

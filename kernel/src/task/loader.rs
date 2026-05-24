@@ -16,6 +16,7 @@ use crate::sync::spinlock::Spinlock;
 
 mod anyos;
 mod linux;
+mod windows;
 
 pub use anyos::exec_current_process;
 pub use linux::exec_current_linux_process;
@@ -1146,6 +1147,24 @@ pub fn load_and_run_linux_with_args_stdio(
     stdio: SpawnStdio,
 ) -> Result<u32, &'static str> {
     linux::load_and_run_with_args_stdio(path, name, args, stdio)
+}
+
+/// Load and run a Windows x86_64 PE through wxe.
+pub fn load_and_run_windows_with_args(
+    path: &str,
+    name: &str,
+    args: &str,
+) -> Result<u32, &'static str> {
+    windows::load_and_run_with_args_stdio(path, name, args, SpawnStdio::NONE)
+}
+
+pub fn load_and_run_windows_with_args_stdio(
+    path: &str,
+    name: &str,
+    args: &str,
+    stdio: SpawnStdio,
+) -> Result<u32, &'static str> {
+    windows::load_and_run_with_args_stdio(path, name, args, stdio)
 }
 
 fn load_and_run_with_args_abi_stdio(

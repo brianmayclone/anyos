@@ -217,6 +217,7 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         // Process management
         syscall::SYS_SPAWN
         | syscall::SYS_LXE_SPAWN
+        | syscall::SYS_WXE_SPAWN
         | syscall::SYS_KILL
         | syscall::SYS_WAITPID
         | syscall::SYS_TRY_WAITPID

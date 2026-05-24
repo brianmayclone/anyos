@@ -305,6 +305,7 @@ file(GLOB_RECURSE _WS_RS CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/apps/*/src/*.rs"
   "${CMAKE_SOURCE_DIR}/libs/libnode/src/*.rs"
   "${CMAKE_SOURCE_DIR}/libs/libuv/src/*.rs"
+  "${CMAKE_SOURCE_DIR}/libs/libwxecore/src/*.rs"
   "${CMAKE_SOURCE_DIR}/system/*/src/*.rs"
   "${CMAKE_SOURCE_DIR}/system/daemons/*/src/*.rs"
   "${CMAKE_SOURCE_DIR}/system/compositor/*/src/*.rs"
@@ -316,6 +317,7 @@ file(GLOB _WS_TOMLS CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/apps/*/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/libs/libnode/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/libs/libuv/Cargo.toml"
+  "${CMAKE_SOURCE_DIR}/libs/libwxecore/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/system/*/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/system/daemons/*/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/system/compositor/*/Cargo.toml"
@@ -892,6 +894,7 @@ add_rust_user_program(vmd)
 add_rust_user_program(vmctl)
 add_rust_user_program(aslctl)
 add_rust_user_program(lxe)
+add_rust_user_program(wxe)
 add_rust_user_program(lxed)
 add_rust_user_program(ftpd)
 add_rust_user_program(zip)

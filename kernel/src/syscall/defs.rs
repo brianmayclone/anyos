@@ -338,6 +338,9 @@ pub const SYS_MUNMAP64: u32 = 632;
 // lxe - Linux Experience Extension
 pub const SYS_LXE_SPAWN: u32 = 710;
 
+// wxe - Windows Experience Extension
+pub const SYS_WXE_SPAWN: u32 = 711;
+
 // Multi-monitor display syscalls. The legacy SYS_SCREEN_SIZE / SYS_SET_RESOLUTION
 // / SYS_MAP_FRAMEBUFFER continue to operate on output 0 for backwards
 // compatibility; these new syscalls let the compositor (and displayd) work

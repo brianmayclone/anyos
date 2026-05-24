@@ -1232,6 +1232,13 @@ fn fallback_custom_property(name: &str) -> Option<&'static str> {
         | "--font-family-inter-tight"
         | "--website-font"
         | "--website-paragraph" => Some("Arial"),
+        "--label-font" | "--label-font-family" | "--button-label-font-family" => {
+            Some("Gotham XNarrow, Avenir Next Condensed, sans-serif-condensed, Arial Narrow, Arial Nova, sans-serif")
+        }
+        "--nav-btn-font-size" | "--nav-btn-mobile-font-size" => Some("15px"),
+        "--nav-btn-line-height" => Some("3.2"),
+        "--nav-btn-narrow-line-height" | "--nav-btn-mobile-line-height" => Some("2.8"),
+        "--nav-btn-letter-spacing" | "--nav-btn-mobile-letter-spacing" => Some("0"),
         "--text-xxs" | "--unified-text-xxs" => Some(".555rem"),
         "--text-xs" | "--unified-text-xs" => Some(".666rem"),
         "--text-sm" | "--unified-text-sm" => Some(".777rem"),

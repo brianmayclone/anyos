@@ -12,7 +12,7 @@ wxe status
 wxe init
 wxe repair
 wxe run <windows-pe> [args...]
-wxe shell [shell-args...]
+wxe shell [--builtin]
 wxe inspect <windows-pe>
 wxe dlls
 ```
@@ -49,6 +49,7 @@ drives/c=/System/var/wxe/drive_c
 drives/z=
 shell/default_drive=C:
 shell/default_cwd=\Users\Default
+shell/comspec=C:\Windows\System32\cmd.exe
 ```
 
 `Z:` and other host mappings are empty by default. Enabling a host-root drive
@@ -101,8 +102,19 @@ current directory to `SYS_WXE_SPAWN`.
 
 ## WXE Shell
 
-The first WXE Shell is a Windows-flavored console launcher, not `cmd.exe`
-compatibility yet.
+The target shell process is WXE's own `C:\Windows\System32\cmd.exe`, exposed
+through the Windows `COMSPEC` convention. WXE must not ship Microsoft's
+`cmd.exe`; the file in the WXE root is an anyOS/WXE implementation with
+Windows-compatible command behavior.
+
+`command.com` is intentionally out of scope for the x86_64 WXE layer. It is
+the DOS/Windows 9x command interpreter and, on old 32-bit NT systems, belonged
+to NTVDM-style DOS compatibility. WXE's first ABI target is the NT x86_64
+console world, so `cmd.exe` is the right command processor.
+
+Until WXE can start its PE `cmd.exe`, `/System/bin/wxe shell` may fall back to
+a bootstrap shell (`wxe shell --builtin`) with the same drive-letter state and
+launch path.
 
 Required built-ins:
 

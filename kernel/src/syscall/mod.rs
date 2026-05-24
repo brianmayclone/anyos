@@ -15,6 +15,7 @@ mod defs;
 pub mod handlers;
 pub(crate) mod linux;
 pub mod table;
+pub(crate) mod windows;
 pub use defs::*;
 
 #[cfg(target_arch = "x86_64")]
@@ -181,6 +182,7 @@ pub(crate) fn dispatch_inner(
         SYS_KILL => handlers::sys_kill(arg1 as u32, arg2 as u32),
         SYS_SPAWN => handlers::sys_spawn(arg1, arg2 as u32, arg3, arg4 as u32),
         SYS_LXE_SPAWN => handlers::sys_lxe_spawn(arg1, arg2),
+        SYS_WXE_SPAWN => handlers::sys_wxe_spawn(arg1, arg2),
         SYS_DETACH => handlers::sys_detach(arg1 as u32),
         SYS_EXEC => handlers::sys_exec(arg1, arg2),
         SYS_GETARGS => handlers::sys_getargs(arg1, arg2 as u32),
@@ -685,6 +687,13 @@ pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
     {
         let result = linux::dispatch(regs);
         return handlers::deliver_pending_signal_linux64(regs, result);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    if crate::task::scheduler::current_thread_abi()
+        == crate::task::abi::AbiPersonality::WindowsX86_64
+    {
+        return windows::dispatch(regs);
     }
 
     // fork() needs the full register frame — intercept before dispatch_inner.

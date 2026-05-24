@@ -20,6 +20,9 @@ clean console slice:
 - WXE implements a Windows x86_64 user-mode ABI profile on the anyOS kernel.
 - WXE is opt-in: processes run as `AnyOs`, `LinuxX86_64` or `WindowsX86_64`.
 - WXE uses WXE-owned DLLs. It does not ship Microsoft DLLs.
+- WXE uses a WXE-owned `C:\Windows\System32\cmd.exe` for the command processor.
+  `command.com` belongs to DOS/Win9x/NTVDM compatibility and is not part of
+  the x86_64 console target.
 - Console applications are the first target.
 - GUI applications come later.
 
@@ -73,6 +76,8 @@ clean console slice:
 - `/System/bin/wxe` with `status`, `init`, `repair`, `run`, `shell`,
   `inspect`, `dlls`.
 - `libs/libwxecore` for config, PE inspection, root layout and CLI logic.
+- `C:\Windows\System32\cmd.exe` as the WXE command processor, with
+  `COMSPEC=C:\Windows\System32\cmd.exe`.
 - `system/daemons/wxed` for root/DLL manifest ownership and runtime leases.
 - `apps/wxeshell` for the first graphical WXE console.
 - `apps/wxemanager` for diagnostics after the core slice is stable.
@@ -153,6 +158,8 @@ Goal: a usable shell for console applications.
 Add:
 
 - `apps/wxeshell`
+- WXE-owned `cmd.exe`
+- `COMSPEC`
 - `wxe shell --pty-bridge`
 - drive-letter state
 - executable search through `PATH`
