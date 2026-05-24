@@ -85,7 +85,6 @@ static mut ERROR_SHADOW_ID: u32 = 0;
 static mut ERROR_LBL_ID: u32 = 0;
 static mut LOGIN_CONTROLS: Option<Vec<u32>> = None;
 static mut PICKER_CONTROLS: Option<Vec<u32>> = None;
-static mut AVATAR_GLOW_FILTER: Option<ui::AntiAliasFilterContainer> = None;
 static mut AVATAR_GLOW: Option<ui::Canvas> = None;
 static mut CENTER_AVATAR_POS: (i32, i32) = (0, 0);
 static mut CENTER_GLOW_POS: (i32, i32) = (0, 0);
@@ -96,7 +95,6 @@ static mut AVATAR_TIMER_ID: u32 = 0;
 
 #[derive(Clone, Copy)]
 struct AvatarAnim {
-    glow_filter: ui::AntiAliasFilterContainer,
     glow: ui::Canvas,
     avatar: ui::Canvas,
     avatar_x: i32,
@@ -319,30 +317,19 @@ fn main() -> u32 {
     let avatar_y = (sh as i32 * 54) / 100;
     let avatar_x = center_x - CURRENT_AVATAR_SIZE as i32 / 2;
     let current_glow_pad = 16;
-    let avatar_glow_filter = ui::AntiAliasFilterContainer::new();
-    avatar_glow_filter.set_position(
-        avatar_x - current_glow_pad as i32,
-        avatar_y - current_glow_pad as i32,
-    );
-    avatar_glow_filter.set_size(
-        CURRENT_AVATAR_SIZE + current_glow_pad * 2,
-        CURRENT_AVATAR_SIZE + current_glow_pad * 2,
-    );
-    avatar_glow_filter.set_visible(has_last_user);
-    avatar_glow_filter.set_style(ui::STYLE_FILTER_STRENGTH, 92);
-    avatar_glow_filter.set_style(ui::STYLE_FILTER_QUALITY, 1);
-    win.add(&avatar_glow_filter);
-    login_ids.push(avatar_glow_filter.id());
-
     let avatar_glow = ui::Canvas::new(
         CURRENT_AVATAR_SIZE + current_glow_pad * 2,
         CURRENT_AVATAR_SIZE + current_glow_pad * 2,
     );
-    avatar_glow.set_position(0, 0);
+    avatar_glow.set_position(
+        avatar_x - current_glow_pad as i32,
+        avatar_y - current_glow_pad as i32,
+    );
     avatar_glow.set_size(
         CURRENT_AVATAR_SIZE + current_glow_pad * 2,
         CURRENT_AVATAR_SIZE + current_glow_pad * 2,
     );
+    avatar_glow.set_visible(has_last_user);
     draw_avatar_ring(
         &avatar_glow,
         CURRENT_AVATAR_SIZE,
@@ -351,9 +338,9 @@ fn main() -> u32 {
         avatar_glow_inner,
         118,
     );
-    avatar_glow_filter.add(&avatar_glow);
+    win.add(&avatar_glow);
+    login_ids.push(avatar_glow.id());
     unsafe {
-        AVATAR_GLOW_FILTER = Some(avatar_glow_filter);
         AVATAR_GLOW = Some(avatar_glow);
         CENTER_AVATAR_POS = (avatar_x, avatar_y);
         CENTER_GLOW_POS = (
@@ -571,18 +558,10 @@ fn main() -> u32 {
         let glow_size = PICKER_AVATAR_SIZE + picker_glow_pad * 2;
         let glow_x =
             cell_x + (cell_w as i32 - PICKER_AVATAR_SIZE as i32) / 2 - picker_glow_pad as i32;
-        let glow_filter = ui::AntiAliasFilterContainer::new();
-        glow_filter.set_position(glow_x, picker_y - picker_glow_pad as i32);
-        glow_filter.set_size(glow_size, glow_size);
-        glow_filter.set_visible(!has_last_user);
-        glow_filter.set_style(ui::STYLE_FILTER_STRENGTH, 92);
-        glow_filter.set_style(ui::STYLE_FILTER_QUALITY, 1);
-        win.add(&glow_filter);
-        picker_ids.push(glow_filter.id());
-
         let glow = ui::Canvas::new(glow_size, glow_size);
-        glow.set_position(0, 0);
+        glow.set_position(glow_x, picker_y - picker_glow_pad as i32);
         glow.set_size(glow_size, glow_size);
+        glow.set_visible(false);
         draw_avatar_ring(
             &glow,
             PICKER_AVATAR_SIZE,
@@ -591,7 +570,7 @@ fn main() -> u32 {
             avatar_glow_inner,
             0,
         );
-        glow_filter.add(&glow);
+        win.add(&glow);
 
         let av = ui::Canvas::new(PICKER_AVATAR_SIZE, PICKER_AVATAR_SIZE);
         let av_x = cell_x + (cell_w as i32 - PICKER_AVATAR_SIZE as i32) / 2;
@@ -608,7 +587,6 @@ fn main() -> u32 {
         win.add(&av);
         picker_ids.push(av.id());
         avatar_anims.push(AvatarAnim {
-            glow_filter,
             glow,
             avatar: av,
             avatar_x: av_x,
@@ -798,12 +776,9 @@ fn set_controls_visible(ids: &Option<Vec<u32>>, visible: bool) {
 fn show_login() {
     clear_login_error();
     unsafe {
-        if let Some(filter) = AVATAR_GLOW_FILTER {
-            let (x, y) = CENTER_GLOW_POS;
-            filter.set_position(x, y);
-            filter.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
-        }
         if let Some(glow) = AVATAR_GLOW {
+            let (x, y) = CENTER_GLOW_POS;
+            glow.set_position(x, y);
             glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
             draw_avatar_ring(
                 &glow,
@@ -813,6 +788,11 @@ fn show_login() {
                 AVATAR_RING_INNER,
                 118,
             );
+        }
+        if let Some(list) = PICKER_AVATARS.as_mut() {
+            for picker in list.iter_mut() {
+                picker.glow.set_visible(false);
+            }
         }
         set_controls_visible(&LOGIN_CONTROLS, true);
         set_controls_visible(&PICKER_CONTROLS, false);
@@ -830,12 +810,9 @@ fn show_picker() {
             avatar.set_size(CURRENT_AVATAR_SIZE, CURRENT_AVATAR_SIZE);
             update_avatar();
         }
-        if let Some(filter) = AVATAR_GLOW_FILTER {
-            let (x, y) = CENTER_GLOW_POS;
-            filter.set_position(x, y);
-            filter.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
-        }
         if let Some(glow) = AVATAR_GLOW {
+            let (x, y) = CENTER_GLOW_POS;
+            glow.set_position(x, y);
             glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
             draw_avatar_ring(
                 &glow,
@@ -845,6 +822,17 @@ fn show_picker() {
                 AVATAR_RING_INNER,
                 0,
             );
+        }
+        if let Some(list) = PICKER_AVATARS.as_mut() {
+            for picker in list.iter_mut() {
+                picker.hover = 0;
+                picker.target = 0;
+                picker.pressed = false;
+                picker.shown_pressed = false;
+                picker.glow.set_position(picker.glow_x, picker.glow_y);
+                picker.glow.set_size(picker.glow_size, picker.glow_size);
+                picker.glow.set_visible(false);
+            }
         }
         set_controls_visible(&LOGIN_CONTROLS, false);
         set_controls_visible(&PICKER_CONTROLS, true);
@@ -865,7 +853,7 @@ fn show_picker_animated() {
         };
         set_controls_visible(&PICKER_CONTROLS, true);
         for picker in list.iter() {
-            picker.glow_filter.set_visible(false);
+            picker.glow.set_visible(false);
             picker.avatar.set_visible(false);
         }
         if let Some(avatar) = AVATAR {
@@ -874,12 +862,9 @@ fn show_picker_animated() {
             avatar.set_size(CURRENT_AVATAR_SIZE, CURRENT_AVATAR_SIZE);
             update_avatar();
         }
-        if let Some(filter) = AVATAR_GLOW_FILTER {
-            let (x, y) = CENTER_GLOW_POS;
-            filter.set_position(x, y);
-            filter.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
-        }
         if let Some(glow) = AVATAR_GLOW {
+            let (x, y) = CENTER_GLOW_POS;
+            glow.set_position(x, y);
             glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
             draw_avatar_ring(
                 &glow,
@@ -926,6 +911,9 @@ fn select_user_animated(idx: usize) {
         set_controls_visible(&LOGIN_CONTROLS, true);
         set_controls_visible(&PICKER_CONTROLS, false);
         if let Some(list) = PICKER_AVATARS.as_ref() {
+            for picker in list.iter() {
+                picker.glow.set_visible(false);
+            }
             if let Some(anim) = list.get(idx) {
                 let from_avatar_x =
                     anim.avatar_x - ((CURRENT_AVATAR_SIZE - anim.avatar_size) / 2) as i32;
@@ -939,6 +927,7 @@ fn select_user_animated(idx: usize) {
                     update_avatar();
                 }
                 if let Some(glow) = AVATAR_GLOW {
+                    glow.set_position(from_glow_x, from_glow_y);
                     glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
                     draw_avatar_ring(
                         &glow,
@@ -948,10 +937,6 @@ fn select_user_animated(idx: usize) {
                         AVATAR_RING_INNER,
                         180,
                     );
-                }
-                if let Some(filter) = AVATAR_GLOW_FILTER {
-                    filter.set_position(from_glow_x, from_glow_y);
-                    filter.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
                 }
                 let (to_avatar_x, to_avatar_y) = CENTER_AVATAR_POS;
                 let (to_glow_x, to_glow_y) = CENTER_GLOW_POS;
@@ -1017,6 +1002,9 @@ fn tick_avatar_animation() {
                 anim.avatar
                     .set_position(anim.avatar_x + inset, anim.avatar_y + inset);
                 anim.avatar.set_size(anim.avatar_size, anim.avatar_size);
+                anim.glow.set_position(anim.glow_x, anim.glow_y);
+                anim.glow.set_size(anim.glow_size, anim.glow_size);
+                anim.glow.set_visible(anim.hover > 0 || target > 0);
                 draw_avatar_ring(
                     &anim.glow,
                     anim.avatar_size,
@@ -1025,6 +1013,9 @@ fn tick_avatar_animation() {
                     AVATAR_RING_INNER,
                     anim.hover,
                 );
+                if anim.hover == 0 && target == 0 {
+                    anim.glow.set_visible(false);
+                }
             }
         }
 
@@ -1041,6 +1032,7 @@ fn tick_avatar_animation() {
                 avatar.set_size(CURRENT_AVATAR_SIZE, CURRENT_AVATAR_SIZE);
             }
             if let Some(glow) = AVATAR_GLOW {
+                glow.set_position(gl_x, gl_y);
                 glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
                 draw_avatar_ring(
                     &glow,
@@ -1051,10 +1043,6 @@ fn tick_avatar_animation() {
                     160,
                 );
             }
-            if let Some(filter) = AVATAR_GLOW_FILTER {
-                filter.set_position(gl_x, gl_y);
-                filter.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
-            }
             if sel.ticks >= 14 {
                 let returning_to_picker = sel.returning_to_picker;
                 if let Some(avatar) = AVATAR {
@@ -1063,6 +1051,7 @@ fn tick_avatar_animation() {
                     update_avatar();
                 }
                 if let Some(glow) = AVATAR_GLOW {
+                    glow.set_position(sel.to_glow_x, sel.to_glow_y);
                     glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
                     let final_glow = if returning_to_picker { 0 } else { 118 };
                     draw_avatar_ring(
@@ -1073,10 +1062,6 @@ fn tick_avatar_animation() {
                         AVATAR_RING_INNER,
                         final_glow,
                     );
-                }
-                if let Some(filter) = AVATAR_GLOW_FILTER {
-                    filter.set_position(sel.to_glow_x, sel.to_glow_y);
-                    filter.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
                 }
                 SELECT_ANIM = None;
                 if returning_to_picker {
@@ -1089,10 +1074,9 @@ fn tick_avatar_animation() {
                             anim.avatar.set_position(anim.avatar_x, anim.avatar_y);
                             anim.avatar.set_size(anim.avatar_size, anim.avatar_size);
                             anim.avatar.set_visible(true);
-                            anim.glow_filter.set_position(anim.glow_x, anim.glow_y);
-                            anim.glow_filter.set_size(anim.glow_size, anim.glow_size);
-                            anim.glow_filter.set_visible(true);
+                            anim.glow.set_position(anim.glow_x, anim.glow_y);
                             anim.glow.set_size(anim.glow_size, anim.glow_size);
+                            anim.glow.set_visible(false);
                             draw_avatar_ring(
                                 &anim.glow,
                                 anim.avatar_size,
@@ -1114,6 +1098,7 @@ fn tick_avatar_animation() {
                         update_avatar();
                     }
                     if let Some(glow) = AVATAR_GLOW {
+                        glow.set_position(to_gx, to_gy);
                         glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
                         draw_avatar_ring(
                             &glow,
@@ -1123,10 +1108,6 @@ fn tick_avatar_animation() {
                             AVATAR_RING_INNER,
                             118,
                         );
-                    }
-                    if let Some(filter) = AVATAR_GLOW_FILTER {
-                        filter.set_position(to_gx, to_gy);
-                        filter.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
                     }
                     ui::Control::from_id(PASS_ID).focus();
                 }
