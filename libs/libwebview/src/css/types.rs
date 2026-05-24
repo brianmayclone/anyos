@@ -181,6 +181,7 @@ pub enum PseudoClass {
     OutOfRange,
     Default,
     Indeterminate,
+    Unsupported,
 }
 
 #[derive(Clone)]

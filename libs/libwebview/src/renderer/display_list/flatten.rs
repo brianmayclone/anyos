@@ -80,7 +80,8 @@ impl DisplayList {
         if self.cmds.is_empty() {
             return;
         }
-        self.tile_cmds.resize_with(max_row.saturating_add(1), Vec::new);
+        self.tile_cmds
+            .resize_with(max_row.saturating_add(1), Vec::new);
         for (idx, cmd) in self.cmds.iter().enumerate() {
             if cmd.h <= 0 {
                 continue;
@@ -108,7 +109,11 @@ impl DisplayList {
                 } else {
                     interpolate_gradient_color(stops, 5000)
                 };
-                Some(if (color >> 24) == 0 { color | 0xFF00_0000 } else { color })
+                Some(if (color >> 24) == 0 {
+                    color | 0xFF00_0000
+                } else {
+                    color
+                })
             }
             // Tailwind-style `bg-clip-text text-transparent` often expresses
             // its gradient through CSS custom properties. Until the full var()
@@ -129,7 +134,11 @@ impl DisplayList {
                 } else {
                     interpolate_gradient_color(stops, t.clamp(0, 10000))
                 };
-                Some(if (color >> 24) == 0 { color | 0xFF00_0000 } else { color })
+                Some(if (color >> 24) == 0 {
+                    color | 0xFF00_0000
+                } else {
+                    color
+                })
             }
             _ => None,
         }
@@ -317,8 +326,8 @@ impl DisplayList {
         }
 
         let parent_opacity = self.opacity_stack.last().copied().unwrap_or(255) as i32;
-        let effective_opacity = ((parent_opacity * bx.opacity.clamp(0, 255) + 127) / 255)
-            .clamp(0, 255) as u8;
+        let effective_opacity =
+            ((parent_opacity * bx.opacity.clamp(0, 255) + 127) / 255).clamp(0, 255) as u8;
         let pushed_opacity = if effective_opacity < 255 || !self.opacity_stack.is_empty() {
             self.opacity_stack.push(effective_opacity);
             true
@@ -629,7 +638,7 @@ impl DisplayList {
                     },
                 );
             } else {
-            // Top border
+                // Top border
                 if bx.border_top_width > 0 && bx.border_top_color != 0 {
                     self.emit_border_edge(
                         abs_x,
@@ -784,12 +793,15 @@ impl DisplayList {
         if let Some(ref text) = bx.text {
             if !text.is_empty() && bx.form_field.is_none() {
                 let font_id = crate::layout::resolve_font_id(bx.custom_font_id, bx.bold, bx.italic);
-                let scale_x_percent =
-                    crate::synthetic_font_width_scale_percent(bx.custom_font_id);
+                let scale_x_percent = crate::synthetic_font_width_scale_percent(bx.custom_font_id);
                 let font_size = bx.font_size.max(1) as u16;
-                let color = self
-                    .text_clip_color(bx)
-                    .unwrap_or_else(|| if bx.color != 0 { bx.color } else { 0xFF000000 });
+                let color = self.text_clip_color(bx).unwrap_or_else(|| {
+                    if bx.color != 0 {
+                        bx.color
+                    } else {
+                        0xFF000000
+                    }
+                });
                 #[cfg(feature = "host")]
                 if std::env::var_os("SURF_DEBUG_FLATTEN_TEXT").is_some()
                     && !text.trim().is_empty()
@@ -799,12 +811,7 @@ impl DisplayList {
                 {
                     eprintln!(
                         "[libwebview] flatten text x={} y={} w={} h={} color=0x{:08x} text={:?}",
-                        abs_x,
-                        abs_y,
-                        draw_w,
-                        draw_h,
-                        color,
-                        text
+                        abs_x, abs_y, draw_w, draw_h, color, text
                     );
                 }
 
@@ -827,7 +834,10 @@ impl DisplayList {
                 }
 
                 if matches!(bx.background_clip, BackgroundClipVal::Text)
-                    && matches!(bx.background_image, BackgroundImageVal::LinearGradient { .. })
+                    && matches!(
+                        bx.background_image,
+                        BackgroundImageVal::LinearGradient { .. }
+                    )
                     && draw_w > 1
                 {
                     let chars: Vec<char> = text.chars().collect();
@@ -855,17 +865,14 @@ impl DisplayList {
                         for (i, ch) in chars.into_iter().enumerate() {
                             let char_w = measured_widths[i];
                             let x0 = abs_x + ((measured_x as i64 * target) / total) as i32;
-                            let x1 = abs_x
-                                + (((measured_x + char_w) as i64 * target) / total) as i32;
+                            let x1 =
+                                abs_x + (((measured_x + char_w) as i64 * target) / total) as i32;
                             let w = (x1 - x0).max(1);
                             let midpoint = measured_x + char_w / 2;
                             let t = if bx.text_clip_width > 1 {
-                                let fragment_midpoint =
-                                    ((midpoint as i64 * target) / total) as i32;
-                                let run_midpoint =
-                                    bx.x - bx.text_clip_origin_x + fragment_midpoint;
-                                ((run_midpoint as i64 * 10000)
-                                    / bx.text_clip_width.max(1) as i64)
+                                let fragment_midpoint = ((midpoint as i64 * target) / total) as i32;
+                                let run_midpoint = bx.x - bx.text_clip_origin_x + fragment_midpoint;
+                                ((run_midpoint as i64 * 10000) / bx.text_clip_width.max(1) as i64)
                                     .clamp(0, 10000) as i32
                             } else {
                                 ((midpoint as i64 * 10000) / total) as i32
@@ -1046,7 +1053,13 @@ impl DisplayList {
         }
 
         // Outline (drawn outside the border box).
-        if bx.outline_width > 0 && bx.outline_color != 0 {
+        if bx.outline_width > 0
+            && bx.outline_color != 0
+            && !matches!(
+                bx.outline_style,
+                crate::style::BorderStyleVal::None | crate::style::BorderStyleVal::Hidden
+            )
+        {
             let ow = bx.outline_width;
             let off = bx.outline_offset;
             let ox = abs_x - ow - off;
@@ -1240,7 +1253,6 @@ impl DisplayList {
             self.rotation_stack.pop();
         }
     }
-
 }
 
 #[cfg(feature = "host")]

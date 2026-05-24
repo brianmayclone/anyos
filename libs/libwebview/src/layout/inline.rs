@@ -5,8 +5,8 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, NodeType, Tag};
 use crate::style::{
-    resolve_inset, resolve_margins, BoxSizing, ComputedStyle, Display, Position, PseudoStyles,
-    TextAlignVal, TextDeco, TextTransform, VerticalAlign, Visibility, WhiteSpace,
+    resolve_inset, resolve_margins, BoxSizing, ComputedStyle, Display, OverflowVal, Position,
+    PseudoStyles, TextAlignVal, TextDeco, TextTransform, VerticalAlign, Visibility, WhiteSpace,
 };
 use crate::ImageCache;
 
@@ -107,10 +107,11 @@ fn apply_inline_control_style(bx: &mut LayoutBox, style: Option<&ComputedStyle>)
     bx.accent_color = style.accent_color;
     bx.uses_dark_color_scheme = style.color_scheme == crate::style::ColorSchemeVal::Dark;
     bx.appearance_none = style.appearance == crate::style::AppearanceVal::None;
-    bx.pointer_events_none = matches!(
-        style.pointer_events,
-        crate::style::PointerEventsVal::None
-    );
+    bx.overflow_hidden = !matches!(style.overflow_x, OverflowVal::Visible)
+        || !matches!(style.overflow_y, OverflowVal::Visible);
+    bx.pointer_events_none = matches!(style.pointer_events, crate::style::PointerEventsVal::None);
+    bx.opacity = style.opacity;
+    bx.backdrop_filter_blur = style.backdrop_filter.blur_px;
     bx.font_size = font_size_px(style);
     bx.bold = is_bold(style);
     bx.italic = is_italic(style);
@@ -145,16 +146,29 @@ fn apply_inline_control_style(bx: &mut LayoutBox, style: Option<&ComputedStyle>)
     bx.border_bottom_style = style.border_bottom.style;
     bx.border_left_style = style.border_left.style;
     bx.outline_width = style.outline_width;
+    bx.outline_style = style.outline_style;
     bx.outline_color = style.outline_color;
     bx.outline_offset = style.outline_offset;
     bx.box_shadows = style.box_shadows.clone();
     bx.text_shadows = style.text_shadows.clone();
     bx.background_image = style.background_image.clone();
+    bx.mask_image = style.mask_image.clone();
     bx.background_size = style.background_size;
     bx.background_repeat = style.background_repeat;
     bx.background_clip = style.background_clip;
     bx.background_position_x = style.background_position_x;
     bx.background_position_y = style.background_position_y;
+    bx.mask_size = style.mask_size;
+    bx.mask_repeat = style.mask_repeat;
+    bx.mask_clip = style.mask_clip;
+    bx.mask_origin = style.mask_origin;
+    bx.mask_position_x = style.mask_position_x;
+    bx.mask_position_x_is_percent = style.mask_position_x_is_percent;
+    bx.mask_position_y = style.mask_position_y;
+    bx.mask_position_y_is_percent = style.mask_position_y_is_percent;
+    bx.filter = style.filter.clone();
+    bx.clip_path = style.clip_path.clone();
+    bx.clip_rect = style.clip_rect;
     bx.letter_spacing = style.letter_spacing;
     bx.text_align = style.text_align;
 }
@@ -210,10 +224,11 @@ fn build_empty_inline_visual_box(node_id: NodeId, style: &ComputedStyle) -> Layo
     let mut bx = LayoutBox::new(Some(node_id), BoxType::Inline);
     bx.is_positioned = style.position != Position::Static;
     bx.visibility_hidden = matches!(style.visibility, Visibility::Hidden | Visibility::Collapse);
-    bx.pointer_events_none = matches!(
-        style.pointer_events,
-        crate::style::PointerEventsVal::None
-    );
+    bx.overflow_hidden = !matches!(style.overflow_x, OverflowVal::Visible)
+        || !matches!(style.overflow_y, OverflowVal::Visible);
+    bx.pointer_events_none = matches!(style.pointer_events, crate::style::PointerEventsVal::None);
+    bx.opacity = style.opacity;
+    bx.backdrop_filter_blur = style.backdrop_filter.blur_px;
     bx.color = style.color;
     bx.bg_color = if style.background_color_is_current {
         style.color
@@ -246,6 +261,30 @@ fn build_empty_inline_visual_box(node_id: NodeId, style: &ComputedStyle) -> Layo
     bx.border_top_right_radius = style.border_top_right_radius;
     bx.border_bottom_right_radius = style.border_bottom_right_radius;
     bx.border_bottom_left_radius = style.border_bottom_left_radius;
+    bx.outline_width = style.outline_width;
+    bx.outline_style = style.outline_style;
+    bx.outline_color = style.outline_color;
+    bx.outline_offset = style.outline_offset;
+    bx.box_shadows = style.box_shadows.clone();
+    bx.text_shadows = style.text_shadows.clone();
+    bx.background_image = style.background_image.clone();
+    bx.mask_image = style.mask_image.clone();
+    bx.background_size = style.background_size;
+    bx.background_repeat = style.background_repeat;
+    bx.background_clip = style.background_clip;
+    bx.background_position_x = style.background_position_x;
+    bx.background_position_y = style.background_position_y;
+    bx.mask_size = style.mask_size;
+    bx.mask_repeat = style.mask_repeat;
+    bx.mask_clip = style.mask_clip;
+    bx.mask_origin = style.mask_origin;
+    bx.mask_position_x = style.mask_position_x;
+    bx.mask_position_x_is_percent = style.mask_position_x_is_percent;
+    bx.mask_position_y = style.mask_position_y;
+    bx.mask_position_y_is_percent = style.mask_position_y_is_percent;
+    bx.filter = style.filter.clone();
+    bx.clip_path = style.clip_path.clone();
+    bx.clip_rect = style.clip_rect;
     if let Some(ref family) = style.font_family {
         if let Some(wf_id) = crate::lookup_web_font_variant(family, bx.bold, bx.italic) {
             bx.custom_font_id = wf_id;

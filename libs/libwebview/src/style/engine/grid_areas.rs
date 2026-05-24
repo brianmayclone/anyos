@@ -451,6 +451,92 @@ mod layout_regression_tests {
     }
 
     #[test]
+    fn outline_none_shorthand_clears_outline_width() {
+        let dom = crate::html::parse(r#"<button id="icon">Search</button>"#);
+        let stylesheet = crate::css::parse_stylesheet(
+            r#"
+            #icon {
+                outline: 2px solid #0060cb;
+                outline: none;
+            }
+            "#,
+        );
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles(&dom, &[&stylesheet], 1365, 700, &mut inline_style_cache);
+        let icon = dom
+            .nodes
+            .iter()
+            .position(|node| {
+                matches!(
+                    &node.node_type,
+                    NodeType::Element { attrs, .. }
+                        if attrs.iter().any(|a| a.name == "id" && a.value == "icon")
+                )
+            })
+            .expect("icon button");
+
+        assert_eq!(styles[icon].outline_width, 0);
+        assert!(matches!(
+            styles[icon].outline_style,
+            crate::style::BorderStyleVal::None
+        ));
+    }
+
+    #[test]
+    fn moz_focusring_does_not_match_unfocused_buttons() {
+        let dom = crate::html::parse(r#"<button id="icon" type="button">Search</button>"#);
+        let stylesheet = crate::css::parse_stylesheet(
+            r#"
+            button:-moz-focusring,
+            [type=button]:-moz-focusring {
+                outline: 1px dotted ButtonText;
+            }
+            "#,
+        );
+        let prepared = PreparedStylesheets::prepare(&[&stylesheet], 800, 600);
+        let icon = dom
+            .nodes
+            .iter()
+            .position(|node| {
+                matches!(
+                    &node.node_type,
+                    NodeType::Element { attrs, .. }
+                        if attrs.iter().any(|a| a.name == "id" && a.value == "icon")
+                )
+            })
+            .expect("icon button");
+
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles_prepared_with_state(
+            &dom,
+            &prepared,
+            800,
+            600,
+            &mut inline_style_cache,
+            &SelectorState::default(),
+        );
+        assert_eq!(styles[icon].outline_width, 0);
+
+        let mut focused = SelectorState::default();
+        focused.focused_node = Some(icon);
+        focused.focus_visible_node = Some(icon);
+        inline_style_cache.clear();
+        let (focused_styles, _) = resolve_styles_prepared_with_state(
+            &dom,
+            &prepared,
+            800,
+            600,
+            &mut inline_style_cache,
+            &focused,
+        );
+        assert_eq!(focused_styles[icon].outline_width, 1);
+        assert!(matches!(
+            focused_styles[icon].outline_style,
+            crate::style::BorderStyleVal::Dotted
+        ));
+    }
+
+    #[test]
     fn custom_element_property_var_resolves_for_overflow_x() {
         let dom = crate::html::parse(
             r#"

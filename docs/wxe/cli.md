@@ -10,7 +10,9 @@ The first CLI should mirror LXE's shape:
 ```text
 wxe status
 wxe init
+wxe init --bootstrap-ms --accept-microsoft-licenses
 wxe repair
+wxe bootstrap-ms --accept-microsoft-licenses
 wxe run <windows-pe> [args...]
 wxe shell [--builtin]
 wxe inspect <windows-pe>
@@ -24,7 +26,9 @@ Planned responsibilities:
 | --- | --- |
 | `wxe status` | Show WXE profile, root path, drive mappings, DLL health and `wxed` status |
 | `wxe init` | Create root layout, install WXE DLLs and seed default files |
+| `wxe init --bootstrap-ms --accept-microsoft-licenses` | Also download Microsoft-provided bootstrap payloads from official sources |
 | `wxe repair` | Reinstall missing WXE DLLs and repair default drive directories |
+| `wxe bootstrap-ms` | Download Microsoft-provided bootstrap payloads after explicit license acceptance |
 | `wxe run` | Start one Windows console executable through `SYS_WXE_SPAWN` |
 | `wxe shell` | Open the WXE shell app or run the PTY bridge mode |
 | `wxe inspect` | Print PE machine, subsystem, imports, relocations and missing DLLs/exports |
@@ -85,9 +89,10 @@ Default filesystem layout:
 ```
 
 The root contains WXE-owned compatibility files, not copied Microsoft Windows
-system files. `wxe init` must not download Microsoft binaries. Optional
-Microsoft payload import is tracked separately in
-[`microsoft-payloads.md`](microsoft-payloads.md).
+system files. Plain `wxe init` must not download Microsoft binaries. If the
+user explicitly runs `wxe init --bootstrap-ms --accept-microsoft-licenses`, WXE
+downloads the bootstrap payloads listed in
+[`microsoft-payloads.md`](microsoft-payloads.md) into `cache/microsoft`.
 
 ## Drive Letters
 

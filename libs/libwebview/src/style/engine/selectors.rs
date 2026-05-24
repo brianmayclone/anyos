@@ -555,6 +555,7 @@ fn pseudo_class_matches(
                 false
             }
         }
+        PseudoClass::Unsupported => false,
     }
 }
 

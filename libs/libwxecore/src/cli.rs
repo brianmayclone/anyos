@@ -35,8 +35,9 @@ pub fn run_cli(raw: &str) {
     match argv.first().copied() {
         None | Some("help") | Some("--help") | Some("-h") => usage(),
         Some("status") => status(&config),
-        Some("init") => init(&config),
+        Some("init") => init(&config, &argv[1..]),
         Some("repair") => repair(&config),
+        Some("bootstrap-ms") => bootstrap_ms(&config, &argv[1..]),
         Some("inspect") => inspect(&config, &argv[1..]),
         Some("run") => run(&config, &argv[1..]),
         Some("shell") => shell(&config, &argv[1..]),
@@ -54,8 +55,9 @@ fn usage() {
     println!();
     println!("Usage:");
     println!("  wxe status");
-    println!("  wxe init");
+    println!("  wxe init [--bootstrap-ms --accept-microsoft-licenses]");
     println!("  wxe repair");
+    println!("  wxe bootstrap-ms --accept-microsoft-licenses");
     println!("  wxe inspect <windows-pe>");
     println!("  wxe run <windows-pe> [args...]");
     println!("  wxe shell");
@@ -82,22 +84,37 @@ fn status(config: &WxeConfig) {
     println!("  comspec: {}", config.comspec);
     println!("  spawn-syscall: SYS_WXE_SPAWN");
     println!("  loader: PE32+ console tier, imports blocked until DLL routing lands");
-    println!("  microsoft-payloads: user-import only, no silent download");
+    println!("  microsoft-payloads: explicit bootstrap/import only");
 }
 
-fn init(config: &WxeConfig) {
+fn init(config: &WxeConfig, args: &[&str]) {
     if crate::rootfs::ensure_rootfs_layout(config) {
         log_ok!("wxe root ready at {}", config.root);
         log_ok!("drive C: mapped to {}", config.drive_c);
         log_warn!("wxe DLL payloads are planned but not generated yet");
-        log_warn!("wxe init does not download Microsoft binaries");
+        if has_arg(args, "--bootstrap-ms") {
+            log_warn!("Microsoft payload bootstrap requested explicitly");
+            let _ = crate::bootstrap::bootstrap_microsoft(
+                config,
+                has_arg(args, "--accept-microsoft-licenses"),
+            );
+        } else {
+            log_warn!("wxe init does not download Microsoft binaries");
+        }
     } else {
         log_error!("wxe init: root layout incomplete");
     }
 }
 
 fn repair(config: &WxeConfig) {
-    init(config);
+    init(config, &[]);
+}
+
+fn bootstrap_ms(config: &WxeConfig, args: &[&str]) {
+    let _ = crate::bootstrap::bootstrap_microsoft(
+        config,
+        has_arg(args, "--accept-microsoft-licenses"),
+    );
 }
 
 fn inspect(config: &WxeConfig, args: &[&str]) {
@@ -253,8 +270,15 @@ fn dlls(config: &WxeConfig) {
     }
 }
 
-fn import_ms(_config: &WxeConfig, args: &[&str]) {
+fn import_ms(config: &WxeConfig, args: &[&str]) {
     let source = args.first().copied().unwrap_or("<missing>");
+    if source == "bootstrap" || source == "sysinternals" || source == "edit" {
+        let _ = crate::bootstrap::bootstrap_microsoft(
+            config,
+            has_arg(args, "--accept-microsoft-licenses"),
+        );
+        return;
+    }
     println!("wxe import-ms {}", source);
     log_warn!("Microsoft payload import is planned but not implemented yet");
     log_warn!("imports will require explicit Microsoft license acceptance");
@@ -263,6 +287,10 @@ fn import_ms(_config: &WxeConfig, args: &[&str]) {
     println!("  windows-media <path>     import from user-provided Windows install media");
     println!("  official-package <id>    fetch a Microsoft-published redistributable package");
     println!("  sysinternals <tool>      open/fetch from Microsoft's Sysinternals source");
+}
+
+fn has_arg(args: &[&str], needle: &str) -> bool {
+    args.iter().any(|arg| *arg == needle)
 }
 
 fn join_args(args: &[&str]) -> String {

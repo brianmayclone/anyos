@@ -6,10 +6,12 @@ edition = "2021"
 [dependencies]
 anyos_std = { path = "../stdlib" }
 libconf_schema = { path = "../libconf_schema" }
+libhttp_client = { path = "../libhttp_client" }
+libtls = { path = "../libtls" }
 
 [features]
 default = []
-host = ["anyos_std/host", "libconf_schema/host"]
+host = ["anyos_std/host", "libconf_schema/host", "libhttp_client/host", "libtls/host"]
 
 [lib]
 name = "libwxecore"

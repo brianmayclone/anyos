@@ -23,8 +23,9 @@ clean console slice:
 - WXE uses a WXE-owned `C:\Windows\System32\cmd.exe` for the command processor.
   `command.com` belongs to DOS/Win9x/NTVDM compatibility and is not part of
   the x86_64 console target.
-- `wxe init` never silently downloads Microsoft binaries. Optional Microsoft
-  payload import must be user-initiated and gated by license acceptance.
+- Plain `wxe init` never silently downloads Microsoft binaries. `wxe init
+  --bootstrap-ms --accept-microsoft-licenses` and `wxe bootstrap-ms
+  --accept-microsoft-licenses` are explicit Microsoft payload download paths.
 - Console applications are the first target.
 - GUI applications come later.
 

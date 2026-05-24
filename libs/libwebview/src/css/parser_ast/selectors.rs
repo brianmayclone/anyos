@@ -139,7 +139,10 @@ fn parse_selector_ast(input: &str) -> Option<CssSelectorAst> {
                 };
                 i += 1;
                 while i < bytes.len()
-                    && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n' || bytes[i] == b'\r')
+                    && (bytes[i] == b' '
+                        || bytes[i] == b'\t'
+                        || bytes[i] == b'\n'
+                        || bytes[i] == b'\r')
                 {
                     i += 1;
                 }
@@ -161,7 +164,10 @@ fn parse_selector_ast(input: &str) -> Option<CssSelectorAst> {
                 }
                 i += 1;
                 while i < bytes.len()
-                    && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n' || bytes[i] == b'\r')
+                    && (bytes[i] == b' '
+                        || bytes[i] == b'\t'
+                        || bytes[i] == b'\n'
+                        || bytes[i] == b'\r')
                 {
                     i += 1;
                 }
@@ -267,7 +273,8 @@ fn parse_simple_selector_ast(input: &str) -> Option<CssSimpleSelectorAst> {
                     pseudo_element = Some(CssPseudoElementAst::Before);
                 } else if lower == "after" {
                     pseudo_element = Some(CssPseudoElementAst::After);
-                } else if let Some(pseudo) = parse_pseudo_class_ast_from_name(&lower, input, &mut i) {
+                } else if let Some(pseudo) = parse_pseudo_class_ast_from_name(&lower, input, &mut i)
+                {
                     pseudo_classes.push(pseudo);
                 }
             }
@@ -396,19 +403,38 @@ fn parse_pseudo_class_ast_from_name(
         "out-of-range" => Some(CssPseudoClassAst::OutOfRange),
         "default" => Some(CssPseudoClassAst::Default),
         "indeterminate" => Some(CssPseudoClassAst::Indeterminate),
-        "nth-child" => Some(CssPseudoClassAst::NthChild(parse_pseudo_nth_arg(input, i, 1))),
-        "nth-last-child" => Some(CssPseudoClassAst::NthLastChild(parse_pseudo_nth_arg(input, i, 1))),
-        "not" => parse_pseudo_selector_list_arg(input, i).map(CssPseudoClassAst::Not),
-        "is" | "matches" | "-webkit-any" | "-moz-any" => {
-            parse_pseudo_selector_list_arg(input, i).map(CssPseudoClassAst::Is)
-        }
-        "where" => parse_pseudo_selector_list_arg(input, i).map(CssPseudoClassAst::Where),
-        "has" => parse_pseudo_has_arg(input, i).map(|selector| CssPseudoClassAst::Has(Box::new(selector))),
+        "nth-child" => Some(CssPseudoClassAst::NthChild(parse_pseudo_nth_arg(
+            input, i, 1,
+        ))),
+        "nth-last-child" => Some(CssPseudoClassAst::NthLastChild(parse_pseudo_nth_arg(
+            input, i, 1,
+        ))),
+        "not" => Some(
+            parse_pseudo_selector_list_arg(input, i)
+                .map(CssPseudoClassAst::Not)
+                .unwrap_or(CssPseudoClassAst::Unsupported),
+        ),
+        "is" | "matches" | "-webkit-any" | "-moz-any" => Some(
+            parse_pseudo_selector_list_arg(input, i)
+                .map(CssPseudoClassAst::Is)
+                .unwrap_or(CssPseudoClassAst::Unsupported),
+        ),
+        "where" => Some(
+            parse_pseudo_selector_list_arg(input, i)
+                .map(CssPseudoClassAst::Where)
+                .unwrap_or(CssPseudoClassAst::Unsupported),
+        ),
+        "has" => Some(
+            parse_pseudo_has_arg(input, i)
+                .map(|selector| CssPseudoClassAst::Has(Box::new(selector)))
+                .unwrap_or(CssPseudoClassAst::Unsupported),
+        ),
+        "-moz-focusring" => Some(CssPseudoClassAst::FocusVisible),
         _ => {
             if *i < input.len() && input.as_bytes()[*i] == b'(' {
                 skip_balanced_parens(input, i);
             }
-            None
+            Some(CssPseudoClassAst::Unsupported)
         }
     }
 }
@@ -421,7 +447,11 @@ fn parse_pseudo_selector_list_arg(input: &str, i: &mut usize) -> Option<Vec<CssS
     skip_balanced_parens(input, i);
     let end = i.saturating_sub(1);
     let list = parse_simple_selector_list_ast(&input[start..end]);
-    if list.is_empty() { None } else { Some(list) }
+    if list.is_empty() {
+        None
+    } else {
+        Some(list)
+    }
 }
 
 fn parse_pseudo_has_arg(input: &str, i: &mut usize) -> Option<CssSimpleSelectorAst> {

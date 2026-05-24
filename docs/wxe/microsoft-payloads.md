@@ -1,14 +1,16 @@
 # WXE Microsoft Payload Policy
 
-WXE may support Microsoft-provided console tools later, but it must do so with
-an explicit license boundary. `wxe init` must never silently download or install
+WXE supports an explicit Microsoft bootstrap download path, but it must keep a
+license boundary. Plain `wxe init` must never silently download or install
 Microsoft Windows binaries.
 
 ## Rules
 
 - anyOS does not bundle Microsoft Windows binaries.
-- `wxe init` creates only WXE-owned files, directories, manifests and generated
-  compatibility DLLs.
+- Plain `wxe init` creates only WXE-owned files, directories, manifests and
+  generated compatibility DLLs.
+- `wxe init --bootstrap-ms --accept-microsoft-licenses` may download the
+  Microsoft bootstrap payloads listed below.
 - Microsoft payload import must be opt-in and visible to the user.
 - Before importing or downloading Microsoft payloads, WXE must show the
   applicable Microsoft license terms or an explicit link/source summary and
@@ -51,16 +53,33 @@ Not every Windows command is a standalone executable:
 This means WXE's first reliable path is a WXE-owned `cmd.exe` with built-ins,
 plus optional import of standalone Microsoft tools only after license consent.
 
-## Planned CLI
+## Bootstrap CLI
 
 ```text
+wxe init --bootstrap-ms --accept-microsoft-licenses
+wxe bootstrap-ms --accept-microsoft-licenses
+wxe import-ms bootstrap --accept-microsoft-licenses
 wxe import-ms windows-media <path>
 wxe import-ms official-package <id>
 wxe import-ms sysinternals <tool>
 ```
 
-The first implementation should only inspect sources and print the license gate.
-Actual import should be added after:
+The bootstrap downloader fetches these payloads into
+`/System/var/wxe/cache/microsoft`:
+
+| Payload | Source |
+| --- | --- |
+| `SysinternalsSuite.zip` | `https://download.sysinternals.com/files/SysinternalsSuite.zip` |
+| `VC_redist.x64.exe` | `https://aka.ms/vc14/vc_redist.x64.exe` |
+| Microsoft Edit release metadata | `https://api.github.com/repos/microsoft/edit/releases/latest` |
+| Microsoft Edit Windows asset | selected from the latest GitHub release's `browser_download_url` list |
+
+Windows OS components such as `cmd.exe` are not standalone downloads in this
+bootstrap. They are recorded in the manifest as `requires-windows-media-import`
+until WXE can import them from user-provided Windows media or replace them with
+a WXE-owned implementation.
+
+Actual installation/import should be added after:
 
 1. source verification
 2. license acceptance UI

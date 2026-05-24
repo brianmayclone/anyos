@@ -5,6 +5,8 @@ extern crate alloc;
 pub mod config;
 
 #[cfg(not(feature = "host"))]
+pub mod bootstrap;
+#[cfg(not(feature = "host"))]
 pub mod cli;
 #[cfg(not(feature = "host"))]
 pub mod pe;

@@ -116,6 +116,7 @@ enum CssPseudoClassAst {
     OutOfRange,
     Default,
     Indeterminate,
+    Unsupported,
 }
 
 #[derive(Clone, Debug)]

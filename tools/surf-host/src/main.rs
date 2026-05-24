@@ -3528,6 +3528,20 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             libwebview::style::Visibility::Collapse => "collapse",
         }
     }
+    fn border_style_name(style: libwebview::style::BorderStyleVal) -> &'static str {
+        match style {
+            libwebview::style::BorderStyleVal::None => "none",
+            libwebview::style::BorderStyleVal::Solid => "solid",
+            libwebview::style::BorderStyleVal::Dashed => "dashed",
+            libwebview::style::BorderStyleVal::Dotted => "dotted",
+            libwebview::style::BorderStyleVal::Double => "double",
+            libwebview::style::BorderStyleVal::Groove => "groove",
+            libwebview::style::BorderStyleVal::Ridge => "ridge",
+            libwebview::style::BorderStyleVal::Inset => "inset",
+            libwebview::style::BorderStyleVal::Outset => "outset",
+            libwebview::style::BorderStyleVal::Hidden => "hidden",
+        }
+    }
     fn flex_direction_name(value: libwebview::style::FlexDirection) -> &'static str {
         match value {
             libwebview::style::FlexDirection::Row => "row",
@@ -3613,7 +3627,11 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
         "teaser__image",
         "page-footer",
         "nav-list--main",
+        "nav-list--util-nav",
+        "nav_btn--type-util",
         "nav_btn--type-main",
+        "nav_btn--bild-hey",
+        "nav_btn__icon",
         "nav_btn__text",
         "A7sPV",
         "KWUYAe",
@@ -3721,7 +3739,7 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             })
             .unwrap_or_else(String::new);
         eprintln!(
-            "[surf-host] interesting-style node={} tag={} id={:?} class={:?} bounds={:?} display={:?} position={} visibility={} overflow=({:?},{:?}) font_family={:?} bg={:#010x} bg_image={:?} bg_clip={:?} mask={:?} flex=({},{},{:?}/{:?}) flexdir={:?} justify={:?} align={:?} align_content={:?} width={:?} width_pct={:?} width_calc={:?} height={:?} height_pct={:?} height_calc={:?} inset=({:?}/{:?},{:?}/{:?},{:?}/{:?},{:?}/{:?}) transform=(tx:{} tx_pct:{} ty:{} ty_pct:{} sx:{} sy:{} rot:{}) min=({:?},{:?}) max=({:?},{:?}) margin=({:?},{:?},{:?},{:?}) margin_auto=({},{},{},{}) padding=({},{},{},{}) grid_rows={} grid_cols={} border_w=({},{},{},{}) border_c=({:#010x},{:#010x},{:#010x},{:#010x}) radius=({},{},{},{}) z={} opacity={:.3} shadows={}{}",
+            "[surf-host] interesting-style node={} tag={} id={:?} class={:?} bounds={:?} display={:?} position={} visibility={} overflow=({:?},{:?}) font_family={:?} bg={:#010x} bg_image={:?} bg_clip={:?} mask={:?} flex=({},{},{:?}/{:?}) flexdir={:?} justify={:?} align={:?} align_content={:?} width={:?} width_pct={:?} width_calc={:?} height={:?} height_pct={:?} height_calc={:?} inset=({:?}/{:?},{:?}/{:?},{:?}/{:?},{:?}/{:?}) transform=(tx:{} tx_pct:{} ty:{} ty_pct:{} sx:{} sy:{} rot:{}) min=({:?},{:?}) max=({:?},{:?}) margin=({:?},{:?},{:?},{:?}) margin_auto=({},{},{},{}) padding=({},{},{},{}) grid_rows={} grid_cols={} border_w=({},{},{},{}) border_c=({:#010x},{:#010x},{:#010x},{:#010x}) outline=({},{:#010x},{}) radius=({},{},{},{}) z={} opacity={:.3} shadows={}{}",
             node_id,
             tag.tag_name(),
             id_attr,
@@ -3792,6 +3810,9 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             style.border_color,
             style.border_color,
             style.border_color,
+            style.outline_width,
+            style.outline_color,
+            border_style_name(style.outline_style),
             style.border_top_left_radius,
             style.border_top_right_radius,
             style.border_bottom_right_radius,

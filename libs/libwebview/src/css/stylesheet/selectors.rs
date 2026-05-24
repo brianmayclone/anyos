@@ -266,10 +266,18 @@ fn lower_pseudo_class_ast(ast: &CssPseudoClassAst) -> Option<PseudoClass> {
         CssPseudoClassAst::NthLastChild(n) => PseudoClass::NthLastChild(*n),
         CssPseudoClassAst::FirstOfType => PseudoClass::FirstOfType,
         CssPseudoClassAst::LastOfType => PseudoClass::LastOfType,
-        CssPseudoClassAst::Not(selectors) => PseudoClass::Not(lower_simple_selector_list_ast(selectors)?),
-        CssPseudoClassAst::Is(selectors) => PseudoClass::Is(lower_simple_selector_list_ast(selectors)?),
-        CssPseudoClassAst::Where(selectors) => PseudoClass::Where(lower_simple_selector_list_ast(selectors)?),
-        CssPseudoClassAst::Has(selector) => PseudoClass::Has(Box::new(lower_simple_selector_ast(selector)?)),
+        CssPseudoClassAst::Not(selectors) => {
+            PseudoClass::Not(lower_simple_selector_list_ast(selectors)?)
+        }
+        CssPseudoClassAst::Is(selectors) => {
+            PseudoClass::Is(lower_simple_selector_list_ast(selectors)?)
+        }
+        CssPseudoClassAst::Where(selectors) => {
+            PseudoClass::Where(lower_simple_selector_list_ast(selectors)?)
+        }
+        CssPseudoClassAst::Has(selector) => {
+            PseudoClass::Has(Box::new(lower_simple_selector_ast(selector)?))
+        }
         CssPseudoClassAst::Empty => PseudoClass::Empty,
         CssPseudoClassAst::Checked => PseudoClass::Checked,
         CssPseudoClassAst::Disabled => PseudoClass::Disabled,
@@ -288,6 +296,7 @@ fn lower_pseudo_class_ast(ast: &CssPseudoClassAst) -> Option<PseudoClass> {
         CssPseudoClassAst::OutOfRange => PseudoClass::OutOfRange,
         CssPseudoClassAst::Default => PseudoClass::Default,
         CssPseudoClassAst::Indeterminate => PseudoClass::Indeterminate,
+        CssPseudoClassAst::Unsupported => PseudoClass::Unsupported,
     })
 }
 

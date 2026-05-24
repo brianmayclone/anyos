@@ -7,7 +7,18 @@ fn expand_border_shorthand(value_str: &str) -> Vec<Declaration> {
     let mut color_val: Option<CssValue> = None;
     for part in &parts {
         let lower = to_ascii_lower(part);
-        if matches!(lower.as_str(), "solid" | "dashed" | "dotted" | "double" | "groove" | "ridge" | "inset" | "outset" | "hidden") {
+        if matches!(
+            lower.as_str(),
+            "solid"
+                | "dashed"
+                | "dotted"
+                | "double"
+                | "groove"
+                | "ridge"
+                | "inset"
+                | "outset"
+                | "hidden"
+        ) {
             style_val = Some(CssValue::Keyword(lower));
         } else if lower == "currentcolor" {
             color_val = Some(CssValue::CurrentColor);
@@ -31,27 +42,66 @@ fn expand_border_shorthand(value_str: &str) -> Vec<Declaration> {
         }
     }
     if let Some(ref sv) = style_val {
-        decls.push(Declaration { property: Property::BorderStyle, value: sv.clone(), important: false });
+        decls.push(Declaration {
+            property: Property::BorderStyle,
+            value: sv.clone(),
+            important: false,
+        });
     }
     if let Some(ref cv) = color_val {
-        decls.push(Declaration { property: Property::BorderColor, value: cv.clone(), important: false });
+        decls.push(Declaration {
+            property: Property::BorderColor,
+            value: cv.clone(),
+            important: false,
+        });
     }
     if let Some(ref wv) = width_val {
-        decls.push(Declaration { property: Property::BorderWidth, value: wv.clone(), important: false });
+        decls.push(Declaration {
+            property: Property::BorderWidth,
+            value: wv.clone(),
+            important: false,
+        });
     }
-    for side_w in &[Property::BorderTopWidth, Property::BorderRightWidth, Property::BorderBottomWidth, Property::BorderLeftWidth] {
+    for side_w in &[
+        Property::BorderTopWidth,
+        Property::BorderRightWidth,
+        Property::BorderBottomWidth,
+        Property::BorderLeftWidth,
+    ] {
         if let Some(ref wv) = width_val {
-            decls.push(Declaration { property: side_w.clone(), value: wv.clone(), important: false });
+            decls.push(Declaration {
+                property: side_w.clone(),
+                value: wv.clone(),
+                important: false,
+            });
         }
     }
-    for side_s in &[Property::BorderTopStyle, Property::BorderRightStyle, Property::BorderBottomStyle, Property::BorderLeftStyle] {
+    for side_s in &[
+        Property::BorderTopStyle,
+        Property::BorderRightStyle,
+        Property::BorderBottomStyle,
+        Property::BorderLeftStyle,
+    ] {
         if let Some(ref sv) = style_val {
-            decls.push(Declaration { property: side_s.clone(), value: sv.clone(), important: false });
+            decls.push(Declaration {
+                property: side_s.clone(),
+                value: sv.clone(),
+                important: false,
+            });
         }
     }
-    for side_c in &[Property::BorderTopColor, Property::BorderRightColor, Property::BorderBottomColor, Property::BorderLeftColor] {
+    for side_c in &[
+        Property::BorderTopColor,
+        Property::BorderRightColor,
+        Property::BorderBottomColor,
+        Property::BorderLeftColor,
+    ] {
         if let Some(ref cv) = color_val {
-            decls.push(Declaration { property: side_c.clone(), value: cv.clone(), important: false });
+            decls.push(Declaration {
+                property: side_c.clone(),
+                value: cv.clone(),
+                important: false,
+            });
         }
     }
     decls
@@ -62,18 +112,30 @@ fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
     let lower = to_ascii_lower(s);
     if lower == "none" || lower == "transparent" {
         let mut v = Vec::new();
-        v.push(Declaration { property: Property::BackgroundColor, value: CssValue::Color(0x00000000), important: false });
+        v.push(Declaration {
+            property: Property::BackgroundColor,
+            value: CssValue::Color(0x00000000),
+            important: false,
+        });
         return v;
     }
     if lower == "inherit" {
         let mut v = Vec::new();
-        v.push(Declaration { property: Property::BackgroundColor, value: CssValue::Inherit, important: false });
+        v.push(Declaration {
+            property: Property::BackgroundColor,
+            value: CssValue::Inherit,
+            important: false,
+        });
         return v;
     }
     if lower.starts_with("var(") {
         let var_val = parse_var_value(&Property::BackgroundColor, s);
         let mut v = Vec::new();
-        v.push(Declaration { property: Property::BackgroundColor, value: var_val, important: false });
+        v.push(Declaration {
+            property: Property::BackgroundColor,
+            value: var_val,
+            important: false,
+        });
         return v;
     }
     let mut found_color: Option<u32> = None;
@@ -100,7 +162,10 @@ fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
             found_image = Some((*part).to_string());
             continue;
         }
-        if matches!(pl.as_str(), "no-repeat" | "repeat" | "repeat-x" | "repeat-y") {
+        if matches!(
+            pl.as_str(),
+            "no-repeat" | "repeat" | "repeat-x" | "repeat-y"
+        ) {
             found_repeat = Some(pl);
             continue;
         }
@@ -117,7 +182,17 @@ fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
             }
             continue;
         }
-        if matches!(pl.as_str(), "cover" | "contain" | "fixed" | "scroll" | "local" | "border-box" | "padding-box" | "content-box") {
+        if matches!(
+            pl.as_str(),
+            "cover"
+                | "contain"
+                | "fixed"
+                | "scroll"
+                | "local"
+                | "border-box"
+                | "padding-box"
+                | "content-box"
+        ) {
             continue;
         }
         if pl == "transparent" {
@@ -126,7 +201,11 @@ fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
         }
         if pl == "currentcolor" {
             let mut v = Vec::new();
-            v.push(Declaration { property: Property::BackgroundColor, value: CssValue::CurrentColor, important: false });
+            v.push(Declaration {
+                property: Property::BackgroundColor,
+                value: CssValue::CurrentColor,
+                important: false,
+            });
             return v;
         }
         if let Some(c) = try_parse_color(part) {
@@ -140,10 +219,18 @@ fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
     }
     let mut v = Vec::new();
     if let Some(image) = found_image {
-        v.push(Declaration { property: Property::BackgroundImage, value: CssValue::Keyword(image), important: false });
+        v.push(Declaration {
+            property: Property::BackgroundImage,
+            value: CssValue::Keyword(image),
+            important: false,
+        });
     }
     if let Some(repeat) = found_repeat {
-        v.push(Declaration { property: Property::BackgroundRepeat, value: CssValue::Keyword(repeat), important: false });
+        v.push(Declaration {
+            property: Property::BackgroundRepeat,
+            value: CssValue::Keyword(repeat),
+            important: false,
+        });
     }
     if !position_parts.is_empty() {
         v.push(Declaration {
@@ -153,9 +240,17 @@ fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
         });
     }
     if let Some(c) = found_color {
-        v.push(Declaration { property: Property::BackgroundColor, value: CssValue::Color(c), important: false });
+        v.push(Declaration {
+            property: Property::BackgroundColor,
+            value: CssValue::Color(c),
+            important: false,
+        });
     } else if let Some(var_val) = found_var {
-        v.push(Declaration { property: Property::BackgroundColor, value: var_val, important: false });
+        v.push(Declaration {
+            property: Property::BackgroundColor,
+            value: var_val,
+            important: false,
+        });
     }
     v
 }
@@ -196,33 +291,89 @@ fn split_background_tokens(s: &str) -> Vec<&str> {
     tokens
 }
 
-fn expand_border_side_shorthand(value_str: &str, width_prop: Property, style_prop: Property, color_prop: Property) -> Vec<Declaration> {
+fn expand_border_side_shorthand(
+    value_str: &str,
+    width_prop: Property,
+    style_prop: Property,
+    color_prop: Property,
+) -> Vec<Declaration> {
     let mut decls = Vec::new();
     let raw_parts: Vec<&str> = value_str.split_whitespace().collect();
     let parts = reassemble_var_parts(&raw_parts);
     for part in &parts {
         let lower = to_ascii_lower(part);
-        if matches!(lower.as_str(), "solid" | "dashed" | "dotted" | "double" | "groove" | "ridge" | "inset" | "outset" | "hidden") {
-            decls.push(Declaration { property: style_prop.clone(), value: CssValue::Keyword(lower), important: false });
+        if matches!(
+            lower.as_str(),
+            "solid"
+                | "dashed"
+                | "dotted"
+                | "double"
+                | "groove"
+                | "ridge"
+                | "inset"
+                | "outset"
+                | "hidden"
+        ) {
+            decls.push(Declaration {
+                property: style_prop.clone(),
+                value: CssValue::Keyword(lower),
+                important: false,
+            });
         } else if lower == "none" {
-            decls.push(Declaration { property: style_prop.clone(), value: CssValue::None, important: false });
-            decls.push(Declaration { property: width_prop.clone(), value: CssValue::Length(0, Unit::Px), important: false });
+            decls.push(Declaration {
+                property: style_prop.clone(),
+                value: CssValue::None,
+                important: false,
+            });
+            decls.push(Declaration {
+                property: width_prop.clone(),
+                value: CssValue::Length(0, Unit::Px),
+                important: false,
+            });
         } else if lower == "currentcolor" {
-            decls.push(Declaration { property: color_prop.clone(), value: CssValue::CurrentColor, important: false });
+            decls.push(Declaration {
+                property: color_prop.clone(),
+                value: CssValue::CurrentColor,
+                important: false,
+            });
         } else if lower.starts_with("var(") {
             if border_var_looks_like_width(part) {
-                decls.push(Declaration { property: width_prop.clone(), value: parse_var_value(&width_prop, part), important: false });
+                decls.push(Declaration {
+                    property: width_prop.clone(),
+                    value: parse_var_value(&width_prop, part),
+                    important: false,
+                });
             } else {
-                decls.push(Declaration { property: color_prop.clone(), value: parse_var_value(&color_prop, part), important: false });
+                decls.push(Declaration {
+                    property: color_prop.clone(),
+                    value: parse_var_value(&color_prop, part),
+                    important: false,
+                });
             }
         } else if let Some(c) = try_parse_color(part) {
-            decls.push(Declaration { property: color_prop.clone(), value: CssValue::Color(c), important: false });
+            decls.push(Declaration {
+                property: color_prop.clone(),
+                value: CssValue::Color(c),
+                important: false,
+            });
         } else if let Some(c) = named_color(&lower) {
-            decls.push(Declaration { property: color_prop.clone(), value: CssValue::Color(c), important: false });
+            decls.push(Declaration {
+                property: color_prop.clone(),
+                value: CssValue::Color(c),
+                important: false,
+            });
         } else if let Some(dim) = try_parse_dimension(part) {
-            decls.push(Declaration { property: width_prop.clone(), value: dim, important: false });
+            decls.push(Declaration {
+                property: width_prop.clone(),
+                value: dim,
+                important: false,
+            });
         } else if matches!(lower.as_str(), "thin" | "medium" | "thick") {
-            decls.push(Declaration { property: width_prop.clone(), value: CssValue::Keyword(lower), important: false });
+            decls.push(Declaration {
+                property: width_prop.clone(),
+                value: CssValue::Keyword(lower),
+                important: false,
+            });
         }
     }
     decls
@@ -259,18 +410,50 @@ fn expand_outline_shorthand(value_str: &str) -> Vec<Declaration> {
     let parts: Vec<&str> = value_str.split_whitespace().collect();
     for part in &parts {
         let lower = to_ascii_lower(part);
-        if matches!(lower.as_str(), "solid" | "dashed" | "dotted" | "double" | "groove" | "ridge" | "inset" | "outset") {
-            decls.push(Declaration { property: Property::OutlineStyle, value: CssValue::Keyword(lower), important: false });
+        if matches!(
+            lower.as_str(),
+            "solid" | "dashed" | "dotted" | "double" | "groove" | "ridge" | "inset" | "outset"
+        ) {
+            decls.push(Declaration {
+                property: Property::OutlineStyle,
+                value: CssValue::Keyword(lower),
+                important: false,
+            });
         } else if lower == "none" {
-            decls.push(Declaration { property: Property::OutlineStyle, value: CssValue::None, important: false });
+            decls.push(Declaration {
+                property: Property::OutlineStyle,
+                value: CssValue::None,
+                important: false,
+            });
+            decls.push(Declaration {
+                property: Property::OutlineWidth,
+                value: CssValue::Length(0, Unit::Px),
+                important: false,
+            });
         } else if let Some(c) = try_parse_color(part) {
-            decls.push(Declaration { property: Property::OutlineColor, value: CssValue::Color(c), important: false });
+            decls.push(Declaration {
+                property: Property::OutlineColor,
+                value: CssValue::Color(c),
+                important: false,
+            });
         } else if let Some(c) = named_color(&lower) {
-            decls.push(Declaration { property: Property::OutlineColor, value: CssValue::Color(c), important: false });
+            decls.push(Declaration {
+                property: Property::OutlineColor,
+                value: CssValue::Color(c),
+                important: false,
+            });
         } else if let Some(dim) = try_parse_dimension(part) {
-            decls.push(Declaration { property: Property::OutlineWidth, value: dim, important: false });
+            decls.push(Declaration {
+                property: Property::OutlineWidth,
+                value: dim,
+                important: false,
+            });
         } else if matches!(lower.as_str(), "thin" | "medium" | "thick") {
-            decls.push(Declaration { property: Property::OutlineWidth, value: CssValue::Keyword(lower), important: false });
+            decls.push(Declaration {
+                property: Property::OutlineWidth,
+                value: CssValue::Keyword(lower),
+                important: false,
+            });
         }
     }
     decls
@@ -290,6 +473,10 @@ fn expand_text_decoration_shorthand(value_str: &str) -> Vec<Declaration> {
     } else {
         "none"
     };
-    decls.push(Declaration { property: Property::TextDecoration, value: CssValue::Keyword(String::from(line_kw)), important: false });
+    decls.push(Declaration {
+        property: Property::TextDecoration,
+        value: CssValue::Keyword(String::from(line_kw)),
+        important: false,
+    });
     decls
 }

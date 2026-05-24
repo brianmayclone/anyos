@@ -149,6 +149,7 @@ pub struct LayoutBox {
     pub border_bottom_left_radius: i32,
     /// Outline.
     pub outline_width: i32,
+    pub outline_style: crate::style::BorderStyleVal,
     pub outline_color: u32,
     pub outline_offset: i32,
     /// Box shadows.
@@ -444,6 +445,7 @@ impl LayoutBox {
             border_bottom_left_radius: 0,
             // Outline
             outline_width: 0,
+            outline_style: crate::style::BorderStyleVal::None,
             outline_color: 0,
             outline_offset: 0,
             // Shadows
@@ -1405,8 +1407,7 @@ pub fn layout_with_budget(
 
     let mut root = LayoutBox::new(Some(body_id), BoxType::Block);
     root.is_positioned = style.position != Position::Static;
-    root.pointer_events_none =
-        matches!(style.pointer_events, crate::style::PointerEventsVal::None);
+    root.pointer_events_none = matches!(style.pointer_events, crate::style::PointerEventsVal::None);
     // Body width: explicit width if set, else viewport width.
     root.width = if let Some(w) = style.width {
         w

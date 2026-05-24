@@ -52,7 +52,7 @@ fn parse_pseudo_class_from_name(lower: &str, p: &mut Parser) -> Option<PseudoCla
                 let selectors = parse_selector_list_in_parens(p);
                 Some(PseudoClass::Not(selectors))
             } else {
-                Option::None
+                Some(PseudoClass::Unsupported)
             }
         }
         "is" | "matches" | "-webkit-any" | "-moz-any" => {
@@ -60,7 +60,7 @@ fn parse_pseudo_class_from_name(lower: &str, p: &mut Parser) -> Option<PseudoCla
                 let selectors = parse_selector_list_in_parens(p);
                 Some(PseudoClass::Is(selectors))
             } else {
-                Option::None
+                Some(PseudoClass::Unsupported)
             }
         }
         "where" => {
@@ -68,7 +68,7 @@ fn parse_pseudo_class_from_name(lower: &str, p: &mut Parser) -> Option<PseudoCla
                 let selectors = parse_selector_list_in_parens(p);
                 Some(PseudoClass::Where(selectors))
             } else {
-                Option::None
+                Some(PseudoClass::Unsupported)
             }
         }
         "has" => {
@@ -82,9 +82,10 @@ fn parse_pseudo_class_from_name(lower: &str, p: &mut Parser) -> Option<PseudoCla
                 }
                 Some(PseudoClass::Has(Box::new(inner)))
             } else {
-                Option::None
+                Some(PseudoClass::Unsupported)
             }
         }
+        "-moz-focusring" => Some(PseudoClass::FocusVisible),
         "focus-visible" => Some(PseudoClass::FocusVisible),
         "focus-within" => Some(PseudoClass::FocusWithin),
         "placeholder-shown" => Some(PseudoClass::PlaceholderShown),
@@ -110,7 +111,7 @@ fn parse_pseudo_class_from_name(lower: &str, p: &mut Parser) -> Option<PseudoCla
                     }
                 }
             }
-            Option::None
+            Some(PseudoClass::Unsupported)
         }
     }
 }
