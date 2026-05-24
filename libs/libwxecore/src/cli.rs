@@ -41,6 +41,7 @@ pub fn run_cli(raw: &str) {
         Some("run") => run(&config, &argv[1..]),
         Some("shell") => shell(&config, &argv[1..]),
         Some("dlls") => dlls(&config),
+        Some("import-ms") => import_ms(&config, &argv[1..]),
         Some(cmd) => {
             log_error!("wxe: unknown command '{}'", cmd);
             usage();
@@ -59,6 +60,7 @@ fn usage() {
     println!("  wxe run <windows-pe> [args...]");
     println!("  wxe shell");
     println!("  wxe dlls");
+    println!("  wxe import-ms <source>");
 }
 
 fn status(config: &WxeConfig) {
@@ -80,6 +82,7 @@ fn status(config: &WxeConfig) {
     println!("  comspec: {}", config.comspec);
     println!("  spawn-syscall: SYS_WXE_SPAWN");
     println!("  loader: PE32+ console tier, imports blocked until DLL routing lands");
+    println!("  microsoft-payloads: user-import only, no silent download");
 }
 
 fn init(config: &WxeConfig) {
@@ -87,6 +90,7 @@ fn init(config: &WxeConfig) {
         log_ok!("wxe root ready at {}", config.root);
         log_ok!("drive C: mapped to {}", config.drive_c);
         log_warn!("wxe DLL payloads are planned but not generated yet");
+        log_warn!("wxe init does not download Microsoft binaries");
     } else {
         log_error!("wxe init: root layout incomplete");
     }
@@ -247,6 +251,18 @@ fn dlls(config: &WxeConfig) {
         };
         println!("  {:<44} {}", dll, state);
     }
+}
+
+fn import_ms(_config: &WxeConfig, args: &[&str]) {
+    let source = args.first().copied().unwrap_or("<missing>");
+    println!("wxe import-ms {}", source);
+    log_warn!("Microsoft payload import is planned but not implemented yet");
+    log_warn!("imports will require explicit Microsoft license acceptance");
+    log_warn!("wxe will not bundle, mirror, or silently download Microsoft OS binaries");
+    println!("planned sources:");
+    println!("  windows-media <path>     import from user-provided Windows install media");
+    println!("  official-package <id>    fetch a Microsoft-published redistributable package");
+    println!("  sysinternals <tool>      open/fetch from Microsoft's Sysinternals source");
 }
 
 fn join_args(args: &[&str]) -> String {

@@ -15,6 +15,7 @@ wxe run <windows-pe> [args...]
 wxe shell [--builtin]
 wxe inspect <windows-pe>
 wxe dlls
+wxe import-ms <source>
 ```
 
 Planned responsibilities:
@@ -28,6 +29,7 @@ Planned responsibilities:
 | `wxe shell` | Open the WXE shell app or run the PTY bridge mode |
 | `wxe inspect` | Print PE machine, subsystem, imports, relocations and missing DLLs/exports |
 | `wxe dlls` | List installed WXE DLLs and exported API subsets |
+| `wxe import-ms` | Future opt-in import path for Microsoft payloads after license acceptance |
 
 `bin/wxe` should be tiny, with most behavior in `libs/libwxecore`, matching
 the LXE split.
@@ -83,7 +85,9 @@ Default filesystem layout:
 ```
 
 The root contains WXE-owned compatibility files, not copied Microsoft Windows
-system files.
+system files. `wxe init` must not download Microsoft binaries. Optional
+Microsoft payload import is tracked separately in
+[`microsoft-payloads.md`](microsoft-payloads.md).
 
 ## Drive Letters
 

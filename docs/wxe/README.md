@@ -34,6 +34,8 @@ for console startup must route their low-level work onto the anyOS kernel.
 - [Debugging](debugging.md)
   describes tracing, loader diagnostics, missing DLL/export reporting and
   smoke-test expectations.
+- [Microsoft Payload Policy](microsoft-payloads.md)
+  describes the license boundary for optional Microsoft-provided tools.
 - [Roadmap](roadmap.md)
   tracks the intended compatibility tiers and next milestones.
 
