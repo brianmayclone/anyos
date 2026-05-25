@@ -5,6 +5,7 @@ use anyos_std::{ipc, process};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 const RESPONSE_TIMEOUT_TICKS: u32 = 200;
+const HEALTH_RESPONSE_TIMEOUT_TICKS: u32 = 600;
 const LONG_RESPONSE_TIMEOUT_TICKS: u32 = 1200;
 const UI_RESPONSE_TIMEOUT_TICKS: u32 = 5;
 const RESPONSE_SLEEP_MS: u32 = 20;
@@ -24,10 +25,11 @@ pub fn request_ui(command: &str) -> Result<AsldResponse, &'static str> {
     request_with_timeout(command, UI_RESPONSE_TIMEOUT_TICKS)
 }
 
-fn request_with_timeout(
-    command: &str,
-    timeout_ticks: u32,
-) -> Result<AsldResponse, &'static str> {
+pub fn request_health(command: &str) -> Result<AsldResponse, &'static str> {
+    request_with_timeout(command, HEALTH_RESPONSE_TIMEOUT_TICKS)
+}
+
+fn request_with_timeout(command: &str, timeout_ticks: u32) -> Result<AsldResponse, &'static str> {
     if command.is_empty() || command.contains('\n') || command.contains('\r') {
         return Err("invalid asld command");
     }

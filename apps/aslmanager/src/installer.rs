@@ -929,8 +929,9 @@ enum VmHealthCheck {
 }
 
 fn wait_for_vm_health() -> VmHealthCheck {
+    let mut last_error = String::from("asld did not report a running Debian VM");
     for _ in 0..12 {
-        match asld::request(&format!("STATUS {}", DISTRO_NAME)) {
+        match asld::request_health(&format!("STATUS {}", DISTRO_NAME)) {
             Ok(resp) if resp.ok => {
                 let state = asld::field_value(&resp.lines, "state").unwrap_or("-");
                 let health = asld::field_value(&resp.lines, "health").unwrap_or("-");
@@ -947,10 +948,14 @@ fn wait_for_vm_health() -> VmHealthCheck {
                     return VmHealthCheck::Failed(String::from(summary));
                 }
             }
-            Ok(resp) => return VmHealthCheck::Failed(resp.message),
-            Err(err) => return VmHealthCheck::Failed(String::from(err)),
+            Ok(resp) => {
+                last_error = resp.message;
+            }
+            Err(err) => {
+                last_error = String::from(err);
+            }
         }
         process::sleep(250);
     }
-    VmHealthCheck::Failed(String::from("asld did not report a running Debian VM"))
+    VmHealthCheck::Failed(last_error)
 }

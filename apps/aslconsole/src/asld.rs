@@ -4,7 +4,9 @@ use alloc::vec::Vec;
 use anyos_std::{ipc, process};
 use core::sync::atomic::{AtomicU32, Ordering};
 
-const RESPONSE_TIMEOUT_TICKS: u32 = 5;
+const RESPONSE_TIMEOUT_TICKS: u32 = 200;
+const LONG_RESPONSE_TIMEOUT_TICKS: u32 = 1200;
+const CANVAS_RESPONSE_TIMEOUT_TICKS: u32 = 40;
 const RESPONSE_SLEEP_MS: u32 = 20;
 static NEXT_REPLY_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -15,6 +17,10 @@ pub struct AsldResponse {
 }
 
 pub fn request(command: &str) -> Result<AsldResponse, &'static str> {
+    request_with_timeout(command, response_timeout_ticks(command))
+}
+
+fn request_with_timeout(command: &str, timeout_ticks: u32) -> Result<AsldResponse, &'static str> {
     if command.is_empty() || command.contains('\n') || command.contains('\r') {
         return Err("invalid asld command");
     }
@@ -45,7 +51,7 @@ pub fn request(command: &str) -> Result<AsldResponse, &'static str> {
 
     let mut raw = String::new();
     let mut buf = [0u8; 1024];
-    for _ in 0..RESPONSE_TIMEOUT_TICKS {
+    for _ in 0..timeout_ticks {
         let n = ipc::pipe_read(reply_pipe, &mut buf);
         if n == u32::MAX {
             let _ = ipc::pipe_close(reply_pipe);
@@ -70,6 +76,15 @@ pub fn request(command: &str) -> Result<AsldResponse, &'static str> {
 
     let _ = ipc::pipe_close(reply_pipe);
     Err("timed out waiting for asld")
+}
+
+fn response_timeout_ticks(command: &str) -> u32 {
+    let verb = command.split_whitespace().next().unwrap_or("");
+    match verb {
+        "CONSOLE_CANVAS" | "console_canvas" => CANVAS_RESPONSE_TIMEOUT_TICKS,
+        "START" | "start" | "RESTART" | "restart" => LONG_RESPONSE_TIMEOUT_TICKS,
+        _ => RESPONSE_TIMEOUT_TICKS,
+    }
 }
 
 fn next_reply_id() -> u32 {

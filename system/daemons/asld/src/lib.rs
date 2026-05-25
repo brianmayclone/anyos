@@ -120,7 +120,11 @@ pub fn run() {
             pipe_id,
             &mut pipe_buf,
         );
+        if active {
+            process::sleep(20);
+            continue;
+        }
         runtime.tick();
-        process::sleep(if active { 20 } else { 100 });
+        process::sleep(20);
     }
 }
