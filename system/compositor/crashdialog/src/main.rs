@@ -324,18 +324,53 @@ fn format_missing_report(path: &str) -> String {
     )
 }
 
+fn first_token(s: &str) -> Option<&str> {
+    let s = s.trim();
+    if s.is_empty() {
+        None
+    } else {
+        s.split_whitespace().next()
+    }
+}
+
+fn crash_log_arg<'a>(raw_args: &'a str, arg_tail: &'a str) -> Option<&'a str> {
+    if let Some(path) = first_token(arg_tail) {
+        return Some(path);
+    }
+
+    // Compatibility for the previous broken handoff where Sessionhost passed
+    // only the report path. process::args() treats that single token as argv[0]
+    // and strips it, so recover it from the raw argument string.
+    let raw = raw_args.trim();
+    if raw.starts_with("/tmp/crashlog_") {
+        first_token(raw)
+    } else {
+        None
+    }
+}
+
 fn main() {
+    let mut raw_arg_buf = [0u8; 256];
+    let raw_len = anyos_std::process::getargs(&mut raw_arg_buf);
+    let raw_args = core::str::from_utf8(&raw_arg_buf[..raw_len]).unwrap_or("");
+
     let mut arg_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut arg_buf);
 
-    let mut parts = args.splitn(2, ' ');
-    let crash_log_path = match parts.next() {
-        Some(s) if !s.is_empty() => s,
+    let crash_log_path = match crash_log_arg(raw_args, args) {
+        Some(path) => path,
         _ => {
-            println!("crashdialog: usage: crashdialog <crash_report_path>");
+            println!(
+                "crashdialog: usage: CrashDialog <crash_report_path> (raw_args='{}')",
+                raw_args
+            );
             return;
         }
     };
+    println!(
+        "crashdialog: raw_args='{}' args='{}' report='{}'",
+        raw_args, args, crash_log_path
+    );
 
     let crash_report = load_crash_report(crash_log_path);
     let report = crash_report.as_ref();

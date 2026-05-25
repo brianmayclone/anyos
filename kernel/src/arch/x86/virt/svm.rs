@@ -10,6 +10,7 @@ use super::{
 };
 use crate::sync::spinlock::Spinlock;
 
+mod cr;
 mod diagnostics;
 mod state;
 pub use state::{
@@ -445,6 +446,7 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
             | INTERCEPT_XSETBV;
         vmcb.control.intercepts_low = intercepts as u32;
         vmcb.control.intercepts_high = (intercepts >> 32) as u32;
+        vmcb.control.intercept_cr_writes = cr::CR_WRITE_INTERCEPTS;
         vmcb.control.iopm_base_pa = iopm_phys;
         vmcb.control.msrpm_base_pa = msrpm_phys;
         vmcb.control.guest_asid = 1; // Must be non-zero
@@ -649,30 +651,40 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
             });
         }
 
+        if cr::is_cr_access_exit(exit_code)
+            && cr::emulate_cr_access(exit_code, instr_len, vcpu, vmcb, vm.npt_root)
+        {
+            return Some(cr::emulated_exit(exit_code, exit_info1, instr_len));
+        }
+
         // Map SVM exit code → portable exit_reason::* value.
-        let reason = match exit_code {
-            VMEXIT_CPUID => super::exit_reason::CPUID,
-            VMEXIT_HLT => super::exit_reason::HLT,
-            VMEXIT_IOIO => super::exit_reason::IO_INSTRUCTION,
-            VMEXIT_MSR => {
-                // exit_info1: 0=RDMSR, 1=WRMSR
-                if exit_info1 == 0 {
-                    super::exit_reason::RDMSR
-                } else {
-                    super::exit_reason::WRMSR
+        let reason = if cr::is_cr_access_exit(exit_code) {
+            super::exit_reason::CR_ACCESS
+        } else {
+            match exit_code {
+                VMEXIT_CPUID => super::exit_reason::CPUID,
+                VMEXIT_HLT => super::exit_reason::HLT,
+                VMEXIT_IOIO => super::exit_reason::IO_INSTRUCTION,
+                VMEXIT_MSR => {
+                    // exit_info1: 0=RDMSR, 1=WRMSR
+                    if exit_info1 == 0 {
+                        super::exit_reason::RDMSR
+                    } else {
+                        super::exit_reason::WRMSR
+                    }
                 }
+                VMEXIT_SHUTDOWN => super::exit_reason::SHUTDOWN,
+                VMEXIT_INVALID => super::exit_reason::INVALID_GUEST_STATE,
+                VMEXIT_NPF => super::exit_reason::EPT_VIOLATION,
+                VMEXIT_VMRUN | VMEXIT_VMMCALL => super::exit_reason::VMCALL,
+                VMEXIT_INVD => super::exit_reason::INVD,
+                VMEXIT_PAUSE => super::exit_reason::PAUSE,
+                VMEXIT_INVLPG | VMEXIT_INVLPGA => super::exit_reason::INVLPG,
+                VMEXIT_WBINVD => super::exit_reason::WBINVD,
+                VMEXIT_XSETBV => super::exit_reason::XSETBV,
+                0x7E => super::exit_reason::SMI,
+                _ => exit_code as u32,
             }
-            VMEXIT_SHUTDOWN => super::exit_reason::SHUTDOWN,
-            VMEXIT_INVALID => super::exit_reason::INVALID_GUEST_STATE,
-            VMEXIT_NPF => super::exit_reason::EPT_VIOLATION,
-            VMEXIT_VMRUN | VMEXIT_VMMCALL => super::exit_reason::VMCALL,
-            VMEXIT_INVD => super::exit_reason::INVD,
-            VMEXIT_PAUSE => super::exit_reason::PAUSE,
-            VMEXIT_INVLPG | VMEXIT_INVLPGA => super::exit_reason::INVLPG,
-            VMEXIT_WBINVD => super::exit_reason::WBINVD,
-            VMEXIT_XSETBV => super::exit_reason::XSETBV,
-            0x7E => super::exit_reason::SMI,
-            _ => exit_code as u32,
         };
 
         let guest_phys = if exit_code == VMEXIT_NPF {
@@ -742,6 +754,10 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
                 info.io_data = (vcpu.guest_gprs.rdx << 32) | (vcpu.guest_gprs.rax & 0xFFFF_FFFF);
             }
             _ => {}
+        }
+        if cr::is_cr_access_exit(exit_code) {
+            info.cr_number = cr::cr_number(exit_code);
+            info.cr_is_read = cr::cr_is_read(exit_code);
         }
 
         Some(info)

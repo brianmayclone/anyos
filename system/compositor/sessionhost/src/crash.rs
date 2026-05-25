@@ -1,6 +1,7 @@
 use anyos_std::prelude::*;
 
 const CRASH_DIALOG_PATH: &str = "/System/CrashDialog.app";
+const CRASH_DIALOG_ARG0: &str = "CrashDialog";
 
 /// Mirrors `kernel/src/task/crash_info::CrashReport` layout.
 #[repr(C)]
@@ -78,5 +79,7 @@ pub fn launch_crash_dialog(tid: u32, signal: u32) {
             );
         }
     }
-    anyos_std::process::spawn(CRASH_DIALOG_PATH, &path);
+    let args = format!("{} {}", CRASH_DIALOG_ARG0, path);
+    anyos_std::println!("[sessionhost/crash] launching crashdialog args='{}'", args);
+    anyos_std::process::spawn(CRASH_DIALOG_PATH, &args);
 }
