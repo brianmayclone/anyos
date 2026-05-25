@@ -27,6 +27,7 @@ pub(super) struct SerialPortState {
     mcr: u8,
     scratch: u8,
     rx: Vec<u8>,
+    tx_count: u64,
 }
 
 impl SerialPortState {
@@ -37,6 +38,10 @@ impl SerialPortState {
 
     pub(super) fn pending_irq(&self) -> bool {
         self.ier & UART_IER_RX_AVAILABLE != 0 && !self.rx.is_empty()
+    }
+
+    pub(super) fn output_bytes(&self) -> u64 {
+        self.tx_count
     }
 }
 
@@ -67,6 +72,7 @@ pub(super) fn serial_io_action(
         UART_RBR_THR_DLL => {
             if state.lcr & UART_LCR_DLAB == 0 {
                 output.push(value);
+                state.tx_count = state.tx_count.wrapping_add(1);
             }
         }
         UART_IER_DLM => {

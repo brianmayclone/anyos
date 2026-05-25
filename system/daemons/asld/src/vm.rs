@@ -16,6 +16,7 @@ mod mmio;
 mod msr;
 mod pci;
 mod platform;
+mod runtime_io;
 mod serial;
 #[cfg(test)]
 mod tests;
@@ -49,6 +50,7 @@ use pci::PciBus;
 #[cfg(not(target_os = "linux"))]
 use platform::platform_io_action;
 use platform::PlatformIoState;
+use runtime_io::{align_guest_memory_size, ensure_pipe};
 #[cfg(not(target_os = "linux"))]
 use serial::serial_io_action;
 use serial::SerialPortState;
@@ -57,8 +59,6 @@ use vcpu::{
     advance_guest_rip, sync_guest_msr_side_effects, write_io_read_value, write_msr_read_value,
 };
 
-const PAGE_SIZE: usize = 0x1000;
-const MIN_GUEST_MEMORY_MB: usize = 16;
 const MAX_STRING_IO_BYTES: usize = 512;
 const BOOT_PML4_ADDR: usize = 0x1000;
 const BOOT_PDPT_ADDR: usize = 0x2000;
@@ -81,6 +81,8 @@ pub struct VmInstance {
     pub input_pipe_name: String,
     pub guest_memory_addr: usize,
     pub guest_memory_size: usize,
+    pub total_vm_exits: u64,
+    pub last_vm_exit_summary: String,
     pub run_state: VmRunState,
     pub halted: bool,
     serial: SerialPortState,
@@ -147,6 +149,8 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         input_pipe_name,
         guest_memory_addr: 0,
         guest_memory_size: align_guest_memory_size(config.resources.memory_mb),
+        total_vm_exits: 0,
+        last_vm_exit_summary: String::new(),
         run_state: VmRunState::Provisioned,
         halted: false,
         serial: SerialPortState::default(),
@@ -297,6 +301,8 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         input_pipe_name,
         guest_memory_addr: guest_memory as usize,
         guest_memory_size,
+        total_vm_exits: 0,
+        last_vm_exit_summary: String::new(),
         run_state: VmRunState::Provisioned,
         halted: false,
         serial: SerialPortState::default(),
@@ -336,6 +342,7 @@ fn boot_probe_impl(instance: &mut VmInstance) -> Result<VmBootReport, AsldError>
             instance.run_state = VmRunState::Degraded;
             return Err(AsldError::BackendUnavailable("avm vcpu run failed"));
         }
+        record_vm_exit_sample(instance, &exit);
         if handle_emulated_exit(instance, &vcpu, &exit)? {
             continue;
         }
@@ -349,12 +356,18 @@ fn boot_probe_impl(instance: &mut VmInstance) -> Result<VmBootReport, AsldError>
             && assessment.halted
             && instance.boot_mode != crate::boot::SMOKE_TEST_KERNEL_PROFILE
         {
-            let _ = vcpu.resume();
-            assessment.halted = false;
-            assessment.summary = format!(
-                "guest reached idle halt; runtime remains active ({})",
-                describe_exit(&exit)
-            );
+            if instance.serial.output_bytes() == 0 {
+                assessment.ready = false;
+                assessment.summary =
+                    format!("guest halted before serial output ({})", describe_exit(&exit));
+            } else {
+                let _ = vcpu.resume();
+                assessment.halted = false;
+                assessment.summary = format!(
+                    "guest reached idle halt; runtime remains active ({})",
+                    describe_exit(&exit)
+                );
+            }
         }
         last_exit = exit;
         if !assessment.should_continue {
@@ -415,6 +428,7 @@ fn poll_runtime_impl(instance: &mut VmInstance) -> Result<Option<VmRuntimeEvent>
             instance.run_state = VmRunState::Degraded;
             return Err(AsldError::BackendUnavailable("avm vcpu run failed"));
         }
+        record_vm_exit_sample(instance, &exit);
         if handle_emulated_exit(instance, &vcpu, &exit)? {
             continue;
         }
@@ -448,6 +462,12 @@ fn poll_runtime_impl(instance: &mut VmInstance) -> Result<Option<VmRuntimeEvent>
 }
 
 #[cfg(not(target_os = "linux"))]
+fn record_vm_exit_sample(instance: &mut VmInstance, exit: &VmExitInfo) {
+    instance.total_vm_exits = instance.total_vm_exits.saturating_add(1);
+    instance.last_vm_exit_summary = describe_exit(exit);
+}
+
+#[cfg(not(target_os = "linux"))]
 fn is_runtime_idle_hlt(instance: &VmInstance, exit: &VmExitInfo) -> bool {
     instance.boot_mode != crate::boot::SMOKE_TEST_KERNEL_PROFILE
         && matches!(exit.reason, exit_reason::HLT | exit_reason::HLT_EMULATED)
@@ -465,25 +485,6 @@ fn stop_vm_impl(instance: &VmInstance) -> Result<(), AsldError> {
     let vm = libavm::AvmVm::from_raw_handle(instance.vm_handle);
     if vm.destroy().is_err() {
         return Err(AsldError::BackendUnavailable("avm destroy_vm failed"));
-    }
-    Ok(())
-}
-
-fn align_guest_memory_size(memory_mb: u32) -> usize {
-    let requested = (memory_mb as usize).max(MIN_GUEST_MEMORY_MB) * 1024 * 1024;
-    (requested + (PAGE_SIZE - 1)) & !(PAGE_SIZE - 1)
-}
-
-fn ensure_pipe(pipe_name: &str) -> Result<(), AsldError> {
-    let existing = anyos_std::ipc::pipe_open(pipe_name);
-    if existing != 0 && existing != u32::MAX {
-        let _ = anyos_std::ipc::pipe_close(existing);
-    }
-    let created = anyos_std::ipc::pipe_create(pipe_name);
-    if created == 0 || created == u32::MAX {
-        return Err(AsldError::BackendUnavailable(
-            "console pipe provisioning failed",
-        ));
     }
     Ok(())
 }

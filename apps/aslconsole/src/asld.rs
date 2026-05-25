@@ -82,6 +82,7 @@ fn response_timeout_ticks(command: &str) -> u32 {
     let verb = command.split_whitespace().next().unwrap_or("");
     match verb {
         "CONSOLE_CANVAS" | "console_canvas" => CANVAS_RESPONSE_TIMEOUT_TICKS,
+        "LOGS" | "logs" => CANVAS_RESPONSE_TIMEOUT_TICKS,
         "START" | "start" | "RESTART" | "restart" => LONG_RESPONSE_TIMEOUT_TICKS,
         _ => RESPONSE_TIMEOUT_TICKS,
     }

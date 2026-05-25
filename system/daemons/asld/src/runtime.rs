@@ -630,14 +630,15 @@ impl RuntimeService {
             .exit_history
             .last()
             .map(|event| event.summary.clone())
-            .unwrap_or_default();
+            .unwrap_or_else(|| backend.vm.last_vm_exit_summary.clone());
         Ok(VmStatusSummary {
             backend: backend.vm.backend.clone(),
             run_state: backend.vm.run_state,
             guest_memory_mb,
+            vcpu_count: 1,
             boot_summary: backend.boot_summary.clone(),
             last_exit_summary,
-            total_exits: backend.total_exits,
+            total_exits: backend.vm.total_vm_exits,
             recent_exit_count: backend.exit_history.len(),
         })
     }

@@ -933,6 +933,7 @@ fn format_vm_status_lines(status: &VmStatusSummary) -> Vec<String> {
         format!("backend\t{}", status.backend),
         format!("run_state\t{}", status.run_state.as_str()),
         format!("guest_memory_mb\t{}", status.guest_memory_mb),
+        format!("vcpu_count\t{}", status.vcpu_count),
         format!("boot_summary\t{}", status.boot_summary),
         format!("last_exit_summary\t{}", status.last_exit_summary),
         format!("total_exits\t{}", status.total_exits),

@@ -312,6 +312,7 @@ pub struct VmStatusSummary {
     pub backend: String,
     pub run_state: VmRunState,
     pub guest_memory_mb: u32,
+    pub vcpu_count: u16,
     pub boot_summary: String,
     pub last_exit_summary: String,
     pub total_exits: u64,

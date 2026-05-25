@@ -12,6 +12,11 @@ mod x86;
 
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
+use alloc::string::String;
+
+use crate::fs::file::FileType;
+use crate::fs::vfs::{self, FsError};
+
 /// Boot mode: 0 = Legacy BIOS, 1 = UEFI.
 static BOOT_MODE: AtomicU8 = AtomicU8::new(0);
 
@@ -36,6 +41,79 @@ pub fn boot_mode() -> u8 {
 
 pub(crate) fn set_boot_mode(mode: u8) {
     BOOT_MODE.store(mode, Ordering::Relaxed);
+}
+
+pub(crate) fn reset_root_tmp_dir_or_halt() {
+    crate::serial_println!("[BOOT] Resetting rootfs /tmp");
+
+    match reset_root_tmp_dir() {
+        Ok(removed) => {
+            crate::serial_println!(
+                "[OK] rootfs /tmp is clean (removed {} stale path(s))",
+                removed
+            );
+        }
+        Err(err) => {
+            crate::serial_println!(
+                "FATAL: Failed to reset rootfs /tmp before userspace: {:?}",
+                err
+            );
+            loop {
+                crate::arch::hal::halt();
+            }
+        }
+    }
+}
+
+fn reset_root_tmp_dir() -> Result<usize, FsError> {
+    let removed = match vfs::lstat("/tmp") {
+        Ok(stat) if stat.file_type == FileType::Directory => delete_tree("/tmp")?,
+        Ok(_) => {
+            vfs::delete("/tmp")?;
+            1
+        }
+        Err(FsError::NotFound) => 0,
+        Err(err) => return Err(err),
+    };
+
+    match vfs::mkdir("/tmp") {
+        Ok(()) => Ok(removed),
+        Err(FsError::AlreadyExists) => match vfs::lstat("/tmp") {
+            Ok(stat) if stat.file_type == FileType::Directory => Ok(removed),
+            Ok(_) => Err(FsError::AlreadyExists),
+            Err(err) => Err(err),
+        },
+        Err(err) => Err(err),
+    }
+}
+
+fn delete_tree(path: &str) -> Result<usize, FsError> {
+    let entries = vfs::read_dir(path)?;
+    let mut removed = 0usize;
+
+    for entry in entries {
+        if entry.name == "." || entry.name == ".." {
+            continue;
+        }
+
+        let child = join_path(path, &entry.name);
+        if entry.file_type == FileType::Directory && !entry.is_symlink {
+            removed += delete_tree(&child)?;
+        } else {
+            vfs::delete(&child)?;
+            removed += 1;
+        }
+    }
+
+    vfs::delete(path)?;
+    Ok(removed + 1)
+}
+
+fn join_path(parent: &str, name: &str) -> String {
+    let mut path = String::from(parent.trim_end_matches('/'));
+    path.push('/');
+    path.push_str(name);
+    path
 }
 
 /// Shared boot entry used by the crate-root wrapper.

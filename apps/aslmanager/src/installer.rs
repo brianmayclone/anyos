@@ -67,21 +67,13 @@ pub fn refresh_runtime_metrics(force: bool) {
     }
 
     let vm_status = asld::request_ui(&format!("VM_STATUS {}", DISTRO_NAME));
-    let config = asld::request_ui(&format!("CONFIG_SHOW {}", DISTRO_NAME));
-
-    let mut vcpus = String::from("-");
-    if let Ok(resp) = config {
-        if resp.ok {
-            vcpus =
-                String::from(asld::field_value(&resp.lines, "resources.vcpu_count").unwrap_or("-"));
-        }
-    }
 
     match vm_status {
         Ok(resp) if resp.ok => {
             let run_state = asld::field_value(&resp.lines, "run_state").unwrap_or("running");
             let backend = asld::field_value(&resp.lines, "backend").unwrap_or("-");
             let memory = asld::field_value(&resp.lines, "guest_memory_mb").unwrap_or("-");
+            let vcpus = asld::field_value(&resp.lines, "vcpu_count").unwrap_or("-");
             let total_exits =
                 parse_u64(asld::field_value(&resp.lines, "total_exits").unwrap_or("0"));
             let recent_exits = asld::field_value(&resp.lines, "recent_exit_count").unwrap_or("0");
@@ -97,7 +89,7 @@ pub fn refresh_runtime_metrics(force: bool) {
             crate::app()
                 .memory_label
                 .set_text(&format!("{} MiB", memory));
-            crate::app().vcpu_label.set_text(&vcpus);
+            crate::app().vcpu_label.set_text(vcpus);
             crate::app()
                 .exit_label
                 .set_text(&format!("{} total", total_exits));
@@ -114,8 +106,8 @@ pub fn refresh_runtime_metrics(force: bool) {
                 ));
             }
         }
-        Ok(resp) => show_runtime_unavailable(&resp.message, &vcpus),
-        Err(err) => show_runtime_unavailable(err, &vcpus),
+        Ok(resp) => show_runtime_unavailable(&resp.message, "-"),
+        Err(err) => show_runtime_unavailable(err, "-"),
     }
 }
 

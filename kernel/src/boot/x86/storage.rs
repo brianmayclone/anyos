@@ -29,6 +29,7 @@ pub(super) fn init_storage_and_userspace(
     fs::vfs::mount_devfs();
     maybe_mount_cdrom_root();
     try_mount_corefs_partitions();
+    crate::boot::reset_root_tmp_dir_or_halt();
 
     drivers::kdrv::probe_external_drivers();
     task::users::init();

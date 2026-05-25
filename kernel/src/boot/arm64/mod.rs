@@ -134,6 +134,7 @@ fn init_storage() {
     fs::vfs::init();
     fs::vfs::mount("/", fs::vfs::FsType::Fat, 0);
     fs::vfs::mount_devfs();
+    boot::reset_root_tmp_dir_or_halt();
 }
 
 fn init_userspace() -> ! {

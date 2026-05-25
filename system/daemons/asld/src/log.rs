@@ -1,7 +1,7 @@
 //! Simple append-only log at /System/var/asl/asld.log.
 //!
-//! Lines: "[uptime_ms] [level] [tag] message". Best-effort; write failures
-//! are silently dropped so logging never blocks or panics the daemon.
+//! Lines: "[uptime_ms] [level] [tag] message". Best-effort; file write
+//! failures are silently dropped so logging never panics the daemon.
 
 use alloc::format;
 
@@ -24,6 +24,9 @@ pub fn emit(level: &str, tag: &str, msg: &str) {
 
     let ts = anyos_std::sys::uptime_ms();
     let mut line = format!("[{}] [{}] [{}] {}\n", ts, level, tag, msg);
+    if tag != "ipc" {
+        anyos_std::println!("[asld][{}][{}] {}", level, tag, msg);
+    }
     if line.len() > MAX_LINE_LEN {
         line.truncate(MAX_LINE_LEN.saturating_sub(1));
         line.push('\n');

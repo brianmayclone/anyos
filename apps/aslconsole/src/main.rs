@@ -241,17 +241,22 @@ fn refresh_diagnostic_rows() {
             let backend = asld::field_value(&resp.lines, "backend").unwrap_or("-");
             let state = asld::field_value(&resp.lines, "run_state").unwrap_or("-");
             let memory = asld::field_value(&resp.lines, "guest_memory_mb").unwrap_or("-");
+            let vcpus = asld::field_value(&resp.lines, "vcpu_count").unwrap_or("-");
             let exits = asld::field_value(&resp.lines, "total_exits").unwrap_or("0");
             let recent = asld::field_value(&resp.lines, "recent_exit_count").unwrap_or("0");
             let boot = asld::field_value(&resp.lines, "boot_summary").unwrap_or("-");
+            let last = asld::field_value(&resp.lines, "last_exit_summary").unwrap_or("-");
             let mut rows = blank_rows();
             rows[0] = String::from("ASL Console: no guest framebuffer or serial output yet");
             rows[2] = format!("Distro: {}", distro);
             rows[3] = format!("Backend: {}", backend);
             rows[4] = format!("State: {}", state);
             rows[5] = format!("Memory: {} MiB", memory);
-            rows[6] = format!("VM exits: {} total, {} recent", exits, recent);
-            rows[7] = format!("Boot: {}", boot);
+            rows[6] = format!("vCPU: {}", vcpus);
+            rows[7] = format!("VM exits: {} total, {} recent", exits, recent);
+            rows[8] = format!("Boot: {}", boot);
+            rows[9] = format!("Last exit: {}", last);
+            append_recent_logs(&mut rows);
             app().diagnostic_rows = rows;
         }
         Ok(resp) => {
@@ -266,6 +271,23 @@ fn refresh_diagnostic_rows() {
             rows[2] = String::from(err);
             app().diagnostic_rows = rows;
         }
+    }
+}
+
+fn append_recent_logs(rows: &mut [String]) {
+    let Ok(resp) = asld::request("LOGS *\t10") else {
+        return;
+    };
+    if !resp.ok || resp.lines.is_empty() {
+        return;
+    }
+    rows[10] = String::from("Recent ASLD log:");
+    for (idx, line) in resp.lines.iter().take(14).enumerate() {
+        let row = 11 + idx;
+        if row >= rows.len() {
+            break;
+        }
+        rows[row] = line.clone();
     }
 }
 
