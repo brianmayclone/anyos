@@ -24,11 +24,18 @@ const MSR_VM_HSAVE_PA: u32 = 0xC001_0117;
 // ── SVM exit codes ───────────────────────────────────────────────────────
 
 pub const VMEXIT_CPUID: u64 = 0x72;
+pub const VMEXIT_INVD: u64 = 0x76;
+pub const VMEXIT_PAUSE: u64 = 0x77;
 pub const VMEXIT_HLT: u64 = 0x78;
+pub const VMEXIT_INVLPG: u64 = 0x79;
+pub const VMEXIT_INVLPGA: u64 = 0x7A;
 pub const VMEXIT_IOIO: u64 = 0x7B;
 pub const VMEXIT_MSR: u64 = 0x7C;
 pub const VMEXIT_SHUTDOWN: u64 = 0x7F;
-pub const VMEXIT_XSETBV: u64 = 0x73;
+pub const VMEXIT_VMRUN: u64 = 0x80;
+pub const VMEXIT_VMMCALL: u64 = 0x81;
+pub const VMEXIT_WBINVD: u64 = 0x89;
+pub const VMEXIT_XSETBV: u64 = 0x8D;
 pub const VMEXIT_NPF: u64 = 0x400;
 pub const VMEXIT_INVALID: u64 = u64::MAX;
 
@@ -170,6 +177,15 @@ const INTERCEPT_HLT: u64 = 1 << 24;
 const INTERCEPT_IOIO_PROT: u64 = 1 << 27;
 const INTERCEPT_MSR_PROT: u64 = 1 << 28;
 const INTERCEPT_SHUTDOWN: u64 = 1 << 31;
+const INTERCEPT_VMRUN: u64 = 1 << 32;
+const INTERCEPT_VMMCALL: u64 = 1 << 33;
+const INTERCEPT_VMLOAD: u64 = 1 << 34;
+const INTERCEPT_VMSAVE: u64 = 1 << 35;
+const INTERCEPT_STGI: u64 = 1 << 36;
+const INTERCEPT_CLGI: u64 = 1 << 37;
+const INTERCEPT_SKINIT: u64 = 1 << 38;
+const INTERCEPT_WBINVD: u64 = 1 << 41;
+const INTERCEPT_XSETBV: u64 = 1 << 45;
 
 // ── Global init ──────────────────────────────────────────────────────────
 
@@ -415,7 +431,16 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
             | INTERCEPT_HLT
             | INTERCEPT_IOIO_PROT
             | INTERCEPT_MSR_PROT
-            | INTERCEPT_SHUTDOWN;
+            | INTERCEPT_SHUTDOWN
+            | INTERCEPT_VMRUN
+            | INTERCEPT_VMMCALL
+            | INTERCEPT_VMLOAD
+            | INTERCEPT_VMSAVE
+            | INTERCEPT_STGI
+            | INTERCEPT_CLGI
+            | INTERCEPT_SKINIT
+            | INTERCEPT_WBINVD
+            | INTERCEPT_XSETBV;
         vmcb.control.intercepts_low = intercepts as u32;
         vmcb.control.intercepts_high = (intercepts >> 32) as u32;
         vmcb.control.iopm_base_pa = iopm_phys;
@@ -560,18 +585,27 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
         if exit_code == VMEXIT_INVALID {
             vcpu.mp_state = VcpuMpState::Halted;
             crate::serial_println!(
-                "[svm] vmentry failed: invalid guest state rip={:#x} cr0={:#x} cr3={:#x} cr4={:#x} efer={:#x} cs={:#x}/{:#x} ds={:#x}/{:#x} ss={:#x}/{:#x}",
+                "[svm] vmentry failed: invalid guest state rip={:#x} cr0={:#x} cr3={:#x} cr4={:#x} efer={:#x} cpl={} cs={:#x}/{:#x} ds={:#x}/{:#x} ss={:#x}/{:#x} tr={:#x}/{:#x} ldtr={:#x}/{:#x} gdtr={:#x}:{:#x} idtr={:#x}:{:#x}",
                 vmcb.state.rip,
                 vmcb.state.cr0,
                 vmcb.state.cr3,
                 vmcb.state.cr4,
                 vmcb.state.efer,
+                vmcb.state.cpl,
                 vmcb.state.cs.selector,
                 vmcb.state.cs.attrib,
                 vmcb.state.ds.selector,
                 vmcb.state.ds.attrib,
                 vmcb.state.ss.selector,
                 vmcb.state.ss.attrib,
+                vmcb.state.tr.selector,
+                vmcb.state.tr.attrib,
+                vmcb.state.ldtr.selector,
+                vmcb.state.ldtr.attrib,
+                vmcb.state.gdtr.base,
+                vmcb.state.gdtr.limit,
+                vmcb.state.idtr.base,
+                vmcb.state.idtr.limit,
             );
             return Some(VmExitInfo {
                 reason: super::exit_reason::INVALID_GUEST_STATE,
@@ -618,14 +652,11 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
             VMEXIT_SHUTDOWN => super::exit_reason::SHUTDOWN,
             VMEXIT_INVALID => super::exit_reason::INVALID_GUEST_STATE,
             VMEXIT_NPF => super::exit_reason::EPT_VIOLATION,
-            // SVM-specific intercepts mapped to portable codes
-            0x6E => super::exit_reason::VMCALL,    // VMMCALL
-            0x14 => super::exit_reason::CR_ACCESS, // CR write
-            0x15 => super::exit_reason::CR_ACCESS, // CR read (varies by CR#)
-            0x1C => super::exit_reason::DR_ACCESS, // DR write
-            0x1D => super::exit_reason::DR_ACCESS, // DR read
-            0x6F => super::exit_reason::INVD,
-            0x65 => super::exit_reason::PAUSE,
+            VMEXIT_VMRUN | VMEXIT_VMMCALL => super::exit_reason::VMCALL,
+            VMEXIT_INVD => super::exit_reason::INVD,
+            VMEXIT_PAUSE => super::exit_reason::PAUSE,
+            VMEXIT_INVLPG | VMEXIT_INVLPGA => super::exit_reason::INVLPG,
+            VMEXIT_WBINVD => super::exit_reason::WBINVD,
             VMEXIT_XSETBV => super::exit_reason::XSETBV,
             0x7E => super::exit_reason::SMI,
             _ => exit_code as u32,
@@ -661,7 +692,10 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
                 info.is_read = (exit_info1 & 1) as u8;
                 let sz_bits = (exit_info1 >> 4) & 0x7;
                 info.access_size = match sz_bits {
-                    1 => 1, 2 => 2, 4 => 4, _ => 1,
+                    1 => 1,
+                    2 => 2,
+                    4 => 4,
+                    _ => 1,
                 };
                 if info.is_read == 0 {
                     info.io_data = vcpu.guest_gprs.rax;
@@ -682,18 +716,17 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
                 info.is_read = if exit_info1 == 0 { 1 } else { 0 };
                 if exit_info1 != 0 {
                     // WRMSR: value = EDX:EAX
-                    info.io_data = (vcpu.guest_gprs.rdx << 32)
-                        | (vcpu.guest_gprs.rax & 0xFFFF_FFFF);
+                    info.io_data =
+                        (vcpu.guest_gprs.rdx << 32) | (vcpu.guest_gprs.rax & 0xFFFF_FFFF);
                 }
             }
-            0x6E /* VMMCALL */ => {
-                info.io_data  = vcpu.guest_gprs.rax; // hypercall number
+            VMEXIT_VMRUN | VMEXIT_VMMCALL => {
+                info.io_data = vcpu.guest_gprs.rax; // hypercall number
                 info.io_data2 = vcpu.guest_gprs.rbx; // first arg
             }
             VMEXIT_XSETBV => {
                 info.msr_index = vcpu.guest_gprs.rcx as u32;
-                info.io_data =
-                    (vcpu.guest_gprs.rdx << 32) | (vcpu.guest_gprs.rax & 0xFFFF_FFFF);
+                info.io_data = (vcpu.guest_gprs.rdx << 32) | (vcpu.guest_gprs.rax & 0xFFFF_FFFF);
             }
             _ => {}
         }
@@ -738,7 +771,7 @@ fn svm_exit_instruction_len(exit_code: u64, vmcb: &Vmcb) -> u32 {
     match exit_code {
         VMEXIT_CPUID | VMEXIT_MSR => 2,
         VMEXIT_HLT => 1,
-        VMEXIT_XSETBV | 0x6E /* VMMCALL */ => 3,
+        VMEXIT_XSETBV | VMEXIT_VMRUN | VMEXIT_VMMCALL => 3,
         _ => 0,
     }
 }
@@ -754,6 +787,13 @@ unsafe fn svm_vmrun(vmcb_phys: u64, gprs: *mut GuestGprs) {
         "push r14",
         "push r15",
         "push rsi",  // save gprs pointer
+        "push rdi",
+        "push rcx",
+        "push rdx",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
 
         // Load guest GPRs (non-RAX; RAX is in VMCB)
         "mov rbx, [rsi + 0x08]",
@@ -796,8 +836,15 @@ unsafe fn svm_vmrun(vmcb_phys: u64, gprs: *mut GuestGprs) {
         "mov [rsi + 0x70], r14",
         "mov [rsi + 0x78], r15",
 
-        // Restore host callee-saved
-        "pop rsi",  // discard (was the gprs pointer push)
+        // Restore host registers.
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdx",
+        "pop rcx",
+        "pop rdi",
+        "pop rsi",
         "pop r15",
         "pop r14",
         "pop r13",
@@ -805,7 +852,7 @@ unsafe fn svm_vmrun(vmcb_phys: u64, gprs: *mut GuestGprs) {
         "pop rbp",
         "pop rbx",
 
-        in("rax") vmcb_phys,
+        inout("rax") vmcb_phys => _,
         in("rsi") gprs,
     );
 }

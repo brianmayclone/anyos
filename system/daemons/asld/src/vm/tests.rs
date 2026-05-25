@@ -80,6 +80,7 @@ fn bootstrap_sregs_target_long_mode_identity_map() {
     assert_eq!(sregs.rip, BOOT_CODE_ADDR as u64);
     assert_eq!(sregs.cs_selector, 0x08);
     assert_eq!(sregs.ss_selector, 0x10);
+    assert_eq!(sregs.tr_ar, 0x008b);
     assert_eq!(sregs.efer & 0x500, 0x500);
     assert_eq!(sregs.cr4 & (1 << 5), 1 << 5);
     assert_eq!(sregs.cr0 & (1 << 31), 1 << 31);
@@ -103,6 +104,7 @@ fn direct_linux_sregs_target_32bit_protected_entry() {
     assert_eq!(sregs.rip, crate::boot::LINUX_KERNEL_LOAD_ADDR as u64);
     assert_eq!(sregs.cs_selector, 0x08);
     assert_eq!(sregs.ss_selector, 0x10);
+    assert_eq!(sregs.tr_ar, 0x008b);
     assert_eq!(sregs.efer, 0);
     assert_eq!(sregs.cr4, 0);
     assert_eq!(sregs.cr0 & 1, 1);

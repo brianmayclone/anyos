@@ -110,7 +110,7 @@ pub(super) fn seabios_sregs(layout: &crate::boot::SeaBiosLayout) -> GuestSregs {
 pub(super) fn direct_linux_sregs(layout: &crate::boot::DirectLinuxLayout) -> GuestSregs {
     const CODE_SEGMENT_AR: u32 = 0xC09B;
     const DATA_SEGMENT_AR: u32 = 0xC093;
-    const TSS_SEGMENT_AR: u32 = 0x808B;
+    const TSS_SEGMENT_AR: u32 = 0x008B;
     const NULL_SEGMENT_AR: u32 = 0x10000;
     const CR0_PE: u64 = 1 << 0;
     const CR0_ET: u64 = 1 << 4;
@@ -167,7 +167,7 @@ pub(super) fn direct_linux_sregs(layout: &crate::boot::DirectLinuxLayout) -> Gue
 pub(super) fn bootstrap_sregs(layout: &BootstrapLayout) -> GuestSregs {
     const CODE_SEGMENT_AR: u32 = 0xA09B;
     const DATA_SEGMENT_AR: u32 = 0xC093;
-    const TSS_SEGMENT_AR: u32 = 0x808B;
+    const TSS_SEGMENT_AR: u32 = 0x008B;
     const NULL_SEGMENT_AR: u32 = 0x10000;
     const CR0_PE: u64 = 1 << 0;
     const CR0_ET: u64 = 1 << 4;
