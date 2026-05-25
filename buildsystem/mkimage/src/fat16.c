@@ -344,6 +344,9 @@ static uint32_t fat16_abs_sector(const Fat16 *fs, uint32_t rel)
 /* Write 512 bytes to a filesystem-relative sector. */
 static void fat16_write_sector(Fat16 *fs, uint32_t rel, const uint8_t *data)
 {
+    if (rel >= fs->fs_sectors)
+        fatal("FAT16: sector %u outside filesystem (%u sectors)",
+              rel, fs->fs_sectors);
     uint32_t offset = fat16_abs_sector(fs, rel) * SECTOR_SIZE;
     memcpy(fs->image + offset, data, SECTOR_SIZE);
 }
@@ -351,6 +354,9 @@ static void fat16_write_sector(Fat16 *fs, uint32_t rel, const uint8_t *data)
 /* Read 512 bytes from a filesystem-relative sector into out[]. */
 static void fat16_read_sector(const Fat16 *fs, uint32_t rel, uint8_t *out)
 {
+    if (rel >= fs->fs_sectors)
+        fatal("FAT16: read sector %u outside filesystem (%u sectors)",
+              rel, fs->fs_sectors);
     uint32_t offset = fat16_abs_sector(fs, rel) * SECTOR_SIZE;
     memcpy(out, fs->image + offset, SECTOR_SIZE);
 }
@@ -364,6 +370,13 @@ static void fat16_set_fat_entry(Fat16 *fs, uint32_t cluster, uint16_t value)
     uint32_t fat_idx;
     uint8_t  sector_data[SECTOR_SIZE];
 
+    if (cluster < 2 || cluster >= fs->total_clusters + 2)
+        fatal("FAT16: cluster %u outside valid range 2..%u",
+              cluster, fs->total_clusters + 1);
+    if (sector_in_fat >= fs->fat_size)
+        fatal("FAT16: FAT sector %u outside FAT size %u",
+              sector_in_fat, fs->fat_size);
+
     for (fat_idx = 0; fat_idx < fs->num_fats; ++fat_idx) {
         uint32_t abs_sector =
             fs->first_fat_sector + fat_idx * fs->fat_size + sector_in_fat;
@@ -376,6 +389,9 @@ static void fat16_set_fat_entry(Fat16 *fs, uint32_t cluster, uint16_t value)
 /* Convert cluster number to filesystem-relative sector. */
 static uint32_t fat16_cluster_to_sector(const Fat16 *fs, uint32_t cluster)
 {
+    if (cluster < 2 || cluster >= fs->total_clusters + 2)
+        fatal("FAT16: cluster %u outside valid range 2..%u",
+              cluster, fs->total_clusters + 1);
     return fs->first_data_sector + (cluster - 2) * fs->sectors_per_cluster;
 }
 
@@ -387,6 +403,17 @@ static uint32_t fat16_alloc_clusters(Fat16 *fs, uint32_t count)
 
     if (count == 0)
         return 0;
+
+    if (fs->next_cluster < 2 ||
+        count > fs->total_clusters ||
+        fs->next_cluster + count < fs->next_cluster ||
+        fs->next_cluster + count > fs->total_clusters + 2) {
+        uint32_t available = 0;
+        if (fs->next_cluster >= 2 && fs->next_cluster < fs->total_clusters + 2)
+            available = fs->total_clusters + 2 - fs->next_cluster;
+        fatal("FAT16: out of clusters (need %u, have %u)",
+              count, available);
+    }
 
     first = fs->next_cluster;
     for (i = 0; i < count; ++i) {
@@ -499,6 +526,9 @@ static void fat16_write_root_entry_at(Fat16 *fs, uint32_t index,
     uint32_t offset_in_sector = entry_offset % SECTOR_SIZE;
     uint32_t sector           = fs->first_root_dir_sector + sector_in_root;
     uint8_t  sector_data[SECTOR_SIZE];
+
+    if (index >= fs->root_entry_count)
+        fatal("FAT16: root directory full (%u entries)", fs->root_entry_count);
 
     fat16_read_sector(fs, sector, sector_data);
     memcpy(sector_data + offset_in_sector, entry32, 32);
@@ -656,6 +686,8 @@ void fat16_init(Fat16 *fs, uint8_t *image, uint32_t fs_start,
     uint32_t total_clusters;
 
     reset_short_name_counters();
+    if (spc == 0)
+        fatal("FAT16: sectors-per-cluster must be non-zero");
 
     fs->image              = image;
     fs->fs_start           = fs_start;
@@ -681,6 +713,9 @@ void fat16_init(Fat16 *fs, uint8_t *image, uint32_t fs_start,
                          - fs->num_fats * fs->fat_size
                          - fs->root_dir_sectors;
     fs->total_clusters = data_sectors / spc;
+    if (fs->total_clusters == 0 || fs->total_clusters > 65524)
+        fatal("FAT16: invalid cluster count %u for %u sectors at spc=%u",
+              fs->total_clusters, fs_sectors, spc);
 
     fs->first_fat_sector     = fs->reserved_sectors;
     fs->first_root_dir_sector = fs->reserved_sectors
@@ -879,143 +914,18 @@ void fat16_add_file(Fat16 *fs, uint32_t parent, const char *name,
            name, size, num_clusters, first_cluster);
 }
 
-/* ── Recursive sysroot population ─────────────────────────────────────────── */
-
-/*
- * Names to skip when traversing the sysroot.
- * Mirrors Python's `if entry_name in ('.DS_Store', '.git', '.gitignore', '.gitkeep')`.
- */
-static int should_skip(const char *name)
+void fat16_add_volume_label(Fat16 *fs, const char *label)
 {
-    return (strcmp(name, ".DS_Store") == 0 ||
-            strcmp(name, ".git")      == 0 ||
-            strcmp(name, ".gitignore")== 0 ||
-            strcmp(name, ".gitkeep")  == 0);
-}
+    uint8_t entry[32];
+    size_t len = strlen(label);
 
-/*
- * Internal recursive worker.  Mirrors Fat16Formatter._populate_dir().
- */
-static void fat16_populate_dir(Fat16 *fs, const char *host_path,
-                               uint32_t parent_cluster, int is_root)
-{
-    DIR           *d;
-    struct dirent *ent;
-    /* We collect names first to sort them (matches Python's sorted(os.listdir())) */
-    char         **names      = NULL;
-    int            name_count = 0;
-    int            name_cap   = 0;
-    int            i;
+    memset(entry, 0, sizeof(entry));
+    memset(entry, ' ', 11);
+    if (len > 11)
+        len = 11;
+    memcpy(entry, label, len);
+    entry[11] = 0x08;
 
-    d = opendir(host_path);
-    if (!d) {
-        fprintf(stderr, "  WARNING: Cannot open directory %s\n", host_path);
-        return;
-    }
-
-    /* Collect non-skipped entry names */
-    while ((ent = readdir(d)) != NULL) {
-        const char *n = ent->d_name;
-
-        /* Skip "." and ".." */
-        if (n[0] == '.' && (n[1] == '\0' || (n[1] == '.' && n[2] == '\0')))
-            continue;
-
-        if (should_skip(n))
-            continue;
-
-        /* Grow array */
-        if (name_count >= name_cap) {
-            int new_cap = (name_cap == 0) ? 64 : name_cap * 2;
-            char **tmp  = (char **)realloc(names, (size_t)new_cap * sizeof(char *));
-            if (!tmp)
-                fatal("fat16_populate_dir: realloc failed");
-            names    = tmp;
-            name_cap = new_cap;
-        }
-        names[name_count++] = strdup(n);
-    }
-    closedir(d);
-
-    /* Sort (ASCII order, matches Python sorted()) */
-    for (i = 0; i < name_count - 1; ++i) {
-        int j;
-        for (j = i + 1; j < name_count; ++j) {
-            if (strcmp(names[i], names[j]) > 0) {
-                char *tmp  = names[i];
-                names[i]   = names[j];
-                names[j]   = tmp;
-            }
-        }
-    }
-
-    /* Process each entry */
-    for (i = 0; i < name_count; ++i) {
-        const char *entry_name = names[i];
-        char full_path[4096];
-        struct stat st;
-
-        snprintf(full_path, sizeof(full_path), "%s/%s", host_path, entry_name);
-
-        if (stat(full_path, &st) != 0)
-            continue;
-
-        if (S_ISDIR(st.st_mode)) {
-            uint32_t dir_cluster = fat16_create_dir(fs, parent_cluster,
-                                                    entry_name, is_root);
-            printf("    Dir:  %s/ (cluster=%u)\n", entry_name, dir_cluster);
-            fat16_populate_dir(fs, full_path, dir_cluster, 0 /* not root */);
-        } else if (S_ISREG(st.st_mode)) {
-            size_t   file_size;
-            uint8_t *file_data = read_file(full_path, &file_size);
-            fat16_add_file(fs, parent_cluster, entry_name,
-                           file_data, file_size, is_root);
-            free(file_data);
-        }
-
-        free(names[i]);
-    }
-
-    free(names);
-}
-
-/*
- * Recursively populate the FAT16 filesystem from a sysroot directory.
- * Mirrors Fat16Formatter.populate_from_sysroot().
- */
-void fat16_populate_sysroot(Fat16 *fs, const char *sysroot_path)
-{
-    struct stat st;
-
-    if (stat(sysroot_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
-        printf("  Warning: sysroot path '%s' does not exist, skipping\n",
-               sysroot_path);
-        return;
-    }
-
-    /* Write volume label entry as root entry 0 */
-    {
-        uint8_t  label_entry[32];
-        uint32_t entry_offset;
-        uint32_t sector_in_root;
-        uint32_t offset_in_sector;
-        uint32_t sector;
-        uint8_t  sector_data[SECTOR_SIZE];
-
-        memset(label_entry, 0, 32);
-        memcpy(label_entry, "ANYOS      ", 11);
-        label_entry[11] = 0x08;     /* Volume label attribute */
-
-        entry_offset     = fs->next_root_entry * 32;
-        sector_in_root   = entry_offset / SECTOR_SIZE;
-        offset_in_sector = entry_offset % SECTOR_SIZE;
-        sector           = fs->first_root_dir_sector + sector_in_root;
-
-        fat16_read_sector(fs, sector, sector_data);
-        memcpy(sector_data + offset_in_sector, label_entry, 32);
-        fat16_write_sector(fs, sector, sector_data);
-        fs->next_root_entry++;
-    }
-
-    fat16_populate_dir(fs, sysroot_path, 0 /* unused for root */, 1 /* is_root */);
+    fat16_write_root_entry_at(fs, fs->next_root_entry, entry);
+    fs->next_root_entry++;
 }

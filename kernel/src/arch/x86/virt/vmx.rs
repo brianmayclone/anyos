@@ -120,6 +120,8 @@ const CR0_GUEST_HOST_MASK: u32 = 0x6000;
 const CR0_READ_SHADOW: u32 = 0x6004;
 const CR4_GUEST_HOST_MASK: u32 = 0x6002;
 const CR4_READ_SHADOW: u32 = 0x6006;
+const CR0_OWNED_BITS: u64 = (1 << 0) | (1 << 5); // PE, NE
+const CR4_OWNED_BITS: u64 = 1 << 13; // VMXE
 
 // ── VMX exit reasons (Intel SDM Vol. 3C Table 27-1) ─────────────────────
 
@@ -181,6 +183,9 @@ static mut VMXON_ACTIVE: [bool; MAX_CPUS] = [false; MAX_CPUS];
 static NEXT_VM_ID: AtomicU32 = AtomicU32::new(1);
 const MAX_VMS: usize = 64;
 const MAX_VCPUS_PER_VM: usize = 16;
+const DIRTY_LOG_SLOTS: usize = 32;
+const DIRTY_LOG_WORDS_PER_SLOT: usize = 64;
+const DIRTY_LOG_TOTAL_WORDS: usize = DIRTY_LOG_SLOTS * DIRTY_LOG_WORDS_PER_SLOT;
 
 struct VmxVcpu {
     vmcs_phys: u64,
@@ -204,11 +209,7 @@ struct VmxVm {
     memory_regions: [Option<MemoryRegion>; 32],
     cpuid_table: [Option<CpuidEntry>; 64],
     cpuid_count: usize,
-    /// Physical address of the dirty-log page (allocated on demand by alloc_page_zeroed).
-    /// Layout: 32 slots × 64 u64 = 32×512 bytes = 16 KiB — fits in 4 pages.
-    /// We allocate 4 contiguous pages for simplicity (see create_vm).
-    /// 0 = not allocated yet.
-    dirty_log_phys: u64,
+    dirty_log: [u64; DIRTY_LOG_TOTAL_WORDS],
 }
 
 // We use a simple static array of VMs protected by a spinlock.
@@ -345,18 +346,6 @@ pub fn create_vm() -> u32 {
         None => return 0,
     };
 
-    // Allocate dirty-log pages on demand (4 pages = 16 KiB for 32 slots × 64 u64).
-    // We allocate page 0 now; pages 1-3 share the same phys region via the
-    // virt mapping. For simplicity we just allocate 4 separate pages and use
-    // only the first here — the dirty-log helper addresses into it by offset.
-    // Actually: 32 slots × 64 u64 × 8 bytes = 16 384 bytes = exactly 4 pages.
-    // We allocate them individually and store only the first phys address;
-    // the others are at phys+PAGE, phys+2PAGE, phys+3PAGE (if contiguous).
-    // For the kernel's simple bump-allocator this is usually contiguous.
-    // If not contiguous, dirty tracking silently degrades (bits just won't set).
-    // A future improvement can use a proper multi-page alloc API.
-    let dirty_log_phys = alloc_page_zeroed().unwrap_or(0);
-
     let vm = VmxVm {
         id,
         active: true,
@@ -365,7 +354,7 @@ pub fn create_vm() -> u32 {
         memory_regions: [const { None }; 32],
         cpuid_table: [const { None }; 64],
         cpuid_count: 0,
-        dirty_log_phys,
+        dirty_log: [0; DIRTY_LOG_TOTAL_WORDS],
     };
 
     let mut vms = VMS.lock();
@@ -400,16 +389,36 @@ pub fn destroy_vm(vm_id: u32) -> bool {
                 }
                 // Free EPT
                 super::ept::destroy_ept(vm.ept_root);
-                // Free dirty-log page
-                if vm.dirty_log_phys != 0 {
-                    free_page(vm.dirty_log_phys);
-                }
                 *slot = None;
                 return true;
             }
         }
     }
     false
+}
+
+/// Register a userspace memory slot without assuming the backing host pages are
+/// physically contiguous. The syscall layer maps each translated page
+/// separately after registering the full slot for dirty logging and diagnostics.
+pub fn register_memory_region(vm_id: u32, slot: u32, gpa: u64, size: u64, hpa: u64) -> bool {
+    let mut vms = VMS.lock();
+    let vm = match find_vm_mut(&mut vms, vm_id) {
+        Some(vm) => vm,
+        None => return false,
+    };
+
+    let slot_idx = slot as usize;
+    if slot_idx >= vm.memory_regions.len() {
+        return false;
+    }
+
+    vm.memory_regions[slot_idx] = Some(MemoryRegion {
+        slot,
+        guest_phys: gpa,
+        size,
+        host_phys: hpa,
+    });
+    true
 }
 
 /// Set a memory region mapping guest physical addresses to host physical addresses.
@@ -448,13 +457,16 @@ pub fn set_memory(vm_id: u32, slot: u32, gpa: u64, size: u64, hpa: u64) -> bool 
 
 /// Map a single 4KB page in the EPT for a VM (used by sys_vm_set_memory for pages
 /// beyond the first, which are mapped without slot re-registration).
-pub fn map_page_in_ept(vm_id: u32, gpa: u64, hpa: u64) {
+pub fn map_page_in_ept(vm_id: u32, gpa: u64, hpa: u64) -> bool {
     let mut vms = VMS.lock();
     if let Some(vm) = find_vm_mut(&mut vms, vm_id) {
         super::ept::ept_map_range(vm.ept_root, gpa, hpa, 0x1000, true, true);
         unsafe {
             super::ept::invept_all_context();
         }
+        true
+    } else {
+        false
     }
 }
 
@@ -505,8 +517,11 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
         None => return false,
     };
 
-    let idx = vcpu_id as usize;
-    if idx >= MAX_VCPUS_PER_VM || vm.vcpus[idx].is_some() {
+    let idx = match vcpu_index(vcpu_id) {
+        Some(idx) => idx,
+        None => return false,
+    };
+    if vm.vcpus[idx].is_some() {
         return false;
     }
 
@@ -676,14 +691,12 @@ unsafe fn init_vmcs(ept_root: u64, msr_bitmap_phys: u64, vpid: u16) {
     // CR0 guest/host mask: the host owns CR0.PE (bit 0) and CR0.NE (bit 5) so
     // writes to those bits cause a VM-exit.  The guest sees our shadow values.
     // We expose PE=0 in the shadow (real-mode start) and NE=1.
-    let cr0_owned: u64 = (1 << 0) | (1 << 5); // PE, NE
-    vmwrite(CR0_GUEST_HOST_MASK, cr0_owned);
+    vmwrite(CR0_GUEST_HOST_MASK, CR0_OWNED_BITS);
     vmwrite(CR0_READ_SHADOW, 1 << 5); // NE=1, PE=0 (real mode)
 
     // CR4 guest/host mask: the host owns CR4.VMXE (bit 13) — the guest must
     // never be able to clear it.  We show the guest VMXE=0 in the shadow.
-    let cr4_owned: u64 = 1 << 13; // VMXE
-    vmwrite(CR4_GUEST_HOST_MASK, cr4_owned);
+    vmwrite(CR4_GUEST_HOST_MASK, CR4_OWNED_BITS);
     vmwrite(CR4_READ_SHADOW, 0); // guest sees VMXE=0
 
     // Guest state: real mode defaults
@@ -830,14 +843,14 @@ core::arch::global_asm!(
     "mov rdx, [rdi + 0x18]",
     // rsi has launched flag — save it; load guest rsi last
     "mov rbp, [rdi + 0x30]",
-    "mov r8,  [rdi + 0x38]",
-    "mov r9,  [rdi + 0x40]",
-    "mov r10, [rdi + 0x48]",
-    "mov r11, [rdi + 0x50]",
-    "mov r12, [rdi + 0x58]",
-    "mov r13, [rdi + 0x60]",
-    "mov r14, [rdi + 0x68]",
-    "mov r15, [rdi + 0x70]",
+    "mov r8,  [rdi + 0x40]",
+    "mov r9,  [rdi + 0x48]",
+    "mov r10, [rdi + 0x50]",
+    "mov r11, [rdi + 0x58]",
+    "mov r12, [rdi + 0x60]",
+    "mov r13, [rdi + 0x68]",
+    "mov r14, [rdi + 0x70]",
+    "mov r15, [rdi + 0x78]",
     // Check launched flag (sil) before clobbering rsi/rdi
     "test sil, sil",
     // Load guest rsi and rdi last
@@ -868,14 +881,14 @@ core::arch::global_asm!(
     "pop rax",
     "mov [rdi + 0x28], rax",
     "mov [rdi + 0x30], rbp",
-    "mov [rdi + 0x38], r8",
-    "mov [rdi + 0x40], r9",
-    "mov [rdi + 0x48], r10",
-    "mov [rdi + 0x50], r11",
-    "mov [rdi + 0x58], r12",
-    "mov [rdi + 0x60], r13",
-    "mov [rdi + 0x68], r14",
-    "mov [rdi + 0x70], r15",
+    "mov [rdi + 0x40], r8",
+    "mov [rdi + 0x48], r9",
+    "mov [rdi + 0x50], r10",
+    "mov [rdi + 0x58], r11",
+    "mov [rdi + 0x60], r12",
+    "mov [rdi + 0x68], r13",
+    "mov [rdi + 0x70], r14",
+    "mov [rdi + 0x78], r15",
     // Restore host callee-saved registers
     "pop r15",
     "pop r14",
@@ -911,7 +924,7 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
 
     let mut vms = VMS.lock();
     let vm = find_vm_mut(&mut vms, vm_id)?;
-    let idx = vcpu_id as usize;
+    let idx = vcpu_index(vcpu_id)?;
     let vcpu = vm.vcpus[idx].as_mut()?;
 
     // Refuse to enter a paused or halted vCPU.
@@ -947,6 +960,7 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
             let hw_reason = vmread(VM_EXIT_REASON) as u32 & 0xFFFF; // low 16 bits = basic reason
             let qualification = vmread(EXIT_QUALIFICATION);
             let instr_len = vmread(VM_EXIT_INSTR_LEN) as u32;
+            vcpu.guest_gprs.rsp = vmread(GUEST_RSP);
 
             let guest_phys = if hw_reason == EXIT_REASON_EPT_VIOLATION
                 || hw_reason == EXIT_REASON_EPT_MISCONFIG
@@ -1008,6 +1022,21 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
                 });
             }
 
+            // VMX can exit on MOV/CLTS/LMSW touching CR0/CR4 bits owned by the
+            // host through the guest/host masks. Linux hits this path while
+            // switching paging and long mode, so keep it in-kernel like KVM.
+            if hw_reason == EXIT_REASON_CR_ACCESS
+                && emulate_cr_access(qualification, instr_len, vcpu)
+            {
+                return Some(VmExitInfo {
+                    reason: super::exit_reason::CR_ACCESS_EMULATED,
+                    hw_reason,
+                    qualification,
+                    instruction_len: instr_len,
+                    ..Default::default()
+                });
+            }
+
             let mut info = VmExitInfo {
                 reason,
                 hw_reason,
@@ -1045,7 +1074,7 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
                     info.access_size = 4;
                     if is_write != 0 {
                         info.io_data = vcpu.guest_gprs.rax;
-                        mark_dirty_page(vm.dirty_log_phys, &vm.memory_regions, guest_phys);
+                        mark_dirty_page(&mut vm.dirty_log, &vm.memory_regions, guest_phys);
                     }
                 }
                 EXIT_REASON_RDMSR => {
@@ -1168,12 +1197,156 @@ unsafe fn handle_cpuid_exit(cpuid_table: &[Option<CpuidEntry>], vcpu: &mut VmxVc
     vmwrite(GUEST_RIP, rip + instr_len);
 }
 
+/// Emulate VMX CR-access exits caused by guest/host mask ownership.
+///
+/// Exit qualification layout for CR access:
+///   bits  3:0  control register number
+///   bits  5:4  access type (0=mov to CR, 1=mov from CR, 2=CLTS, 3=LMSW)
+///   bits 11:8  general-purpose register
+///   bits 31:16 LMSW source data
+unsafe fn emulate_cr_access(qualification: u64, instr_len: u32, vcpu: &mut VmxVcpu) -> bool {
+    let cr = (qualification & 0x0f) as u8;
+    let access_type = ((qualification >> 4) & 0x03) as u8;
+    let gpr = ((qualification >> 8) & 0x0f) as u8;
+
+    match access_type {
+        0 => {
+            let value = guest_gpr_read(&vcpu.guest_gprs, gpr);
+            if !write_guest_cr(cr, value) {
+                return false;
+            }
+        }
+        1 => {
+            let Some(value) = read_guest_cr(cr) else {
+                return false;
+            };
+            guest_gpr_write(&mut vcpu.guest_gprs, gpr, value);
+        }
+        2 => {
+            // CLTS clears CR0.TS.
+            if cr != 0 {
+                return false;
+            }
+            let value = vmread(GUEST_CR0) & !(1 << 3);
+            write_guest_cr0(value);
+        }
+        3 => {
+            // LMSW updates CR0 bits 0..3. Once PE is set it cannot be cleared
+            // by LMSW, matching architectural behavior.
+            let source = (qualification >> 16) & 0x0f;
+            let old = vmread(GUEST_CR0);
+            let mut value = (old & !0x0f) | source;
+            if old & 1 != 0 {
+                value |= 1;
+            }
+            write_guest_cr0(value);
+        }
+        _ => return false,
+    }
+
+    let rip = vmread(GUEST_RIP);
+    vmwrite(GUEST_RIP, rip.wrapping_add(instr_len.max(1) as u64));
+    vcpu.guest_gprs.rsp = vmread(GUEST_RSP);
+    true
+}
+
+unsafe fn read_guest_cr(cr: u8) -> Option<u64> {
+    match cr {
+        0 => Some(vmread(GUEST_CR0)),
+        3 => Some(vmread(GUEST_CR3)),
+        4 => Some(vmread(GUEST_CR4)),
+        // CR8 is only meaningful for APIC TPR. We keep a zero TPR shadow until
+        // AVM grows an explicit APICv/TPR model.
+        8 => Some(0),
+        _ => None,
+    }
+}
+
+unsafe fn write_guest_cr(cr: u8, value: u64) -> bool {
+    match cr {
+        0 => write_guest_cr0(value),
+        3 => vmwrite(GUEST_CR3, value),
+        4 => write_guest_cr4(value),
+        // CR8 writes are accepted as a no-op for now. Userspace APIC emulation
+        // owns interrupt priority; ignoring CR8 is preferable to killing boot.
+        8 => {}
+        _ => return false,
+    }
+    true
+}
+
+unsafe fn write_guest_cr0(value: u64) {
+    // Keep NE set: VMX requires it, and every modern guest expects it.
+    let guest = value | (1 << 5);
+    vmwrite(GUEST_CR0, guest);
+    vmwrite(CR0_READ_SHADOW, guest & CR0_OWNED_BITS);
+}
+
+unsafe fn write_guest_cr4(value: u64) {
+    // The guest must not see or set VMXE unless nested virtualization exists.
+    let guest = value & !CR4_OWNED_BITS;
+    vmwrite(GUEST_CR4, guest);
+    vmwrite(CR4_READ_SHADOW, guest & CR4_OWNED_BITS);
+}
+
+unsafe fn guest_gpr_read(gprs: &GuestGprs, reg: u8) -> u64 {
+    match reg {
+        0 => gprs.rax,
+        1 => gprs.rcx,
+        2 => gprs.rdx,
+        3 => gprs.rbx,
+        4 => vmread(GUEST_RSP),
+        5 => gprs.rbp,
+        6 => gprs.rsi,
+        7 => gprs.rdi,
+        8 => gprs.r8,
+        9 => gprs.r9,
+        10 => gprs.r10,
+        11 => gprs.r11,
+        12 => gprs.r12,
+        13 => gprs.r13,
+        14 => gprs.r14,
+        15 => gprs.r15,
+        _ => 0,
+    }
+}
+
+unsafe fn guest_gpr_write(gprs: &mut GuestGprs, reg: u8, value: u64) {
+    match reg {
+        0 => gprs.rax = value,
+        1 => gprs.rcx = value,
+        2 => gprs.rdx = value,
+        3 => gprs.rbx = value,
+        4 => {
+            gprs.rsp = value;
+            vmwrite(GUEST_RSP, value);
+        }
+        5 => gprs.rbp = value,
+        6 => gprs.rsi = value,
+        7 => gprs.rdi = value,
+        8 => gprs.r8 = value,
+        9 => gprs.r9 = value,
+        10 => gprs.r10 = value,
+        11 => gprs.r11 = value,
+        12 => gprs.r12 = value,
+        13 => gprs.r13 = value,
+        14 => gprs.r14 = value,
+        15 => gprs.r15 = value,
+        _ => {}
+    }
+}
+
 /// Get guest general-purpose registers.
 pub fn get_regs(vm_id: u32, vcpu_id: u32) -> Option<GuestGprs> {
     let vms = VMS.lock();
     let vm = find_vm(&vms, vm_id)?;
-    let vcpu = vm.vcpus[vcpu_id as usize].as_ref()?;
-    Some(vcpu.guest_gprs)
+    let vcpu = vm.vcpus[vcpu_index(vcpu_id)?].as_ref()?;
+    let mut gprs = vcpu.guest_gprs;
+    unsafe {
+        vmptrld(vcpu.vmcs_phys);
+        gprs.rsp = vmread(GUEST_RSP);
+    }
+    Some(gprs)
 }
 
 /// Set guest general-purpose registers.
@@ -1183,11 +1356,19 @@ pub fn set_regs(vm_id: u32, vcpu_id: u32, gprs: &GuestGprs) -> bool {
         Some(v) => v,
         None => return false,
     };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+    let idx = match vcpu_index(vcpu_id) {
+        Some(idx) => idx,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[idx].as_mut() {
         Some(v) => v,
         None => return false,
     };
     vcpu.guest_gprs = *gprs;
+    unsafe {
+        vmptrld(vcpu.vmcs_phys);
+        vmwrite(GUEST_RSP, gprs.rsp);
+    }
     true
 }
 
@@ -1195,7 +1376,7 @@ pub fn set_regs(vm_id: u32, vcpu_id: u32, gprs: &GuestGprs) -> bool {
 pub fn get_sregs(vm_id: u32, vcpu_id: u32) -> Option<GuestSregs> {
     let vms = VMS.lock();
     let vm = find_vm(&vms, vm_id)?;
-    let vcpu = vm.vcpus[vcpu_id as usize].as_ref()?;
+    let vcpu = vm.vcpus[vcpu_index(vcpu_id)?].as_ref()?;
 
     unsafe {
         vmptrld(vcpu.vmcs_phys);
@@ -1254,7 +1435,11 @@ pub fn set_sregs(vm_id: u32, vcpu_id: u32, sregs: &GuestSregs) -> bool {
         Some(v) => v,
         None => return false,
     };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+    let idx = match vcpu_index(vcpu_id) {
+        Some(idx) => idx,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[idx].as_mut() {
         Some(v) => v,
         None => return false,
     };
@@ -1298,26 +1483,31 @@ pub fn set_sregs(vm_id: u32, vcpu_id: u32, sregs: &GuestSregs) -> bool {
         vmwrite(GUEST_GDTR_LIMIT, sregs.gdtr_limit as u64);
         vmwrite(GUEST_IDTR_BASE, sregs.idtr_base);
         vmwrite(GUEST_IDTR_LIMIT, sregs.idtr_limit as u64);
-        vmwrite(GUEST_CR0, sregs.cr0);
+        write_guest_cr0(sregs.cr0);
         vmwrite(GUEST_CR3, sregs.cr3);
-        vmwrite(GUEST_CR4, sregs.cr4);
+        write_guest_cr4(sregs.cr4);
         vmwrite(GUEST_IA32_EFER, sregs.efer);
         vmwrite(GUEST_RIP, sregs.rip);
         vmwrite(GUEST_RSP, sregs.rsp);
         vmwrite(GUEST_RFLAGS, sregs.rflags);
     }
+    vcpu.guest_gprs.rsp = sregs.rsp;
 
     true
 }
 
 /// Inject an external interrupt into the guest.
 pub fn inject_irq(vm_id: u32, vcpu_id: u32, vector: u8) -> bool {
-    let vms = VMS.lock();
-    let vm = match find_vm(&vms, vm_id) {
+    let mut vms = VMS.lock();
+    let vm = match find_vm_mut(&mut vms, vm_id) {
         Some(v) => v,
         None => return false,
     };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() {
+    let idx = match vcpu_index(vcpu_id) {
+        Some(idx) => idx,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[idx].as_mut() {
         Some(v) => v,
         None => return false,
     };
@@ -1327,17 +1517,24 @@ pub fn inject_irq(vm_id: u32, vcpu_id: u32, vector: u8) -> bool {
         let info = (vector as u32) | (0 << 8) | (1 << 31);
         vmwrite(VM_ENTRY_INTR_INFO, info as u64);
     }
+    if vcpu.mp_state == VcpuMpState::Halted {
+        vcpu.mp_state = VcpuMpState::Runnable;
+    }
     true
 }
 
 /// Inject an exception into the guest.
 pub fn inject_exception(vm_id: u32, vcpu_id: u32, vector: u8, error_code: u32) -> bool {
-    let vms = VMS.lock();
-    let vm = match find_vm(&vms, vm_id) {
+    let mut vms = VMS.lock();
+    let vm = match find_vm_mut(&mut vms, vm_id) {
         Some(v) => v,
         None => return false,
     };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() {
+    let idx = match vcpu_index(vcpu_id) {
+        Some(idx) => idx,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[idx].as_mut() {
         Some(v) => v,
         None => return false,
     };
@@ -1352,17 +1549,24 @@ pub fn inject_exception(vm_id: u32, vcpu_id: u32, vector: u8, error_code: u32) -
         }
         vmwrite(VM_ENTRY_INTR_INFO, info as u64);
     }
+    if vcpu.mp_state == VcpuMpState::Halted {
+        vcpu.mp_state = VcpuMpState::Runnable;
+    }
     true
 }
 
 /// Inject an NMI into the guest.
 pub fn inject_nmi(vm_id: u32, vcpu_id: u32) -> bool {
-    let vms = VMS.lock();
-    let vm = match find_vm(&vms, vm_id) {
+    let mut vms = VMS.lock();
+    let vm = match find_vm_mut(&mut vms, vm_id) {
         Some(v) => v,
         None => return false,
     };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() {
+    let idx = match vcpu_index(vcpu_id) {
+        Some(idx) => idx,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[idx].as_mut() {
         Some(v) => v,
         None => return false,
     };
@@ -1371,6 +1575,9 @@ pub fn inject_nmi(vm_id: u32, vcpu_id: u32) -> bool {
         vmptrld(vcpu.vmcs_phys);
         let info: u32 = 2 | (2 << 8) | (1 << 31);
         vmwrite(VM_ENTRY_INTR_INFO, info as u64);
+    }
+    if vcpu.mp_state == VcpuMpState::Halted {
+        vcpu.mp_state = VcpuMpState::Runnable;
     }
     true
 }
@@ -1382,7 +1589,11 @@ pub fn vcpu_pause(vm_id: u32, vcpu_id: u32) -> bool {
         Some(v) => v,
         None => return false,
     };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+    let idx = match vcpu_index(vcpu_id) {
+        Some(idx) => idx,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[idx].as_mut() {
         Some(v) => v,
         None => return false,
     };
@@ -1397,7 +1608,11 @@ pub fn vcpu_resume(vm_id: u32, vcpu_id: u32) -> bool {
         Some(v) => v,
         None => return false,
     };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+    let idx = match vcpu_index(vcpu_id) {
+        Some(idx) => idx,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[idx].as_mut() {
         Some(v) => v,
         None => return false,
     };
@@ -1413,7 +1628,7 @@ pub fn vcpu_resume(vm_id: u32, vcpu_id: u32) -> bool {
 pub fn get_fpu(vm_id: u32, vcpu_id: u32) -> Option<GuestFpuState> {
     let vms = VMS.lock();
     let vm = find_vm(&vms, vm_id)?;
-    let vcpu = vm.vcpus[vcpu_id as usize].as_ref()?;
+    let vcpu = vm.vcpus[vcpu_index(vcpu_id)?].as_ref()?;
     Some(vcpu.guest_fpu)
 }
 
@@ -1424,7 +1639,11 @@ pub fn set_fpu(vm_id: u32, vcpu_id: u32, fpu: &GuestFpuState) -> bool {
         Some(v) => v,
         None => return false,
     };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+    let idx = match vcpu_index(vcpu_id) {
+        Some(idx) => idx,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[idx].as_mut() {
         Some(v) => v,
         None => return false,
     };
@@ -1436,7 +1655,7 @@ pub fn set_fpu(vm_id: u32, vcpu_id: u32, fpu: &GuestFpuState) -> bool {
 pub fn get_mp_state(vm_id: u32, vcpu_id: u32) -> Option<VcpuMpState> {
     let vms = VMS.lock();
     let vm = find_vm(&vms, vm_id)?;
-    let vcpu = vm.vcpus[vcpu_id as usize].as_ref()?;
+    let vcpu = vm.vcpus[vcpu_index(vcpu_id)?].as_ref()?;
     Some(vcpu.mp_state)
 }
 
@@ -1447,7 +1666,11 @@ pub fn set_mp_state(vm_id: u32, vcpu_id: u32, state: VcpuMpState) -> bool {
         Some(v) => v,
         None => return false,
     };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+    let idx = match vcpu_index(vcpu_id) {
+        Some(idx) => idx,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[idx].as_mut() {
         Some(v) => v,
         None => return false,
     };
@@ -1465,7 +1688,7 @@ pub fn set_mp_state(vm_id: u32, vcpu_id: u32, state: VcpuMpState) -> bool {
 pub fn translate_gva(vm_id: u32, vcpu_id: u32, gva: u64) -> Option<u64> {
     let vms = VMS.lock();
     let vm = find_vm(&vms, vm_id)?;
-    let vcpu = vm.vcpus[vcpu_id as usize].as_ref()?;
+    let vcpu = vm.vcpus[vcpu_index(vcpu_id)?].as_ref()?;
 
     unsafe {
         vmptrld(vcpu.vmcs_phys);
@@ -1535,68 +1758,50 @@ pub fn translate_gva(vm_id: u32, vcpu_id: u32, gva: u64) -> Option<u64> {
 
 /// Get dirty-page log for a memory slot.
 ///
-/// The dirty log is a page allocated at `dirty_log_phys`.  Layout:
+/// The dirty log is stored inline in the VM. Layout:
 ///   slot 0 → words [0..64), slot 1 → words [64..128), …, slot 31 → words [1984..2048)
-/// Total: 32 × 64 × 8 = 16 384 bytes = 4 pages.  We allocated only 1 page in create_vm;
-/// this is enough for the first 8 slots (512 bytes per slot × 8 = 4 KB).  Expand if needed.
+/// Total: 32 × 64 × 8 = 16 384 bytes.
 ///
 /// Returns the number of dirty pages, or `None` on error.
 pub fn get_dirty_log(vm_id: u32, slot: u32, bitmap: &mut [u64]) -> Option<u32> {
     let mut vms = VMS.lock();
     let vm = find_vm_mut(&mut vms, vm_id)?;
     let slot_idx = slot as usize;
-    if slot_idx >= 32 || vm.dirty_log_phys == 0 {
+    if slot_idx >= DIRTY_LOG_SLOTS {
         return None;
     }
 
-    // Each slot gets 64 u64 words (= 512 bytes) within the dirty-log page.
-    // Offset of this slot's words = slot_idx × 64 × 8 bytes.
-    const WORDS_PER_SLOT: usize = 64;
-    const BYTES_PER_SLOT: usize = WORDS_PER_SLOT * 8;
-
-    let base_virt = super::phys_to_virt(vm.dirty_log_phys) as *mut u64;
-    let slot_offset = slot_idx * WORDS_PER_SLOT;
-
-    let copy_words = bitmap.len().min(WORDS_PER_SLOT);
+    let slot_offset = slot_idx * DIRTY_LOG_WORDS_PER_SLOT;
+    let copy_words = bitmap.len().min(DIRTY_LOG_WORDS_PER_SLOT);
     let mut dirty_count = 0u32;
-    unsafe {
-        for i in 0..copy_words {
-            let w = *base_virt.add(slot_offset + i);
-            bitmap[i] = w;
-            dirty_count += w.count_ones();
-        }
-        // Clear after reading (like KVM).
-        for i in 0..WORDS_PER_SLOT {
-            *base_virt.add(slot_offset + i) = 0;
-        }
+    for i in 0..copy_words {
+        let w = vm.dirty_log[slot_offset + i];
+        bitmap[i] = w;
+        dirty_count += w.count_ones();
     }
-    let _ = BYTES_PER_SLOT; // suppress unused warning
+    // Clear after reading (like KVM).
+    for i in 0..DIRTY_LOG_WORDS_PER_SLOT {
+        vm.dirty_log[slot_offset + i] = 0;
+    }
     Some(dirty_count)
 }
 
 // ── Internal dirty-tracking helper ───────────────────────────────────────
 
-fn mark_dirty_page(dirty_log_phys: u64, regions: &[Option<MemoryRegion>; 32], gpa: u64) {
-    if dirty_log_phys == 0 {
-        return;
-    }
-    const WORDS_PER_SLOT: usize = 64;
-
+fn mark_dirty_page(
+    dirty_log: &mut [u64; DIRTY_LOG_TOTAL_WORDS],
+    regions: &[Option<MemoryRegion>; 32],
+    gpa: u64,
+) {
     for (slot_idx, region_opt) in regions.iter().enumerate() {
         if let Some(r) = region_opt {
             if gpa >= r.guest_phys && gpa < r.guest_phys + r.size {
                 let page_offset = ((gpa - r.guest_phys) >> 12) as usize;
                 let word = page_offset / 64;
                 let bit = page_offset % 64;
-                if word < WORDS_PER_SLOT {
-                    let base = super::phys_to_virt(dirty_log_phys) as *mut u64;
-                    let idx = slot_idx * WORDS_PER_SLOT + word;
-                    // Bounds-check: one allocated page = 512 u64 words total.
-                    if idx < 512 {
-                        unsafe {
-                            *base.add(idx) |= 1u64 << bit;
-                        }
-                    }
+                if word < DIRTY_LOG_WORDS_PER_SLOT {
+                    let idx = slot_idx * DIRTY_LOG_WORDS_PER_SLOT + word;
+                    dirty_log[idx] |= 1u64 << bit;
                 }
                 return;
             }
@@ -1605,6 +1810,15 @@ fn mark_dirty_page(dirty_log_phys: u64, regions: &[Option<MemoryRegion>; 32], gp
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
+
+fn vcpu_index(vcpu_id: u32) -> Option<usize> {
+    let idx = vcpu_id as usize;
+    if idx < MAX_VCPUS_PER_VM {
+        Some(idx)
+    } else {
+        None
+    }
+}
 
 fn find_vm(vms: &[Option<VmxVm>; MAX_VMS], vm_id: u32) -> Option<&VmxVm> {
     vms.iter()

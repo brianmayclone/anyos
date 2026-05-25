@@ -9,7 +9,9 @@ CC      ?= cc
 CFLAGS  ?= -Wall -Wextra -O2 -std=c99
 SRCDIR  = src
 SRCS    = $(SRCDIR)/mkimage.c $(SRCDIR)/elf.c $(SRCDIR)/fat16.c \
-          $(SRCDIR)/exfat.c $(SRCDIR)/gpt.c $(SRCDIR)/iso9660.c
+          $(SRCDIR)/fat16_populate.c $(SRCDIR)/exfat.c \
+          $(SRCDIR)/gpt.c $(SRCDIR)/iso9660.c \
+          $(SRCDIR)/uefi_image.c $(SRCDIR)/arm64_image.c
 HDRS    = $(SRCDIR)/mkimage.h
 OBJS    = $(SRCS:.c=.o)
 TARGET  = mkimage

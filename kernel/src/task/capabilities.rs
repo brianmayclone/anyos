@@ -321,7 +321,8 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_VCPU_RESUME
         | syscall::SYS_VCPU_GET_MP_STATE
         | syscall::SYS_VCPU_SET_MP_STATE
-        | syscall::SYS_VCPU_TRANSLATE => CAP_HYPERVISOR,
+        | syscall::SYS_VCPU_TRANSLATE
+        | syscall::SYS_AVM_IOCTL => CAP_HYPERVISOR,
 
         // Unknown syscalls — let the dispatch handle it (returns u32::MAX)
         _ => 0,

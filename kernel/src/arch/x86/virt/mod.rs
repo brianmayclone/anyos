@@ -221,6 +221,8 @@ pub mod exit_reason {
     pub const CPUID_EMULATED: u32 = 0x104;
     /// Internal HLT handled by kernel (vCPU now in Halted MP state).
     pub const HLT_EMULATED: u32 = 0x105;
+    /// Internal control-register access handled by the kernel.
+    pub const CR_ACCESS_EMULATED: u32 = 0x106;
 }
 
 /// Information returned to userspace after a VM-exit.
@@ -283,6 +285,7 @@ pub struct GuestGprs {
     pub rsi: u64,
     pub rdi: u64,
     pub rbp: u64,
+    pub rsp: u64,
     pub r8: u64,
     pub r9: u64,
     pub r10: u64,

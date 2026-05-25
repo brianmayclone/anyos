@@ -37,9 +37,12 @@ add_custom_command(
     ${BUILDSYSTEM_DIR}/mkimage/src/mkimage.c
     ${BUILDSYSTEM_DIR}/mkimage/src/elf.c
     ${BUILDSYSTEM_DIR}/mkimage/src/fat16.c
+    ${BUILDSYSTEM_DIR}/mkimage/src/fat16_populate.c
     ${BUILDSYSTEM_DIR}/mkimage/src/exfat.c
     ${BUILDSYSTEM_DIR}/mkimage/src/gpt.c
     ${BUILDSYSTEM_DIR}/mkimage/src/iso9660.c
+    ${BUILDSYSTEM_DIR}/mkimage/src/uefi_image.c
+    ${BUILDSYSTEM_DIR}/mkimage/src/arm64_image.c
   DEPENDS ${MKIMAGE_SRCS}
   COMMENT "Building buildsystem tool: mkimage"
 )

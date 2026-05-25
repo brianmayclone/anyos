@@ -18,6 +18,8 @@ struct TerminatedChildCleanup {
     pd_to_destroy: Option<PhysAddr>,
 }
 
+const MAX_FAULT_PROCESS_CLEANUP: usize = 128;
+
 #[inline]
 fn safe_cpu_id(cpu_id: usize) -> usize {
     if cpu_id < super::MAX_CPUS {
@@ -186,7 +188,6 @@ fn collect_and_terminate_children(
             let t = &sched.threads[i];
             if t.parent_tid == ptid
                 && t.tid != parent_tid
-                && t.state != ThreadState::Terminated
                 && !t.is_idle
                 && !sched.is_idle_tid(t.tid)
             {
@@ -201,17 +202,25 @@ fn collect_and_terminate_children(
 
     // Terminate all collected children first.  We collect address spaces in a
     // second pass so sibling checks see every cascade-killed child as dead.
+    // Once the parent is exiting/killed, none of these children has a live
+    // waiter owner any more; orphan them so the deferred reaper may drop their
+    // kernel stacks after the grace period.
     for &child_tid in &to_kill {
         if let Some(idx) = sched.find_idx(child_tid) {
-            sched.threads[idx].state = ThreadState::Terminated;
-            sched.threads[idx].exit_code = Some(9); // SIGKILL
-            sched.threads[idx].terminated_at_tick = Some(tick);
+            if sched.threads[idx].state != ThreadState::Terminated {
+                sched.threads[idx].state = ThreadState::Terminated;
+                sched.threads[idx].exit_code = Some(9); // SIGKILL
+                sched.threads[idx].terminated_at_tick = Some(tick);
+            }
             sched.remove_from_all_queues(child_tid);
 
             // Wake anyone waiting for this child
             if let Some(waiter_tid) = sched.threads[idx].exit_waiter_tid {
                 sched.wake_thread_inner(waiter_tid);
             }
+            sched.threads[idx].exit_waiter_tid = None;
+            sched.threads[idx].retain_exit_status = false;
+            sched.threads[idx].parent_tid = 0;
         }
     }
 
@@ -221,16 +230,14 @@ fn collect_and_terminate_children(
         let mut pd_to_destroy = None;
         if let Some(idx) = sched.find_idx(child_tid) {
             if let Some(pd) = sched.threads[idx].page_directory {
-                if !sched.threads[idx].pd_shared {
-                    let has_live_siblings = sched.threads.iter().any(|t| {
-                        t.tid != child_tid
-                            && t.page_directory == Some(pd)
-                            && t.state != ThreadState::Terminated
-                    });
-                    if !has_live_siblings && !queued_pds.iter().any(|queued| *queued == pd) {
-                        pd_to_destroy = Some(pd);
-                        queued_pds.push(pd);
-                    }
+                let has_live_siblings = sched.threads.iter().any(|t| {
+                    t.tid != child_tid
+                        && t.page_directory == Some(pd)
+                        && t.state != ThreadState::Terminated
+                });
+                if !has_live_siblings && !queued_pds.iter().any(|queued| *queued == pd) {
+                    pd_to_destroy = Some(pd);
+                    queued_pds.push(pd);
                 }
                 sched.threads[idx].page_directory = None;
             }
@@ -306,6 +313,55 @@ fn defer_fault_exit_cleanup(current_tid: u32, current_code: u32, child_tids: &[u
     }
 }
 
+fn terminate_same_pd_threads_for_fault(
+    sched: &mut super::Scheduler,
+    pd: PhysAddr,
+    current_tid: u32,
+    code: u32,
+    tick: u32,
+    cleanup_tids: &mut [u32; MAX_FAULT_PROCESS_CLEANUP],
+) -> usize {
+    let mut cleanup_count = 0usize;
+    for idx in 0..sched.threads.len() {
+        let should_kill = {
+            let t = &sched.threads[idx];
+            t.tid != current_tid
+                && t.page_directory == Some(pd)
+                && !t.is_idle
+                && !sched.is_idle_tid(t.tid)
+        };
+        if !should_kill {
+            continue;
+        }
+
+        let tid = sched.threads[idx].tid;
+        let waiter = sched.threads[idx].exit_waiter_tid;
+        sched.remove_from_all_queues(tid);
+        if sched.threads[idx].state != ThreadState::Terminated {
+            sched.threads[idx].state = ThreadState::Terminated;
+            sched.threads[idx].exit_code = Some(code);
+            sched.threads[idx].terminated_at_tick = Some(tick);
+        }
+        sched.threads[idx].page_directory = None;
+        sched.threads[idx].exit_waiter_tid = None;
+        sched.threads[idx].retain_exit_status = false;
+        sched.threads[idx].parent_tid = 0;
+        if let Some(waiter_tid) = waiter {
+            sched.wake_thread_inner(waiter_tid);
+        }
+        if cleanup_count < cleanup_tids.len() {
+            cleanup_tids[cleanup_count] = tid;
+            cleanup_count += 1;
+        } else {
+            crate::serial_verbose_println!(
+                "  WARN: fault-exit cleanup list full, tid={} cleanup deferred only by reap",
+                tid
+            );
+        }
+    }
+    cleanup_count
+}
+
 fn defer_fault_pd_destroy(pd: PhysAddr, tid: u32) {
     if let Some(mut queue) = DEFERRED_PD_DESTROY.try_lock() {
         queue.push(pd, tid);
@@ -377,16 +433,18 @@ pub fn exit_current(code: u32) {
 
         // ── Page directory cleanup ────────────────────────────────
         if let Some(pd) = sched.threads[idx].page_directory {
-            if !sched.threads[idx].pd_shared {
-                let has_live_siblings = sched.threads.iter().any(|t| {
-                    t.tid != current_tid
-                        && t.page_directory == Some(pd)
-                        && t.state != ThreadState::Terminated
-                });
-                if !has_live_siblings {
-                    pd_to_destroy = Some(pd);
-                }
+            let has_live_siblings = sched.threads.iter().any(|t| {
+                t.tid != current_tid
+                    && t.page_directory == Some(pd)
+                    && t.state != ThreadState::Terminated
+            });
+            if !has_live_siblings {
+                pd_to_destroy = Some(pd);
             }
+        }
+        if sched.threads[idx].pd_shared {
+            sched.threads[idx].parent_tid = 0;
+            sched.threads[idx].retain_exit_status = false;
         }
         sched.threads[idx].page_directory = None;
 
@@ -445,6 +503,8 @@ pub fn try_exit_current(code: u32) -> bool {
     let my_cpu = safe_cpu_id(get_cpu_id());
     let tid: u32;
     let mut pd_to_destroy: Option<PhysAddr> = None;
+    let mut killed_sibling_tids = [0u32; MAX_FAULT_PROCESS_CLEANUP];
+    let mut killed_sibling_count = 0usize;
     let idle_stack_top: u64;
     let idle_ctx: Option<*const CpuContext>;
     crate::sched_diag::set(my_cpu, crate::sched_diag::PHASE_TRY_EXIT_CURRENT);
@@ -486,15 +546,21 @@ pub fn try_exit_current(code: u32) -> bool {
         // dying address space for deferred teardown; otherwise a faulting LXE
         // process can leak its entire userspace mapping.
         if let Some(pd) = sched.threads[idx].page_directory {
-            if !sched.threads[idx].pd_shared {
-                let has_live_siblings = sched.threads.iter().any(|t| {
-                    t.tid != current_tid
-                        && t.page_directory == Some(pd)
-                        && t.state != ThreadState::Terminated
-                });
-                if !has_live_siblings {
-                    pd_to_destroy = Some(pd);
-                }
+            killed_sibling_count = terminate_same_pd_threads_for_fault(
+                sched,
+                pd,
+                current_tid,
+                code,
+                tick,
+                &mut killed_sibling_tids,
+            );
+            let has_live_siblings = sched.threads.iter().any(|t| {
+                t.tid != current_tid
+                    && t.page_directory == Some(pd)
+                    && t.state != ThreadState::Terminated
+            });
+            if !has_live_siblings {
+                pd_to_destroy = Some(pd);
             }
         }
         sched.remove_from_all_queues(current_tid);
@@ -504,7 +570,8 @@ pub fn try_exit_current(code: u32) -> bool {
         sched.threads[idx].terminated_at_tick = Some(tick);
         sched.threads[idx].page_directory = None;
         sched.threads[idx].exit_waiter_tid = None;
-        sched.threads[idx].retain_exit_status = true;
+        sched.threads[idx].retain_exit_status = false;
+        sched.threads[idx].parent_tid = 0;
         try_exit_diag_mark(b'J');
 
         try_exit_diag_mark(b'K');
@@ -536,7 +603,7 @@ pub fn try_exit_current(code: u32) -> bool {
     let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
     crate::arch::hal::switch_page_table(kernel_cr3);
     try_exit_diag_mark(b'Q');
-    defer_fault_exit_cleanup(tid, code, &[]);
+    defer_fault_exit_cleanup(tid, code, &killed_sibling_tids[..killed_sibling_count]);
     if let Some(pd) = pd_to_destroy {
         crate::syscall::windows::cleanup_process(pd.as_u64());
         crate::task::env::cleanup(pd.as_u64());
@@ -558,6 +625,10 @@ pub static mut BAD_RSP_SAVED: u64 = 0;
 pub extern "C" fn bad_rsp_recovery() -> ! {
     let cpu_id = safe_cpu_id(crate::arch::hal::cpu_id());
     let tid = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed);
+    let mut pd_to_destroy: Option<PhysAddr> = None;
+    let mut killed_thread = false;
+    let mut killed_sibling_tids = [0u32; MAX_FAULT_PROCESS_CLEANUP];
+    let mut killed_sibling_count = 0usize;
     crate::serial_verbose_println!(
         "!RSP RECOVERY on CPU {} — killing TID={}, entering idle",
         cpu_id,
@@ -584,6 +655,25 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
                     let pri = sched.threads[idx].priority;
                     sched.per_cpu[cpu_id].run_queue.enqueue(current_tid, pri);
                 } else if !sched.threads[idx].is_idle && !sched.is_idle_tid(current_tid) {
+                    if let Some(pd) = sched.threads[idx].page_directory {
+                        killed_sibling_count = terminate_same_pd_threads_for_fault(
+                            sched,
+                            pd,
+                            current_tid,
+                            139,
+                            crate::arch::hal::timer_current_ticks(),
+                            &mut killed_sibling_tids,
+                        );
+                        let has_live_siblings = sched.threads.iter().any(|t| {
+                            t.tid != current_tid
+                                && t.page_directory == Some(pd)
+                                && t.state != ThreadState::Terminated
+                        });
+                        if !has_live_siblings {
+                            pd_to_destroy = Some(pd);
+                        }
+                    }
+                    sched.remove_from_all_queues(current_tid);
                     sched.threads[idx].state = ThreadState::Terminated;
                     sched.threads[idx].exit_code = Some(139);
                     sched.threads[idx].terminated_at_tick =
@@ -591,6 +681,11 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
                     if let Some(waiter_tid) = sched.threads[idx].exit_waiter_tid {
                         sched.wake_thread_inner(waiter_tid);
                     }
+                    sched.threads[idx].page_directory = None;
+                    sched.threads[idx].exit_waiter_tid = None;
+                    sched.threads[idx].retain_exit_status = false;
+                    sched.threads[idx].parent_tid = 0;
+                    killed_thread = true;
                 }
             }
             sched.per_cpu[cpu_id].current_tid = None;
@@ -600,6 +695,14 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
 
     let kcr3 = crate::memory::virtual_mem::kernel_cr3();
     crate::arch::hal::switch_page_table(kcr3);
+    if killed_thread {
+        defer_fault_exit_cleanup(tid, 139, &killed_sibling_tids[..killed_sibling_count]);
+        if let Some(pd) = pd_to_destroy {
+            crate::syscall::windows::cleanup_process(pd.as_u64());
+            crate::task::env::cleanup(pd.as_u64());
+            defer_fault_pd_destroy(pd, tid);
+        }
+    }
     enter_idle_recovery(cpu_id, idle_stack_top, idle_ctx);
 }
 
@@ -615,6 +718,8 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
 pub fn fault_kill_tid_and_idle(tid: u32, signal: u32) -> ! {
     let cpu_id = safe_cpu_id(crate::arch::hal::cpu_id());
     let mut pd_to_destroy: Option<PhysAddr> = None;
+    let mut killed_sibling_tids = [0u32; MAX_FAULT_PROCESS_CLEANUP];
+    let mut killed_sibling_count = 0usize;
     crate::serial_verbose_println!(
         "  FALLBACK: manual kill TID={} signal={} on CPU {}",
         tid,
@@ -646,15 +751,21 @@ pub fn fault_kill_tid_and_idle(tid: u32, signal: u32) -> ! {
             if !sched.threads[idx].is_idle && !sched.is_idle_tid(tid) {
                 let tick = crate::arch::hal::timer_current_ticks();
                 if let Some(pd) = sched.threads[idx].page_directory {
-                    if !sched.threads[idx].pd_shared {
-                        let has_live_siblings = sched.threads.iter().any(|t| {
-                            t.tid != tid
-                                && t.page_directory == Some(pd)
-                                && t.state != ThreadState::Terminated
-                        });
-                        if !has_live_siblings {
-                            pd_to_destroy = Some(pd);
-                        }
+                    killed_sibling_count = terminate_same_pd_threads_for_fault(
+                        sched,
+                        pd,
+                        tid,
+                        signal,
+                        tick,
+                        &mut killed_sibling_tids,
+                    );
+                    let has_live_siblings = sched.threads.iter().any(|t| {
+                        t.tid != tid
+                            && t.page_directory == Some(pd)
+                            && t.state != ThreadState::Terminated
+                    });
+                    if !has_live_siblings {
+                        pd_to_destroy = Some(pd);
                     }
                 }
                 sched.remove_from_all_queues(tid);
@@ -663,7 +774,8 @@ pub fn fault_kill_tid_and_idle(tid: u32, signal: u32) -> ! {
                 sched.threads[idx].terminated_at_tick = Some(tick);
                 sched.threads[idx].page_directory = None;
                 sched.threads[idx].exit_waiter_tid = None;
-                sched.threads[idx].retain_exit_status = true;
+                sched.threads[idx].retain_exit_status = false;
+                sched.threads[idx].parent_tid = 0;
             }
         }
         sched.per_cpu[cpu_id].current_tid = None;
@@ -672,7 +784,7 @@ pub fn fault_kill_tid_and_idle(tid: u32, signal: u32) -> ! {
 
     let kcr3 = crate::memory::virtual_mem::kernel_cr3();
     crate::arch::hal::switch_page_table(kcr3);
-    defer_fault_exit_cleanup(tid, signal, &[]);
+    defer_fault_exit_cleanup(tid, signal, &killed_sibling_tids[..killed_sibling_count]);
     if let Some(pd) = pd_to_destroy {
         crate::syscall::windows::cleanup_process(pd.as_u64());
         crate::task::env::cleanup(pd.as_u64());
@@ -740,21 +852,17 @@ pub fn kill_thread(tid: u32) -> u32 {
         sched.remove_from_all_queues(tid);
 
         if let Some(pd) = sched.threads[target_idx].page_directory {
-            if sched.threads[target_idx].pd_shared {
-                sched.threads[target_idx].page_directory = None;
-            } else {
-                let has_live_siblings = sched.threads.iter().any(|t| {
-                    t.tid != tid
-                        && t.page_directory == Some(pd)
-                        && t.state != ThreadState::Terminated
-                });
-                if has_live_siblings {
-                    sched.threads[target_idx].page_directory = None;
-                } else {
-                    pd_to_destroy = Some(pd);
-                    sched.threads[target_idx].page_directory = None;
-                }
+            let has_live_siblings = sched.threads.iter().any(|t| {
+                t.tid != tid && t.page_directory == Some(pd) && t.state != ThreadState::Terminated
+            });
+            if !has_live_siblings {
+                pd_to_destroy = Some(pd);
             }
+            if sched.threads[target_idx].pd_shared {
+                sched.threads[target_idx].parent_tid = 0;
+                sched.threads[target_idx].retain_exit_status = false;
+            }
+            sched.threads[target_idx].page_directory = None;
         }
 
         if let Some(waiter_tid) = sched.threads[target_idx].exit_waiter_tid {

@@ -10,6 +10,12 @@ use super::{
 };
 use crate::sync::spinlock::Spinlock;
 
+mod state;
+pub use state::{
+    get_dirty_log, get_fpu, get_mp_state, get_regs, get_sregs, inject_exception, inject_irq,
+    inject_nmi, set_fpu, set_mp_state, set_regs, set_sregs, translate_gva, vcpu_pause, vcpu_resume,
+};
+
 // ── MSR addresses ────────────────────────────────────────────────────────
 
 const MSR_EFER: u32 = 0xC000_0080;
@@ -116,6 +122,9 @@ static mut HSAVE_AREAS: [u64; MAX_CPUS] = [0; MAX_CPUS];
 static NEXT_VM_ID: AtomicU32 = AtomicU32::new(1);
 const MAX_VMS: usize = 64;
 const MAX_VCPUS_PER_VM: usize = 16;
+const DIRTY_LOG_SLOTS: usize = 32;
+const DIRTY_LOG_WORDS_PER_SLOT: usize = 64;
+const DIRTY_LOG_TOTAL_WORDS: usize = DIRTY_LOG_SLOTS * DIRTY_LOG_WORDS_PER_SLOT;
 
 struct SvmVcpu {
     vmcb_phys: u64,
@@ -136,9 +145,7 @@ struct SvmVm {
     memory_regions: [Option<MemoryRegion>; 32],
     cpuid_table: [Option<CpuidEntry>; 64],
     cpuid_count: usize,
-    /// Physical address of the dirty-log page (allocated on demand, 0 = not yet alloc'd).
-    /// Layout identical to VMX: slot_idx × 64 u64 words per slot, 1 page total.
-    dirty_log_phys: u64,
+    dirty_log: [u64; DIRTY_LOG_TOTAL_WORDS],
 }
 
 static VMS: Spinlock<[Option<SvmVm>; MAX_VMS]> = Spinlock::new([const { None }; MAX_VMS]);
@@ -197,8 +204,6 @@ pub fn create_vm() -> u32 {
         None => return 0,
     };
 
-    let dirty_log_phys = alloc_page_zeroed().unwrap_or(0);
-
     let vm = SvmVm {
         id,
         active: true,
@@ -207,7 +212,7 @@ pub fn create_vm() -> u32 {
         memory_regions: [const { None }; 32],
         cpuid_table: [const { None }; 64],
         cpuid_count: 0,
-        dirty_log_phys,
+        dirty_log: [0; DIRTY_LOG_TOTAL_WORDS],
     };
 
     let mut vms = VMS.lock();
@@ -242,15 +247,36 @@ pub fn destroy_vm(vm_id: u32) -> bool {
                     }
                 }
                 super::ept::destroy_npt(vm.npt_root);
-                if vm.dirty_log_phys != 0 {
-                    free_page(vm.dirty_log_phys);
-                }
                 *slot = None;
                 return true;
             }
         }
     }
     false
+}
+
+/// Register a userspace memory slot without assuming the backing host pages are
+/// physically contiguous. The syscall layer maps each translated page
+/// separately after registering the full slot for dirty logging and diagnostics.
+pub fn register_memory_region(vm_id: u32, slot: u32, gpa: u64, size: u64, hpa: u64) -> bool {
+    let mut vms = VMS.lock();
+    let vm = match find_vm_mut(&mut vms, vm_id) {
+        Some(vm) => vm,
+        None => return false,
+    };
+
+    let slot_idx = slot as usize;
+    if slot_idx >= vm.memory_regions.len() {
+        return false;
+    }
+
+    vm.memory_regions[slot_idx] = Some(MemoryRegion {
+        slot,
+        guest_phys: gpa,
+        size,
+        host_phys: hpa,
+    });
+    true
 }
 
 pub fn set_memory(vm_id: u32, slot: u32, gpa: u64, size: u64, hpa: u64) -> bool {
@@ -274,9 +300,27 @@ pub fn set_memory(vm_id: u32, slot: u32, gpa: u64, size: u64, hpa: u64) -> bool 
 
     super::ept::npt_map_range(vm.npt_root, gpa, hpa, size, true, true);
 
-    // Flush stale nested-page TLB entries via INVLPGA.
-    // INVLPGA flushes TLB entries for a given virtual address and ASID.
-    // Using address=0 and ASID=0xFFFF_FFFF flushes all entries for all ASIDs.
+    flush_npt_tlb();
+
+    true
+}
+
+/// Map a single 4KB page in the NPT for a VM (used by sys_vm_set_memory for pages
+/// beyond the first, which are mapped without slot re-registration).
+pub fn map_page_in_npt(vm_id: u32, gpa: u64, hpa: u64) -> bool {
+    let mut vms = VMS.lock();
+    if let Some(vm) = find_vm_mut(&mut vms, vm_id) {
+        super::ept::npt_map_range(vm.npt_root, gpa, hpa, 0x1000, true, true);
+        flush_npt_tlb();
+        true
+    } else {
+        false
+    }
+}
+
+fn flush_npt_tlb() {
+    // Flush stale nested-page TLB entries via INVLPGA. Using address=0 and
+    // ASID=0xFFFF_FFFF flushes all entries for all ASIDs.
     unsafe {
         core::arch::asm!(
             "invlpga rax, ecx",
@@ -284,17 +328,6 @@ pub fn set_memory(vm_id: u32, slot: u32, gpa: u64, size: u64, hpa: u64) -> bool 
             in("ecx") 0xFFFF_FFFFu32,
             options(nostack, preserves_flags),
         );
-    }
-
-    true
-}
-
-/// Map a single 4KB page in the NPT for a VM (used by sys_vm_set_memory for pages
-/// beyond the first, which are mapped without slot re-registration).
-pub fn map_page_in_npt(vm_id: u32, gpa: u64, hpa: u64) {
-    let mut vms = VMS.lock();
-    if let Some(vm) = find_vm_mut(&mut vms, vm_id) {
-        super::ept::npt_map_range(vm.npt_root, gpa, hpa, 0x1000, true, true);
     }
 }
 
@@ -320,8 +353,11 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
         None => return false,
     };
 
-    let idx = vcpu_id as usize;
-    if idx >= MAX_VCPUS_PER_VM || vm.vcpus[idx].is_some() {
+    let idx = match vcpu_index(vcpu_id) {
+        Some(idx) => idx,
+        None => return false,
+    };
+    if vm.vcpus[idx].is_some() {
         return false;
     }
 
@@ -464,7 +500,7 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
 pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
     let mut vms = VMS.lock();
     let vm = find_vm_mut(&mut vms, vm_id)?;
-    let idx = vcpu_id as usize;
+    let idx = vcpu_index(vcpu_id)?;
     let vcpu = vm.vcpus[idx].as_mut()?;
 
     // Refuse to enter a paused or halted vCPU.
@@ -499,6 +535,7 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
 
         // Save RAX back from VMCB
         vcpu.guest_gprs.rax = vmcb.state.rax;
+        vcpu.guest_gprs.rsp = vmcb.state.rsp;
 
         let exit_code = vmcb.control.exit_code;
         let exit_info1 = vmcb.control.exit_info1;
@@ -593,7 +630,7 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
                 info.access_size = 4;
                 if is_write != 0 {
                     info.io_data = vcpu.guest_gprs.rax;
-                    mark_dirty_page(vm.dirty_log_phys, &vm.memory_regions, exit_info2);
+                    mark_dirty_page(&mut vm.dirty_log, &vm.memory_regions, exit_info2);
                 }
             }
             VMEXIT_MSR => {
@@ -633,14 +670,14 @@ unsafe fn svm_vmrun(vmcb_phys: u64, gprs: *mut GuestGprs) {
         "mov rcx, [rsi + 0x10]",
         "mov rdx, [rsi + 0x18]",
         "mov rbp, [rsi + 0x30]",
-        "mov r8,  [rsi + 0x38]",
-        "mov r9,  [rsi + 0x40]",
-        "mov r10, [rsi + 0x48]",
-        "mov r11, [rsi + 0x50]",
-        "mov r12, [rsi + 0x58]",
-        "mov r13, [rsi + 0x60]",
-        "mov r14, [rsi + 0x68]",
-        "mov r15, [rsi + 0x70]",
+        "mov r8,  [rsi + 0x40]",
+        "mov r9,  [rsi + 0x48]",
+        "mov r10, [rsi + 0x50]",
+        "mov r11, [rsi + 0x58]",
+        "mov r12, [rsi + 0x60]",
+        "mov r13, [rsi + 0x68]",
+        "mov r14, [rsi + 0x70]",
+        "mov r15, [rsi + 0x78]",
         // Load guest rdi and rsi last
         "mov rdi, [rsi + 0x28]",
         "push rsi",              // save gprs pointer again
@@ -660,14 +697,14 @@ unsafe fn svm_vmrun(vmcb_phys: u64, gprs: *mut GuestGprs) {
         "mov [rsi + 0x20], rax",
         "mov [rsi + 0x28], rdi",
         "mov [rsi + 0x30], rbp",
-        "mov [rsi + 0x38], r8",
-        "mov [rsi + 0x40], r9",
-        "mov [rsi + 0x48], r10",
-        "mov [rsi + 0x50], r11",
-        "mov [rsi + 0x58], r12",
-        "mov [rsi + 0x60], r13",
-        "mov [rsi + 0x68], r14",
-        "mov [rsi + 0x70], r15",
+        "mov [rsi + 0x40], r8",
+        "mov [rsi + 0x48], r9",
+        "mov [rsi + 0x50], r10",
+        "mov [rsi + 0x58], r11",
+        "mov [rsi + 0x60], r12",
+        "mov [rsi + 0x68], r13",
+        "mov [rsi + 0x70], r14",
+        "mov [rsi + 0x78], r15",
 
         // Restore host callee-saved
         "pop rsi",  // discard (was the gprs pointer push)
@@ -731,418 +768,22 @@ unsafe fn handle_cpuid_exit(
     vmcb.state.rip += 2;
 }
 
-pub fn get_regs(vm_id: u32, vcpu_id: u32) -> Option<GuestGprs> {
-    let vms = VMS.lock();
-    let vm = find_vm(&vms, vm_id)?;
-    let vcpu = vm.vcpus[vcpu_id as usize].as_ref()?;
-    let mut gprs = vcpu.guest_gprs;
-    // RAX is in the VMCB
-    unsafe {
-        let vmcb = &*(super::phys_to_virt(vcpu.vmcb_phys) as *const Vmcb);
-        gprs.rax = vmcb.state.rax;
-    }
-    Some(gprs)
-}
-
-pub fn set_regs(vm_id: u32, vcpu_id: u32, gprs: &GuestGprs) -> bool {
-    let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) {
-        Some(v) => v,
-        None => return false,
-    };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
-        Some(v) => v,
-        None => return false,
-    };
-    vcpu.guest_gprs = *gprs;
-    unsafe {
-        let vmcb = &mut *(super::phys_to_virt(vcpu.vmcb_phys) as *mut Vmcb);
-        vmcb.state.rax = gprs.rax;
-    }
-    true
-}
-
-pub fn get_sregs(vm_id: u32, vcpu_id: u32) -> Option<GuestSregs> {
-    let vms = VMS.lock();
-    let vm = find_vm(&vms, vm_id)?;
-    let vcpu = vm.vcpus[vcpu_id as usize].as_ref()?;
-
-    unsafe {
-        let vmcb = &*(super::phys_to_virt(vcpu.vmcb_phys) as *const Vmcb);
-        Some(GuestSregs {
-            cs_selector: vmcb.state.cs.selector,
-            cs_base: vmcb.state.cs.base,
-            cs_limit: vmcb.state.cs.limit,
-            cs_ar: vmcb.state.cs.attrib as u32,
-            ds_selector: vmcb.state.ds.selector,
-            ds_base: vmcb.state.ds.base,
-            ds_limit: vmcb.state.ds.limit,
-            ds_ar: vmcb.state.ds.attrib as u32,
-            es_selector: vmcb.state.es.selector,
-            es_base: vmcb.state.es.base,
-            es_limit: vmcb.state.es.limit,
-            es_ar: vmcb.state.es.attrib as u32,
-            fs_selector: vmcb.state.fs.selector,
-            fs_base: vmcb.state.fs.base,
-            fs_limit: vmcb.state.fs.limit,
-            fs_ar: vmcb.state.fs.attrib as u32,
-            gs_selector: vmcb.state.gs.selector,
-            gs_base: vmcb.state.gs.base,
-            gs_limit: vmcb.state.gs.limit,
-            gs_ar: vmcb.state.gs.attrib as u32,
-            ss_selector: vmcb.state.ss.selector,
-            ss_base: vmcb.state.ss.base,
-            ss_limit: vmcb.state.ss.limit,
-            ss_ar: vmcb.state.ss.attrib as u32,
-            tr_selector: vmcb.state.tr.selector,
-            tr_base: vmcb.state.tr.base,
-            tr_limit: vmcb.state.tr.limit,
-            tr_ar: vmcb.state.tr.attrib as u32,
-            ldtr_selector: vmcb.state.ldtr.selector,
-            ldtr_base: vmcb.state.ldtr.base,
-            ldtr_limit: vmcb.state.ldtr.limit,
-            ldtr_ar: vmcb.state.ldtr.attrib as u32,
-            gdtr_base: vmcb.state.gdtr.base,
-            gdtr_limit: vmcb.state.gdtr.limit,
-            idtr_base: vmcb.state.idtr.base,
-            idtr_limit: vmcb.state.idtr.limit,
-            cr0: vmcb.state.cr0,
-            cr3: vmcb.state.cr3,
-            cr4: vmcb.state.cr4,
-            efer: vmcb.state.efer,
-            rip: vmcb.state.rip,
-            rsp: vmcb.state.rsp,
-            rflags: vmcb.state.rflags,
-        })
-    }
-}
-
-pub fn set_sregs(vm_id: u32, vcpu_id: u32, sregs: &GuestSregs) -> bool {
-    let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) {
-        Some(v) => v,
-        None => return false,
-    };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
-        Some(v) => v,
-        None => return false,
-    };
-
-    unsafe {
-        let vmcb = &mut *(super::phys_to_virt(vcpu.vmcb_phys) as *mut Vmcb);
-        vmcb.state.cs = VmcbSegment {
-            selector: sregs.cs_selector,
-            base: sregs.cs_base,
-            limit: sregs.cs_limit,
-            attrib: sregs.cs_ar as u16,
-        };
-        vmcb.state.ds = VmcbSegment {
-            selector: sregs.ds_selector,
-            base: sregs.ds_base,
-            limit: sregs.ds_limit,
-            attrib: sregs.ds_ar as u16,
-        };
-        vmcb.state.es = VmcbSegment {
-            selector: sregs.es_selector,
-            base: sregs.es_base,
-            limit: sregs.es_limit,
-            attrib: sregs.es_ar as u16,
-        };
-        vmcb.state.fs = VmcbSegment {
-            selector: sregs.fs_selector,
-            base: sregs.fs_base,
-            limit: sregs.fs_limit,
-            attrib: sregs.fs_ar as u16,
-        };
-        vmcb.state.gs = VmcbSegment {
-            selector: sregs.gs_selector,
-            base: sregs.gs_base,
-            limit: sregs.gs_limit,
-            attrib: sregs.gs_ar as u16,
-        };
-        vmcb.state.ss = VmcbSegment {
-            selector: sregs.ss_selector,
-            base: sregs.ss_base,
-            limit: sregs.ss_limit,
-            attrib: sregs.ss_ar as u16,
-        };
-        vmcb.state.tr = VmcbSegment {
-            selector: sregs.tr_selector,
-            base: sregs.tr_base,
-            limit: sregs.tr_limit,
-            attrib: sregs.tr_ar as u16,
-        };
-        vmcb.state.ldtr = VmcbSegment {
-            selector: sregs.ldtr_selector,
-            base: sregs.ldtr_base,
-            limit: sregs.ldtr_limit,
-            attrib: sregs.ldtr_ar as u16,
-        };
-        vmcb.state.gdtr.base = sregs.gdtr_base;
-        vmcb.state.gdtr.limit = sregs.gdtr_limit;
-        vmcb.state.idtr.base = sregs.idtr_base;
-        vmcb.state.idtr.limit = sregs.idtr_limit;
-        vmcb.state.cr0 = sregs.cr0;
-        vmcb.state.cr3 = sregs.cr3;
-        vmcb.state.cr4 = sregs.cr4;
-        vmcb.state.efer = sregs.efer;
-        vmcb.state.rip = sregs.rip;
-        vmcb.state.rsp = sregs.rsp;
-        vmcb.state.rflags = sregs.rflags;
-    }
-
-    true
-}
-
-pub fn inject_irq(vm_id: u32, vcpu_id: u32, vector: u8) -> bool {
-    let vms = VMS.lock();
-    let vm = match find_vm(&vms, vm_id) {
-        Some(v) => v,
-        None => return false,
-    };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() {
-        Some(v) => v,
-        None => return false,
-    };
-
-    unsafe {
-        let vmcb = &mut *(super::phys_to_virt(vcpu.vmcb_phys) as *mut Vmcb);
-        vmcb.control.event_inj = (vector as u64) | (0u64 << 8) | (1u64 << 31);
-    }
-    true
-}
-
-pub fn inject_exception(vm_id: u32, vcpu_id: u32, vector: u8, error_code: u32) -> bool {
-    let vms = VMS.lock();
-    let vm = match find_vm(&vms, vm_id) {
-        Some(v) => v,
-        None => return false,
-    };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() {
-        Some(v) => v,
-        None => return false,
-    };
-
-    unsafe {
-        let vmcb = &mut *(super::phys_to_virt(vcpu.vmcb_phys) as *mut Vmcb);
-        let has_error = matches!(vector, 8 | 10 | 11 | 12 | 13 | 14 | 17);
-        let mut info: u64 = (vector as u64) | (3 << 8) | (1u64 << 31);
-        if has_error {
-            info |= (1u64 << 11) | ((error_code as u64) << 32);
-        }
-        vmcb.control.event_inj = info;
-    }
-    true
-}
-
-pub fn inject_nmi(vm_id: u32, vcpu_id: u32) -> bool {
-    let vms = VMS.lock();
-    let vm = match find_vm(&vms, vm_id) {
-        Some(v) => v,
-        None => return false,
-    };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() {
-        Some(v) => v,
-        None => return false,
-    };
-
-    unsafe {
-        let vmcb = &mut *(super::phys_to_virt(vcpu.vmcb_phys) as *mut Vmcb);
-        let info: u64 = 2 | (2u64 << 8) | (1u64 << 31);
-        vmcb.control.event_inj = info;
-    }
-    true
-}
-
-/// Pause a vCPU.
-pub fn vcpu_pause(vm_id: u32, vcpu_id: u32) -> bool {
-    let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) {
-        Some(v) => v,
-        None => return false,
-    };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
-        Some(v) => v,
-        None => return false,
-    };
-    vcpu.paused = true;
-    true
-}
-
-/// Resume a paused vCPU.
-pub fn vcpu_resume(vm_id: u32, vcpu_id: u32) -> bool {
-    let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) {
-        Some(v) => v,
-        None => return false,
-    };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
-        Some(v) => v,
-        None => return false,
-    };
-    vcpu.paused = false;
-    if vcpu.mp_state == VcpuMpState::Halted {
-        vcpu.mp_state = VcpuMpState::Runnable;
-    }
-    true
-}
-
-/// Get guest FPU state.
-pub fn get_fpu(vm_id: u32, vcpu_id: u32) -> Option<GuestFpuState> {
-    let vms = VMS.lock();
-    let vm = find_vm(&vms, vm_id)?;
-    let vcpu = vm.vcpus[vcpu_id as usize].as_ref()?;
-    Some(vcpu.guest_fpu)
-}
-
-/// Set guest FPU state.
-pub fn set_fpu(vm_id: u32, vcpu_id: u32, fpu: &GuestFpuState) -> bool {
-    let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) {
-        Some(v) => v,
-        None => return false,
-    };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
-        Some(v) => v,
-        None => return false,
-    };
-    vcpu.guest_fpu = *fpu;
-    true
-}
-
-/// Get vCPU multi-processor state.
-pub fn get_mp_state(vm_id: u32, vcpu_id: u32) -> Option<VcpuMpState> {
-    let vms = VMS.lock();
-    let vm = find_vm(&vms, vm_id)?;
-    let vcpu = vm.vcpus[vcpu_id as usize].as_ref()?;
-    Some(vcpu.mp_state)
-}
-
-/// Set vCPU multi-processor state.
-pub fn set_mp_state(vm_id: u32, vcpu_id: u32, state: VcpuMpState) -> bool {
-    let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) {
-        Some(v) => v,
-        None => return false,
-    };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
-        Some(v) => v,
-        None => return false,
-    };
-    vcpu.mp_state = state;
-    true
-}
-
-/// Translate a guest virtual address to guest physical using the NPT.
-///
-/// Reads CR3 from the VMCB and walks the guest's 4-level page tables
-/// (64-bit long-mode only), resolving each table's HPA via NPT.
-pub fn translate_gva(vm_id: u32, vcpu_id: u32, gva: u64) -> Option<u64> {
-    let vms = VMS.lock();
-    let vm = find_vm(&vms, vm_id)?;
-    let vcpu = vm.vcpus[vcpu_id as usize].as_ref()?;
-
-    unsafe {
-        let vmcb = &*(super::phys_to_virt(vcpu.vmcb_phys) as *const Vmcb);
-        let cr3 = vmcb.state.cr3 & !0xFFF;
-        let efer = vmcb.state.efer;
-
-        // Long mode only.
-        if efer & 0x500 != 0x500 {
-            return None;
-        }
-
-        let walk_gpa = |table_gpa: u64, idx: usize| -> Option<u64> {
-            let hpa = super::ept::npt_translate(vm.npt_root, table_gpa)?;
-            let virt = super::phys_to_virt(hpa & !0xFFF) as *const u64;
-            Some(unsafe { *virt.add(idx) })
-        };
-
-        let pml4_idx = ((gva >> 39) & 0x1FF) as usize;
-        let pml4e = walk_gpa(cr3, pml4_idx)?;
-        if pml4e & 1 == 0 {
-            return None;
-        }
-
-        let pdpt_gpa = pml4e & 0x000F_FFFF_FFFF_F000;
-        let pdpt_idx = ((gva >> 30) & 0x1FF) as usize;
-        let pdpte = walk_gpa(pdpt_gpa, pdpt_idx)?;
-        if pdpte & 1 == 0 {
-            return None;
-        }
-        if pdpte & (1 << 7) != 0 {
-            return Some((pdpte & 0x000F_FFFC_0000_0000) | (gva & 0x3FFF_FFFF));
-        }
-
-        let pd_gpa = pdpte & 0x000F_FFFF_FFFF_F000;
-        let pd_idx = ((gva >> 21) & 0x1FF) as usize;
-        let pde = walk_gpa(pd_gpa, pd_idx)?;
-        if pde & 1 == 0 {
-            return None;
-        }
-        if pde & (1 << 7) != 0 {
-            return Some((pde & 0x000F_FFFF_FFE0_0000) | (gva & 0x1F_FFFF));
-        }
-
-        let pt_gpa = pde & 0x000F_FFFF_FFFF_F000;
-        let pt_idx = ((gva >> 12) & 0x1FF) as usize;
-        let pte = walk_gpa(pt_gpa, pt_idx)?;
-        if pte & 1 == 0 {
-            return None;
-        }
-        Some((pte & 0x000F_FFFF_FFFF_F000) | (gva & 0xFFF))
-    }
-}
-
-/// Get dirty-page log for a memory slot (page-based, identical layout to VMX).
-pub fn get_dirty_log(vm_id: u32, slot: u32, bitmap: &mut [u64]) -> Option<u32> {
-    let mut vms = VMS.lock();
-    let vm = find_vm_mut(&mut vms, vm_id)?;
-    let slot_idx = slot as usize;
-    if slot_idx >= 32 || vm.dirty_log_phys == 0 {
-        return None;
-    }
-
-    const WORDS_PER_SLOT: usize = 64;
-    let base = super::phys_to_virt(vm.dirty_log_phys) as *mut u64;
-    let slot_offset = slot_idx * WORDS_PER_SLOT;
-    let copy_words = bitmap.len().min(WORDS_PER_SLOT);
-    let mut dirty_count = 0u32;
-    unsafe {
-        for i in 0..copy_words {
-            let w = *base.add(slot_offset + i);
-            bitmap[i] = w;
-            dirty_count += w.count_ones();
-        }
-        for i in 0..WORDS_PER_SLOT {
-            *base.add(slot_offset + i) = 0;
-        }
-    }
-    Some(dirty_count)
-}
-
 // ── Internal dirty-tracking helper ───────────────────────────────────────
 
-fn mark_dirty_page(dirty_log_phys: u64, regions: &[Option<MemoryRegion>; 32], gpa: u64) {
-    if dirty_log_phys == 0 {
-        return;
-    }
-    const WORDS_PER_SLOT: usize = 64;
-
+fn mark_dirty_page(
+    dirty_log: &mut [u64; DIRTY_LOG_TOTAL_WORDS],
+    regions: &[Option<MemoryRegion>; 32],
+    gpa: u64,
+) {
     for (slot_idx, region_opt) in regions.iter().enumerate() {
         if let Some(r) = region_opt {
             if gpa >= r.guest_phys && gpa < r.guest_phys + r.size {
                 let page_offset = ((gpa - r.guest_phys) >> 12) as usize;
                 let word = page_offset / 64;
                 let bit = page_offset % 64;
-                if word < WORDS_PER_SLOT {
-                    let base = super::phys_to_virt(dirty_log_phys) as *mut u64;
-                    let idx = slot_idx * WORDS_PER_SLOT + word;
-                    if idx < 512 {
-                        unsafe {
-                            *base.add(idx) |= 1u64 << bit;
-                        }
-                    }
+                if word < DIRTY_LOG_WORDS_PER_SLOT {
+                    let idx = slot_idx * DIRTY_LOG_WORDS_PER_SLOT + word;
+                    dirty_log[idx] |= 1u64 << bit;
                 }
                 return;
             }
@@ -1151,6 +792,15 @@ fn mark_dirty_page(dirty_log_phys: u64, regions: &[Option<MemoryRegion>; 32], gp
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
+
+fn vcpu_index(vcpu_id: u32) -> Option<usize> {
+    let idx = vcpu_id as usize;
+    if idx < MAX_VCPUS_PER_VM {
+        Some(idx)
+    } else {
+        None
+    }
+}
 
 fn find_vm(vms: &[Option<SvmVm>; MAX_VMS], vm_id: u32) -> Option<&SvmVm> {
     vms.iter()

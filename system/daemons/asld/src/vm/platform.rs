@@ -13,13 +13,14 @@ pub(super) const IO_PORT_CMOS_INDEX: u16 = 0x70;
 pub(super) const IO_PORT_CMOS_DATA: u16 = 0x71;
 const IO_PORT_KBD_DATA: u16 = 0x60;
 pub(super) const IO_PORT_KBD_STATUS: u16 = 0x64;
+const PIT_INPUT_HZ: u64 = 1_193_182;
+const PIT_DEFAULT_PERIOD_MS: u32 = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PlatformIoState {
     pic1: PicChip,
     pic2: PicChip,
-    pit_cmd: u8,
-    pit_data: [u8; 3],
+    pit: PitState,
     cmos_index: u8,
 }
 
@@ -77,8 +78,7 @@ impl Default for PlatformIoState {
         Self {
             pic1: PicChip::new(0x08),
             pic2: PicChip::new(0x70),
-            pit_cmd: 0,
-            pit_data: [0; 3],
+            pit: PitState::default(),
             cmos_index: 0,
         }
     }
@@ -105,6 +105,17 @@ impl PlatformIoState {
                 }
             }
             _ => None,
+        }
+    }
+
+    pub(super) fn pending_irq(&mut self) -> Option<u8> {
+        self.pit.refresh(anyos_std::sys::uptime_ms());
+        self.pit.pending_irq()
+    }
+
+    pub(super) fn ack_irq(&mut self, irq: u8) {
+        if irq == 0 {
+            self.pit.ack_irq();
         }
     }
 }
@@ -134,10 +145,10 @@ pub(super) fn platform_io_action(
         IO_PORT_PIC1_DATA => state.pic1.data_write(value),
         IO_PORT_PIC2_CMD => state.pic2.command_write(value),
         IO_PORT_PIC2_DATA => state.pic2.data_write(value),
-        IO_PORT_PIT_CH0 => state.pit_data[0] = value,
-        IO_PORT_PIT_CH1 => state.pit_data[1] = value,
-        IO_PORT_PIT_CH2 => state.pit_data[2] = value,
-        IO_PORT_PIT_CMD => state.pit_cmd = value,
+        IO_PORT_PIT_CH0 => state.pit.write_channel0(value, anyos_std::sys::uptime_ms()),
+        IO_PORT_PIT_CH1 => state.pit.write_unused_channel(1, value),
+        IO_PORT_PIT_CH2 => state.pit.write_unused_channel(2, value),
+        IO_PORT_PIT_CMD => state.pit.write_command(value, anyos_std::sys::uptime_ms()),
         IO_PORT_CMOS_INDEX => state.cmos_index = value & 0x7f,
         IO_PORT_POST_DELAY | IO_PORT_CMOS_DATA | IO_PORT_KBD_DATA | IO_PORT_KBD_STATUS => {}
         _ => {}
@@ -151,10 +162,10 @@ fn platform_io_read(state: &PlatformIoState, port: u16) -> u32 {
         IO_PORT_PIC1_DATA => state.pic1.data_read() as u32,
         IO_PORT_PIC2_CMD => state.pic2.command as u32,
         IO_PORT_PIC2_DATA => state.pic2.data_read() as u32,
-        IO_PORT_PIT_CH0 => state.pit_data[0] as u32,
-        IO_PORT_PIT_CH1 => state.pit_data[1] as u32,
-        IO_PORT_PIT_CH2 => state.pit_data[2] as u32,
-        IO_PORT_PIT_CMD => state.pit_cmd as u32,
+        IO_PORT_PIT_CH0 => state.pit.read_channel(0) as u32,
+        IO_PORT_PIT_CH1 => state.pit.read_channel(1) as u32,
+        IO_PORT_PIT_CH2 => state.pit.read_channel(2) as u32,
+        IO_PORT_PIT_CMD => state.pit.command as u32,
         IO_PORT_CMOS_INDEX => state.cmos_index as u32,
         IO_PORT_CMOS_DATA => cmos_read(state.cmos_index),
         IO_PORT_KBD_DATA => 0,
@@ -195,4 +206,188 @@ fn is_platform_io_port(port: u16) -> bool {
             | IO_PORT_KBD_DATA
             | IO_PORT_KBD_STATUS
     )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PitState {
+    command: u8,
+    channel_data: [u8; 3],
+    access_mode: u8,
+    mode: u8,
+    low_latch: u8,
+    expecting_high: bool,
+    reload: u16,
+    period_ms: u32,
+    next_irq_ms: u32,
+    enabled: bool,
+    pending_irq0: bool,
+}
+
+impl Default for PitState {
+    fn default() -> Self {
+        Self {
+            command: 0,
+            channel_data: [0; 3],
+            access_mode: 3,
+            mode: 3,
+            low_latch: 0,
+            expecting_high: false,
+            reload: 0,
+            period_ms: PIT_DEFAULT_PERIOD_MS,
+            next_irq_ms: 0,
+            enabled: false,
+            pending_irq0: false,
+        }
+    }
+}
+
+impl PitState {
+    fn write_command(&mut self, value: u8, now_ms: u32) {
+        self.command = value;
+        let channel = value >> 6;
+        let access = (value >> 4) & 0x3;
+        if channel != 0 || access == 0 {
+            return;
+        }
+        self.access_mode = access;
+        self.mode = (value >> 1) & 0x7;
+        if self.mode >= 6 {
+            self.mode &= 0x3;
+        }
+        self.expecting_high = false;
+        if self.reload != 0 {
+            self.arm(now_ms);
+        }
+    }
+
+    fn write_channel0(&mut self, value: u8, now_ms: u32) {
+        self.channel_data[0] = value;
+        match self.access_mode {
+            1 => self.program_reload((self.reload & 0xff00) | value as u16, now_ms),
+            2 => self.program_reload((value as u16) << 8, now_ms),
+            3 => {
+                if self.expecting_high {
+                    let reload = ((value as u16) << 8) | self.low_latch as u16;
+                    self.expecting_high = false;
+                    self.program_reload(reload, now_ms);
+                } else {
+                    self.low_latch = value;
+                    self.expecting_high = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn write_unused_channel(&mut self, channel: usize, value: u8) {
+        if let Some(slot) = self.channel_data.get_mut(channel) {
+            *slot = value;
+        }
+    }
+
+    fn read_channel(&self, channel: usize) -> u8 {
+        self.channel_data.get(channel).copied().unwrap_or(0)
+    }
+
+    fn pending_irq(&self) -> Option<u8> {
+        if self.pending_irq0 {
+            Some(0)
+        } else {
+            None
+        }
+    }
+
+    fn ack_irq(&mut self) {
+        self.pending_irq0 = false;
+    }
+
+    fn program_reload(&mut self, reload: u16, now_ms: u32) {
+        self.reload = reload;
+        self.period_ms = pit_period_ms(reload);
+        self.arm(now_ms);
+    }
+
+    fn arm(&mut self, now_ms: u32) {
+        self.enabled = true;
+        self.pending_irq0 = false;
+        self.next_irq_ms = now_ms.wrapping_add(self.period_ms);
+    }
+
+    fn refresh(&mut self, now_ms: u32) {
+        if !self.enabled || self.pending_irq0 || !time_due(now_ms, self.next_irq_ms) {
+            return;
+        }
+
+        self.pending_irq0 = true;
+        let period = self.period_ms.max(1);
+        self.next_irq_ms = self.next_irq_ms.wrapping_add(period);
+        for _ in 0..16 {
+            if !time_due(now_ms, self.next_irq_ms) {
+                break;
+            }
+            self.next_irq_ms = self.next_irq_ms.wrapping_add(period);
+        }
+    }
+}
+
+fn pit_period_ms(reload: u16) -> u32 {
+    let count = if reload == 0 { 65_536 } else { reload as u64 };
+    let ms = (count * 1000 + PIT_INPUT_HZ - 1) / PIT_INPUT_HZ;
+    (ms as u32).max(1)
+}
+
+fn time_due(now: u32, deadline: u32) -> bool {
+    now.wrapping_sub(deadline) <= 0x7fff_ffff
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        pit_period_ms, platform_io_action, PlatformIoState, VmExitInfo, IO_PORT_PIC1_DATA,
+    };
+    use crate::vm::exit_reason;
+
+    #[test]
+    fn pit_reload_uses_legacy_18hz_period_for_zero_count() {
+        assert_eq!(pit_period_ms(0), 55);
+    }
+
+    #[test]
+    fn pit_channel0_raises_pending_irq_when_due() {
+        let mut state = PlatformIoState::default();
+        state.pit.write_command(0x36, 1000);
+        state.pit.write_channel0(0, 1000);
+        state.pit.write_channel0(0, 1000);
+
+        assert_eq!(state.pit.pending_irq(), None);
+        state.pit.refresh(1055);
+        assert_eq!(state.pit.pending_irq(), Some(0));
+        state.ack_irq(0);
+        assert_eq!(state.pit.pending_irq(), None);
+    }
+
+    #[test]
+    fn pic_remap_exposes_irq0_vector() {
+        let mut state = PlatformIoState::default();
+        write_port(&mut state, 0x20, 0x11);
+        write_port(&mut state, 0x21, 0x20);
+        write_port(&mut state, 0x21, 0x04);
+        write_port(&mut state, 0x21, 0x01);
+        write_port(&mut state, IO_PORT_PIC1_DATA, 0xfe);
+        assert_eq!(state.irq_vector(0), Some(0x20));
+    }
+
+    fn write_port(state: &mut PlatformIoState, port: u16, value: u8) {
+        let _ = platform_io_action(
+            state,
+            &VmExitInfo {
+                reason: exit_reason::IO_INSTRUCTION,
+                io_port: port,
+                access_size: 1,
+                is_read: 0,
+                io_data: value as u64,
+                ..Default::default()
+            },
+        );
+    }
 }

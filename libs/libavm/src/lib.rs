@@ -175,6 +175,15 @@ pub struct AvmCpuidEntry {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AvmDirtyLog {
+    pub slot: u32,
+    pub _pad: u32,
+    pub bitmap_ptr: u64,
+    pub bitmap_size: u64,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AvmFpuState {
     pub fxsave: [u8; 512],
@@ -286,6 +295,19 @@ impl AvmVm {
         Ok(())
     }
 
+    pub fn get_dirty_log(&self, slot: u32, bitmap: &mut [u64]) -> Result<(), AvmError> {
+        if bitmap.is_empty() {
+            return Err(AvmError::KernelError);
+        }
+        let mut req = AvmDirtyLog {
+            slot,
+            bitmap_ptr: bitmap.as_mut_ptr() as u64,
+            bitmap_size: (bitmap.len() * core::mem::size_of::<u64>()) as u64,
+            ..AvmDirtyLog::default()
+        };
+        ioctl_ptr(self.handle, AVMIO_GET_DIRTY_LOG, &mut req)
+    }
+
     pub fn destroy(&self) -> Result<(), AvmError> {
         avm_ioctl(self.handle, AVMIO_DESTROY_VM, 0, 0)?;
         Ok(())
@@ -323,6 +345,16 @@ impl AvmVcpu {
 
     pub fn set_sregs(&self, sregs: &AvmSregs) -> Result<(), AvmError> {
         ioctl_ptr_const(self.handle, AVMIO_SET_SREGS, sregs)
+    }
+
+    pub fn fpu(&self) -> Result<AvmFpuState, AvmError> {
+        let mut fpu = AvmFpuState::default();
+        ioctl_ptr(self.handle, AVMIO_GET_FPU, &mut fpu)?;
+        Ok(fpu)
+    }
+
+    pub fn set_fpu(&self, fpu: &AvmFpuState) -> Result<(), AvmError> {
+        ioctl_ptr_const(self.handle, AVMIO_SET_FPU, fpu)
     }
 
     pub fn pause(&self) -> Result<(), AvmError> {
@@ -428,5 +460,18 @@ mod tests {
         };
         assert_eq!(region.guest_phys_addr, 0x1000);
         assert_eq!(region.userspace_addr, 0x4000);
+    }
+
+    #[test]
+    fn dirty_log_request_uses_bitmap_bytes() {
+        let mut bitmap = [0u64; 4];
+        let req = AvmDirtyLog {
+            slot: 3,
+            bitmap_ptr: bitmap.as_mut_ptr() as u64,
+            bitmap_size: (bitmap.len() * core::mem::size_of::<u64>()) as u64,
+            ..AvmDirtyLog::default()
+        };
+        assert_eq!(req.slot, 3);
+        assert_eq!(req.bitmap_size, 32);
     }
 }

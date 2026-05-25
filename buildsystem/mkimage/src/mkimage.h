@@ -212,6 +212,7 @@ uint32_t fat16_create_dir(Fat16 *fs, uint32_t parent, const char *name,
 void     fat16_add_file(Fat16 *fs, uint32_t parent, const char *name,
                         const uint8_t *data, size_t size,
                         int is_root_parent);
+void     fat16_add_volume_label(Fat16 *fs, const char *label);
 void     fat16_populate_sysroot(Fat16 *fs, const char *sysroot_path);
 
 /* ── exFAT directory tree node (for incremental updates) ──────────────── */

@@ -52,15 +52,27 @@ pub fn sys_vm_set_memory(vm_id: u32, slot: u32, desc_ptr: u64) -> u32 {
     }
 
     const PAGE_SIZE: u64 = 0x1000;
+    if (gpa & (PAGE_SIZE - 1)) != 0 || (uva & (PAGE_SIZE - 1)) != 0 || (size & (PAGE_SIZE - 1)) != 0
+    {
+        return u32::MAX;
+    }
+    if gpa.checked_add(size).is_none() || uva.checked_add(size).is_none() {
+        return u32::MAX;
+    }
 
-    // Use slot for the first page; subsequent pages reuse slot 0 within the
-    // existing NPT/EPT map (npt_map_range / ept_map_range just inserts PTEs —
-    // calling set_memory once per page is correct but we only need to register
-    // the MemoryRegion once.  We call the backend once for the first page to
-    // register the region, then map remaining pages directly via npt/ept.
+    let registered = match super::virt_type() {
+        super::VirtType::Vmx => super::vmx::register_memory_region(vm_id, slot, gpa, size, 0),
+        super::VirtType::Svm => super::svm::register_memory_region(vm_id, slot, gpa, size, 0),
+        super::VirtType::None => false,
+    };
+    if !registered {
+        return u32::MAX;
+    }
+
+    // mmap_large() may back guest RAM with non-contiguous host frames. Translate
+    // and map each page independently, while the full slot remains registered
+    // above for dirty logging and KVM-style memory-slot accounting.
     let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-    let mut first = true;
-
     for i in 0..pages {
         let page_uva = uva + i * PAGE_SIZE;
         let page_gpa = gpa + i * PAGE_SIZE;
@@ -80,34 +92,13 @@ pub fn sys_vm_set_memory(vm_id: u32, slot: u32, desc_ptr: u64) -> u32 {
             }
         };
 
-        if first {
-            // Register the memory region with the backend (uses slot tracking).
-            let ok = match super::virt_type() {
-                super::VirtType::Vmx => {
-                    super::vmx::set_memory(vm_id, slot, page_gpa, PAGE_SIZE, page_hpa)
-                }
-                super::VirtType::Svm => {
-                    super::svm::set_memory(vm_id, slot, page_gpa, PAGE_SIZE, page_hpa)
-                }
-                super::VirtType::None => false,
-            };
-            if !ok {
-                return u32::MAX;
-            }
-            first = false;
-        } else {
-            // Map remaining pages directly into NPT/EPT without slot re-registration.
-            match super::virt_type() {
-                super::VirtType::Vmx => {
-                    // Acquire EPT root from VMX backend and map directly.
-                    super::vmx::map_page_in_ept(vm_id, page_gpa, page_hpa);
-                }
-                super::VirtType::Svm => {
-                    // Acquire NPT root from SVM backend and map directly.
-                    super::svm::map_page_in_npt(vm_id, page_gpa, page_hpa);
-                }
-                super::VirtType::None => {}
-            }
+        let mapped = match super::virt_type() {
+            super::VirtType::Vmx => super::vmx::map_page_in_ept(vm_id, page_gpa, page_hpa),
+            super::VirtType::Svm => super::svm::map_page_in_npt(vm_id, page_gpa, page_hpa),
+            super::VirtType::None => false,
+        };
+        if !mapped {
+            return u32::MAX;
         }
     }
 

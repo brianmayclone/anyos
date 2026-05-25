@@ -1126,10 +1126,18 @@ impl Scheduler {
                 let auto_reap_delay_ms = if self.threads[i].is_user { 5_000 } else { 200 };
                 // Linux wait semantics require a dead child to remain as a
                 // waitable zombie until its parent consumes the exit status.
-                // Only orphan/root threads may be auto-reaped.
-                let auto_reap = self.threads[i].parent_tid == 0
+                // Orphans and detached in-process threads have no stable owner
+                // that will reap them, so do not retain their 2 MiB kernel stack
+                // forever. Specific waitpid(tid) still has the grace period below.
+                let parent_tid = self.threads[i].parent_tid;
+                let parent_gone = parent_tid != 0 && self.find_idx(parent_tid).is_none();
+                let detached_process_thread =
+                    self.threads[i].pd_shared && self.threads[i].exit_waiter_tid.is_none();
+                let auto_reap = (parent_tid == 0 || parent_gone || detached_process_thread)
                     && self.threads[i].exit_waiter_tid.is_none()
-                    && !self.threads[i].retain_exit_status
+                    && (!self.threads[i].retain_exit_status
+                        || parent_gone
+                        || detached_process_thread)
                     && self.threads[i]
                         .terminated_at_tick
                         .map(|t| current_tick.wrapping_sub(t) > auto_reap_delay_ms)

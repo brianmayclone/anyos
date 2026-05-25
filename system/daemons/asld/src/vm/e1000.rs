@@ -365,6 +365,10 @@ fn is_e1000_mmio(gpa: u64) -> bool {
     (E1000_MMIO_BASE..E1000_MMIO_BASE + E1000_MMIO_SIZE).contains(&gpa)
 }
 
+pub(super) fn is_e1000_mmio_region(gpa: u64) -> bool {
+    is_e1000_mmio(gpa)
+}
+
 fn read_u16(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
 }

@@ -115,6 +115,28 @@ pub fn init() {
 // Both 32-bit and 64-bit entry points extract args into u32 and call this.
 // =========================================================================
 
+fn syscall_capability_allowed(syscall_num: u32) -> bool {
+    let required = crate::task::capabilities::required_cap(syscall_num);
+    if required == 0 {
+        return true;
+    }
+
+    let caps = crate::task::scheduler::current_thread_capabilities();
+    if caps & required == required {
+        true
+    } else {
+        crate::serial_println!(
+            "DENIED: T{} syscall {}({}) requires cap {:#x}, has {:#x}",
+            crate::task::scheduler::current_tid(),
+            table::syscall_name(syscall_num),
+            syscall_num,
+            required,
+            caps
+        );
+        false
+    }
+}
+
 #[inline(always)]
 pub(crate) fn dispatch_inner(
     syscall_num: u32,
@@ -145,20 +167,8 @@ pub(crate) fn dispatch_inner(
     }
 
     // Capability permission check — deny syscalls the thread lacks permission for.
-    let required = crate::task::capabilities::required_cap(syscall_num);
-    if required != 0 {
-        let caps = crate::task::scheduler::current_thread_capabilities();
-        if caps & required != required {
-            crate::serial_println!(
-                "DENIED: T{} syscall {}({}) requires cap {:#x}, has {:#x}",
-                crate::task::scheduler::current_tid(),
-                table::syscall_name(syscall_num),
-                syscall_num,
-                required,
-                caps
-            );
-            return u32::MAX;
-        }
+    if !syscall_capability_allowed(syscall_num) {
+        return u32::MAX;
     }
 
     let result = match syscall_num {
@@ -718,6 +728,19 @@ pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
     let arg3_64: u64 = regs.rdx;
     let arg4_64: u64 = regs.rsi;
     let arg5_64: u64 = regs.rdi;
+
+    match syscall_num {
+        SYS_SBRK | SYS_MMAP | SYS_MUNMAP | SYS_MMAP64 | SYS_MUNMAP64 | SYS_MAP_FRAMEBUFFER
+        | SYS_AVM_IOCTL | SYS_VM_SET_MEMORY | SYS_VCPU_RUN | SYS_VCPU_GET_REGS
+        | SYS_VCPU_SET_REGS | SYS_VCPU_GET_SREGS | SYS_VCPU_SET_SREGS | SYS_VM_SET_CPUID
+        | SYS_VM_GET_DIRTY_LOG | SYS_VCPU_GET_FPU | SYS_VCPU_SET_FPU | SYS_VCPU_TRANSLATE => {
+            if !syscall_capability_allowed(syscall_num) {
+                handlers::deliver_pending_signal_default();
+                return u64::MAX;
+            }
+        }
+        _ => {}
+    }
 
     match syscall_num {
         SYS_SBRK => {
