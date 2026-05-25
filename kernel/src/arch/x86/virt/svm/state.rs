@@ -1,7 +1,8 @@
 use super::super::{GuestFpuState, GuestGprs, GuestSregs, VcpuMpState};
 use super::{
-    avm_segment_attr_to_svm, find_vm, find_vm_mut, svm_segment_attr_to_avm, vcpu_index, Vmcb,
-    VmcbSegment, DIRTY_LOG_SLOTS, DIRTY_LOG_WORDS_PER_SLOT, VMS,
+    avm_efer_to_svm, avm_segment_attr_to_svm, find_vm, find_vm_mut, svm_efer_to_avm,
+    svm_segment_attr_to_avm, vcpu_index, Vmcb, VmcbSegment, DIRTY_LOG_SLOTS,
+    DIRTY_LOG_WORDS_PER_SLOT, VMS,
 };
 
 pub fn get_regs(vm_id: u32, vcpu_id: u32) -> Option<GuestGprs> {
@@ -87,7 +88,7 @@ pub fn get_sregs(vm_id: u32, vcpu_id: u32) -> Option<GuestSregs> {
             cr0: vmcb.state.cr0,
             cr3: vmcb.state.cr3,
             cr4: vmcb.state.cr4,
-            efer: vmcb.state.efer,
+            efer: svm_efer_to_avm(vmcb.state.efer),
             rip: vmcb.state.rip,
             rsp: vmcb.state.rsp,
             rflags: vmcb.state.rflags,
@@ -167,7 +168,7 @@ pub fn set_sregs(vm_id: u32, vcpu_id: u32, sregs: &GuestSregs) -> bool {
         vmcb.state.cr0 = sregs.cr0;
         vmcb.state.cr3 = sregs.cr3;
         vmcb.state.cr4 = sregs.cr4;
-        vmcb.state.efer = sregs.efer;
+        vmcb.state.efer = avm_efer_to_svm(sregs.efer);
         vmcb.state.rip = sregs.rip;
         vmcb.state.rsp = sregs.rsp;
         vmcb.state.rflags = sregs.rflags;

@@ -20,6 +20,7 @@ pub use state::{
 
 const MSR_EFER: u32 = 0xC000_0080;
 const MSR_VM_HSAVE_PA: u32 = 0xC001_0117;
+const EFER_SVME: u64 = 1 << 12;
 
 // ── SVM exit codes ───────────────────────────────────────────────────────
 
@@ -204,7 +205,7 @@ pub fn per_cpu_init() {
     unsafe {
         // Set EFER.SVME (bit 12)
         let efer = rdmsr(MSR_EFER);
-        wrmsr(MSR_EFER, efer | (1 << 12));
+        wrmsr(MSR_EFER, efer | EFER_SVME);
 
         // Allocate host save area
         let hsave = match alloc_page_zeroed() {
@@ -512,9 +513,9 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
         vmcb.state.cr0 = 0x0000_0030; // ET + NE (real mode)
         vmcb.state.cr3 = 0;
         vmcb.state.cr4 = 0;
-        // EFER: SVME must be 0 in guest (AMD APM Vol.2 §15.5.1).
-        // Leave EFER = 0 for a real-mode guest.
-        vmcb.state.efer = 0;
+        // SVM's VMRUN consistency checks require EFER.SVME in the VMCB EFER
+        // field. AVM keeps that bit invisible through get_sregs/RDMSR.
+        vmcb.state.efer = avm_efer_to_svm(0);
         vmcb.state.rip = 0xFFF0;
         vmcb.state.rsp = 0;
         vmcb.state.rflags = 0x2;
@@ -752,6 +753,14 @@ fn svm_segment_attr_to_avm(attr: u16) -> u32 {
     // and SVM backends.
     let attr = attr as u32;
     (attr & 0x00ff) | ((attr & 0x0f00) << 4)
+}
+
+fn avm_efer_to_svm(efer: u64) -> u64 {
+    efer | EFER_SVME
+}
+
+fn svm_efer_to_avm(efer: u64) -> u64 {
+    efer & !EFER_SVME
 }
 
 fn svm_exit_instruction_len(exit_code: u64, vmcb: &Vmcb) -> u32 {
