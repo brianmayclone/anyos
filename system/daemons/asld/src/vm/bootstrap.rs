@@ -112,37 +112,40 @@ pub(super) fn direct_linux_sregs(layout: &crate::boot::DirectLinuxLayout) -> Gue
     const DATA_SEGMENT_AR: u32 = 0xC093;
     const TSS_SEGMENT_AR: u32 = 0x008B;
     const NULL_SEGMENT_AR: u32 = 0x10000;
+    const BOOT_CS: u16 = 0x10;
+    const BOOT_DS: u16 = 0x18;
+    const BOOT_TSS: u16 = 0x20;
     const CR0_PE: u64 = 1 << 0;
     const CR0_ET: u64 = 1 << 4;
     const CR0_NE: u64 = 1 << 5;
     const SEGMENT_LIMIT: u32 = 0xFFFFF;
 
     GuestSregs {
-        cs_selector: 0x08,
+        cs_selector: BOOT_CS,
         cs_base: 0,
         cs_limit: SEGMENT_LIMIT,
         cs_ar: CODE_SEGMENT_AR,
-        ds_selector: 0x10,
+        ds_selector: BOOT_DS,
         ds_base: 0,
         ds_limit: SEGMENT_LIMIT,
         ds_ar: DATA_SEGMENT_AR,
-        es_selector: 0x10,
+        es_selector: BOOT_DS,
         es_base: 0,
         es_limit: SEGMENT_LIMIT,
         es_ar: DATA_SEGMENT_AR,
-        fs_selector: 0x10,
+        fs_selector: BOOT_DS,
         fs_base: 0,
         fs_limit: SEGMENT_LIMIT,
         fs_ar: DATA_SEGMENT_AR,
-        gs_selector: 0x10,
+        gs_selector: BOOT_DS,
         gs_base: 0,
         gs_limit: SEGMENT_LIMIT,
         gs_ar: DATA_SEGMENT_AR,
-        ss_selector: 0x10,
+        ss_selector: BOOT_DS,
         ss_base: 0,
         ss_limit: SEGMENT_LIMIT,
         ss_ar: DATA_SEGMENT_AR,
-        tr_selector: 0x18,
+        tr_selector: BOOT_TSS,
         tr_base: 0,
         tr_limit: 0x67,
         tr_ar: TSS_SEGMENT_AR,
@@ -150,8 +153,8 @@ pub(super) fn direct_linux_sregs(layout: &crate::boot::DirectLinuxLayout) -> Gue
         ldtr_base: 0,
         ldtr_limit: 0,
         ldtr_ar: NULL_SEGMENT_AR,
-        gdtr_base: 0,
-        gdtr_limit: 0,
+        gdtr_base: crate::boot::LINUX_BOOT_GDT_ADDR as u64,
+        gdtr_limit: 39,
         idtr_base: 0,
         idtr_limit: 0,
         cr0: CR0_PE | CR0_ET | CR0_NE,

@@ -10,6 +10,13 @@ const MIN_THUMB: i32 = 20;
 const THUMB_RADIUS: u32 = 4;
 /// Logical space reserved by a visible scrollbar, including its edge padding.
 const BAR_EXTENT: u32 = BAR_W + (BAR_PAD as u32 * 2);
+const WHEEL_STEP_PX: i32 = 44;
+const KINETIC_FP: i32 = 256;
+const KINETIC_WHEEL_IMPULSE_FP: i32 = 1300 * KINETIC_FP;
+const KINETIC_MAX_VELOCITY_FP: i32 = 9000 * KINETIC_FP;
+const KINETIC_STOP_VELOCITY_FP: i32 = 28 * KINETIC_FP;
+const KINETIC_FRICTION_NUM: i32 = 86;
+const KINETIC_FRICTION_DEN: i32 = 100;
 
 pub struct ScrollView {
     pub(crate) base: ControlBase,
@@ -29,6 +36,9 @@ pub struct ScrollView {
     dragging_h_thumb: bool,
     /// Mouse-Y offset from thumb top when drag started.
     drag_anchor: i32,
+    kinetic_velocity_y_fp: i32,
+    kinetic_remainder_y_fp: i32,
+    kinetic_last_ms: u32,
 }
 
 impl ScrollView {
@@ -44,6 +54,9 @@ impl ScrollView {
             dragging_v_thumb: false,
             dragging_h_thumb: false,
             drag_anchor: 0,
+            kinetic_velocity_y_fp: 0,
+            kinetic_remainder_y_fp: 0,
+            kinetic_last_ms: 0,
         }
     }
 
@@ -54,12 +67,7 @@ impl ScrollView {
         if dy == 0 {
             return false;
         }
-        let (_, view_h) = self.viewport_size();
-        let max_scroll = if self.content_height > view_h {
-            (self.content_height - view_h) as i32
-        } else {
-            0
-        };
+        let max_scroll = self.max_scroll_y();
         let prev = self.scroll_y;
         self.scroll_y = (self.scroll_y + dy).max(0).min(max_scroll);
         if self.scroll_y != prev {
@@ -75,12 +83,7 @@ impl ScrollView {
         if dx == 0 {
             return false;
         }
-        let (view_w, _) = self.viewport_size();
-        let max_scroll = if self.content_width > view_w {
-            (self.content_width - view_w) as i32
-        } else {
-            0
-        };
+        let max_scroll = self.max_scroll_x();
         let prev = self.scroll_x;
         self.scroll_x = (self.scroll_x + dx).max(0).min(max_scroll);
         if self.scroll_x != prev {
@@ -105,22 +108,14 @@ impl ScrollView {
     }
 
     pub fn set_scroll_offsets(&mut self, x: i32, y: i32) -> bool {
-        let (view_w, view_h) = self.viewport_size();
-        let max_scroll_x = if self.content_width > view_w {
-            (self.content_width - view_w) as i32
-        } else {
-            0
-        };
-        let max_scroll_y = if self.content_height > view_h {
-            (self.content_height - view_h) as i32
-        } else {
-            0
-        };
+        let max_scroll_x = self.max_scroll_x();
+        let max_scroll_y = self.max_scroll_y();
         let next_x = x.max(0).min(max_scroll_x);
         let next_y = y.max(0).min(max_scroll_y);
         if self.scroll_x == next_x && self.scroll_y == next_y {
             return false;
         }
+        self.stop_kinetic_scroll();
         self.scroll_x = next_x;
         self.scroll_y = next_y;
         self.base.state = self.scroll_y as u32;
@@ -236,6 +231,7 @@ impl ScrollView {
         } else {
             0
         };
+        self.stop_kinetic_scroll();
         self.scroll_y = new_scroll.max(0).min(max_scroll);
         self.base.state = self.scroll_y as u32;
     }
@@ -253,7 +249,93 @@ impl ScrollView {
         } else {
             0
         };
+        self.stop_kinetic_scroll();
         self.scroll_x = new_scroll.max(0).min(max_scroll);
+    }
+
+    fn max_scroll_y(&self) -> i32 {
+        let (_, view_h) = self.viewport_size();
+        if self.content_height > view_h {
+            (self.content_height - view_h) as i32
+        } else {
+            0
+        }
+    }
+
+    fn max_scroll_x(&self) -> i32 {
+        let (view_w, _) = self.viewport_size();
+        if self.content_width > view_w {
+            (self.content_width - view_w) as i32
+        } else {
+            0
+        }
+    }
+
+    fn stop_kinetic_scroll(&mut self) {
+        self.kinetic_velocity_y_fp = 0;
+        self.kinetic_remainder_y_fp = 0;
+        self.kinetic_last_ms = 0;
+    }
+
+    fn start_kinetic_scroll(&mut self, impulse_fp: i32) {
+        let now = crate::syscall::uptime_ms();
+        self.kinetic_velocity_y_fp = self
+            .kinetic_velocity_y_fp
+            .saturating_add(impulse_fp)
+            .max(-KINETIC_MAX_VELOCITY_FP)
+            .min(KINETIC_MAX_VELOCITY_FP);
+        self.kinetic_last_ms = now;
+    }
+
+    fn has_kinetic_scroll(&self) -> bool {
+        self.kinetic_velocity_y_fp != 0 || self.kinetic_remainder_y_fp != 0
+    }
+
+    fn advance_kinetic_scroll(&mut self, now_ms: u32) -> bool {
+        if self.kinetic_velocity_y_fp == 0 {
+            return false;
+        }
+
+        let elapsed = now_ms.wrapping_sub(self.kinetic_last_ms);
+        let dt = elapsed.max(1).min(50);
+        self.kinetic_last_ms = now_ms;
+
+        let delta_fp = ((self.kinetic_velocity_y_fp as i64 * dt as i64) / 1000) as i32;
+        self.kinetic_remainder_y_fp = self.kinetic_remainder_y_fp.saturating_add(delta_fp);
+        let dy = self.kinetic_remainder_y_fp / KINETIC_FP;
+        self.kinetic_remainder_y_fp -= dy * KINETIC_FP;
+
+        let moved = if dy != 0 {
+            self.apply_scroll_delta(dy)
+        } else {
+            false
+        };
+        if dy != 0 && !moved {
+            self.stop_kinetic_scroll();
+            return false;
+        }
+
+        let steps = ((dt + 15) / 16).max(1).min(4);
+        for _ in 0..steps {
+            self.kinetic_velocity_y_fp =
+                self.kinetic_velocity_y_fp * KINETIC_FRICTION_NUM / KINETIC_FRICTION_DEN;
+        }
+
+        if abs_i32(self.kinetic_velocity_y_fp) < KINETIC_STOP_VELOCITY_FP
+            && abs_i32(self.kinetic_remainder_y_fp) < KINETIC_FP
+        {
+            self.stop_kinetic_scroll();
+        }
+
+        moved
+    }
+}
+
+fn abs_i32(v: i32) -> i32 {
+    if v < 0 {
+        v.saturating_neg()
+    } else {
+        v
     }
 }
 
@@ -445,19 +527,12 @@ impl Control for ScrollView {
     }
 
     fn handle_scroll(&mut self, delta: i32) -> EventResponse {
-        let (_, view_h) = self.viewport_size();
-        let max_scroll = if self.content_height > view_h {
-            (self.content_height - view_h) as i32
-        } else {
-            0
-        };
-        let prev = self.scroll_y;
-        self.scroll_y = (self.scroll_y - delta * 20).max(0).min(max_scroll);
-        if self.scroll_y == prev {
+        let dy = -delta * WHEEL_STEP_PX;
+        if !self.apply_scroll_delta(dy) {
+            self.stop_kinetic_scroll();
             return EventResponse::CONSUMED;
         }
-        self.base.state = self.scroll_y as u32;
-        self.base.mark_dirty();
+        self.start_kinetic_scroll(-delta * KINETIC_WHEEL_IMPULSE_FP);
         EventResponse::CHANGED
     }
 }
@@ -471,6 +546,43 @@ pub fn scroll_offsets(controls: &[alloc::boxed::Box<dyn Control>], id: u32) -> (
         return (0, 0);
     };
     sv.scroll_offsets()
+}
+
+pub fn has_active_kinetic_scrolls(controls: &[alloc::boxed::Box<dyn Control>]) -> bool {
+    controls.iter().any(|control| {
+        if control.kind() != ControlKind::ScrollView {
+            return false;
+        }
+        crate::control::cast_ref::<ScrollView>(control, ControlKind::ScrollView)
+            .map(|sv| sv.has_kinetic_scroll())
+            .unwrap_or(false)
+    })
+}
+
+pub fn advance_kinetic_scrolls(
+    controls: &mut [alloc::boxed::Box<dyn Control>],
+    now_ms: u32,
+    moved_ids: &mut alloc::vec::Vec<u32>,
+) -> bool {
+    let mut any_active = false;
+    for control in controls.iter_mut() {
+        if control.kind() != ControlKind::ScrollView {
+            continue;
+        }
+        let Some(sv) = crate::control::cast_mut::<ScrollView>(control, ControlKind::ScrollView)
+        else {
+            continue;
+        };
+        if !sv.has_kinetic_scroll() {
+            continue;
+        }
+        any_active = true;
+        let id = sv.base.id;
+        if sv.advance_kinetic_scroll(now_ms) {
+            moved_ids.push(id);
+        }
+    }
+    any_active
 }
 
 pub fn viewport_size(controls: &[alloc::boxed::Box<dyn Control>], id: u32) -> (u32, u32) {
@@ -526,6 +638,9 @@ pub fn update_scroll_bounds(controls: &mut [alloc::boxed::Box<dyn Control>]) {
             };
             sv.scroll_x = sv.scroll_x.min(max_scroll_x).max(0);
             sv.scroll_y = sv.scroll_y.min(max_scroll).max(0);
+            if sv.scroll_y == 0 || sv.scroll_y == max_scroll {
+                sv.stop_kinetic_scroll();
+            }
             sv.base.state = sv.scroll_y as u32;
         }
     }

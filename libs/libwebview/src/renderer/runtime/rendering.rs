@@ -162,9 +162,6 @@ impl Renderer {
         self.doc_h = doc_h;
         self.last_scroll_y = scroll_y;
 
-        self.tile_cache.invalidate_all();
-        self.deactivate_all_tile_canvases();
-
         let (visible_first_row, visible_last_row) =
             Self::visible_tile_row_range(scroll_y, viewport_h, doc_h);
         let immediate_rows =

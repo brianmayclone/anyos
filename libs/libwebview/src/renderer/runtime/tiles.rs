@@ -99,6 +99,22 @@ impl Renderer {
             .min(doc_h.saturating_sub(row * TILE_HEIGHT))
             .max(1);
 
+        if let Some(idx) = self
+            .tile_canvases
+            .iter()
+            .position(|tc| tc.active && tc.row == row)
+        {
+            let tc = &mut self.tile_canvases[idx];
+            if tc.w != doc_w || tc.h != tile_h {
+                tc.canvas.set_size(doc_w, tile_h);
+                tc.w = doc_w;
+                tc.h = tile_h;
+            }
+            tc.canvas.set_position(0, tile_y);
+            tc.canvas.copy_pixels_from(pixels);
+            return true;
+        }
+
         if let Some(idx) = self.tile_canvases.iter().position(|tc| !tc.active) {
             let tc = &mut self.tile_canvases[idx];
             tc.row = row;

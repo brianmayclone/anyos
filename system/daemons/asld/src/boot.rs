@@ -9,17 +9,20 @@ pub const SMOKE_TEST_KERNEL_PROFILE: &str = "avm-smoke-test";
 pub const SEABIOS_KERNEL_PROFILE: &str = "seabios-x86_64";
 pub const SEABIOS_FIRMWARE_PATH: &str = "/System/var/asl/firmware/seabios.bin";
 pub const LINUX_BOOT_PARAMS_ADDR: usize = 0x7000;
+pub const LINUX_BOOT_GDT_ADDR: usize = 0x8000;
 pub const LINUX_CMDLINE_ADDR: usize = 0x20_000;
 pub const LINUX_KERNEL_LOAD_ADDR: usize = 0x10_0000;
 pub const SEABIOS_RESET_VECTOR: usize = 0x0f_fff0;
 
 const LINUX_BOOT_PARAMS_SIZE: usize = 4096;
+const LINUX_SETUP_HEADER_START: usize = 0x1f1;
 const LINUX_SETUP_HEADER_MIN: usize = 0x240;
 const LINUX_BOOT_FLAG_OFFSET: usize = 0x1fe;
 const LINUX_HEADER_OFFSET: usize = 0x202;
 const LINUX_VERSION_OFFSET: usize = 0x206;
 const LINUX_TYPE_OF_LOADER_OFFSET: usize = 0x210;
 const LINUX_LOADFLAGS_OFFSET: usize = 0x211;
+const LINUX_CODE32_START_OFFSET: usize = 0x214;
 const LINUX_INITRD_ADDR_OFFSET: usize = 0x218;
 const LINUX_INITRD_SIZE_OFFSET: usize = 0x21c;
 const LINUX_HEAP_END_PTR_OFFSET: usize = 0x224;
@@ -33,6 +36,7 @@ const LINUX_E820_TYPE_RAM: u32 = 1;
 const LINUX_E820_TYPE_RESERVED: u32 = 2;
 const LINUX_BOOT_MAGIC: u32 = 0x5372_6448;
 const LINUX_BOOT_FLAG: u16 = 0xaa55;
+const LINUX_BOOT_GDT_SIZE: usize = 5 * 8;
 const DEFAULT_SETUP_SECTORS: usize = 4;
 const SEABIOS_LOAD_TOP: usize = 0x10_0000;
 const SEABIOS_MAX_SIZE: usize = 0x40_000;
@@ -213,12 +217,17 @@ pub fn parse_direct_linux_image(data: &[u8]) -> Result<DirectLinuxImage, AsldErr
         ));
     }
     let cmdline_limit = read_u32(data, LINUX_CMDLINE_SIZE_OFFSET).unwrap_or(2048) as usize;
+    let code32_start = read_u32(data, LINUX_CODE32_START_OFFSET).unwrap_or(0) as usize;
     Ok(DirectLinuxImage {
         setup_sectors,
         protocol_version: read_u16(data, LINUX_VERSION_OFFSET)?,
         protected_mode_offset,
         protected_mode_size: data.len() - protected_mode_offset,
-        entry_addr: LINUX_KERNEL_LOAD_ADDR,
+        entry_addr: if code32_start == 0 {
+            LINUX_KERNEL_LOAD_ADDR
+        } else {
+            code32_start
+        },
         cmdline_limit: cmdline_limit.max(2048),
     })
 }
@@ -278,7 +287,8 @@ fn build_direct_linux_layout(
     if cmdline_len + 1 > image.cmdline_limit {
         return Err(AsldError::InvalidArgument("Linux command line is too long"));
     }
-    let kernel_end = LINUX_KERNEL_LOAD_ADDR
+    let kernel_end = image
+        .entry_addr
         .checked_add(image.protected_mode_size)
         .ok_or(AsldError::InvalidState("Linux kernel layout overflow"))?;
     if kernel_end > guest_memory_size {
@@ -311,7 +321,7 @@ fn build_direct_linux_layout(
 
     Ok(DirectLinuxLayout {
         boot_params_addr: LINUX_BOOT_PARAMS_ADDR,
-        kernel_load_addr: LINUX_KERNEL_LOAD_ADDR,
+        kernel_load_addr: image.entry_addr,
         kernel_entry_addr: image.entry_addr,
         kernel_size: image.protected_mode_size,
         cmdline_addr: LINUX_CMDLINE_ADDR,
@@ -334,7 +344,9 @@ fn write_direct_linux_guest_memory(
     memory.fill(0);
 
     let setup_len = image.protected_mode_offset.min(LINUX_BOOT_PARAMS_SIZE);
-    copy_to_guest(memory, layout.boot_params_addr, &kernel[..setup_len])?;
+    let params = slice_mut(memory, layout.boot_params_addr, LINUX_BOOT_PARAMS_SIZE)?;
+    params[LINUX_SETUP_HEADER_START..setup_len]
+        .copy_from_slice(&kernel[LINUX_SETUP_HEADER_START..setup_len]);
     copy_to_guest(
         memory,
         layout.kernel_load_addr,
@@ -342,6 +354,7 @@ fn write_direct_linux_guest_memory(
     )?;
     copy_to_guest(memory, layout.cmdline_addr, cmdline.as_bytes())?;
     memory[layout.cmdline_addr + cmdline.len()] = 0;
+    write_direct_linux_gdt(memory)?;
     if !initrd.is_empty() {
         copy_to_guest(memory, layout.initrd_addr, initrd)?;
     }
@@ -349,12 +362,28 @@ fn write_direct_linux_guest_memory(
     let params = slice_mut(memory, layout.boot_params_addr, LINUX_BOOT_PARAMS_SIZE)?;
     params[LINUX_TYPE_OF_LOADER_OFFSET] = 0xff;
     params[LINUX_LOADFLAGS_OFFSET] |= 0x80;
+    write_u32(
+        params,
+        LINUX_CODE32_START_OFFSET,
+        layout.kernel_entry_addr as u32,
+    )?;
     write_u16(params, LINUX_HEAP_END_PTR_OFFSET, 0xe000)?;
     write_u32(params, LINUX_CMDLINE_PTR_OFFSET, layout.cmdline_addr as u32)?;
     write_u32(params, LINUX_INITRD_ADDR_MAX_OFFSET, 0xffff_ffff)?;
     write_u32(params, LINUX_INITRD_ADDR_OFFSET, layout.initrd_addr as u32)?;
     write_u32(params, LINUX_INITRD_SIZE_OFFSET, layout.initrd_size as u32)?;
     write_e820_map(params, guest_memory_size)?;
+    Ok(())
+}
+
+fn write_direct_linux_gdt(memory: &mut [u8]) -> Result<(), AsldError> {
+    let gdt = slice_mut(memory, LINUX_BOOT_GDT_ADDR, LINUX_BOOT_GDT_SIZE)?;
+    for byte in gdt.iter_mut() {
+        *byte = 0;
+    }
+    write_u64(gdt, 0x10, 0x00cf_9a00_0000_ffff)?;
+    write_u64(gdt, 0x18, 0x00cf_9200_0000_ffff)?;
+    write_u64(gdt, 0x20, 0x0000_8b00_0000_0067)?;
     Ok(())
 }
 
@@ -480,8 +509,8 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::{
-        build_boot_plan, parse_direct_linux_image, LINUX_BOOT_PARAMS_ADDR, LINUX_CMDLINE_ADDR,
-        LINUX_KERNEL_LOAD_ADDR, SEABIOS_KERNEL_PROFILE, SEABIOS_RESET_VECTOR,
+        build_boot_plan, parse_direct_linux_image, LINUX_BOOT_GDT_ADDR, LINUX_BOOT_PARAMS_ADDR,
+        LINUX_CMDLINE_ADDR, LINUX_KERNEL_LOAD_ADDR, SEABIOS_KERNEL_PROFILE, SEABIOS_RESET_VECTOR,
         SMOKE_TEST_KERNEL_PROFILE,
     };
     use crate::distro::build_distro_config;
@@ -568,7 +597,33 @@ mod tests {
             &[0x7f; 4]
         );
         assert_eq!(memory[LINUX_CMDLINE_ADDR], b'c');
+        assert_eq!(memory[LINUX_BOOT_PARAMS_ADDR], 0);
         assert_eq!(memory[LINUX_BOOT_PARAMS_ADDR + 0x210], 0xff);
+        assert_eq!(
+            u32::from_le_bytes(
+                memory[LINUX_BOOT_PARAMS_ADDR + super::LINUX_CODE32_START_OFFSET
+                    ..LINUX_BOOT_PARAMS_ADDR + super::LINUX_CODE32_START_OFFSET + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            LINUX_KERNEL_LOAD_ADDR as u32
+        );
+        assert_eq!(
+            u64::from_le_bytes(
+                memory[LINUX_BOOT_GDT_ADDR + 0x10..LINUX_BOOT_GDT_ADDR + 0x18]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x00cf_9a00_0000_ffff
+        );
+        assert_eq!(
+            u64::from_le_bytes(
+                memory[LINUX_BOOT_GDT_ADDR + 0x18..LINUX_BOOT_GDT_ADDR + 0x20]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x00cf_9200_0000_ffff
+        );
         assert_eq!(
             memory[LINUX_BOOT_PARAMS_ADDR + super::LINUX_E820_ENTRIES_OFFSET],
             3

@@ -4806,6 +4806,67 @@ mod tests {
             "programmatic button.click() should perform the browser submit default action"
         );
     }
+
+    #[test]
+    fn iframe_src_assignment_fires_load_and_keeps_frame_context() {
+        let dom = html::parse("<html><body></body></html>");
+        let mut runtime = JsRuntime::new();
+        runtime.execute_script_sources(
+            &dom,
+            "https://browserbench.org/Speedometer3.1/",
+            &[String::from(
+                r#"
+                const frame = document.createElement('iframe');
+                let loaded = 0;
+                frame.onload = () => {
+                    loaded++;
+                    globalThis.__iframe_context_ok =
+                        frame.contentDocument !== document &&
+                        frame.contentWindow !== window &&
+                        frame.contentWindow.document === frame.contentDocument &&
+                        typeof frame.contentDocument.querySelector === 'function' &&
+                        typeof frame.contentWindow.requestAnimationFrame === 'function';
+                    globalThis.__iframe_query_ok =
+                        !!frame.contentDocument.querySelector('.new-todo');
+                };
+                document.body.appendChild(frame);
+                frame.src = 'resources/warmup/index.html';
+                globalThis.__iframe_loaded = loaded;
+                globalThis.__iframe_src = frame.src;
+                "#,
+            )],
+        );
+
+        assert!(
+            runtime.engine.vm().last_exception.is_none(),
+            "unexpected JS exception: {:?}",
+            runtime.engine.vm().last_exception
+        );
+        assert_eq!(
+            runtime
+                .engine
+                .vm()
+                .get_global("__iframe_loaded")
+                .to_number() as i32,
+            1
+        );
+        assert!(matches!(
+            runtime.engine.vm().get_global("__iframe_context_ok"),
+            JsValue::Bool(true)
+        ));
+        assert!(matches!(
+            runtime.engine.vm().get_global("__iframe_query_ok"),
+            JsValue::Bool(true)
+        ));
+        assert_eq!(
+            runtime
+                .engine
+                .vm()
+                .get_global("__iframe_src")
+                .to_js_string(),
+            "resources/warmup/index.html"
+        );
+    }
 }
 
 /// Helper: read all [name, value] pairs from FormData's __entries.

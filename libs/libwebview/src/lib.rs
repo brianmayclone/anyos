@@ -182,6 +182,7 @@ enum MutationImpact {
 struct ImageUsageCacheEntry {
     src: String,
     requires_layout_refresh: bool,
+    node_ids: Vec<usize>,
     lazy_node_ids: Vec<usize>,
 }
 
@@ -778,8 +779,11 @@ impl WebView {
         h: u32,
     ) -> bool {
         self.images.add(String::from(src), pixels, w, h);
-        let (requires_layout_refresh, lazy_node_ids) = self.image_usage_for_src(src);
+        let (requires_layout_refresh, node_ids, lazy_node_ids) = self.image_usage_for_src(src);
         self.mark_loaded_lazy_images_by_id(&lazy_node_ids);
+        if !requires_layout_refresh {
+            self.invalidate_image_paint_ranges(&node_ids);
+        }
         requires_layout_refresh
     }
 
@@ -872,10 +876,15 @@ impl WebView {
                 .find(|entry| entry.src == src)
             {
                 entry.requires_layout_refresh |= requires_layout_refresh;
+                if !entry.node_ids.iter().any(|id| *id == node_id) {
+                    entry.node_ids.push(node_id);
+                }
                 if is_lazy {
                     entry.lazy_node_ids.push(node_id);
                 }
             } else {
+                let mut node_ids = Vec::new();
+                node_ids.push(node_id);
                 let mut lazy_node_ids = Vec::new();
                 if is_lazy {
                     lazy_node_ids.push(node_id);
@@ -883,6 +892,7 @@ impl WebView {
                 self.image_usage_cache.push(ImageUsageCacheEntry {
                     src,
                     requires_layout_refresh,
+                    node_ids,
                     lazy_node_ids,
                 });
             }
@@ -890,13 +900,39 @@ impl WebView {
         self.image_usage_cache_valid = true;
     }
 
-    fn image_usage_for_src(&mut self, src: &str) -> (bool, Vec<usize>) {
+    fn image_usage_for_src(&mut self, src: &str) -> (bool, Vec<usize>, Vec<usize>) {
         self.ensure_image_usage_cache();
         self.image_usage_cache
             .iter()
             .find(|entry| entry.src == src)
-            .map(|entry| (entry.requires_layout_refresh, entry.lazy_node_ids.clone()))
-            .unwrap_or((false, Vec::new()))
+            .map(|entry| {
+                (
+                    entry.requires_layout_refresh,
+                    entry.node_ids.clone(),
+                    entry.lazy_node_ids.clone(),
+                )
+            })
+            .unwrap_or((false, Vec::new(), Vec::new()))
+    }
+
+    fn invalidate_image_paint_ranges(&mut self, node_ids: &[usize]) {
+        if node_ids.is_empty() {
+            return;
+        }
+
+        let mut ranges = Vec::new();
+        for &node_id in node_ids {
+            if let Some((_, y, _, h)) = self.node_bounds(node_id) {
+                ranges.push((y, h.max(1)));
+            }
+        }
+
+        for (y, h) in ranges {
+            self.renderer.invalidate_y_range(y, h);
+            if self.y_range_intersects_viewport(y, h) {
+                self.pending_tiles = true;
+            }
+        }
     }
 
     fn mark_loaded_lazy_images_by_id(&mut self, node_ids: &[usize]) {

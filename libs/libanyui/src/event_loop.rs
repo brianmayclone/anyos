@@ -75,6 +75,10 @@ pub fn run() {
             }
         }
 
+        if crate::controls::scroll_view::has_active_kinetic_scrolls(&st.controls) {
+            min_wait = min_wait.min(16);
+        }
+
         // Tooltip delay: wake up when tooltip should appear
         if st.tooltip_pending_id.is_some() {
             let elapsed = now.wrapping_sub(st.tooltip_hover_start);
@@ -127,6 +131,21 @@ pub fn run_once() -> u32 {
                 });
                 slot.last_fired_ms = now;
             }
+        }
+    }
+
+    // ── Phase 0.6: Kinetic scroll continuation ─────────────────────
+    {
+        let now = crate::syscall::uptime_ms();
+        let mut moved_scrolls: Vec<ControlId> = Vec::new();
+        crate::controls::scroll_view::advance_kinetic_scrolls(
+            &mut st.controls,
+            now,
+            &mut moved_scrolls,
+        );
+        for id in moved_scrolls {
+            fire_event_callback(&st.controls, id, control::EVENT_SCROLL, &mut pending_cbs);
+            fire_event_callback(&st.controls, id, control::EVENT_CHANGE, &mut pending_cbs);
         }
     }
 

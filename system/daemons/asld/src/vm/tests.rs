@@ -102,9 +102,13 @@ fn direct_linux_sregs_target_32bit_protected_entry() {
     let sregs = direct_linux_sregs(&layout);
     assert_eq!(regs.rsi, crate::boot::LINUX_BOOT_PARAMS_ADDR as u64);
     assert_eq!(sregs.rip, crate::boot::LINUX_KERNEL_LOAD_ADDR as u64);
-    assert_eq!(sregs.cs_selector, 0x08);
-    assert_eq!(sregs.ss_selector, 0x10);
+    assert_eq!(sregs.cs_selector, 0x10);
+    assert_eq!(sregs.ds_selector, 0x18);
+    assert_eq!(sregs.ss_selector, 0x18);
+    assert_eq!(sregs.tr_selector, 0x20);
     assert_eq!(sregs.tr_ar, 0x008b);
+    assert_eq!(sregs.gdtr_base, crate::boot::LINUX_BOOT_GDT_ADDR as u64);
+    assert_eq!(sregs.gdtr_limit, 39);
     assert_eq!(sregs.efer, 0);
     assert_eq!(sregs.cr4, 0);
     assert_eq!(sregs.cr0 & 1, 1);
@@ -435,7 +439,7 @@ fn boot_exit_assessment_rejects_invalid_guest_state() {
     });
     assert!(!result.ready);
     assert!(!result.should_continue);
-    assert!(!result.halted);
+    assert!(result.halted);
     assert!(result.summary.contains("stable boot state"));
 }
 

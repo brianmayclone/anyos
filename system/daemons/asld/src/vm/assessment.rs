@@ -55,7 +55,7 @@ pub(super) fn assess_boot_exit(exit: &VmExitInfo) -> ExitAssessment {
             ExitAssessment {
                 ready: false,
                 should_continue: false,
-                halted: false,
+                halted: true,
                 summary: format!(
                     "guest failed to enter stable boot state ({})",
                     describe_exit(exit)

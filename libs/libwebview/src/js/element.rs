@@ -561,10 +561,6 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     let cl = classlist::make_class_list(node_id, &class_name);
     obj.set(String::from("classList"), cl);
 
-    if tag_name == "IFRAME" {
-        install_iframe_shim(vm, &mut obj, &src_val);
-    }
-
     // ── Native methods ──
     obj.set(
         String::from("getAttribute"),
@@ -889,6 +885,12 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     obj.set_hook = Some(dom_property_hook);
     obj.set_hook_data = node_id as usize as *mut u8;
     install_reflected_accessors(&mut obj, INSTANCE_REFLECTED_PROPERTIES);
+    if tag_name == "IFRAME" {
+        // Iframe has live browsing-context properties. Install this after the
+        // generic reflected properties so src/contentDocument/contentWindow
+        // are not overwritten by plain attribute accessors.
+        install_iframe_shim(vm, &mut obj, &src_val);
+    }
 
     let result = JsValue::Object(Rc::new(RefCell::new(obj)));
 
@@ -1645,8 +1647,10 @@ fn el_set_attribute_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn install_iframe_shim(vm: &mut Vm, obj: &mut JsObject, src: &str) {
     let (document, window) = make_synthetic_iframe_context(vm);
     obj.set_hidden(String::from("_src"), JsValue::String(String::from(src)));
-    obj.set(String::from("contentDocument"), document);
-    obj.set(String::from("contentWindow"), window);
+    obj.properties
+        .insert(String::from("contentDocument"), Property::data(document));
+    obj.properties
+        .insert(String::from("contentWindow"), Property::data(window));
     obj.properties.insert(
         String::from("src"),
         Property::accessor(
@@ -1663,6 +1667,10 @@ fn iframe_src_get(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 fn iframe_src_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let value = arg_string(args, 0);
     let frame = vm.current_this.clone();
+    #[cfg(feature = "host")]
+    if std::env::var_os("SURF_DEBUG_IFRAME").is_some() {
+        eprintln!("[js-iframe] set src={}", value);
+    }
     frame.set_hidden_property(String::from("_src"), JsValue::String(value.clone()));
 
     let nid = this_node_id(vm);
@@ -1674,13 +1682,24 @@ fn iframe_src_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         });
     }
 
-    if frame.get_property("contentDocument").is_undefined() {
+    if vm
+        .get_property_invoking_getter(&frame, "contentDocument")
+        .is_undefined()
+    {
         let (document, window) = make_synthetic_iframe_context(vm);
         frame.set_property(String::from("contentDocument"), document);
         frame.set_property(String::from("contentWindow"), window);
     }
 
-    let onload = frame.get_property("onload");
+    let onload = vm.get_property_invoking_getter(&frame, "onload");
+    #[cfg(feature = "host")]
+    if std::env::var_os("SURF_DEBUG_IFRAME").is_some() {
+        eprintln!(
+            "[js-iframe] onload function={} value={}",
+            matches!(onload, JsValue::Function(_)),
+            onload.to_js_string()
+        );
+    }
     if matches!(onload, JsValue::Function(_)) {
         vm.call_value(&onload, &[], frame);
         vm.drain_microtasks();
