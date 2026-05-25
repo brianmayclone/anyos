@@ -521,29 +521,42 @@ pub(super) fn rasterize_masked_cmd(
     clip: (i32, i32, i32, i32),
 ) {
     let (cx, cy, cw, ch) = clip;
-    if cw <= 0 || ch <= 0 {
+    if cw <= 0 || ch <= 0 || stride == 0 || buf_h == 0 {
         return;
     }
-    let mut scratch = vec![0u32; (cw as usize).saturating_mul(ch as usize)];
+
+    let buf_w = (stride.min(i32::MAX as u32)) as i32;
+    let buf_h_i32 = (buf_h.min(i32::MAX as u32)) as i32;
+    let clipped_x0 = cx.max(0);
+    let clipped_y0 = cy.max(0);
+    let clipped_x1 = cx.saturating_add(cw).min(buf_w);
+    let clipped_y1 = cy.saturating_add(ch).min(buf_h_i32);
+    if clipped_x0 >= clipped_x1 || clipped_y0 >= clipped_y1 {
+        return;
+    }
+
+    let clipped_w = clipped_x1 - clipped_x0;
+    let clipped_h = clipped_y1 - clipped_y0;
+    let mut scratch = vec![0u32; (clipped_w as usize).saturating_mul(clipped_h as usize)];
     rasterize_draw_cmd(
         images,
         cmd,
         scratch.as_mut_ptr(),
-        cw as u32,
-        ch as u32,
-        tile_y_start + cy,
-        draw_y - cy,
-        (cmd.x - cx, draw_y - cy, cmd.w, cmd.h),
+        clipped_w as u32,
+        clipped_h as u32,
+        tile_y_start + clipped_y0,
+        draw_y - clipped_y0,
+        (cmd.x - clipped_x0, draw_y - clipped_y0, cmd.w, cmd.h),
     );
     composite_masked_scratch(
         images,
         buf,
         stride,
         buf_h,
-        cx,
-        cy,
-        cw,
-        ch,
+        clipped_x0,
+        clipped_y0,
+        clipped_w,
+        clipped_h,
         tile_y_start,
         &scratch,
         &cmd.masks,
@@ -567,18 +580,24 @@ fn composite_masked_scratch(
     rounded_clips: &[RoundedClip],
     opacity: u32,
 ) {
-    if dst.is_null() || w <= 0 || h <= 0 {
+    if dst.is_null() || stride == 0 || buf_h == 0 || w <= 0 || h <= 0 {
+        return;
+    }
+    let buf_w = (stride.min(i32::MAX as u32)) as i32;
+    let buf_h_i32 = (buf_h.min(i32::MAX as u32)) as i32;
+    let col_start = if x < 0 { -x } else { 0 };
+    let col_end = w.min(buf_w.saturating_sub(x));
+    let row_start = if y < 0 { -y } else { 0 };
+    let row_end = h.min(buf_h_i32.saturating_sub(y));
+    if col_start >= col_end || row_start >= row_end {
         return;
     }
     unsafe {
-        for row in 0..h {
+        for row in row_start..row_end {
             let dst_row = y + row;
-            if dst_row < 0 || dst_row >= buf_h as i32 {
-                continue;
-            }
             let base = row as usize * w as usize;
             let dst_offset = dst_row as usize * stride as usize;
-            for col in 0..w {
+            for col in col_start..col_end {
                 let src = scratch[base + col as usize];
                 let src_a = (src >> 24) & 0xFF;
                 if src_a == 0 {
@@ -1487,4 +1506,49 @@ fn rounded_rect_sample_inside(
         return dx * dx + dy * dy <= bl * bl;
     }
     true
+}
+
+#[cfg(all(test, feature = "host"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn masked_raster_clip_does_not_write_past_right_edge() {
+        let images = ImageCache::new();
+        let cmd = DrawCmd {
+            x: 0,
+            y: 0,
+            w: 992,
+            h: 1,
+            src_x: 0,
+            src_y: 0,
+            src_w: 992,
+            src_h: 1,
+            kind: DrawKind::Rect { color: 0xFFFF0000 },
+            clip: None,
+            masks: Vec::new(),
+            rounded_clips: Vec::new(),
+            opacity: 128,
+            rotations: Vec::new(),
+        };
+
+        let mut buf = vec![0xFF000000; 992];
+        for px in &mut buf[900..] {
+            *px = 0x12345678;
+        }
+
+        rasterize_masked_cmd(
+            &images,
+            &cmd,
+            buf.as_mut_ptr(),
+            900,
+            1,
+            0,
+            0,
+            (0, 0, 992, 1),
+        );
+
+        assert_ne!(buf[899], 0xFF000000);
+        assert!(buf[900..].iter().all(|&px| px == 0x12345678));
+    }
 }

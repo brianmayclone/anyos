@@ -82,7 +82,7 @@ fn main() {
                 let exited_tid = evt[1];
                 let exit_code = evt[2];
                 if exit_code > 128 && exit_code < 256 {
-                    crash::launch_crash_dialog(exited_tid);
+                    crash::launch_crash_dialog(exited_tid, exit_code);
                 }
             }
             continue;

@@ -19,6 +19,8 @@ mod platform;
 mod serial;
 #[cfg(test)]
 mod tests;
+#[cfg(not(target_os = "linux"))]
+mod vcpu;
 use apic::ApicState;
 #[cfg(not(target_os = "linux"))]
 use apic::{apic_mmio_action, is_apic_mmio};
@@ -40,7 +42,7 @@ use memory::{
 use mmio::{complete_mmio_read, prepare_mmio_exit};
 use msr::MsrState;
 #[cfg(not(target_os = "linux"))]
-use msr::{msr_read, msr_write, MSR_IA32_EFER, MSR_IA32_FS_BASE, MSR_IA32_GS_BASE};
+use msr::{msr_read, msr_write};
 use pci::PciBus;
 #[cfg(not(target_os = "linux"))]
 use platform::platform_io_action;
@@ -48,6 +50,10 @@ use platform::PlatformIoState;
 #[cfg(not(target_os = "linux"))]
 use serial::serial_io_action;
 use serial::SerialPortState;
+#[cfg(not(target_os = "linux"))]
+use vcpu::{
+    advance_guest_rip, sync_guest_msr_side_effects, write_io_read_value, write_msr_read_value,
+};
 
 const PAGE_SIZE: usize = 0x1000;
 const MIN_GUEST_MEMORY_MB: usize = 16;
@@ -57,6 +63,7 @@ const BOOT_PDPT_ADDR: usize = 0x2000;
 const BOOT_PD_ADDR: usize = 0x3000;
 const BOOT_CODE_ADDR: usize = 0x20_0000;
 const BOOT_STACK_GUARD: usize = 0x2000;
+const SERIAL_IRQ: u8 = 4;
 const E1000_IRQ: u8 = 11;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +76,7 @@ pub struct VmInstance {
     pub vcpu_handle: u64,
     pub backend: String,
     pub console_pipe_name: String,
+    pub input_pipe_name: String,
     pub guest_memory_addr: usize,
     pub guest_memory_size: usize,
     pub run_state: VmRunState,
@@ -119,7 +127,10 @@ pub fn stop_vm(instance: &VmInstance) -> Result<(), AsldError> {
 
 #[cfg(target_os = "linux")]
 fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
-    ensure_pipe(&format!("asl-console-{}", config.name))?;
+    let console_pipe_name = format!("asl-console-{}", config.name);
+    let input_pipe_name = format!("asl-input-{}", config.name);
+    ensure_pipe(&console_pipe_name)?;
+    ensure_pipe(&input_pipe_name)?;
     Ok(VmInstance {
         distro_name: config.name.clone(),
         boot_mode: crate::boot::build_boot_plan(config).mode,
@@ -128,7 +139,8 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         vm_handle: 1,
         vcpu_handle: 1,
         backend: String::from("host-stub"),
-        console_pipe_name: format!("asl-console-{}", config.name),
+        console_pipe_name,
+        input_pipe_name,
         guest_memory_addr: 0,
         guest_memory_size: align_guest_memory_size(config.resources.memory_mb),
         run_state: VmRunState::Provisioned,
@@ -235,7 +247,13 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
     }
 
     let console_pipe_name = format!("asl-console-{}", config.name);
+    let input_pipe_name = format!("asl-input-{}", config.name);
     if let Err(err) = ensure_pipe(&console_pipe_name) {
+        let _ = anyos_std::process::munmap_large(guest_memory, guest_memory_size);
+        let _ = vm.destroy();
+        return Err(err);
+    }
+    if let Err(err) = ensure_pipe(&input_pipe_name) {
         let _ = anyos_std::process::munmap_large(guest_memory, guest_memory_size);
         let _ = vm.destroy();
         return Err(err);
@@ -270,6 +288,7 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
             _ => String::from("avm-unknown"),
         },
         console_pipe_name,
+        input_pipe_name,
         guest_memory_addr: guest_memory as usize,
         guest_memory_size,
         run_state: VmRunState::Provisioned,
@@ -292,8 +311,12 @@ fn boot_probe_impl(instance: &mut VmInstance) -> Result<VmBootReport, AsldError>
     let mut last_exit = VmExitInfo::default();
     let vcpu = libavm::AvmVcpu::from_raw_handle(instance.vcpu_handle);
     for _ in 0..MAX_BOOT_EXITS {
+        drain_serial_input(instance);
         poll_e1000_rx(instance, &vcpu)?;
         if inject_pending_local_apic_irq(instance, &vcpu)? {
+            continue;
+        }
+        if inject_pending_serial_irq(instance, &vcpu)? {
             continue;
         }
         if inject_pending_platform_irq(instance, &vcpu)? {
@@ -367,8 +390,12 @@ fn poll_runtime_impl(instance: &mut VmInstance) -> Result<Option<VmRuntimeEvent>
 
     let vcpu = libavm::AvmVcpu::from_raw_handle(instance.vcpu_handle);
     for _ in 0..MAX_RUNTIME_EXITS {
+        drain_serial_input(instance);
         poll_e1000_rx(instance, &vcpu)?;
         if inject_pending_local_apic_irq(instance, &vcpu)? {
+            continue;
+        }
+        if inject_pending_serial_irq(instance, &vcpu)? {
             continue;
         }
         if inject_pending_platform_irq(instance, &vcpu)? {
@@ -822,6 +849,9 @@ fn inject_pending_device_irqs(
     if inject_pending_local_apic_irq(instance, vcpu)? {
         return Ok(true);
     }
+    if inject_pending_serial_irq(instance, vcpu)? {
+        return Ok(true);
+    }
     if inject_pending_platform_irq(instance, vcpu)? {
         return Ok(true);
     }
@@ -829,6 +859,17 @@ fn inject_pending_device_irqs(
         return inject_device_irq(instance, vcpu, E1000_IRQ);
     }
     Ok(false)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn inject_pending_serial_irq(
+    instance: &mut VmInstance,
+    vcpu: &libavm::AvmVcpu,
+) -> Result<bool, AsldError> {
+    if !instance.serial.pending_irq() {
+        return Ok(false);
+    }
+    inject_device_irq(instance, vcpu, SERIAL_IRQ)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -880,6 +921,26 @@ fn inject_device_irq(
 }
 
 #[cfg(not(target_os = "linux"))]
+fn drain_serial_input(instance: &mut VmInstance) {
+    let pipe = anyos_std::ipc::pipe_open(&instance.input_pipe_name);
+    if pipe == 0 || pipe == u32::MAX {
+        return;
+    }
+    let mut buf = [0u8; 128];
+    loop {
+        let n = anyos_std::ipc::pipe_read(pipe, &mut buf);
+        if n == 0 || n == u32::MAX {
+            break;
+        }
+        instance.serial.push_input(&buf[..n as usize]);
+        if n < buf.len() as u32 {
+            break;
+        }
+    }
+    let _ = anyos_std::ipc::pipe_close(pipe);
+}
+
+#[cfg(not(target_os = "linux"))]
 fn handle_msr_exit(
     instance: &mut VmInstance,
     vcpu: &libavm::AvmVcpu,
@@ -916,71 +977,4 @@ fn handle_xsetbv_exit(
     }
     advance_guest_rip(vcpu, exit.instruction_len)?;
     Ok(true)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn write_io_read_value(
-    vcpu: &libavm::AvmVcpu,
-    access_size: u8,
-    value: u32,
-) -> Result<(), AsldError> {
-    let mut regs = vcpu
-        .regs()
-        .map_err(|_| AsldError::BackendUnavailable("avm get_regs failed"))?;
-    let mask = match access_size {
-        1 => 0xffu64,
-        2 => 0xffffu64,
-        4 => 0xffff_ffffu64,
-        _ => 0xffu64,
-    };
-    regs.rax = (regs.rax & !mask) | ((value as u64) & mask);
-    vcpu.set_regs(&regs)
-        .map_err(|_| AsldError::BackendUnavailable("avm set_regs failed"))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn write_msr_read_value(vcpu: &libavm::AvmVcpu, value: u64) -> Result<(), AsldError> {
-    let mut regs = vcpu
-        .regs()
-        .map_err(|_| AsldError::BackendUnavailable("avm get_regs failed"))?;
-    regs.rax = (regs.rax & !0xffff_ffffu64) | (value & 0xffff_ffffu64);
-    regs.rdx = (regs.rdx & !0xffff_ffffu64) | ((value >> 32) & 0xffff_ffffu64);
-    vcpu.set_regs(&regs)
-        .map_err(|_| AsldError::BackendUnavailable("avm set_regs failed"))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn sync_guest_msr_side_effects(
-    vcpu: &libavm::AvmVcpu,
-    msr: u32,
-    state: &MsrState,
-) -> Result<(), AsldError> {
-    if !matches!(msr, MSR_IA32_EFER | MSR_IA32_FS_BASE | MSR_IA32_GS_BASE) {
-        return Ok(());
-    }
-    let mut sregs = vcpu
-        .sregs()
-        .map_err(|_| AsldError::BackendUnavailable("avm get_sregs failed"))?;
-    match msr {
-        MSR_IA32_EFER => sregs.efer = state.efer,
-        MSR_IA32_FS_BASE => sregs.fs_base = state.fs_base,
-        MSR_IA32_GS_BASE => sregs.gs_base = state.gs_base,
-        _ => {}
-    }
-    vcpu.set_sregs(&sregs)
-        .map_err(|_| AsldError::BackendUnavailable("avm set_sregs failed"))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn advance_guest_rip(vcpu: &libavm::AvmVcpu, instruction_len: u32) -> Result<(), AsldError> {
-    let mut sregs = vcpu
-        .sregs()
-        .map_err(|_| AsldError::BackendUnavailable("avm get_sregs failed"))?;
-    sregs.rip = sregs.rip.wrapping_add(if instruction_len == 0 {
-        1
-    } else {
-        instruction_len as u64
-    });
-    vcpu.set_sregs(&sregs)
-        .map_err(|_| AsldError::BackendUnavailable("avm set_sregs failed"))
 }

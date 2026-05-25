@@ -265,7 +265,7 @@ fn build_sidebar(
     debian_name.set_text_color(tc.text);
     debian_row.add(&debian_name);
 
-    let debian_sub = anyui::Label::new("Trixie amd64, headless VM");
+    let debian_sub = anyui::Label::new("Trixie amd64 netboot");
     debian_sub.set_position(72, 40);
     debian_sub.set_size(SIDEBAR_W - 96, 18);
     debian_sub.set_font_size(11);
@@ -348,9 +348,8 @@ fn build_overview_panel(
     heading.set_color(tc.window_bg);
     root.add(&heading);
 
-    let summary = anyui::Label::new(
-        "One click downloads a headless Debian VM disk, registers ASL, and starts it.",
-    );
+    let summary =
+        anyui::Label::new("One click downloads Debian netboot, registers ASL, and starts it.");
     summary.set_position(content_x + 24, 58);
     summary.set_size(content_w - 48, 34);
     summary.set_font_size(12);
@@ -358,13 +357,13 @@ fn build_overview_panel(
     summary.set_color(tc.window_bg);
     root.add(&summary);
 
-    add_fact(root, content_x + 24, 100, "Mode", "Headless VM disk");
+    add_fact(root, content_x + 24, 100, "Mode", "Netboot installer");
     add_fact(
         root,
         content_x + 196,
         100,
         "Source",
-        "cloud.debian.org over HTTPS",
+        "deb.debian.org over HTTPS",
     );
     add_fact(
         root,
@@ -381,7 +380,7 @@ fn build_overview_panel(
     install_btn.set_text_color(0xFFFFFFFF);
     root.add(&install_btn);
 
-    let terminal_btn = anyui::Button::new("Open Terminal");
+    let terminal_btn = anyui::Button::new("Open Console");
     terminal_btn.set_position(content_x + 178, 156);
     terminal_btn.set_size(132, 34);
     terminal_btn.set_enabled(false);

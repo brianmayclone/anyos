@@ -8,8 +8,8 @@
 //! ADR references:
 //! - ADR-0010 (Enterprise-Quality-Bar): test coverage is mandatory for
 //!   user-input boundaries. Whitelists and safety checks live here.
-//! - ADR-0011 (Image-Trust): `artifact_size_ok` and `raw_disk_header_ok`
-//!   implement the stage-1 verification described in the ADR.
+//! - ADR-0011 (Image-Trust): `artifact_size_ok` plus artifact-specific
+//!   header checks implement the stage-1 verification described in the ADR.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -58,16 +58,16 @@ pub fn is_safe_absolute_dir(path: &str) -> bool {
         && !path.ends_with('/')
 }
 
-/// True if `path` is inside `images_dir` (with a literal `/` boundary)
+/// True if `path` is inside `artifact_root` (with a literal `/` boundary)
 /// and contains no path-traversal tokens.
 ///
 /// Pure function — no I/O. The caller is responsible for ensuring
-/// `images_dir` itself is safe.
-pub fn is_safe_artifact_path(path: &str, images_dir: &str) -> bool {
-    let in_images = path.len() > images_dir.len()
-        && path.starts_with(images_dir)
-        && path.as_bytes().get(images_dir.len()) == Some(&b'/');
-    in_images && !path.contains('\0') && !path.contains("/../") && !path.ends_with("/..")
+/// `artifact_root` itself is safe.
+pub fn is_safe_artifact_path(path: &str, artifact_root: &str) -> bool {
+    let in_root = path.len() > artifact_root.len()
+        && path.starts_with(artifact_root)
+        && path.as_bytes().get(artifact_root.len()) == Some(&b'/');
+    in_root && !path.contains('\0') && !path.contains("/../") && !path.ends_with("/..")
 }
 
 // ============================================================================
@@ -127,6 +127,21 @@ pub fn artifact_size_ok(stat_size: u32, min_size_bytes: u64) -> bool {
 /// Pure function — no I/O.
 pub fn raw_disk_header_ok(header: &[u8], read: usize) -> bool {
     read >= 512 && header.len() >= 512 && header[510] == 0x55 && header[511] == 0xaa
+}
+
+/// True if the prefix bytes look like an x86 Linux boot protocol image:
+/// MBR-style boot flag at 0x1fe and `"HdrS"` setup header magic at 0x202.
+pub fn linux_kernel_header_ok(header: &[u8], read: usize) -> bool {
+    read >= 0x206
+        && header.len() >= 0x206
+        && header[0x1fe] == 0x55
+        && header[0x1ff] == 0xaa
+        && &header[0x202..0x206] == b"HdrS"
+}
+
+/// True if the prefix bytes look like a gzip stream.
+pub fn gzip_header_ok(header: &[u8], read: usize) -> bool {
+    read >= 2 && header.len() >= 2 && header[0] == 0x1f && header[1] == 0x8b
 }
 
 // ============================================================================
@@ -430,6 +445,34 @@ mod tests {
     fn raw_disk_header_rejects_too_small_buffer() {
         let header = [0u8; 100];
         assert!(!raw_disk_header_ok(&header, 100));
+    }
+
+    #[test]
+    fn linux_kernel_header_accepts_setup_header() {
+        let mut header = [0u8; 0x240];
+        header[0x1fe] = 0x55;
+        header[0x1ff] = 0xaa;
+        header[0x202..0x206].copy_from_slice(b"HdrS");
+        assert!(linux_kernel_header_ok(&header, header.len()));
+    }
+
+    #[test]
+    fn linux_kernel_header_rejects_wrong_magic_or_short_read() {
+        let mut header = [0u8; 0x240];
+        header[0x1fe] = 0x55;
+        header[0x1ff] = 0xaa;
+        header[0x202..0x206].copy_from_slice(b"HdrS");
+        header[0x202] = b'X';
+        assert!(!linux_kernel_header_ok(&header, header.len()));
+        header[0x202] = b'H';
+        assert!(!linux_kernel_header_ok(&header, 0x100));
+    }
+
+    #[test]
+    fn gzip_header_accepts_and_rejects_magic() {
+        assert!(gzip_header_ok(&[0x1f, 0x8b, 0x08], 3));
+        assert!(!gzip_header_ok(&[0x1f, 0x00, 0x08], 3));
+        assert!(!gzip_header_ok(&[0x1f, 0x8b], 1));
     }
 
     // -- HTTP fallback policy ----------------------------------------------

@@ -17,7 +17,8 @@ use super::platform::{
     IO_PORT_PIC1_CMD, IO_PORT_PIC1_DATA, IO_PORT_PIC2_CMD, IO_PORT_PIC2_DATA, IO_PORT_POST_DELAY,
 };
 use super::serial::{
-    serial_io_action, SerialPortState, UART_LCR, UART_LCR_DLAB, UART_LSR, UART_RBR_THR_DLL,
+    serial_io_action, SerialPortState, UART_IER_DLM, UART_IIR_FCR, UART_LCR, UART_LCR_DLAB,
+    UART_LSR, UART_RBR_THR_DLL,
 };
 use super::{
     align_guest_memory_size, boot_probe, exit_reason, poll_runtime, start_vm, stop_vm,
@@ -53,6 +54,7 @@ fn vm_start_returns_backend_instance() {
     assert_eq!(instance.vcpu_id, 0);
     assert_eq!(instance.boot_mode, "direct-linux");
     assert!(instance.console_pipe_name.contains("ubuntu"));
+    assert!(instance.input_pipe_name.contains("ubuntu"));
     assert!(instance.guest_memory_size >= 16 * 1024 * 1024);
     let mut instance = instance;
     let boot = boot_probe(&mut instance).unwrap();
@@ -202,6 +204,69 @@ fn serial_io_action_captures_com1_output_and_status_reads() {
     )
     .unwrap();
     assert_eq!(status.read_value, Some(0x60));
+}
+
+#[test]
+fn serial_io_action_drains_guest_input_and_signals_irq() {
+    let mut state = SerialPortState::default();
+    state.push_input(b"xy");
+
+    let lsr = serial_io_action(
+        &mut state,
+        &VmExitInfo {
+            reason: exit_reason::IO_INSTRUCTION,
+            io_port: UART_LSR,
+            access_size: 1,
+            is_read: 1,
+            instruction_len: 1,
+            ..VmExitInfo::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(lsr.read_value, Some(0x61));
+
+    assert!(!state.pending_irq());
+    let _ = serial_io_action(
+        &mut state,
+        &VmExitInfo {
+            reason: exit_reason::IO_INSTRUCTION,
+            io_port: UART_IER_DLM,
+            access_size: 1,
+            is_read: 0,
+            io_data: 1,
+            instruction_len: 1,
+            ..VmExitInfo::default()
+        },
+    );
+    assert!(state.pending_irq());
+
+    let iir = serial_io_action(
+        &mut state,
+        &VmExitInfo {
+            reason: exit_reason::IO_INSTRUCTION,
+            io_port: UART_IIR_FCR,
+            access_size: 1,
+            is_read: 1,
+            instruction_len: 1,
+            ..VmExitInfo::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(iir.read_value, Some(0x04));
+
+    let first = serial_io_action(
+        &mut state,
+        &VmExitInfo {
+            reason: exit_reason::IO_INSTRUCTION,
+            io_port: UART_RBR_THR_DLL,
+            access_size: 1,
+            is_read: 1,
+            instruction_len: 1,
+            ..VmExitInfo::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(first.read_value, Some(b'x' as u32));
 }
 
 #[test]

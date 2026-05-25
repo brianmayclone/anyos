@@ -28,6 +28,7 @@ pub const VMEXIT_HLT: u64 = 0x78;
 pub const VMEXIT_IOIO: u64 = 0x7B;
 pub const VMEXIT_MSR: u64 = 0x7C;
 pub const VMEXIT_SHUTDOWN: u64 = 0x7F;
+pub const VMEXIT_XSETBV: u64 = 0x73;
 pub const VMEXIT_NPF: u64 = 0x400;
 
 // ── VMCB structures ─────────────────────────────────────────────────────
@@ -41,7 +42,8 @@ struct VmcbControl {
     intercept_dr_reads: u16,   // 0x004
     intercept_dr_writes: u16,  // 0x006
     intercept_exceptions: u32, // 0x008
-    intercepts: u64,           // 0x00C — misc intercepts (CPUID, HLT, I/O, MSR, etc.)
+    intercepts_low: u32,       // 0x00C — misc intercepts low dword
+    intercepts_high: u32,      // 0x010 — misc intercepts high dword
     _reserved1: [u8; 0x040 - 0x014],
     iopm_base_pa: u64,  // 0x040
     msrpm_base_pa: u64, // 0x048
@@ -57,9 +59,15 @@ struct VmcbControl {
     exit_int_info: u64,    // 0x088
     np_enable: u64,        // 0x090 — bit 0 enables NPT
     _reserved3: [u8; 0x0A8 - 0x098],
-    event_inj: u64, // 0x0A8 — EVENTINJ (event injection)
-    ncr3: u64,      // 0x0B0 — nested CR3 (NPT root)
-    _reserved4: [u8; 0x400 - 0x0B8],
+    event_inj: u64,                // 0x0A8 — EVENTINJ (event injection)
+    ncr3: u64,                     // 0x0B0 — nested CR3 (NPT root)
+    _reserved4: u64,               // 0x0B8 — virtualization extensions, unused
+    clean_bits: u32,               // 0x0C0
+    _reserved5: u32,               // 0x0C4
+    next_rip: u64,                 // 0x0C8 — valid when host supports NRIPS
+    fetched_instruction_len: u8,   // 0x0D0 — decode assists, when supported
+    fetched_instruction: [u8; 15], // 0x0D1
+    _reserved6: [u8; 0x400 - 0x0E0],
 }
 
 /// VMCB segment descriptor.
@@ -76,33 +84,33 @@ struct VmcbSegment {
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct VmcbStateSave {
-    es: VmcbSegment,   // 0x400
-    cs: VmcbSegment,   // 0x410
-    ss: VmcbSegment,   // 0x420
-    ds: VmcbSegment,   // 0x430
-    fs: VmcbSegment,   // 0x440
-    gs: VmcbSegment,   // 0x450
-    gdtr: VmcbSegment, // 0x460
-    ldtr: VmcbSegment, // 0x470
-    idtr: VmcbSegment, // 0x480
-    tr: VmcbSegment,   // 0x490
-    _reserved1: [u8; 0x4CB - 0x4A0],
-    cpl: u8, // 0x4CB
-    _reserved2: [u8; 0x4D0 - 0x4CC],
-    efer: u64, // 0x4D0
-    _reserved3: [u8; 0x548 - 0x4D8],
-    cr4: u64,    // 0x548
-    cr3: u64,    // 0x550
-    cr0: u64,    // 0x558
-    dr7: u64,    // 0x560
-    dr6: u64,    // 0x568
-    rflags: u64, // 0x570
-    rip: u64,    // 0x578
-    _reserved4: [u8; 0x5D8 - 0x580],
-    rsp: u64, // 0x5D8
-    _reserved5: [u8; 0x5F8 - 0x5E0],
-    rax: u64, // 0x5F8
-    _reserved6: [u8; 0x1000 - 0x600],
+    es: VmcbSegment,   // 0x000 (absolute VMCB offset 0x400)
+    cs: VmcbSegment,   // 0x010
+    ss: VmcbSegment,   // 0x020
+    ds: VmcbSegment,   // 0x030
+    fs: VmcbSegment,   // 0x040
+    gs: VmcbSegment,   // 0x050
+    gdtr: VmcbSegment, // 0x060
+    ldtr: VmcbSegment, // 0x070
+    idtr: VmcbSegment, // 0x080
+    tr: VmcbSegment,   // 0x090
+    _reserved1: [u8; 0x0CB - 0x0A0],
+    cpl: u8, // 0x0CB
+    _reserved2: [u8; 0x0D0 - 0x0CC],
+    efer: u64, // 0x0D0
+    _reserved3: [u8; 0x148 - 0x0D8],
+    cr4: u64,    // 0x148
+    cr3: u64,    // 0x150
+    cr0: u64,    // 0x158
+    dr7: u64,    // 0x160
+    dr6: u64,    // 0x168
+    rflags: u64, // 0x170
+    rip: u64,    // 0x178
+    _reserved4: [u8; 0x1D8 - 0x180],
+    rsp: u64, // 0x1D8
+    _reserved5: [u8; 0x1F8 - 0x1E0],
+    rax: u64, // 0x1F8
+    _reserved6: [u8; 0x0C00 - 0x200],
 }
 
 /// Full VMCB (4KB aligned).
@@ -111,6 +119,10 @@ struct Vmcb {
     control: VmcbControl,
     state: VmcbStateSave,
 }
+
+const _: [(); 0x400] = [(); core::mem::size_of::<VmcbControl>()];
+const _: [(); 0x0C00] = [(); core::mem::size_of::<VmcbStateSave>()];
+const _: [(); 0x1000] = [(); core::mem::size_of::<Vmcb>()];
 
 // ── Per-CPU state ────────────────────────────────────────────────────────
 
@@ -398,11 +410,13 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
         let vmcb = &mut *(super::phys_to_virt(vmcb_phys) as *mut Vmcb);
 
         // Control area
-        vmcb.control.intercepts = INTERCEPT_CPUID
+        let intercepts = INTERCEPT_CPUID
             | INTERCEPT_HLT
             | INTERCEPT_IOIO_PROT
             | INTERCEPT_MSR_PROT
             | INTERCEPT_SHUTDOWN;
+        vmcb.control.intercepts_low = intercepts as u32;
+        vmcb.control.intercepts_high = (intercepts >> 32) as u32;
         vmcb.control.iopm_base_pa = iopm_phys;
         vmcb.control.msrpm_base_pa = msrpm_phys;
         vmcb.control.guest_asid = 1; // Must be non-zero
@@ -531,7 +545,7 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
         let vm = find_vm_mut(&mut vms, vm_id)?;
         let vcpu = vm.vcpus[idx].as_mut()?;
 
-        let vmcb = &*(super::phys_to_virt(vmcb_phys) as *const Vmcb);
+        let vmcb = &mut *(super::phys_to_virt(vmcb_phys) as *mut Vmcb);
 
         // Save RAX back from VMCB
         vcpu.guest_gprs.rax = vmcb.state.rax;
@@ -540,6 +554,7 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
         let exit_code = vmcb.control.exit_code;
         let exit_info1 = vmcb.control.exit_info1;
         let exit_info2 = vmcb.control.exit_info2;
+        let instr_len = svm_exit_instruction_len(exit_code, vmcb);
 
         crate::serial_println!(
             "[svm] vmexit: code={:#x} info1={:#x} info2={:#x} rip={:#x} cs.base={:#x}",
@@ -583,7 +598,7 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
             0x1D => super::exit_reason::DR_ACCESS, // DR read
             0x6F => super::exit_reason::INVD,
             0x65 => super::exit_reason::PAUSE,
-            0x73 => super::exit_reason::XSETBV,
+            VMEXIT_XSETBV => super::exit_reason::XSETBV,
             0x7E => super::exit_reason::SMI,
             _ => exit_code as u32,
         };
@@ -599,12 +614,13 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
             hw_reason: exit_code as u32,
             qualification: exit_info1,
             guest_phys_addr: guest_phys,
+            instruction_len: instr_len,
             ..Default::default()
         };
 
         match exit_code {
             VMEXIT_HLT => {
-                // RIP is already advanced past HLT by VMRUN hardware.
+                vmcb.state.rip = vmcb.state.rip.wrapping_add(instr_len.max(1) as u64);
                 vcpu.mp_state = VcpuMpState::Halted;
                 info.reason = super::exit_reason::HLT_EMULATED;
             }
@@ -646,10 +662,37 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
                 info.io_data  = vcpu.guest_gprs.rax; // hypercall number
                 info.io_data2 = vcpu.guest_gprs.rbx; // first arg
             }
+            VMEXIT_XSETBV => {
+                info.msr_index = vcpu.guest_gprs.rcx as u32;
+                info.io_data =
+                    (vcpu.guest_gprs.rdx << 32) | (vcpu.guest_gprs.rax & 0xFFFF_FFFF);
+            }
             _ => {}
         }
 
         Some(info)
+    }
+}
+
+fn svm_exit_instruction_len(exit_code: u64, vmcb: &Vmcb) -> u32 {
+    let next_rip = vmcb.control.next_rip;
+    if next_rip > vmcb.state.rip {
+        let len = next_rip - vmcb.state.rip;
+        if len <= 15 {
+            return len as u32;
+        }
+    }
+
+    let fetched_len = vmcb.control.fetched_instruction_len as u32;
+    if (1..=15).contains(&fetched_len) {
+        return fetched_len;
+    }
+
+    match exit_code {
+        VMEXIT_CPUID | VMEXIT_MSR => 2,
+        VMEXIT_HLT => 1,
+        VMEXIT_XSETBV | 0x6E /* VMMCALL */ => 3,
+        _ => 0,
     }
 }
 

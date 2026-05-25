@@ -1144,6 +1144,7 @@ add_app(store       ${CMAKE_SOURCE_DIR}/apps/store         "App Store")
 if(NOT ANYOS_ARCH STREQUAL "arm64")
   add_app(vmmanager   ${CMAKE_SOURCE_DIR}/apps/vmmanager    "VM Manager")
   add_app(aslmanager  ${CMAKE_SOURCE_DIR}/apps/aslmanager   "ASL Manager")
+  add_app(aslconsole  ${CMAKE_SOURCE_DIR}/apps/aslconsole   "ASL Console")
 endif()
 add_app(anymail     ${CMAKE_SOURCE_DIR}/apps/anymail       "anyMail")
 add_app(anyzilla    ${CMAKE_SOURCE_DIR}/apps/anyzilla      "anyzilla")
@@ -1311,10 +1312,13 @@ add_custom_command(
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/CrashDialog.app/CrashDialog
   COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/CrashDialog.app
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CRASHDIALOG_SRC_DIR}/Info.conf
+    ${SYSROOT_DIR}/System/CrashDialog.app/Info.conf
   COMMAND ${ANYELF_EXECUTABLE} bin
     ${CRASHDIALOG_ELF}
     ${SYSROOT_DIR}/System/CrashDialog.app/CrashDialog
-  DEPENDS ${CRASHDIALOG_ELF} ${ANYELF_EXECUTABLE}
+  DEPENDS ${CRASHDIALOG_ELF} ${ANYELF_EXECUTABLE} ${CRASHDIALOG_SRC_DIR}/Info.conf
   COMMENT "Converting crashdialog ELF to flat binary"
 )
 list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/CrashDialog.app/CrashDialog)

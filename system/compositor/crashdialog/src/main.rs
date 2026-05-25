@@ -170,32 +170,6 @@ fn signal_detail(sig: u32) -> &'static str {
     }
 }
 
-fn parse_hex(s: &str) -> u64 {
-    let s = s.strip_prefix("0x").unwrap_or(s);
-    let mut val: u64 = 0;
-    for b in s.bytes() {
-        let digit = match b {
-            b'0'..=b'9' => b - b'0',
-            b'a'..=b'f' => b - b'a' + 10,
-            b'A'..=b'F' => b - b'A' + 10,
-            _ => break,
-        };
-        val = val.wrapping_shl(4) | digit as u64;
-    }
-    val
-}
-
-fn parse_u32(s: &str) -> u32 {
-    let mut val: u32 = 0;
-    for b in s.bytes() {
-        match b {
-            b'0'..=b'9' => val = val.wrapping_mul(10).wrapping_add((b - b'0') as u32),
-            _ => break,
-        }
-    }
-    val
-}
-
 fn trim_cstr(bytes: &[u8]) -> &str {
     let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     core::str::from_utf8(&bytes[..len]).unwrap_or("")
@@ -203,29 +177,31 @@ fn trim_cstr(bytes: &[u8]) -> &str {
 
 fn format_registers(report: Option<&CrashReport>) -> String {
     if let Some(r) = report {
-        return format!(
-            "    rax: {:#018x}    rbx: {:#018x}\n    rcx: {:#018x}    rdx: {:#018x}\n    rdi: {:#018x}    rsi: {:#018x}\n    rbp: {:#018x}    rsp: {:#018x}\n     r8: {:#018x}     r9: {:#018x}\n    r10: {:#018x}    r11: {:#018x}\n    r12: {:#018x}    r13: {:#018x}\n    r14: {:#018x}    r15: {:#018x}\n    rip: {:#018x} rflags: {:#018x}\n     cs: {:#018x}     ss: {:#018x}\n",
-            r.rax,
-            r.rbx,
-            r.rcx,
-            r.rdx,
-            r.rdi,
-            r.rsi,
-            r.rbp,
-            r.rsp,
-            r.r8,
-            r.r9,
-            r.r10,
-            r.r11,
-            r.r12,
-            r.r13,
-            r.r14,
-            r.r15,
-            r.rip,
-            r.rflags,
-            r.cs,
-            r.ss,
-        );
+        if r.valid {
+            return format!(
+                "    rax: {:#018x}    rbx: {:#018x}\n    rcx: {:#018x}    rdx: {:#018x}\n    rdi: {:#018x}    rsi: {:#018x}\n    rbp: {:#018x}    rsp: {:#018x}\n     r8: {:#018x}     r9: {:#018x}\n    r10: {:#018x}    r11: {:#018x}\n    r12: {:#018x}    r13: {:#018x}\n    r14: {:#018x}    r15: {:#018x}\n    rip: {:#018x} rflags: {:#018x}\n     cs: {:#018x}     ss: {:#018x}\n",
+                r.rax,
+                r.rbx,
+                r.rcx,
+                r.rdx,
+                r.rdi,
+                r.rsi,
+                r.rbp,
+                r.rsp,
+                r.r8,
+                r.r9,
+                r.r10,
+                r.r11,
+                r.r12,
+                r.r13,
+                r.r14,
+                r.r15,
+                r.rip,
+                r.rflags,
+                r.cs,
+                r.ss,
+            );
+        }
     }
 
     String::from("    No register dump was available for this crash.\n")
@@ -233,6 +209,9 @@ fn format_registers(report: Option<&CrashReport>) -> String {
 
 fn format_backtrace(report: Option<&CrashReport>) -> String {
     if let Some(r) = report {
+        if !r.valid {
+            return String::from("    No backtrace was available for this crash.\n");
+        }
         if r.num_frames == 0 {
             return String::from("    No stack frames were captured.\n");
         }
@@ -321,55 +300,68 @@ fn draw_warning_icon(canvas: &anyui::Canvas, p: DialogPalette) {
     canvas.fill_circle(40, 59, 4, 0xFFFFFFFF);
 }
 
+fn load_crash_report(path: &str) -> Option<CrashReport> {
+    let data = anyos_std::fs::read_to_vec(path).ok()?;
+    if data.len() < core::mem::size_of::<CrashReport>() {
+        return None;
+    }
+
+    let mut report = CrashReport::empty();
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            data.as_ptr(),
+            (&mut report as *mut CrashReport).cast::<u8>(),
+            core::mem::size_of::<CrashReport>(),
+        );
+    }
+    Some(report)
+}
+
+fn format_missing_report(path: &str) -> String {
+    format!(
+        "----------------------------------------\nCrash Report File Missing\n----------------------------------------\n\nCrashDialog could not read the report file:\n{}\n\nThe process crash was detected, but the Sessionhost report handoff did not provide a readable CrashReport payload.\n",
+        path,
+    )
+}
+
 fn main() {
     let mut arg_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut arg_buf);
 
-    let mut parts = args.splitn(4, ' ');
-    let tid_str = match parts.next() {
+    let mut parts = args.splitn(2, ' ');
+    let crash_log_path = match parts.next() {
         Some(s) if !s.is_empty() => s,
         _ => {
-            println!("crashdialog: usage: crashdialog <tid> <signal> <rip_hex> <thread_name>");
+            println!("crashdialog: usage: crashdialog <crash_report_path>");
             return;
         }
     };
-    let sig_str = parts.next().unwrap_or("0");
-    let rip_str = parts.next().unwrap_or("0");
-    let thread_name_arg = parts.next().unwrap_or("unknown");
 
-    let tid = parse_u32(tid_str);
-    let signal = parse_u32(sig_str);
-    let rip = parse_hex(rip_str);
-
-    let mut crash_report = CrashReport::empty();
-    let crash_buf = unsafe {
-        core::slice::from_raw_parts_mut(
-            (&mut crash_report as *mut CrashReport).cast::<u8>(),
-            core::mem::size_of::<CrashReport>(),
-        )
-    };
-    let crash_len = anyos_std::sys::get_crash_info(tid, crash_buf) as usize;
-    let report = if crash_len >= core::mem::size_of::<CrashReport>() {
-        Some(&crash_report)
-    } else {
-        None
-    };
+    let crash_report = load_crash_report(crash_log_path);
+    let report = crash_report.as_ref();
+    let tid = report.map(|r| r.tid).unwrap_or(0);
+    let signal = report.map(|r| r.signal).unwrap_or(0);
+    let rip = report.map(|r| r.rip).unwrap_or(0);
 
     let thread_name = if let Some(r) = report {
         let from_report = trim_cstr(&r.name);
         if from_report.is_empty() {
-            thread_name_arg
+            "unknown"
         } else {
             from_report
         }
     } else {
-        thread_name_arg
+        "unknown"
     };
 
     let crash_signal = report.map(|r| r.signal).unwrap_or(signal);
     let problem_title = format!("Problem Report for {}", thread_name);
     let headline_text = format!("{} quit unexpectedly.", thread_name);
-    let detail_text = format_problem_details(report, tid, signal, rip, thread_name);
+    let detail_text = if report.is_some() {
+        format_problem_details(report, tid, signal, rip, thread_name)
+    } else {
+        format_missing_report(crash_log_path)
+    };
 
     if !anyui::init() {
         println!("crashdialog: failed to init anyui");

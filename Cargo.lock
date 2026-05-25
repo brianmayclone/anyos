@@ -210,6 +210,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aslconsole"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+]
+
+[[package]]
 name = "aslconsoled"
 version = "0.1.0"
 dependencies = [

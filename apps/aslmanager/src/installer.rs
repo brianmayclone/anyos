@@ -2,9 +2,8 @@ use alloc::format;
 use alloc::string::String;
 use anyos_std::{fs, process, sys};
 use aslmanager_core::{
-    artifact_size_ok, const_time_eq, hex_encode,
-    is_safe_artifact_path as core_is_safe_artifact_path, official_http_fallback, parse_sha512_hex,
-    parse_u64, raw_disk_header_ok, should_try_http_fallback, Sha512,
+    artifact_size_ok, gzip_header_ok, is_safe_artifact_path as core_is_safe_artifact_path,
+    linux_kernel_header_ok, official_http_fallback, parse_u64, should_try_http_fallback,
 };
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use libanyui_client as anyui;
@@ -16,8 +15,6 @@ use crate::constants::*;
 static WORKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static WORKER_DONE: AtomicBool = AtomicBool::new(false);
 static WORKER_ERROR: AtomicBool = AtomicBool::new(false);
-static SKIP_VERIFY_REQUESTED: AtomicBool = AtomicBool::new(false);
-static SKIP_VERIFY_BTN_VISIBLE: AtomicBool = AtomicBool::new(false);
 const LOG_SLOT_COUNT: usize = 32;
 static LOG_SEQ: AtomicU32 = AtomicU32::new(0);
 static LOG_LINE_LEN: [AtomicU32; LOG_SLOT_COUNT] = [const { AtomicU32::new(0) }; LOG_SLOT_COUNT];
@@ -132,7 +129,6 @@ pub fn start_install() {
 
     WORKER_DONE.store(false, Ordering::Release);
     WORKER_ERROR.store(false, Ordering::Release);
-    SKIP_VERIFY_REQUESTED.store(false, Ordering::Release);
     crate::app().install_btn.set_enabled(false);
     crate::app().terminal_btn.set_enabled(false);
     crate::app().skip_verify_btn.set_enabled(false);
@@ -164,12 +160,6 @@ pub fn start_install() {
 }
 
 pub fn on_timer() {
-    let want_skip_btn = SKIP_VERIFY_BTN_VISIBLE.load(Ordering::Acquire)
-        && !SKIP_VERIFY_REQUESTED.load(Ordering::Acquire);
-    if crate::app().skip_verify_btn_enabled != want_skip_btn {
-        crate::app().skip_verify_btn.set_enabled(want_skip_btn);
-        crate::app().skip_verify_btn_enabled = want_skip_btn;
-    }
     let seq = LOG_SEQ.load(Ordering::Acquire);
     let mut had_logs = false;
     if seq > crate::app().last_log_seq {
@@ -218,28 +208,20 @@ pub fn on_timer() {
 }
 
 pub fn skip_verify() {
-    if SKIP_VERIFY_REQUESTED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        log_line("User requested to skip SHA-512 verification.");
-    }
+    log_line("No pinned hash verifier is active for Debian netboot artifacts.");
 }
 
 pub fn open_terminal() {
-    let tid = process::launch_app(
-        "/Applications/Terminal.app/Terminal",
-        "ASL --run aslctl shell debian --fallback-console",
-    );
+    let tid = process::launch_app("/Applications/ASL Console.app/ASL Console", DISTRO_NAME);
     if tid == u32::MAX {
         crate::app()
             .status_label
-            .set_text("Could not open Terminal. Run aslctl shell debian.");
+            .set_text("Could not open ASL Console. Run aslctl console-canvas debian.");
     } else {
         crate::app()
             .status_label
-            .set_text("ASL terminal opened for Debian.");
-        log_line_ui("Terminal opened and attached to Debian.");
+            .set_text("ASL Console opened for Debian.");
+        log_line_ui("ASL Console opened and attached to Debian.");
     }
 }
 
@@ -286,18 +268,30 @@ fn install_worker() {
     }
 
     if !ensure_artifact(
-        &cfg.base_image_path,
-        &cfg.base_image_tmp,
-        &cfg.debian_raw_url,
+        &cfg.kernel_path,
+        &cfg.kernel_tmp,
+        &cfg.debian_kernel_url,
         &cfg,
-        ArtifactKind::RawDisk {
-            expected_sha512_hex: Some(DEBIAN_RAW_SHA512_HEX),
-        },
-        "Debian VM disk",
+        ArtifactKind::LinuxKernel,
+        "Debian netboot kernel",
         10,
-        68,
+        34,
     ) {
-        finish_error("Debian VM disk download failed");
+        finish_error("Debian netboot kernel download failed");
+        return;
+    }
+
+    if !ensure_artifact(
+        &cfg.initrd_path,
+        &cfg.initrd_tmp,
+        &cfg.debian_initrd_url,
+        &cfg,
+        ArtifactKind::InitrdGzip,
+        "Debian netboot initrd",
+        44,
+        34,
+    ) {
+        finish_error("Debian netboot initrd download failed");
         return;
     }
 
@@ -305,7 +299,7 @@ fn install_worker() {
     set_phase("Registering Debian with asld");
     match asld::request(&format!("STATUS {}", DISTRO_NAME)) {
         Ok(resp) if resp.ok => {
-            if !ensure_seabios_config() {
+            if !ensure_kernel_profile_config() {
                 finish_error("could not update Debian ASL profile");
                 return;
             }
@@ -366,31 +360,17 @@ fn install_worker() {
     }
 
     set_progress(100);
-    set_phase("Debian is starting");
-    set_status("Debian is starting. Open Terminal to attach.");
-    log_line("Done. Debian has been installed and started.");
+    set_phase("Debian installer is starting");
+    set_status("Debian netboot is starting. Open Console to attach.");
+    log_line("Done. Debian netboot has been installed and started.");
     WORKER_ERROR.store(false, Ordering::Release);
     WORKER_DONE.store(true, Ordering::Release);
 }
 
 #[derive(Clone, Copy)]
 enum ArtifactKind {
-    /// Raw bootable disk image. `expected_sha512_hex`, when `Some`, is
-    /// the pinned SHA-512 from `constants.rs` (ADR-0011 stage 2). When
-    /// `None`, only stage-1 size + MBR validation runs.
-    RawDisk {
-        expected_sha512_hex: Option<&'static str>,
-    },
-}
-
-impl ArtifactKind {
-    fn has_pinned_hash(self) -> bool {
-        match self {
-            ArtifactKind::RawDisk {
-                expected_sha512_hex,
-            } => expected_sha512_hex.is_some(),
-        }
-    }
+    LinuxKernel,
+    InitrdGzip,
 }
 
 fn ensure_artifact(
@@ -438,7 +418,7 @@ fn ensure_artifact(
         set_phase(&format!("Downloading {}", label));
         log_line(&format!("Downloading {} from Debian mirror.", label));
         let userdata = ((base as u64) << 32) | span as u64;
-        if !download_with_retries(url, tmp, label, userdata, kind.has_pinned_hash()) {
+        if !download_with_retries(url, tmp, label, userdata) {
             return false;
         }
     }
@@ -447,24 +427,10 @@ fn ensure_artifact(
         let _ = fs::unlink(tmp);
         return false;
     }
-    // ADR-0011 stage 2: SHA-512 hash pin. If the artifact specifies an
-    // expected hash, run a second read-pass and compare. On mismatch,
-    // refuse the download and unlink. Mismatch likely means: stale pin
-    // after Debian rotated `latest`, mirror corruption, or active
-    // tampering — all require operator attention.
-    if let Some(verdict) = verify_artifact_hash(tmp, kind, label) {
-        if !verdict {
-            let _ = fs::unlink(tmp);
-            return false;
-        }
-    } else {
-        // No hash pinned for this artifact — fall back to stage-1
-        // language so operators don't think it was hash-verified.
-        log_line(&format!(
-            "WARN: {} verified by size + MBR signature only (ADR-0011 stage 1).",
-            label
-        ));
-    }
+    log_line(&format!(
+        "{} verified by size + format signature (ADR-0011 stage 1).",
+        label
+    ));
 
     let _ = fs::unlink(path);
     if fs::rename(tmp, path) != 0 {
@@ -473,191 +439,6 @@ fn ensure_artifact(
     }
     log_line(&format!("{} ready.", label));
     true
-}
-
-/// Run ADR-0011 stage-2 hash verification against the pinned hex digest
-/// associated with `kind`.
-///
-/// Returns:
-/// - `None` if no hash is pinned for this artifact kind (caller should
-///   fall back to stage-1 language).
-/// - `Some(true)` on successful match.
-/// - `Some(false)` on read failure, parse failure, or hash mismatch.
-fn verify_artifact_hash(path: &str, kind: ArtifactKind, label: &str) -> Option<bool> {
-    let expected_hex = match kind {
-        ArtifactKind::RawDisk {
-            expected_sha512_hex,
-        } => expected_sha512_hex?,
-    };
-    let Some(expected) = parse_sha512_hex(expected_hex) else {
-        log_line(&format!(
-            "ERROR: pinned SHA-512 for {} is not 128 hex chars; refusing artifact.",
-            label
-        ));
-        return Some(false);
-    };
-
-    set_phase(&format!("Verifying {} (SHA-512)", label));
-    log_line(&format!(
-        "Computing SHA-512 of {} for stage-2 image-trust check.",
-        label
-    ));
-    SKIP_VERIFY_BTN_VISIBLE.store(true, Ordering::Release);
-    let total_bytes = partial_file_size(path);
-    set_transfer_status(&format!(
-        "Verify: hashing {} ({})",
-        label,
-        format_bytes(total_bytes as u64)
-    ));
-    let result = compute_file_sha512(path, label, total_bytes);
-    SKIP_VERIFY_BTN_VISIBLE.store(false, Ordering::Release);
-    let actual = match result {
-        HashResult::Done(digest) => digest,
-        HashResult::Skipped => {
-            log_line(&format!(
-                "WARN: SHA-512 verification of {} skipped by user (ADR-0011 stage 2 bypassed).",
-                label
-            ));
-            set_transfer_status("Verify: skipped by user.");
-            return None;
-        }
-        HashResult::Failed => {
-            log_line(&format!(
-                "ERROR: could not read back {} for hash verification.",
-                label
-            ));
-            return Some(false);
-        }
-    };
-
-    if !const_time_eq(&actual, &expected) {
-        log_line(&format!(
-            "ERROR: {} SHA-512 mismatch (ADR-0011 stage 2).",
-            label
-        ));
-        log_line(&format!("  expected: {}", expected_hex));
-        log_line(&format!("  actual:   {}", hex_encode(&actual)));
-        log_line(
-            "  Pinned hash may be stale after a Debian release rotation. \
-             Verify against https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS \
-             and update DEBIAN_RAW_SHA512_HEX if appropriate.",
-        );
-        return Some(false);
-    }
-
-    log_line(&format!(
-        "OK: {} SHA-512 matches pinned digest (ADR-0011 stage 2).",
-        label
-    ));
-    Some(true)
-}
-
-enum HashResult {
-    Done([u8; 64]),
-    Skipped,
-    Failed,
-}
-
-/// Stream-read `path` and return its SHA-512 digest. 64 KiB buffer keeps
-/// the stack small. Returns `Failed` if open fails or any read errors,
-/// or `Skipped` if the user clicked the Skip Verify button mid-hash.
-/// Posts periodic transfer-status updates so the UI shows the verify is
-/// progressing — hashing a multi-GiB image otherwise looks like a hang.
-fn compute_file_sha512(path: &str, label: &str, total_bytes: u32) -> HashResult {
-    let fd = fs::open(path, 0);
-    if fd == u32::MAX {
-        return HashResult::Failed;
-    }
-    let mut hasher = Sha512::new();
-    // 1 MiB buffer: reduces syscall count by ~16x vs 64 KiB on multi-GiB
-    // images. SHA-512 in pure software is the limit on most disks anyway,
-    // so larger reads mainly amortize syscall + FS-block-walk overhead.
-    let mut buf = alloc::vec![0u8; 1024 * 1024];
-    let mut hashed: u64 = 0;
-    let mut read_ms: u64 = 0;
-    let mut hash_ms: u64 = 0;
-    let start_ms = sys::uptime_ms();
-    let mut last_ui_ms = start_ms;
-    loop {
-        if SKIP_VERIFY_REQUESTED.load(Ordering::Acquire) {
-            let _ = fs::close(fd);
-            return HashResult::Skipped;
-        }
-        let t0 = sys::uptime_ms();
-        let n = fs::read(fd, &mut buf);
-        let t1 = sys::uptime_ms();
-        read_ms = read_ms.saturating_add(t1.wrapping_sub(t0) as u64);
-        if n == u32::MAX {
-            let _ = fs::close(fd);
-            return HashResult::Failed;
-        }
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n as usize]);
-        let t2 = sys::uptime_ms();
-        hash_ms = hash_ms.saturating_add(t2.wrapping_sub(t1) as u64);
-        hashed = hashed.saturating_add(n as u64);
-
-        let now = sys::uptime_ms();
-        if now.wrapping_sub(last_ui_ms) >= 500 {
-            last_ui_ms = now;
-            let elapsed_ms = now.wrapping_sub(start_ms).max(1) as u64;
-            let rate_bps = (hashed * 1000) / elapsed_ms;
-            let rate = if rate_bps == 0 {
-                String::from("measuring speed")
-            } else {
-                format!("{}/s", format_bytes(rate_bps))
-            };
-            let text = if total_bytes == 0 {
-                format!(
-                    "Verify: {} hashed ({}) - {}",
-                    format_bytes(hashed),
-                    label,
-                    rate
-                )
-            } else {
-                let total = total_bytes as u64;
-                let pct = ((hashed * 100) / total.max(1)).min(100) as u32;
-                let eta = if rate_bps == 0 || hashed >= total {
-                    String::from("ETA --:--")
-                } else {
-                    let remaining = total.saturating_sub(hashed);
-                    let secs = ((remaining + rate_bps - 1) / rate_bps) as u32;
-                    format!("{} left", format_duration(secs))
-                };
-                format!(
-                    "Verify: {} / {} ({}%) - {} - {}",
-                    format_bytes(hashed),
-                    format_bytes(total),
-                    pct,
-                    rate,
-                    eta
-                )
-            };
-            set_transfer_status(&text);
-        }
-    }
-    let _ = fs::close(fd);
-    set_transfer_status(&format!(
-        "Verify: {} hashed ({})",
-        label,
-        format_bytes(hashed)
-    ));
-    let total_ms = sys::uptime_ms().wrapping_sub(start_ms) as u64;
-    let avg_bps = if total_ms == 0 {
-        0
-    } else {
-        (hashed * 1000) / total_ms
-    };
-    log_line(&format!(
-        "SHA-512 timing: total {} ms, read {} ms, hash {} ms, throughput {}/s",
-        total_ms,
-        read_ms,
-        hash_ms,
-        format_bytes(avg_bps)
-    ));
-    HashResult::Done(hasher.finalize())
 }
 
 fn preflight_tmp_path(tmp: &str, label: &str, keep_existing: bool) -> bool {
@@ -681,27 +462,8 @@ fn preflight_tmp_path(tmp: &str, label: &str, keep_existing: bool) -> bool {
     true
 }
 
-fn download_with_retries(
-    url: &str,
-    tmp: &str,
-    label: &str,
-    userdata: u64,
-    prefer_http_for_pinned_artifact: bool,
-) -> bool {
+fn download_with_retries(url: &str, tmp: &str, label: &str, userdata: u64) -> bool {
     let fallback_url = official_http_fallback(url);
-    if prefer_http_for_pinned_artifact {
-        if let Some(ref http_url) = fallback_url {
-            log_line(
-                "Using Debian's HTTP cloud mirror transport for hash-pinned artifact; \
-                 SHA-512 verification remains mandatory after download.",
-            );
-            if attempt_download(http_url, tmp, label, userdata, "HTTP verified") {
-                return true;
-            }
-            log_line("HTTP verified transport failed; retrying HTTPS endpoint.");
-        }
-    }
-
     if attempt_download(url, tmp, label, userdata, "HTTPS") {
         return true;
     }
@@ -906,12 +668,14 @@ fn ensure_dirs(cfg: &ManagerConfig) -> bool {
     log_line(&format!("ASL root: {}", cfg.asl_root));
     log_line(&format!("Distro directory: {}", cfg.distro_root));
     log_line(&format!("Image directory: {}", cfg.images_dir));
+    log_line(&format!("Boot directory: {}", cfg.boot_dir));
     for dir in [
         "/System/var",
         cfg.asl_root.as_str(),
         cfg.distros_root.as_str(),
         cfg.distro_root.as_str(),
         cfg.images_dir.as_str(),
+        cfg.boot_dir.as_str(),
     ] {
         if fs::mkdir(dir) == u32::MAX && !dir_exists(dir) {
             log_line(&format!("Could not create ASL directory: {}", dir));
@@ -923,13 +687,8 @@ fn ensure_dirs(cfg: &ManagerConfig) -> bool {
 
 fn artifacts_ready() -> bool {
     let cfg = &crate::app().config;
-    verified_artifact(
-        &cfg.base_image_path,
-        cfg,
-        ArtifactKind::RawDisk {
-            expected_sha512_hex: Some(DEBIAN_RAW_SHA512_HEX),
-        },
-    )
+    verified_artifact(&cfg.kernel_path, cfg, ArtifactKind::LinuxKernel)
+        && verified_artifact(&cfg.initrd_path, cfg, ArtifactKind::InitrdGzip)
 }
 
 fn verified_artifact(path: &str, cfg: &ManagerConfig, kind: ArtifactKind) -> bool {
@@ -937,7 +696,8 @@ fn verified_artifact(path: &str, cfg: &ManagerConfig, kind: ArtifactKind) -> boo
         return false;
     }
     let min_size = match kind {
-        ArtifactKind::RawDisk { .. } => RAW_DISK_MIN_BYTES,
+        ArtifactKind::LinuxKernel => LINUX_KERNEL_MIN_BYTES,
+        ArtifactKind::InitrdGzip => INITRD_MIN_BYTES,
     };
     let mut stat_buf = [0u32; 7];
     if fs::stat(path, &mut stat_buf) != 0 {
@@ -949,7 +709,8 @@ fn verified_artifact(path: &str, cfg: &ManagerConfig, kind: ArtifactKind) -> boo
     let mut header = [0u8; 520];
     let read = read_prefix(path, &mut header);
     match kind {
-        ArtifactKind::RawDisk { .. } => raw_disk_header_ok(&header, read),
+        ArtifactKind::LinuxKernel => linux_kernel_header_ok(&header, read),
+        ArtifactKind::InitrdGzip => gzip_header_ok(&header, read),
     }
 }
 
@@ -968,20 +729,20 @@ fn read_prefix(path: &str, buf: &mut [u8]) -> usize {
 }
 
 fn is_safe_artifact_path(path: &str, cfg: &ManagerConfig) -> bool {
-    core_is_safe_artifact_path(path, &cfg.images_dir)
+    core_is_safe_artifact_path(path, &cfg.distro_root)
 }
 
-fn ensure_seabios_config() -> bool {
+fn ensure_kernel_profile_config() -> bool {
     let config = asld::request(&format!("CONFIG_SHOW {}", DISTRO_NAME));
     match config {
         Ok(resp) if resp.ok => {
             let profile = asld::field_value(&resp.lines, "kernel_profile").unwrap_or("-");
             if profile == KERNEL_PROFILE {
-                log_line("ASL distro already exists with SeaBIOS profile; reusing it.");
+                log_line("ASL distro already exists with direct Linux profile; reusing it.");
                 return true;
             }
             log_line(
-                "Existing Debian profile is not a bootable VM profile; replacing ASL registration.",
+                "Existing Debian profile is not the netboot profile; replacing ASL registration.",
             );
             match asld::request(&format!("DELETE {}\t1", DISTRO_NAME)) {
                 Ok(resp) if resp.ok => {}
@@ -1000,7 +761,7 @@ fn ensure_seabios_config() -> bool {
             );
             match asld::request(&cmd) {
                 Ok(resp) if resp.ok => {
-                    log_line("ASL distro recreated with SeaBIOS VM profile.");
+                    log_line("ASL distro recreated with direct Linux netboot profile.");
                     true
                 }
                 Ok(resp) => {
