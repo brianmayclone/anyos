@@ -142,7 +142,9 @@ pub fn current_fd_set_linux_fb_position(fd: u32, position: u32) -> bool {
     let Some(idx) = sched.current_idx(cpu) else {
         return false;
     };
-    sched.threads[idx].fd_table.set_linux_fb_position(fd, position)
+    sched.threads[idx]
+        .fd_table
+        .set_linux_fb_position(fd, position)
 }
 
 /// Update the cursor for a lxe Linux proc pseudo-file in the current FD table.

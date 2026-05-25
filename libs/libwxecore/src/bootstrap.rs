@@ -2,6 +2,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::{fs, print, println, sys};
 use libtls::crypto::sha256::Sha256;
+use libzip_client::ZipReader;
 
 use crate::config::WxeConfig;
 
@@ -36,6 +37,10 @@ pub fn bootstrap_microsoft(config: &WxeConfig, accept_licenses: bool) -> bool {
         println!("wxe bootstrap: failed to load libhttp");
         return false;
     }
+    if !libzip_client::init() {
+        println!("wxe bootstrap: failed to load libzip");
+        return false;
+    }
 
     let mut manifest = String::new();
     manifest.push_str("wxe-microsoft-bootstrap-v1\n");
@@ -61,7 +66,14 @@ pub fn bootstrap_microsoft(config: &WxeConfig, accept_licenses: bool) -> bool {
 
     let sysinternals_zip = join(&ms_cache, "SysinternalsSuite.zip");
     if download_payload("sysinternals-suite", SYSINTERNALS_URL, &sysinternals_zip) {
-        manifest_file(&mut manifest, "payload.sysinternals-suite", &sysinternals_zip);
+        manifest_file(
+            &mut manifest,
+            "payload.sysinternals-suite",
+            &sysinternals_zip,
+        );
+        if !install_sysinternals(config, &sysinternals_zip, &mut manifest) {
+            ok = false;
+        }
     } else {
         ok = false;
     }
@@ -69,6 +81,15 @@ pub fn bootstrap_microsoft(config: &WxeConfig, accept_licenses: bool) -> bool {
     let vcredist_x64 = join(&ms_cache, "VC_redist.x64.exe");
     if download_payload("vcredist-x64", VCREDIST_X64_URL, &vcredist_x64) {
         manifest_file(&mut manifest, "payload.vcredist-x64", &vcredist_x64);
+        if !stage_installer(
+            config,
+            "vcredist-x64",
+            &vcredist_x64,
+            "VC_redist.x64.exe",
+            &mut manifest,
+        ) {
+            ok = false;
+        }
     } else {
         ok = false;
     }
@@ -94,6 +115,9 @@ pub fn bootstrap_microsoft(config: &WxeConfig, accept_licenses: bool) -> bool {
                     manifest.push_str("payload.microsoft-edit.url=");
                     manifest.push_str(&url);
                     manifest.push('\n');
+                    if !install_microsoft_edit(config, &ms_cache, &edit_zip, &mut manifest) {
+                        ok = false;
+                    }
                 } else {
                     ok = false;
                 }
@@ -108,8 +132,8 @@ pub fn bootstrap_microsoft(config: &WxeConfig, accept_licenses: bool) -> bool {
         }
     }
 
-    manifest.push_str("windows-os.cmd.exe=requires-windows-media-import\n");
-    manifest.push_str("windows-os.command-builtins=implemented-by-cmd.exe\n");
+    manifest.push_str("windows-os.cmd.exe=provided-by-wxe-shell-until-native-payload\n");
+    manifest.push_str("windows-os.command-builtins=provided-by-wxe-shell\n");
     manifest.push_str("windows-os.copy=cmd-builtin\n");
     manifest.push_str("windows-os.dir=cmd-builtin\n");
     manifest.push_str("windows-os.type=cmd-builtin\n");
@@ -125,7 +149,7 @@ pub fn bootstrap_microsoft(config: &WxeConfig, accept_licenses: bool) -> bool {
     }
 
     if ok {
-        println!("wxe bootstrap: downloads complete");
+        println!("wxe bootstrap: downloads installed");
     } else {
         println!("wxe bootstrap: completed with missing payloads");
     }
@@ -151,7 +175,185 @@ pub fn print_license_gate() {
     println!("  {}", MICROSOFT_LEARN_VCREDIST);
     println!();
     println!("Windows OS files such as cmd.exe are not standalone downloads here.");
-    println!("They must be imported from user-provided Windows media or replaced by WXE.");
+    println!("WXE uses its built-in command shell until a native cmd.exe payload exists.");
+}
+
+fn install_sysinternals(config: &WxeConfig, zip_path: &str, manifest: &mut String) -> bool {
+    let dest = join(&config.drive_c, "Program Files/Sysinternals");
+    println!("wxe bootstrap: installing Sysinternals to {}", dest);
+    let report = install_zip_payload(zip_path, &dest);
+    write_install_report(manifest, "install.sysinternals", &dest, &report);
+    print_install_report("sysinternals-suite", &report);
+    report.ok
+}
+
+fn install_microsoft_edit(
+    config: &WxeConfig,
+    cache_dir: &str,
+    package_path: &str,
+    manifest: &mut String,
+) -> bool {
+    let dest = join(&config.drive_c, "Program Files/Microsoft/Edit");
+    println!("wxe bootstrap: installing Microsoft Edit to {}", dest);
+
+    let install_source = match extract_nested_msix(package_path, cache_dir, manifest) {
+        Some(path) => path,
+        None => String::from(package_path),
+    };
+
+    let report = install_zip_payload(&install_source, &dest);
+    write_install_report(manifest, "install.microsoft-edit", &dest, &report);
+    print_install_report("microsoft-edit", &report);
+    report.ok
+}
+
+fn stage_installer(
+    config: &WxeConfig,
+    key: &str,
+    src: &str,
+    file_name: &str,
+    manifest: &mut String,
+) -> bool {
+    let dest_dir = join(&config.drive_c, "ProgramData/WXE/Installers");
+    ensure_dir_recursive(&dest_dir);
+    let dest = join(&dest_dir, file_name);
+    println!("wxe bootstrap: staging {} installer at {}", key, dest);
+    if copy_file(src, &dest) {
+        manifest_path(manifest, &alloc::format!("install.{}", key), &dest);
+        manifest.push_str("install.");
+        manifest.push_str(key);
+        manifest.push_str(".mode=staged-installer\n");
+        true
+    } else {
+        println!("wxe bootstrap: failed to stage {}", key);
+        false
+    }
+}
+
+fn extract_nested_msix(
+    package_path: &str,
+    cache_dir: &str,
+    manifest: &mut String,
+) -> Option<String> {
+    let reader = ZipReader::open(package_path)?;
+    let mut selected = None;
+    for i in 0..reader.entry_count() {
+        let name = reader.entry_name(i);
+        let lower = ascii_lower(&name);
+        if lower.ends_with(".msix") || lower.ends_with(".appx") {
+            if selected.is_none()
+                || lower.contains("x64")
+                || lower.contains("amd64")
+                || lower.contains("x86_64")
+            {
+                selected = Some((i, name));
+                if lower.contains("x64") || lower.contains("amd64") || lower.contains("x86_64") {
+                    break;
+                }
+            }
+        }
+    }
+
+    let (index, name) = selected?;
+    let out_path = join(cache_dir, "MicrosoftEdit-Package.msix");
+    println!("wxe bootstrap: extracting nested Edit package {}", name);
+    if reader.extract_to_file(index, &out_path) {
+        manifest_path(manifest, "payload.microsoft-edit.inner-package", &out_path);
+        Some(out_path)
+    } else {
+        println!("wxe bootstrap: failed to extract nested Edit package");
+        None
+    }
+}
+
+struct InstallReport {
+    ok: bool,
+    files: u32,
+    dirs: u32,
+    exes: u32,
+    skipped: u32,
+}
+
+fn install_zip_payload(zip_path: &str, dest_root: &str) -> InstallReport {
+    let mut report = InstallReport {
+        ok: true,
+        files: 0,
+        dirs: 0,
+        exes: 0,
+        skipped: 0,
+    };
+
+    ensure_dir_recursive(dest_root);
+    let Some(reader) = ZipReader::open(zip_path) else {
+        println!("wxe bootstrap: failed to open archive {}", zip_path);
+        report.ok = false;
+        return report;
+    };
+
+    for i in 0..reader.entry_count() {
+        let name = reader.entry_name(i);
+        let Some(rel) = safe_archive_path(&name) else {
+            report.skipped += 1;
+            continue;
+        };
+        if rel.is_empty() {
+            report.skipped += 1;
+            continue;
+        }
+
+        let dest = join(dest_root, &rel);
+        if reader.entry_is_dir(i) || name.ends_with('/') || name.ends_with('\\') {
+            ensure_dir_recursive(&dest);
+            report.dirs += 1;
+            continue;
+        }
+
+        if let Some(parent) = parent_path(&dest) {
+            ensure_dir_recursive(&parent);
+        }
+        if reader.extract_to_file(i, &dest) {
+            report.files += 1;
+            if ascii_lower(&rel).ends_with(".exe") {
+                report.exes += 1;
+            }
+        } else {
+            println!("wxe bootstrap: failed to extract {}", name);
+            report.ok = false;
+        }
+    }
+
+    report
+}
+
+fn write_install_report(manifest: &mut String, key: &str, dest: &str, report: &InstallReport) {
+    manifest_path(manifest, key, dest);
+    manifest.push_str(key);
+    manifest.push_str(".files=");
+    manifest.push_str(&alloc::format!("{}", report.files));
+    manifest.push('\n');
+    manifest.push_str(key);
+    manifest.push_str(".dirs=");
+    manifest.push_str(&alloc::format!("{}", report.dirs));
+    manifest.push('\n');
+    manifest.push_str(key);
+    manifest.push_str(".exes=");
+    manifest.push_str(&alloc::format!("{}", report.exes));
+    manifest.push('\n');
+    manifest.push_str(key);
+    manifest.push_str(".skipped=");
+    manifest.push_str(&alloc::format!("{}", report.skipped));
+    manifest.push('\n');
+    manifest.push_str(key);
+    manifest.push_str(".status=");
+    manifest.push_str(if report.ok { "ok" } else { "partial" });
+    manifest.push('\n');
+}
+
+fn print_install_report(name: &str, report: &InstallReport) {
+    println!(
+        "wxe bootstrap: installed {}: {} files, {} executables, {} skipped",
+        name, report.files, report.exes, report.skipped
+    );
 }
 
 extern "C" fn progress_callback(received: u32, total: u32, _userdata: u64) {
@@ -226,7 +428,8 @@ fn select_edit_windows_asset(data: &[u8]) -> Option<String> {
             return Some(url.clone());
         }
     }
-    urls.into_iter().find(|url| ascii_lower(url).ends_with(".zip"))
+    urls.into_iter()
+        .find(|url| ascii_lower(url).ends_with(".zip"))
 }
 
 fn ascii_lower(value: &str) -> String {
@@ -334,6 +537,95 @@ fn current_time_string() -> String {
         buf[5] as u32,
         buf[6] as u32
     )
+}
+
+fn safe_archive_path(name: &str) -> Option<String> {
+    if name.is_empty() || name.starts_with('/') || name.starts_with('\\') || name.contains(':') {
+        return None;
+    }
+
+    let mut out = String::new();
+    for part in name.split(|c| c == '/' || c == '\\') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            return None;
+        }
+        if !out.is_empty() {
+            out.push('/');
+        }
+        out.push_str(part);
+    }
+    Some(out)
+}
+
+fn ensure_dir_recursive(path: &str) {
+    let mut cur = String::new();
+    for part in path.split('/') {
+        if part.is_empty() {
+            if cur.is_empty() {
+                cur.push('/');
+            }
+            continue;
+        }
+        if cur.len() > 1 && !cur.ends_with('/') {
+            cur.push('/');
+        }
+        cur.push_str(part);
+        let _ = fs::mkdir(&cur);
+    }
+}
+
+fn parent_path(path: &str) -> Option<String> {
+    let pos = path.rfind('/')?;
+    if pos == 0 {
+        Some(String::from("/"))
+    } else {
+        Some(String::from(&path[..pos]))
+    }
+}
+
+fn copy_file(src: &str, dest: &str) -> bool {
+    let in_fd = fs::open(src, 0);
+    if in_fd == u32::MAX {
+        return false;
+    }
+
+    let out_fd = fs::open(dest, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if out_fd == u32::MAX {
+        let _ = fs::close(in_fd);
+        return false;
+    }
+
+    let mut ok = true;
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = fs::read(in_fd, &mut buf);
+        if n == u32::MAX {
+            ok = false;
+            break;
+        }
+        if n == 0 {
+            break;
+        }
+        let mut written = 0usize;
+        while written < n as usize {
+            let m = fs::write(out_fd, &buf[written..n as usize]);
+            if m == u32::MAX || m == 0 {
+                ok = false;
+                break;
+            }
+            written += m as usize;
+        }
+        if !ok {
+            break;
+        }
+    }
+
+    let _ = fs::close(in_fd);
+    let _ = fs::close(out_fd);
+    ok
 }
 
 fn ensure_dir(path: &str) {

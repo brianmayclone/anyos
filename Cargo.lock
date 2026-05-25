@@ -1520,6 +1520,7 @@ dependencies = [
  "libconf_schema",
  "libhttp_client",
  "libtls",
+ "libzip_client",
 ]
 
 [[package]]

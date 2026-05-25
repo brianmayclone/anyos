@@ -80,10 +80,20 @@ fn status(config: &WxeConfig) {
         }
     );
     println!("  system32: {}", config.system32());
-    println!("  default-cwd: {}{}", config.default_drive, config.default_cwd);
+    println!(
+        "  default-cwd: {}{}",
+        config.default_drive, config.default_cwd
+    );
     println!("  comspec: {}", config.comspec);
     println!("  spawn-syscall: SYS_WXE_SPAWN");
-    println!("  loader: PE32+ console tier, imports blocked until DLL routing lands");
+    println!("  loader: PE32+ console tier, WXE DLL imports and console file APIs");
+    println!(
+        "  routes: {} NT services, {} DLL routes, {} UI routes, {} libanyui bindings",
+        crate::rootfs::nt_service_count(),
+        crate::rootfs::dll_route_count(),
+        crate::rootfs::ui_route_count(),
+        crate::rootfs::anyui_binding_count()
+    );
     println!("  microsoft-payloads: explicit bootstrap/import only");
 }
 
@@ -91,7 +101,8 @@ fn init(config: &WxeConfig, args: &[&str]) {
     if crate::rootfs::ensure_rootfs_layout(config) {
         log_ok!("wxe root ready at {}", config.root);
         log_ok!("drive C: mapped to {}", config.drive_c);
-        log_warn!("wxe DLL payloads are planned but not generated yet");
+        log_ok!("ntdll, Win32, UI and libanyui binding manifests installed");
+        log_ok!("generated WXE PE DLL payloads installed in System32");
         if has_arg(args, "--bootstrap-ms") {
             log_warn!("Microsoft payload bootstrap requested explicitly");
             let _ = crate::bootstrap::bootstrap_microsoft(
@@ -111,10 +122,8 @@ fn repair(config: &WxeConfig) {
 }
 
 fn bootstrap_ms(config: &WxeConfig, args: &[&str]) {
-    let _ = crate::bootstrap::bootstrap_microsoft(
-        config,
-        has_arg(args, "--accept-microsoft-licenses"),
-    );
+    let _ =
+        crate::bootstrap::bootstrap_microsoft(config, has_arg(args, "--accept-microsoft-licenses"));
 }
 
 fn inspect(config: &WxeConfig, args: &[&str]) {
@@ -122,8 +131,9 @@ fn inspect(config: &WxeConfig, args: &[&str]) {
         log_error!("wxe inspect: missing PE path");
         return;
     };
-    let native_path = resolve_windows_path(config, &config.default_drive, &config.default_cwd, path)
-        .unwrap_or_else(|| String::from(*path));
+    let native_path =
+        resolve_windows_path(config, &config.default_drive, &config.default_cwd, path)
+            .unwrap_or_else(|| String::from(*path));
     match fs::read_to_vec(&native_path) {
         Ok(data) => {
             print!("{}", crate::pe::diagnose(&data));
@@ -137,8 +147,9 @@ fn run(config: &WxeConfig, args: &[&str]) {
         log_error!("wxe run: missing PE path");
         return;
     };
-    let native_path = resolve_windows_path(config, &config.default_drive, &config.default_cwd, path)
-        .unwrap_or_else(|| String::from(*path));
+    let native_path =
+        resolve_windows_path(config, &config.default_drive, &config.default_cwd, path)
+            .unwrap_or_else(|| String::from(*path));
     if let Ok(data) = fs::read_to_vec(&native_path) {
         print!("{}", crate::pe::diagnose(&data));
     } else {
@@ -149,7 +160,7 @@ fn run(config: &WxeConfig, args: &[&str]) {
     let tid = process::wxe_spawn(&native_path, &child_args);
     if tid == u32::MAX {
         log_fatal!("wxe run: failed to start '{}'", native_path);
-        log_error!("wxe run: current tier rejects imported DLLs/TLS until DLL routing lands");
+        log_error!("wxe run: check PE subsystem, TLS callbacks, imports and WXE DLL status");
         return;
     }
 
@@ -164,7 +175,10 @@ fn shell(config: &WxeConfig, args: &[&str]) {
         return;
     }
     if !force_builtin {
-        log_warn!("{} is not startable yet; using WXE bootstrap shell", config.comspec);
+        log_warn!(
+            "{} is not startable yet; using WXE bootstrap shell",
+            config.comspec
+        );
     }
 
     let mut drive = if config.default_drive.is_empty() {
@@ -220,6 +234,26 @@ fn shell(config: &WxeConfig, args: &[&str]) {
         } else if ascii_eq(cmd, "dir") {
             let target = tokens.get(1).map(|s| s.as_str()).unwrap_or(".");
             shell_dir(config, &drive, &cwd, target);
+        } else if ascii_eq(cmd, "echo") {
+            shell_echo(&tokens[1..]);
+        } else if ascii_eq(cmd, "type") {
+            shell_type(config, &drive, &cwd, &tokens[1..]);
+        } else if ascii_eq(cmd, "copy") {
+            shell_copy(config, &drive, &cwd, &tokens[1..]);
+        } else if ascii_eq(cmd, "del") || ascii_eq(cmd, "erase") {
+            shell_delete(config, &drive, &cwd, &tokens[1..]);
+        } else if ascii_eq(cmd, "mkdir") || ascii_eq(cmd, "md") {
+            shell_mkdir(config, &drive, &cwd, &tokens[1..]);
+        } else if ascii_eq(cmd, "cls") {
+            print!("\x1b[2J\x1b[H");
+        } else if ascii_eq(cmd, "ver") {
+            println!("WXE Command Shell [{}]", config.nt_profile);
+        } else if ascii_eq(cmd, "path") {
+            shell_path(config, &drive, &cwd);
+        } else if ascii_eq(cmd, "where") {
+            shell_where(config, &drive, &cwd, &tokens[1..]);
+        } else if ascii_eq(cmd, "set") {
+            shell_set(config, &drive, &cwd, &tokens[1..]);
         } else if ascii_eq(cmd, "inspect") {
             if let Some(target) = tokens.get(1) {
                 shell_inspect(config, &drive, &cwd, target);
@@ -248,7 +282,10 @@ fn start_comspec(config: &WxeConfig) -> bool {
 
     let tid = process::wxe_spawn(&native_path, "");
     if tid == u32::MAX {
-        log_warn!("wxe shell: found {}, but WXE could not start it yet", config.comspec);
+        log_warn!(
+            "wxe shell: found {}, but WXE could not start it yet",
+            config.comspec
+        );
         return false;
     }
     let code = process::waitpid(tid);
@@ -259,6 +296,27 @@ fn start_comspec(config: &WxeConfig) -> bool {
 fn dlls(config: &WxeConfig) {
     println!("wxe dlls");
     println!("  system32: {}", config.system32());
+    println!("  manifests:");
+    println!(
+        "    {} ({} services)",
+        crate::rootfs::nt_services_path(config),
+        crate::rootfs::nt_service_count()
+    );
+    println!(
+        "    {} ({} routes)",
+        crate::rootfs::dll_routes_path(config),
+        crate::rootfs::dll_route_count()
+    );
+    println!(
+        "    {} ({} UI routes)",
+        crate::rootfs::ui_routes_path(config),
+        crate::rootfs::ui_route_count()
+    );
+    println!(
+        "    {} ({} libanyui bindings)",
+        crate::rootfs::anyui_bindings_path(config),
+        crate::rootfs::anyui_binding_count()
+    );
     for dll in crate::rootfs::expected_dlls() {
         let path = crate::rootfs::installed_dll_path(config, dll);
         let state = if crate::rootfs::path_exists(&path) {
@@ -320,6 +378,14 @@ fn shell_help() {
     println!("  cd <path>        change WXE directory");
     println!("  C:               switch to drive C");
     println!("  dir [path]       list a WXE directory");
+    println!("  copy <src> <dst> copy a file");
+    println!("  del <path>       delete a file");
+    println!("  echo [text]      print text");
+    println!("  mkdir <path>     create a directory");
+    println!("  type <path>      print a file");
+    println!("  cls              clear the screen");
+    println!("  path             show WXE executable search path");
+    println!("  where <cmd>      locate an executable");
     println!("  inspect <exe>    inspect a PE32+ image");
     println!("  run <exe> [args] run a PE32+ console image");
     println!("  exit             leave WXE shell");
@@ -365,6 +431,146 @@ fn shell_dir(config: &WxeConfig, drive: &str, cwd: &str, target: &str) {
     }
 }
 
+fn shell_echo(args: &[String]) {
+    for (idx, arg) in args.iter().enumerate() {
+        if idx > 0 {
+            print!(" ");
+        }
+        print!("{}", arg);
+    }
+    println!();
+}
+
+fn shell_type(config: &WxeConfig, drive: &str, cwd: &str, args: &[String]) {
+    if args.is_empty() {
+        log_error!("type: missing file");
+        return;
+    }
+    for target in args {
+        let Some(native) = resolve_windows_path(config, drive, cwd, target) else {
+            log_error!("type: unsupported drive");
+            continue;
+        };
+        match fs::read_to_vec(&native) {
+            Ok(data) => match core::str::from_utf8(&data) {
+                Ok(text) => print!("{}", text),
+                Err(_) => {
+                    for byte in data {
+                        match byte {
+                            b'\n' | b'\r' | b'\t' => print!("{}", byte as char),
+                            b' '..=b'~' => print!("{}", byte as char),
+                            _ => print!("."),
+                        }
+                    }
+                    println!();
+                }
+            },
+            Err(_) => log_error!("type: failed to read '{}'", native),
+        }
+    }
+}
+
+fn shell_copy(config: &WxeConfig, drive: &str, cwd: &str, args: &[String]) {
+    if args.len() < 2 {
+        log_error!("copy: usage: copy <source> <target>");
+        return;
+    }
+    let Some(src) = resolve_windows_path(config, drive, cwd, &args[0]) else {
+        log_error!("copy: unsupported source drive");
+        return;
+    };
+    let Some(mut dst) = resolve_windows_path(config, drive, cwd, &args[1]) else {
+        log_error!("copy: unsupported target drive");
+        return;
+    };
+    if fs::read_dir(&dst).is_ok() {
+        dst = join_native(&dst, windows_basename(&args[0]));
+    }
+    if copy_native_file(&src, &dst) {
+        println!("        1 file(s) copied.");
+    } else {
+        log_error!("copy: failed to copy '{}' to '{}'", src, dst);
+    }
+}
+
+fn shell_delete(config: &WxeConfig, drive: &str, cwd: &str, args: &[String]) {
+    if args.is_empty() {
+        log_error!("del: missing file");
+        return;
+    }
+    for target in args {
+        let Some(native) = resolve_windows_path(config, drive, cwd, target) else {
+            log_error!("del: unsupported drive");
+            continue;
+        };
+        if fs::unlink(&native) == 0 {
+            println!("Deleted {}", target);
+        } else {
+            log_error!("del: failed to delete '{}'", native);
+        }
+    }
+}
+
+fn shell_mkdir(config: &WxeConfig, drive: &str, cwd: &str, args: &[String]) {
+    if args.is_empty() {
+        log_error!("mkdir: missing directory");
+        return;
+    }
+    for target in args {
+        let Some(native) = resolve_windows_path(config, drive, cwd, target) else {
+            log_error!("mkdir: unsupported drive");
+            continue;
+        };
+        if fs::mkdir(&native) != 0 && fs::read_dir(&native).is_err() {
+            log_error!("mkdir: failed to create '{}'", native);
+        }
+    }
+}
+
+fn shell_path(config: &WxeConfig, drive: &str, cwd: &str) {
+    println!("{}{}", drive, cwd);
+    for path in executable_search_paths() {
+        println!("{}", path);
+    }
+    println!("C:\\Program Files\\Sysinternals");
+    println!("C:\\Program Files\\Microsoft\\Edit");
+    println!("C:\\ProgramData\\WXE\\Installers");
+    println!("System32 native: {}", config.system32());
+}
+
+fn shell_where(config: &WxeConfig, drive: &str, cwd: &str, args: &[String]) {
+    if args.is_empty() {
+        log_error!("where: missing command");
+        return;
+    }
+    for target in args {
+        match resolve_executable_path(config, drive, cwd, target) {
+            Some(native) => println!("{}", native),
+            None => log_error!("where: '{}' not found", target),
+        }
+    }
+}
+
+fn shell_set(config: &WxeConfig, drive: &str, cwd: &str, args: &[String]) {
+    if args.is_empty() {
+        println!("COMSPEC={}", config.comspec);
+        println!("SystemDrive=C:");
+        println!("SystemRoot=C:\\Windows");
+        println!("USERPROFILE=C:\\Users\\Default");
+        println!("CD={}{}", drive, cwd);
+        print!("PATH={}{}", drive, cwd);
+        for path in executable_search_paths() {
+            print!(";C:{}", path);
+        }
+        println!();
+        return;
+    }
+    log_warn!("set: environment mutation is not persisted yet");
+    for arg in args {
+        println!("{}", arg);
+    }
+}
+
 fn shell_inspect(config: &WxeConfig, drive: &str, cwd: &str, target: &str) {
     let Some(native) = resolve_windows_path(config, drive, cwd, target) else {
         log_error!("inspect: unsupported drive");
@@ -377,9 +583,8 @@ fn shell_inspect(config: &WxeConfig, drive: &str, cwd: &str, target: &str) {
 }
 
 fn shell_run(config: &WxeConfig, drive: &str, cwd: &str, target: &str, args: &[String]) {
-    let executable = executable_name(target);
-    let Some(native) = resolve_windows_path(config, drive, cwd, &executable) else {
-        log_error!("run: unsupported drive");
+    let Some(native) = resolve_executable_path(config, drive, cwd, target) else {
+        log_error!("run: '{}' not found", target);
         return;
     };
     let child_args = join_string_args(args);
@@ -392,16 +597,124 @@ fn shell_run(config: &WxeConfig, drive: &str, cwd: &str, target: &str, args: &[S
     println!("process {} exited with {}", tid, code);
 }
 
-fn executable_name(target: &str) -> String {
-    if target.contains('.')
-        || target.contains('\\')
-        || target.contains('/')
-        || target.as_bytes().get(1) == Some(&b':')
-    {
-        String::from(target)
-    } else {
-        alloc::format!("{}.exe", target)
+fn resolve_executable_path(
+    config: &WxeConfig,
+    drive: &str,
+    cwd: &str,
+    target: &str,
+) -> Option<String> {
+    if has_path_component(target) {
+        return first_existing_candidate(config, drive, cwd, target);
     }
+
+    if let Some(native) = first_existing_candidate(config, drive, cwd, target) {
+        return Some(native);
+    }
+
+    for search_cwd in executable_search_paths() {
+        if let Some(native) = first_existing_candidate(config, "C:", search_cwd, target) {
+            return Some(native);
+        }
+    }
+
+    let file_name = executable_file_name(target);
+    for search_cwd in recursive_executable_search_paths() {
+        let Some(root) = resolve_windows_path(config, "C:", "\\", search_cwd) else {
+            continue;
+        };
+        if let Some(native) = find_executable_recursive(&root, &file_name, 4) {
+            return Some(native);
+        }
+    }
+    None
+}
+
+fn first_existing_candidate(
+    config: &WxeConfig,
+    drive: &str,
+    cwd: &str,
+    target: &str,
+) -> Option<String> {
+    let mut candidate = String::from(target);
+    if let Some(native) = existing_windows_path(config, drive, cwd, &candidate) {
+        return Some(native);
+    }
+    if !has_extension(target) {
+        candidate.push_str(".exe");
+        return existing_windows_path(config, drive, cwd, &candidate);
+    }
+    None
+}
+
+fn existing_windows_path(
+    config: &WxeConfig,
+    drive: &str,
+    cwd: &str,
+    target: &str,
+) -> Option<String> {
+    let native = resolve_windows_path(config, drive, cwd, target)?;
+    if crate::rootfs::path_exists(&native) {
+        Some(native)
+    } else {
+        None
+    }
+}
+
+fn executable_search_paths() -> &'static [&'static str] {
+    &[
+        "\\Windows\\System32",
+        "\\Windows",
+        "\\Program Files\\Sysinternals",
+        "\\Program Files\\Microsoft\\Edit",
+        "\\ProgramData\\WXE\\Installers",
+    ]
+}
+
+fn recursive_executable_search_paths() -> &'static [&'static str] {
+    &["\\Program Files\\Microsoft\\Edit"]
+}
+
+fn executable_file_name(target: &str) -> String {
+    let base = windows_basename(target);
+    if has_extension(base) {
+        String::from(base)
+    } else {
+        alloc::format!("{}.exe", base)
+    }
+}
+
+fn find_executable_recursive(native_dir: &str, file_name: &str, depth: u32) -> Option<String> {
+    let Ok(mut entries) = fs::read_dir(native_dir) else {
+        return None;
+    };
+    while let Some(entry) = entries.next() {
+        let path = join_native(native_dir, &entry.name);
+        if entry.file_type == 1 {
+            if depth > 0 {
+                if let Some(found) = find_executable_recursive(&path, file_name, depth - 1) {
+                    return Some(found);
+                }
+            }
+        } else if ascii_eq(&entry.name, file_name) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn has_path_component(target: &str) -> bool {
+    target.contains('\\') || target.contains('/') || drive_from_path(target).is_some()
+}
+
+fn has_extension(target: &str) -> bool {
+    windows_basename(target).contains('.')
+}
+
+fn windows_basename(path: &str) -> &str {
+    path.rsplit(|c| c == '\\' || c == '/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(path)
 }
 
 fn display_windows_path(drive: &str, cwd: &str, target: &str) -> String {
@@ -536,6 +849,56 @@ fn is_absolute_windows_path(raw: &str) -> bool {
 
 fn ascii_eq(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
+}
+
+fn join_native(base: &str, leaf: &str) -> String {
+    if base.ends_with('/') {
+        alloc::format!("{}{}", base, leaf)
+    } else {
+        alloc::format!("{}/{}", base, leaf)
+    }
+}
+
+fn copy_native_file(src: &str, dst: &str) -> bool {
+    let in_fd = fs::open(src, 0);
+    if in_fd == u32::MAX {
+        return false;
+    }
+
+    let out_fd = fs::open(dst, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if out_fd == u32::MAX {
+        let _ = fs::close(in_fd);
+        return false;
+    }
+
+    let mut ok = true;
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = fs::read(in_fd, &mut buf);
+        if n == u32::MAX {
+            ok = false;
+            break;
+        }
+        if n == 0 {
+            break;
+        }
+        let mut written = 0usize;
+        while written < n as usize {
+            let m = fs::write(out_fd, &buf[written..n as usize]);
+            if m == u32::MAX || m == 0 {
+                ok = false;
+                break;
+            }
+            written += m as usize;
+        }
+        if !ok {
+            break;
+        }
+    }
+
+    let _ = fs::close(in_fd);
+    let _ = fs::close(out_fd);
+    ok
 }
 
 fn read_line(buf: &mut [u8]) -> usize {

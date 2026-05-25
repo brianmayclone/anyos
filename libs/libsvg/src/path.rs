@@ -474,8 +474,10 @@ fn flatten_arc(
         d_theta += 2.0 * core::f32::consts::PI;
     }
 
-    // Approximate arc with line segments (about 4 per quarter circle)
-    let n_segs = (libm_ceil(d_theta.abs() / (core::f32::consts::PI * 0.5)) as u32).max(1).min(64);
+    // Approximate arcs densely enough for small UI icons.  A single chord per
+    // quarter circle turns magnifiers, clocks, and circular logos into angular
+    // shapes; browsers keep the chord error well below a device pixel.
+    let n_segs = arc_segment_count(d_theta, rx, ry, scale);
     let dt = d_theta / n_segs as f32;
     let mut theta = theta1;
     for _ in 0..n_segs {
@@ -484,6 +486,25 @@ fn flatten_arc(
         let py = sin_phi * rx * libm_cos(theta) + cos_phi * ry * libm_sin(theta) + cy;
         out.push(apply_and_scale(xform, px, py, scale));
     }
+}
+
+fn arc_segment_count(d_theta: f32, rx: f32, ry: f32, scale: f32) -> u32 {
+    let sweep = d_theta.abs();
+    if sweep < 1e-6 {
+        return 1;
+    }
+
+    let per_quarter = libm_ceil(sweep / (core::f32::consts::PI * 0.125)) as u32;
+    let radius_px = rx.abs().max(ry.abs()) * scale.abs().max(1.0);
+    let error_limited = if radius_px > 0.25 {
+        let cos_arg = (1.0 - 0.25 / radius_px).max(-1.0).min(1.0);
+        let max_step = (2.0 * libm_acos(cos_arg)).max(0.05);
+        libm_ceil(sweep / max_step) as u32
+    } else {
+        1
+    };
+
+    per_quarter.max(error_limited).max(1).min(256)
 }
 
 fn angle(ux: f32, uy: f32, vx: f32, vy: f32) -> f32 {
@@ -540,4 +561,26 @@ pub fn ellipse_to_poly(cx: f32, cy: f32, rx: f32, ry: f32, xform: &Transform, sc
         pts.push(apply_and_scale(xform, x, y, scale));
     }
     pts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arc_flattening_uses_multiple_segments_per_quarter_circle() {
+        let quarter = core::f32::consts::PI * 0.5;
+        assert!(arc_segment_count(quarter, 8.0, 8.0, 1.0) >= 4);
+        assert!(arc_segment_count(quarter, 64.0, 64.0, 1.0) > 4);
+    }
+
+    #[test]
+    fn google_search_icon_arc_path_keeps_curves_detailed() {
+        let cmds = parse_path_d(
+            "M9.5 3a6.5 6.5 0 0 1 5.2 10.4l4.45 4.45-1.4 1.4-4.45-4.45A6.5 6.5 0 1 1 9.5 3m0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9",
+        );
+        let polys = flatten(&cmds, &Transform::identity(), 1.0);
+        let point_count: usize = polys.iter().map(Vec::len).sum();
+        assert!(point_count >= 32, "point_count={point_count}");
+    }
 }

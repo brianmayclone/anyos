@@ -100,7 +100,11 @@ pub fn send_signal_to_pty(pty_id: u32, sig: u32) -> u32 {
     let mut sent = 0u32;
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
-        for thread in sched.threads.iter_mut().filter(|thread| thread.pty_id == pty_id) {
+        for thread in sched
+            .threads
+            .iter_mut()
+            .filter(|thread| thread.pty_id == pty_id)
+        {
             thread.signals.send(sig);
             sent = sent.saturating_add(1);
         }

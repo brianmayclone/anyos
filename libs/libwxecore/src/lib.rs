@@ -12,6 +12,8 @@ pub mod cli;
 pub mod pe;
 #[cfg(not(feature = "host"))]
 pub mod rootfs;
+#[cfg(not(feature = "host"))]
+pub mod wxedll;
 
 #[cfg(not(feature = "host"))]
 pub use cli::run_cli;

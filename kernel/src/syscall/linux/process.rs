@@ -1150,8 +1150,8 @@ pub(super) fn linux_capset(_header_ptr: u64, _data_ptr: u64) -> u64 {
 
 pub(super) fn linux_prctl(option: u64, arg2: u64) -> u64 {
     match option {
-        3 => 1,  // PR_GET_DUMPABLE
-        4 => 0,  // PR_SET_DUMPABLE
+        3 => 1, // PR_GET_DUMPABLE
+        4 => 0, // PR_SET_DUMPABLE
         15 => {
             if arg2 == 0 {
                 return linux_err(EFAULT);

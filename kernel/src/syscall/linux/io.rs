@@ -1,11 +1,9 @@
 use super::*;
 
 const LINUX_COPY_CHUNK: usize = 16 * 1024;
-static TIOCL_VESA_BLANK_MODE: core::sync::atomic::AtomicU8 =
-    core::sync::atomic::AtomicU8::new(0);
+static TIOCL_VESA_BLANK_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 static TIOCL_KMSG_REDIRECT: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
-static TIOCL_BLANKED_CONSOLE: core::sync::atomic::AtomicU8 =
-    core::sync::atomic::AtomicU8::new(0);
+static TIOCL_BLANKED_CONSOLE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 pub(super) fn linux_close(fd: u64) -> u64 {
     let tid = crate::task::scheduler::current_tid();
@@ -1132,9 +1130,7 @@ pub(super) fn linux_ioctl(fd: u32, request: u64, arg: u64) -> u64 {
             }
             0
         }
-        TIOCLINUX => {
-            linux_tioclinux(fd, arg)
-        }
+        TIOCLINUX => linux_tioclinux(fd, arg),
         _ => {
             crate::serial_verbose_println!(
                 "lxe linux ioctl: unsupported fd={} request={:#x}",
@@ -1251,8 +1247,9 @@ fn linux_tioclinux(fd: u32, arg: u64) -> u64 {
             TIOCL_BLANKED_CONSOLE.store(1, core::sync::atomic::Ordering::Relaxed);
             0
         }
-        TIOCL_BLANKEDSCREEN => TIOCL_BLANKED_CONSOLE.load(core::sync::atomic::Ordering::Relaxed)
-            as u64,
+        TIOCL_BLANKEDSCREEN => {
+            TIOCL_BLANKED_CONSOLE.load(core::sync::atomic::Ordering::Relaxed) as u64
+        }
         TIOCL_GETKMSGREDIRECT => {
             TIOCL_KMSG_REDIRECT.load(core::sync::atomic::Ordering::Relaxed) as u64
         }

@@ -59,7 +59,10 @@ pub fn inspect(data: &[u8]) -> Result<PeInfo, &'static str> {
     }
 
     let pe_offset = read_u32(data, 0x3c)? as usize;
-    if pe_offset.checked_add(24).map_or(true, |end| end > data.len()) {
+    if pe_offset
+        .checked_add(24)
+        .map_or(true, |end| end > data.len())
+    {
         return Err("PE header offset out of bounds");
     }
     if read_u32(data, pe_offset)? != IMAGE_NT_SIGNATURE {
@@ -71,7 +74,10 @@ pub fn inspect(data: &[u8]) -> Result<PeInfo, &'static str> {
     let sections = read_u16(data, coff + 2)?;
     let optional_size = read_u16(data, coff + 16)? as usize;
     let opt = coff + 20;
-    if opt.checked_add(optional_size).map_or(true, |end| end > data.len()) {
+    if opt
+        .checked_add(optional_size)
+        .map_or(true, |end| end > data.len())
+    {
         return Err("optional header out of bounds");
     }
     if optional_size < 112 {
@@ -124,7 +130,10 @@ pub fn diagnose(data: &[u8]) -> String {
             ));
             out.push_str(&alloc::format!("  image-base: {:#x}\n", info.image_base));
             out.push_str(&alloc::format!("  entry-rva: {:#x}\n", info.entry_rva));
-            out.push_str(&alloc::format!("  size-of-image: {:#x}\n", info.size_of_image));
+            out.push_str(&alloc::format!(
+                "  size-of-image: {:#x}\n",
+                info.size_of_image
+            ));
             out.push_str(&alloc::format!(
                 "  imports: rva={:#x} size={:#x}\n",
                 info.import_rva,

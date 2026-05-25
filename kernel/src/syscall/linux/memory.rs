@@ -294,7 +294,13 @@ pub(super) fn linux_mremap(
     }
 
     if !fixed && new_aligned <= old_aligned {
-        return linux_mremap_shrink_in_place(old_addr, old_size, old_aligned, new_size, new_aligned);
+        return linux_mremap_shrink_in_place(
+            old_addr,
+            old_size,
+            old_aligned,
+            new_size,
+            new_aligned,
+        );
     }
 
     if !may_move {
@@ -523,7 +529,8 @@ pub(super) fn linux_map_fixed(addr: u64, len: u64) -> Option<u64> {
 
 fn align_page_up(size: u64) -> Option<u64> {
     const PAGE_SIZE: u64 = 4096;
-    size.checked_add(PAGE_SIZE - 1).map(|v| v & !(PAGE_SIZE - 1))
+    size.checked_add(PAGE_SIZE - 1)
+        .map(|v| v & !(PAGE_SIZE - 1))
 }
 
 fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
@@ -603,11 +610,7 @@ pub(super) fn linux_read_fd_at(
     Ok(total)
 }
 
-fn linux_read_global_chunk_at(
-    global_id: u32,
-    offset: u64,
-    out: &mut [u8],
-) -> Result<usize, i32> {
+fn linux_read_global_chunk_at(global_id: u32, offset: u64, out: &mut [u8]) -> Result<usize, i32> {
     match crate::fs::vfs::read_at(global_id, offset as u32, out) {
         Ok(n) => return Ok(n),
         Err(crate::fs::vfs::FsError::NotSupported) => {}

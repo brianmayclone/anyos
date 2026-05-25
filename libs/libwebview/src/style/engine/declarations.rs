@@ -23,6 +23,36 @@ fn apply_inset_side(
     }
 }
 
+fn inherit_width(style: &mut ComputedStyle, parent_style: Option<&ComputedStyle>) {
+    if let Some(parent) = parent_style {
+        style.width = parent.width;
+        style.width_pct = parent.width_pct;
+        style.width_calc = parent.width_calc;
+        style.width_max_content = parent.width_max_content;
+        style.width_min_content = parent.width_min_content;
+        style.width_fit_content = parent.width_fit_content;
+    } else {
+        style.width = Option::None;
+        style.width_pct = Option::None;
+        style.width_calc = Option::None;
+        style.width_max_content = false;
+        style.width_min_content = false;
+        style.width_fit_content = false;
+    }
+}
+
+fn inherit_height(style: &mut ComputedStyle, parent_style: Option<&ComputedStyle>) {
+    if let Some(parent) = parent_style {
+        style.height = parent.height;
+        style.height_pct = parent.height_pct;
+        style.height_calc = parent.height_calc;
+    } else {
+        style.height = Option::None;
+        style.height_pct = Option::None;
+        style.height_calc = Option::None;
+    }
+}
+
 /// Resolve a CSS length value to pixels.
 ///
 /// `CssValue::Length` stores fixed-point * 100: "16px" -> Length(1600, Px),
@@ -260,6 +290,9 @@ pub fn apply_declaration(
                     style.width_pct = Option::None;
                     style.width_calc = Option::None;
                 }
+                CssValue::Inherit => {
+                    inherit_width(style, parent_style);
+                }
                 CssValue::Percentage(v) => {
                     style.width_pct = Some(v);
                     style.width = Option::None;
@@ -312,6 +345,9 @@ pub fn apply_declaration(
                 style.height_pct = Option::None;
                 style.height_calc = Option::None;
             }
+            CssValue::Inherit => {
+                inherit_height(style, parent_style);
+            }
             CssValue::Percentage(v) => {
                 style.height_pct = Some(v);
                 style.height = Option::None;
@@ -336,6 +372,15 @@ pub fn apply_declaration(
                     style.max_width = Option::None;
                     style.max_width_calc = Option::None;
                 }
+                CssValue::Inherit => {
+                    if let Some(parent) = parent_style {
+                        style.max_width = parent.max_width;
+                        style.max_width_calc = parent.max_width_calc;
+                    } else {
+                        style.max_width = Option::None;
+                        style.max_width_calc = Option::None;
+                    }
+                }
                 CssValue::Percentage(v) => {
                     // Store percentage as negative marker; layout resolves against container.
                     style.max_width = Some(-(v.max(1)));
@@ -354,7 +399,15 @@ pub fn apply_declaration(
             }
         }
         Property::MinWidth => {
-            if let CssValue::Percentage(v) = decl.value {
+            if let CssValue::Inherit = decl.value {
+                if let Some(parent) = parent_style {
+                    style.min_width = parent.min_width;
+                    style.min_width_calc = parent.min_width_calc;
+                } else {
+                    style.min_width = 0;
+                    style.min_width_calc = Option::None;
+                }
+            } else if let CssValue::Percentage(v) = decl.value {
                 style.min_width = -(v.max(1));
                 style.min_width_calc = Option::None;
             } else if let CssValue::Calc(px, pct) = decl.value {
@@ -370,6 +423,15 @@ pub fn apply_declaration(
                 style.max_height = Option::None;
                 style.max_height_calc = Option::None;
             }
+            CssValue::Inherit => {
+                if let Some(parent) = parent_style {
+                    style.max_height = parent.max_height;
+                    style.max_height_calc = parent.max_height_calc;
+                } else {
+                    style.max_height = Option::None;
+                    style.max_height_calc = Option::None;
+                }
+            }
             CssValue::Calc(px, pct) => {
                 style.max_height = Option::None;
                 style.max_height_calc = Some((px, pct));
@@ -382,7 +444,15 @@ pub fn apply_declaration(
             }
         },
         Property::MinHeight => {
-            if let CssValue::Calc(px, pct) = decl.value {
+            if let CssValue::Inherit = decl.value {
+                if let Some(parent) = parent_style {
+                    style.min_height = parent.min_height;
+                    style.min_height_calc = parent.min_height_calc;
+                } else {
+                    style.min_height = 0;
+                    style.min_height_calc = Option::None;
+                }
+            } else if let CssValue::Calc(px, pct) = decl.value {
                 style.min_height = 0;
                 style.min_height_calc = Some((px, pct));
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {

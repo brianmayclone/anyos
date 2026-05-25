@@ -4780,10 +4780,7 @@ impl WebView {
         mutations: &[js::DomMutation],
         id_map: &alloc::collections::BTreeMap<i64, usize>,
     ) {
-        fn resolve_id(
-            id: i64,
-            id_map: &alloc::collections::BTreeMap<i64, usize>,
-        ) -> Option<usize> {
+        fn resolve_id(id: i64, id_map: &alloc::collections::BTreeMap<i64, usize>) -> Option<usize> {
             if id >= 0 {
                 Some(id as usize)
             } else {
@@ -4845,8 +4842,11 @@ impl WebView {
                             continue;
                         }
                         if matches!(fc.kind, FormFieldKind::Checkbox | FormFieldKind::Radio) {
-                            ui::Control::from_id(fc.control_id)
-                                .set_state(if checked { 1 } else { 0 });
+                            ui::Control::from_id(fc.control_id).set_state(if checked {
+                                1
+                            } else {
+                                0
+                            });
                         }
                     }
                 }
@@ -5870,6 +5870,7 @@ fn devtools_position_name(v: style::Position) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::BoxType;
 
     fn find_node_by_id(dom: &dom::Dom, id_value: &str) -> usize {
         dom.nodes
@@ -5891,6 +5892,140 @@ mod tests {
         bx.children
             .iter()
             .find_map(|child| find_layout_box_by_node(child, node_id))
+    }
+
+    fn visible_text_children<'a>(bx: &'a LayoutBox) -> impl Iterator<Item = &'a LayoutBox> {
+        bx.children.iter().filter(|child| {
+            child
+                .text
+                .as_ref()
+                .map(|text| !text.is_empty())
+                .unwrap_or(false)
+        })
+    }
+
+    #[test]
+    fn inline_wrap_discards_space_after_overwide_word() {
+        let mut wv = WebView::new(220, 160);
+        wv.set_url("https://example.test/");
+        wv.set_html_no_js(
+            r#"
+            <html><body>
+              <div id="item"><a id="topic">abcdefghij &amp; xyz</a></div>
+            </body></html>
+            "#,
+        );
+        wv.add_stylesheet(
+            r#"
+            body { margin: 0; }
+            #item { width: 80px; }
+            #topic {
+                display: block;
+                width: 80px;
+                font-family: Ahem;
+                font-size: 10px;
+                line-height: 12px;
+            }
+            "#,
+        );
+        wv.relayout();
+
+        let topic = {
+            let dom = wv.dom().expect("dom");
+            find_node_by_id(dom, "topic")
+        };
+        let root = wv.layout_root_ref().expect("layout root");
+        let bx = find_layout_box_by_node(root, topic).expect("topic layout box");
+        let lines: Vec<&LayoutBox> = bx
+            .children
+            .iter()
+            .filter(|child| child.box_type == BoxType::LineBox)
+            .collect();
+        assert!(lines.len() >= 2, "expected wrapped inline content");
+
+        for line in lines {
+            if let Some(first) = visible_text_children(line).next() {
+                assert_ne!(first.text.as_deref(), Some(" "));
+            }
+            let mut prev_end = i32::MIN;
+            for child in visible_text_children(line).filter(|child| {
+                child
+                    .text
+                    .as_ref()
+                    .map(|text| !text.trim().is_empty())
+                    .unwrap_or(false)
+            }) {
+                assert!(
+                    child.x >= prev_end,
+                    "text run {:?} overlaps previous run on the same line",
+                    child.text
+                );
+                prev_end = child.x + child.width;
+            }
+        }
+    }
+
+    #[test]
+    fn flex_item_max_content_honors_descendant_min_width() {
+        let mut wv = WebView::new(320, 160);
+        wv.set_url("https://example.test/");
+        wv.set_html_no_js(
+            r#"
+            <html><body>
+              <ul id="bar">
+                <li id="item">
+                  <button id="nav-button" class="nav_btn">
+                    <span>X</span>
+                  </button>
+                </li>
+              </ul>
+            </body></html>
+            "#,
+        );
+        wv.add_stylesheet(
+            r#"
+            body { margin: 0; }
+            #bar {
+                display: flex;
+                width: 120px;
+                margin: 0;
+                padding: 0;
+                list-style: none;
+            }
+            #item { margin-left: 32px; }
+            .nav_btn {
+                display: flex;
+                flex-direction: column;
+                width: 100%;
+                min-width: 48px;
+                height: 48px;
+                padding: 0;
+                border: 0;
+            }
+            "#,
+        );
+        wv.relayout();
+
+        let (bar, item, button) = {
+            let dom = wv.dom().expect("dom");
+            (
+                find_node_by_id(dom, "bar"),
+                find_node_by_id(dom, "item"),
+                find_node_by_id(dom, "nav-button"),
+            )
+        };
+        let style = wv.resolved_style_ref(button).expect("button style");
+        assert_eq!(style.min_width, 48);
+        assert!(matches!(style.display, Display::Flex));
+        assert_eq!(style.width_pct, Some(10_000));
+
+        let root = wv.layout_root_ref().expect("layout root");
+        let bar_bx = find_layout_box_by_node(root, bar).expect("bar layout box");
+        let item_bx = find_layout_box_by_node(root, item).expect("item layout box");
+        let bx = find_layout_box_by_node(root, button).expect("button layout box");
+        assert_eq!(bar_bx.width, 120);
+        assert_eq!(item_bx.width, 48);
+        assert_eq!(bx.width, 48);
     }
 
     #[test]

@@ -100,8 +100,7 @@ pub fn set_termios(id: u32, termios: Termios) -> bool {
 }
 
 pub fn get_winsize(id: u32) -> Option<(u16, u16)> {
-    PTYS
-        .lock()
+    PTYS.lock()
         .iter()
         .find(|pty| pty.id == id)
         .map(|pty| (pty.rows, pty.cols))

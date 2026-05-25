@@ -31,6 +31,9 @@ for console startup must route their low-level work onto the anyOS kernel.
 - [DLL Surface](dlls.md)
   describes the initial Windows DLL set, export routing rules and the split
   between user-mode Win32 wrappers and kernel NT services.
+- [Win32 UI Surface](ui.md)
+  describes the `user32.dll`, `gdi32.dll` and `win32u.dll` route plan and the
+  staged bridge through `libanyui` to the anyOS compositor.
 - [Debugging](debugging.md)
   describes tracing, loader diagnostics, missing DLL/export reporting and
   smoke-test expectations.
@@ -55,6 +58,12 @@ The implementation should be broad enough for small console programs compiled
 with common Windows C runtimes, but narrow enough that unsupported Windows
 behavior is explicit instead of accidentally corrupting native anyOS or LXE
 state.
+
+Current console-tier implementation status: the loader maps imported WXE
+System32 PE DLLs, resolves PE forwarders, creates a fixed WXE PEB/process
+parameter block, registers loaded modules for `GetModuleHandle*` and
+`GetProcAddress`, and routes the first `CreateFile*`/read/write/seek/size
+helpers onto anyOS fd-backed handles.
 
 ## Main Components
 

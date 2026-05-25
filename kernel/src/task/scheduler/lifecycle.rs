@@ -272,6 +272,7 @@ fn cleanup_killed_children(children: &[TerminatedChildCleanup]) {
     for child in children {
         cleanup_thread_resources(child.tid);
         if let Some(pd) = child.pd_to_destroy {
+            crate::syscall::windows::cleanup_process(pd.as_u64());
             crate::task::env::cleanup(pd.as_u64());
             DEFERRED_PD_DESTROY.lock().push(pd, child.tid);
         }
@@ -416,6 +417,7 @@ pub fn exit_current(code: u32) {
     cleanup_thread_resources(tid);
 
     if let Some(pd) = pd_to_destroy {
+        crate::syscall::windows::cleanup_process(pd.as_u64());
         crate::task::env::cleanup(pd.as_u64());
         let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
         crate::arch::hal::switch_page_table(kernel_cr3);
@@ -536,6 +538,7 @@ pub fn try_exit_current(code: u32) -> bool {
     try_exit_diag_mark(b'Q');
     defer_fault_exit_cleanup(tid, code, &[]);
     if let Some(pd) = pd_to_destroy {
+        crate::syscall::windows::cleanup_process(pd.as_u64());
         crate::task::env::cleanup(pd.as_u64());
         defer_fault_pd_destroy(pd, tid);
     }
@@ -671,6 +674,7 @@ pub fn fault_kill_tid_and_idle(tid: u32, signal: u32) -> ! {
     crate::arch::hal::switch_page_table(kcr3);
     defer_fault_exit_cleanup(tid, signal, &[]);
     if let Some(pd) = pd_to_destroy {
+        crate::syscall::windows::cleanup_process(pd.as_u64());
         crate::task::env::cleanup(pd.as_u64());
         defer_fault_pd_destroy(pd, tid);
     }
@@ -788,6 +792,7 @@ pub fn kill_thread(tid: u32) -> u32 {
         }
     }
     if let Some(pd) = pd_to_destroy {
+        crate::syscall::windows::cleanup_process(pd.as_u64());
         crate::task::env::cleanup(pd.as_u64());
     }
 

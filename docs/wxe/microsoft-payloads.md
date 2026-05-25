@@ -64,22 +64,26 @@ wxe import-ms official-package <id>
 wxe import-ms sysinternals <tool>
 ```
 
-The bootstrap downloader fetches these payloads into
-`/System/var/wxe/cache/microsoft`:
+The bootstrap downloader fetches payloads into
+`/System/var/wxe/cache/microsoft`, then installs extractable packages into the
+WXE `C:` tree:
 
-| Payload | Source |
-| --- | --- |
-| `SysinternalsSuite.zip` | `https://download.sysinternals.com/files/SysinternalsSuite.zip` |
-| `VC_redist.x64.exe` | `https://aka.ms/vc14/vc_redist.x64.exe` |
-| Microsoft Edit release metadata | `https://api.github.com/repos/microsoft/edit/releases/latest` |
-| Microsoft Edit Windows asset | selected from the latest GitHub release's `browser_download_url` list |
+| Payload | Source | Install action |
+| --- | --- | --- |
+| `SysinternalsSuite.zip` | `https://download.sysinternals.com/files/SysinternalsSuite.zip` | Extracted to `C:\Program Files\Sysinternals` |
+| `VC_redist.x64.exe` | `https://aka.ms/vc14/vc_redist.x64.exe` | Staged at `C:\ProgramData\WXE\Installers\VC_redist.x64.exe` until installer execution is supported |
+| Microsoft Edit release metadata | `https://api.github.com/repos/microsoft/edit/releases/latest` | Recorded in the bootstrap manifest |
+| Microsoft Edit Windows asset | selected from the latest GitHub release's `browser_download_url` list | Extracted to `C:\Program Files\Microsoft\Edit`; `.msixbundle` inner packages are unpacked first |
 
 Windows OS components such as `cmd.exe` are not standalone downloads in this
-bootstrap. They are recorded in the manifest as `requires-windows-media-import`
-until WXE can import them from user-provided Windows media or replace them with
-a WXE-owned implementation.
+bootstrap. WXE uses its built-in command shell and records that shell as the
+current command processor provider until a native WXE-owned `cmd.exe` payload is
+added.
 
-Actual installation/import should be added after:
+All archive extraction must reject absolute paths, drive-qualified paths and
+`..` segments before writing into the WXE root.
+
+Further Windows-media import should be added after:
 
 1. source verification
 2. license acceptance UI

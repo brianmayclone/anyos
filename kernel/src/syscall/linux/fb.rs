@@ -135,13 +135,7 @@ pub(super) fn linux_fb_lseek(fd: u32, position: u32, offset: u64, whence: u64) -
     next as u64
 }
 
-pub(super) fn linux_fb_mmap(
-    _addr: u64,
-    len: u64,
-    prot: u64,
-    flags: u64,
-    offset: u64,
-) -> u64 {
+pub(super) fn linux_fb_mmap(_addr: u64, len: u64, prot: u64, flags: u64, offset: u64) -> u64 {
     let map_type = flags & 0x3;
     let fixed = (flags & LINUX_MAP_FIXED) != 0;
     if fixed || map_type != LINUX_MAP_SHARED || (prot & LINUX_PROT_WRITE) == 0 {

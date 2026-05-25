@@ -201,6 +201,7 @@ impl Vm {
                 native_fn_with_length("keys", native_array::array_keys, 0),
             );
             p.set_hidden(String::from("values"), values_fn.clone());
+            p.set_hidden(String::from("@@iterator"), values_fn.clone());
             p.set_hidden(
                 String::from("at"),
                 native_fn_with_length("at", native_array::array_at, 1),
@@ -412,6 +413,10 @@ impl Vm {
             // Symbol.iterator — returns a string character iterator
             p.set_hidden(
                 String::from(native_symbol::WELL_KNOWN_ITERATOR),
+                native_fn_with_length("[Symbol.iterator]", string_symbol_iterator, 0),
+            );
+            p.set_hidden(
+                String::from("@@iterator"),
                 native_fn_with_length("[Symbol.iterator]", string_symbol_iterator, 0),
             );
             // ES2024
@@ -867,6 +872,10 @@ impl Vm {
                 String::from(native_symbol::WELL_KNOWN_ITERATOR),
                 native_fn("[Symbol.iterator]", native_map::map_entries),
             );
+            proto.set_property(
+                String::from("@@iterator"),
+                native_fn("[Symbol.iterator]", native_map::map_entries),
+            );
             if let JsValue::Object(proto_obj) = &proto {
                 proto_obj.borrow_mut().properties.insert(
                     String::from("size"),
@@ -909,6 +918,10 @@ impl Vm {
             // Symbol.iterator → values (ES2023 §24.2.3.10)
             proto.set_property(
                 String::from(native_symbol::WELL_KNOWN_ITERATOR),
+                native_fn("[Symbol.iterator]", native_map::set_values),
+            );
+            proto.set_property(
+                String::from("@@iterator"),
                 native_fn("[Symbol.iterator]", native_map::set_values),
             );
             // ES2025 Set methods

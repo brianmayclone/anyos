@@ -102,6 +102,40 @@ mod layout_regression_tests {
     }
 
     #[test]
+    fn height_inherit_from_auto_parent_resets_fixed_height() {
+        let dom =
+            crate::html::parse(r#"<header id="host"><div id="wrapper"><div id="inner"></div></div></header>"#);
+        let stylesheet = crate::css::parse_stylesheet(
+            r#"
+            #wrapper { height: 48px; }
+            #inner { height: 64px; }
+            @media (min-width: 996px) {
+                #wrapper { height: inherit; }
+            }
+            "#,
+        );
+        let mut inline_style_cache = Vec::new();
+        let (mobile_styles, _) =
+            resolve_styles(&dom, &[&stylesheet], 800, 600, &mut inline_style_cache);
+        let wrapper_id = dom
+            .nodes
+            .iter()
+            .position(|node| match &node.node_type {
+                NodeType::Element { attrs, .. } => attrs
+                    .iter()
+                    .any(|attr| attr.name == "id" && attr.value == "wrapper"),
+                _ => false,
+            })
+            .expect("wrapper node");
+        assert_eq!(mobile_styles[wrapper_id].height, Some(48));
+
+        let mut inline_style_cache = Vec::new();
+        let (desktop_styles, _) =
+            resolve_styles(&dom, &[&stylesheet], 1366, 900, &mut inline_style_cache);
+        assert_eq!(desktop_styles[wrapper_id].height, Option::None);
+    }
+
+    #[test]
     fn calc_division_by_negative_number_after_var_resolution() {
         let dom = crate::html::parse(r#"<section id="home"></section>"#);
         let stylesheet = crate::css::parse_stylesheet(

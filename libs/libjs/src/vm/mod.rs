@@ -3328,7 +3328,21 @@ impl Vm {
                     // single-threaded VM: microtasks queued by the promise
                     // executor or `.then` chains are processed, which may
                     // resolve the awaited promise.
-                    let val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let mut val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let is_internal_promise = matches!(
+                        &val,
+                        JsValue::Object(obj)
+                            if obj.borrow().internal_tag.as_deref() == Some("__promise__")
+                    );
+                    if !is_internal_promise
+                        && matches!(
+                            &val,
+                            JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)
+                        )
+                        && self.get_property_with_proto(&val, "then").is_function()
+                    {
+                        val = native_promise::promise_resolve(self, &[val.clone()]);
+                    }
                     if let JsValue::Object(ref obj) = val {
                         let is_promise =
                             obj.borrow().internal_tag.as_deref() == Some("__promise__");
@@ -3423,17 +3437,7 @@ impl Vm {
                                 }
                             }
                         } else {
-                            // Non-promise object: wrap in Promise.resolve semantics.
-                            // Check for thenable (.then method).
-                            let then_fn = val.get_property("then");
-                            if then_fn.is_function() {
-                                // It's a thenable — call .then and await
-                                let result = self.call_value(&then_fn, &[], val.clone());
-                                self.drain_microtasks();
-                                self.stack.push(result);
-                            } else {
-                                self.stack.push(val);
-                            }
+                            self.stack.push(val);
                         }
                     } else {
                         // Non-object value — pass through unchanged.
@@ -4925,6 +4929,29 @@ impl Vm {
                 return true;
             }
         }
+
+        if self.frames.last().is_some_and(|frame| frame.chunk.is_async) {
+            let frame_depth = self.frames.len();
+            let stack_base = self
+                .frames
+                .last()
+                .map(|frame| frame.stack_base)
+                .unwrap_or(0);
+            self.close_iterators_in_stack_range(stack_base);
+            while let Some(handler) = self.try_handlers.last() {
+                if handler.frame_depth >= frame_depth {
+                    self.try_handlers.pop();
+                } else {
+                    break;
+                }
+            }
+            self.frames.pop();
+            self.last_exception = None;
+            self.stack.truncate(stack_base);
+            self.stack.push(native_promise::make_rejected_promise(val));
+            return true;
+        }
+
         let detail = self.describe_exception(&val);
         let stack_info = self.frame_stack_summary(8);
         if let Some(frame) = self.frames.last() {

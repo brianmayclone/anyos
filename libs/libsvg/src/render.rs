@@ -514,16 +514,24 @@ fn alpha_blend(dst: u32, src: u32) -> u32 {
     let sa = (src >> 24) & 0xFF;
     if sa == 255 { return src; }
     if sa == 0   { return dst; }
-    let inv = 255 - sa;
-    let blend_ch = |s_shift: u32, d_shift: u32| -> u32 {
-        let sc = (src >> s_shift) & 0xFF;
-        let dc = (dst >> d_shift) & 0xFF;
-        (sc * sa + dc * inv) / 255
+    let da = (dst >> 24) & 0xFF;
+    let inv_sa = 255 - sa;
+    let out_a = sa + (da * inv_sa + 127) / 255;
+    if out_a == 0 {
+        return 0;
+    }
+
+    let blend_ch = |shift: u32| -> u32 {
+        let sc = (src >> shift) & 0xFF;
+        let dc = (dst >> shift) & 0xFF;
+        let dst_part = (dc * da * inv_sa + 127) / 255;
+        let premul = sc * sa + dst_part;
+        (premul + out_a / 2) / out_a
     };
-    0xFF000000
-      | (blend_ch(16, 16) << 16)
-      | (blend_ch( 8,  8) <<  8)
-      |  blend_ch( 0,  0)
+    (out_a << 24)
+      | (blend_ch(16) << 16)
+      | (blend_ch( 8) <<  8)
+      |  blend_ch( 0)
 }
 
 /// Scale the alpha channel of an ARGB8888 colour by `factor` ∈ [0, 1].
@@ -532,4 +540,38 @@ fn apply_alpha(color: u32, factor: f32) -> u32 {
     if factor >= 1.0 { return color; }
     let a = ((color >> 24) as f32 * factor) as u32;
     (a << 24) | (color & 0x00FFFFFF)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser;
+
+    #[test]
+    fn alpha_blend_keeps_transparent_destination_transparent() {
+        assert_eq!(alpha_blend(0x00000000, 0x80FFFFFF), 0x80FFFFFF);
+        assert_eq!(alpha_blend(0x00000000, 0x40000000), 0x40000000);
+    }
+
+    #[test]
+    fn white_svg_antialias_edges_stay_white_not_gray() {
+        let svg = br#"
+            <svg width="10" height="10" viewBox="0 0 10 10" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="5" cy="5" r="4.2" fill="white"/>
+            </svg>
+        "#;
+        let doc = parser::parse(svg).expect("parse svg");
+        let mut pixels = [0u32; 100];
+        render(&doc, &mut pixels, 10, 10, 0x00000000);
+
+        let mut saw_partial_edge = false;
+        for px in pixels {
+            let alpha = px >> 24;
+            if alpha > 0 && alpha < 255 {
+                saw_partial_edge = true;
+                assert_eq!(px & 0x00FFFFFF, 0x00FFFFFF);
+            }
+        }
+        assert!(saw_partial_edge, "expected antialiased edge pixels");
+    }
 }

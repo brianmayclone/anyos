@@ -357,7 +357,7 @@ mod tests {
              run().then(v => { seen = v; }); \
              seen",
         );
-        assert_eq!(result.to_js_string(), "pending");
+        assert_eq!(result.to_js_string(), "function");
         let result = engine.eval("seen");
         assert_eq!(result.to_js_string(), "1");
     }
@@ -778,6 +778,99 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_import_through_vite_preload_with_deps_resolves_namespace() {
+        let mut engine = JsEngine::new();
+        engine.set_step_limit(1_000_000);
+        engine.register_module_source(
+            "./route.js",
+            "const P = { ok: 11 }; export { P as configValuesSerialized };",
+        );
+        let result = engine.eval(
+            "var seen = 'pending'; \
+             var document = { \
+                 getElementsByTagName() { return []; }, \
+                 querySelector() { return null; }, \
+                 createElement() { return { addEventListener(){}, setAttribute(){} }; }, \
+                 head: { appendChild(){} } \
+             }; \
+             var window = { dispatchEvent() { return true; } }; \
+             function Event() { this.defaultPrevented = false; } \
+             function preload(loader, deps) { \
+                 let i = Promise.resolve(); \
+                 if (deps && deps.length > 0) { \
+                     let settleAll = function(items) { \
+                         return Promise.all(items.map(item => Promise.resolve(item).then( \
+                             value => ({ status: 'fulfilled', value }), \
+                             reason => ({ status: 'rejected', reason }) \
+                         ))); \
+                     }; \
+                     document.getElementsByTagName('link'); \
+                     const nonce = document.querySelector('meta[property=csp-nonce]'); \
+                     i = settleAll(deps.map(dep => { \
+                         const link = document.createElement('link'); \
+                         link.rel = 'modulepreload'; \
+                         link.as = 'script'; \
+                         link.href = dep; \
+                         document.head.appendChild(link); \
+                         return undefined; \
+                     })); \
+                 } \
+                 function onError(err) { throw err; } \
+                 return i.then(results => { \
+                     for (const result of results || []) { \
+                         if (result.status === 'rejected') onError(result.reason); \
+                     } \
+                     return loader().catch(onError); \
+                 }); \
+             } \
+             async function run() { \
+                 const ns = await preload(() => import('./route.js'), ['dep-a.js', 'dep-b.js']); \
+                 seen = ns.configValuesSerialized.ok; \
+             } \
+             run(); \
+             seen",
+        );
+        assert_eq!(result.to_js_string(), "11");
+        let result = engine.eval("seen");
+        assert_eq!(result.to_js_string(), "11");
+    }
+
+    #[test]
+    fn await_assimilates_plain_thenable() {
+        let mut engine = JsEngine::new();
+        engine.set_step_limit(1_000_000);
+        let result = engine.eval(
+            "var seen = 'pending'; \
+             const thenable = { then(resolve) { resolve({ ok: 13 }); } }; \
+             async function run() { const value = await thenable; seen = value.ok; } \
+             run(); \
+             seen",
+        );
+        assert_eq!(result.to_js_string(), "13");
+    }
+
+    #[test]
+    fn async_pending_await_returns_chainable_promise_to_caller() {
+        let mut engine = JsEngine::new();
+        engine.set_step_limit(1_000_000);
+        let result = engine.eval(
+            "var seen = 'pending'; \
+             var savedResolve; \
+             async function load() { \
+                 await new Promise(resolve => { savedResolve = resolve; }); \
+                 return 23; \
+             } \
+             load().then(value => { seen = value; }).catch(() => { seen = 'rejected'; }); \
+             seen",
+        );
+        assert_eq!(result.to_js_string(), "pending");
+        let result = engine.eval("savedResolve(); seen");
+        assert_eq!(result.to_js_string(), "pending");
+        let result = engine.eval("seen");
+        assert_eq!(result.to_js_string(), "23");
+    }
+
+    #[test]
     fn object_literal_arrow_return_can_build_vike_page_entry() {
         let mut engine = JsEngine::new();
         engine.set_step_limit(1_000_000);
@@ -836,6 +929,422 @@ mod tests {
              moduleId + ':' + moduleExportsPromise",
         );
         assert_eq!(result.to_js_string(), "x:9");
+    }
+
+    #[test]
+    fn object_destructuring_alias_reads_arrow_return_object() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var page = { load: () => ({ moduleId: 'x', moduleExportsPromise: 9 }) }; \
+             const { moduleId: a, moduleExportsPromise: r } = page.load(); \
+             a + ':' + r",
+        );
+        assert_eq!(result.to_js_string(), "x:9");
+    }
+
+    #[test]
+    fn vike_page_entry_survives_promise_all_hydration_merge() {
+        let mut engine = JsEngine::new();
+        engine.set_step_limit(1_000_000);
+        engine.register_module_source(
+            "./route.js",
+            "function renderClient() {} \
+             const exports = Object.freeze(Object.defineProperty( \
+               { __proto__: null, onRenderClient: renderClient }, \
+               Symbol.toStringTag, \
+               { value: 'Module' } \
+             )); \
+             const configValuesSerialized = { \
+               onRenderClient: { \
+                 type: 'standard', \
+                 definedAtData: { filePathToShowToUser: '+onRenderClient.tsx' }, \
+                 valueSerialized: { type: 'plus-file', exportValues: exports } \
+               } \
+             }; \
+             export { configValuesSerialized };",
+        );
+        let result = engine.eval(
+            "function deserializeConfig(serialized) { \
+                 const out = {}; \
+                 Object.entries(serialized).forEach(([name, entry]) => { \
+                     const values = entry.valueSerialized.exportValues; \
+                     let value; \
+                     Object.entries(values).forEach(([exportName, exportValue]) => { \
+                         if (exportName === 'default' || exportName === name) value = exportValue; \
+                     }); \
+                     out[name] = { value }; \
+                 }); \
+                 return out; \
+             } \
+             var page = { \
+                 configValues: {}, \
+                 loadVirtualFilePageEntry: () => ({ \
+                     moduleId: 'virtual:vike:test', \
+                     moduleExportsPromise: Promise.resolve().then(() => import('./route.js')) \
+                 }) \
+             }; \
+             async function loadPageEntry(p) { \
+                 const { moduleExportsPromise } = p.loadVirtualFilePageEntry(); \
+                 const ns = await moduleExportsPromise; \
+                 Object.assign(p.configValues, deserializeConfig(ns.configValuesSerialized)); \
+                 return p; \
+             } \
+             async function merge() { \
+                 const loaded = (await Promise.all([loadPageEntry(page), undefined]))[0]; \
+                 return typeof loaded.configValues.onRenderClient.value; \
+             } \
+             var seen = 'pending'; \
+             merge().then(v => { seen = v; }); \
+             seen",
+        );
+        assert_eq!(result.to_js_string(), "pending");
+        let result = engine.eval("seen");
+        assert_eq!(result.to_js_string(), "function");
+    }
+
+    #[test]
+    fn vike_plus_file_deserialization_populates_exports() {
+        let mut engine = JsEngine::new();
+        engine.set_step_limit(1_000_000);
+        let result = engine.eval(
+            "function renderClient() {} \
+             const exportValues = Object.freeze(Object.defineProperty( \
+               { __proto__: null, onRenderClient: renderClient }, \
+               Symbol.toStringTag, \
+               { value: 'Module' } \
+             )); \
+             const serialized = { \
+               onRenderClient: { \
+                 type: 'standard', \
+                 definedAtData: { filePathToShowToUser: '+onRenderClient.tsx' }, \
+                 valueSerialized: { type: 'plus-file', exportValues } \
+               } \
+             }; \
+             function unpackValue(entry, name, definedAt) { \
+                 if (entry.type === 'plus-file') { \
+                     const values = entry.exportValues; \
+                     let value; \
+                     const sideExports = []; \
+                     Object.entries(values).forEach(([exportName, exportValue]) => { \
+                         if (exportName !== 'default' && exportName !== name) { \
+                             sideExports.push({ configName: exportName, configValue: { type: 'standard', value: exportValue, definedAtData: definedAt } }); \
+                         } else { \
+                             value = exportValue; \
+                         } \
+                     }); \
+                     return { value, sideExports }; \
+                 } \
+                 return { value: entry.value, sideExports: [] }; \
+             } \
+             function deserializeConfig(input) { \
+                 const out = {}; \
+                 Object.entries(input).forEach(([name, cfg]) => { \
+                     const unpacked = unpackValue(cfg.valueSerialized, name, cfg.definedAtData); \
+                     out[name] = { value: unpacked.value, definedAtData: cfg.definedAtData, type: cfg.type }; \
+                 }); \
+                 return out; \
+             } \
+             function buildRuntimeConfig(configValues) { \
+                 const config = {}; \
+                 const exportsAll = {}; \
+                 Object.entries(configValues).forEach(([name, cfg]) => { \
+                     const value = cfg.value; \
+                     config[name] = config[name] ?? value; \
+                     exportsAll[name] = exportsAll[name] ?? []; \
+                     exportsAll[name].push({ exportValue: value, filePath: cfg.definedAtData.filePathToShowToUser, _fileType: null, _isFromDefaultExport: null }); \
+                 }); \
+                 return { config, exportsAll }; \
+             } \
+             function buildPageContext(pageConfig) { \
+                 const runtime = buildRuntimeConfig(pageConfig.configValues); \
+                 const exports = {}; \
+                 Object.entries(runtime.exportsAll).forEach(([name, entries]) => { \
+                     entries.forEach(({ exportValue }) => { exports[name] = exports[name] ?? exportValue; }); \
+                 }); \
+                 return { config: runtime.config, exports, exportsAll: runtime.exportsAll }; \
+             } \
+             function copyDescriptors(target, source) { \
+                 Object.defineProperties(target, Object.getOwnPropertyDescriptors(source)); \
+             } \
+             const pageConfig = { configValues: deserializeConfig(serialized) }; \
+             const pageContext = {}; \
+             copyDescriptors(pageContext, buildPageContext(pageConfig)); \
+             ('onRenderClient' in pageContext.exports) + ':' + typeof pageContext.exports.onRenderClient",
+        );
+        assert_eq!(result.to_js_string(), "true:function");
+    }
+
+    #[test]
+    fn vike_server_routing_hydration_keeps_on_render_client() {
+        let mut engine = JsEngine::new();
+        engine.set_step_limit(1_000_000);
+        engine.register_module_source(
+            "./route.js",
+            "function onRenderClient() {} \
+             const exportValues = Object.freeze(Object.defineProperty( \
+               { __proto__: null, onRenderClient }, \
+               Symbol.toStringTag, \
+               { value: 'Module' } \
+             )); \
+             const configValuesSerialized = { \
+               onRenderClient: { \
+                 type: 'standard', \
+                 definedAtData: { filePathToShowToUser: '+onRenderClient.tsx' }, \
+                 valueSerialized: { type: 'plus-file', exportValues } \
+               } \
+             }; \
+             export { configValuesSerialized };",
+        );
+        let result = engine.eval(
+            "function copyDescriptors(target, source) { \
+                 if (source) Object.defineProperties(target, Object.getOwnPropertyDescriptors(source)); \
+             } \
+             function deserialize(input) { \
+                 const out = {}; \
+                 Object.entries(input).forEach(([name, cfg]) => { \
+                     let value; \
+                     Object.entries(cfg.valueSerialized.exportValues).forEach(([exportName, exportValue]) => { \
+                         if (exportName === 'default' || exportName === name) value = exportValue; \
+                     }); \
+                     out[name] = { value, type: cfg.type, definedAtData: cfg.definedAtData }; \
+                 }); \
+                 return out; \
+             } \
+             function runtime(configValues) { \
+                 const config = {}; \
+                 const exportsAll = {}; \
+                 Object.entries(configValues).forEach(([name, cfg]) => { \
+                     const value = cfg.value; \
+                     config[name] = config[name] ?? value; \
+                     exportsAll[name] = exportsAll[name] ?? []; \
+                     exportsAll[name].push({ exportValue: value, filePath: cfg.definedAtData.filePathToShowToUser, _fileType: null, _isFromDefaultExport: null }); \
+                 }); \
+                 return { config, exportsAll }; \
+             } \
+             function buildPageContext(pageFiles, pageConfig, globalConfig) { \
+                 const exportsAll = {}; \
+                 pageFiles.forEach(file => { \
+                     Object.entries(file.fileExports || {}).forEach(([exportName, exportValue]) => { \
+                         exportsAll[exportName] = exportsAll[exportName] ?? []; \
+                         exportsAll[exportName].push({ exportValue, filePath: file.filePath, _fileType: file.fileType, _isFromDefaultExport: false }); \
+                     }); \
+                 }); \
+                 const rt = runtime({ ...globalConfig.configValues, ...pageConfig.configValues }); \
+                 Object.assign(exportsAll, rt.exportsAll); \
+                 const exports = {}; \
+                 const pageExports = {}; \
+                 Object.entries(exportsAll).forEach(([name, entries]) => { \
+                     entries.forEach(({ exportValue, _fileType, _isFromDefaultExport }) => { \
+                         exports[name] = exports[name] ?? exportValue; \
+                         if (_fileType === '.page' && !_isFromDefaultExport) pageExports[name] = pageExports[name] ?? exportValue; \
+                     }); \
+                 }); \
+                 return { config: rt.config, exports, exportsAll, pageExports }; \
+             } \
+             async function va(page) { \
+                 if ('isPageEntryLoaded' in page) return page; \
+                 const { moduleExportsPromise } = page.loadVirtualFilePageEntry(); \
+                 const ns = await moduleExportsPromise; \
+                 Object.assign(page.configValues, deserialize(ns.configValuesSerialized)); \
+                 copyDescriptors(page, { isPageEntryLoaded: true }); \
+                 return page; \
+             } \
+             function relevant(files, pageId) { return files.filter(f => f.pageId === pageId || f.isDefaultPageFile); } \
+             function selected(configs, pageId) { const matches = configs.filter(p => p.pageId === pageId); return matches[0] ?? null; } \
+             async function Ea(pageId, files, configs, globalConfig) { \
+                 const n = relevant(files, pageId); \
+                 const i = selected(configs, pageId); \
+                 let loaded; \
+                 loaded = (await Promise.all([i && va(i, false), ...n.map(s => s.loadFile?.())]))[0]; \
+                 const out = {}; \
+                 copyDescriptors(out, buildPageContext(n, loaded, globalConfig)); \
+                 copyDescriptors(out, { _pageFilesLoaded: n }); \
+                 return out; \
+             } \
+             function de(ctx, name) { return (name in ctx.exports) ? ctx.exports[name] : null; } \
+             const D = {}; \
+             function makeGlobal(entry) { \
+                 const pageConfigs = entry.pageConfigsSerialized.map(p => ({ ...p, configValues: deserialize(p.configValuesSerialized) })); \
+                 const pageConfigGlobal = { configValues: deserialize(entry.pageConfigGlobalSerialized.configValuesSerialized) }; \
+                 return { _pageFilesAll: entry.pageFilesList, _pageConfigs: pageConfigs, _pageConfigGlobal: pageConfigGlobal, _globalConfigPublic: { config: {}, exports: {}, exportsAll: {} } }; \
+             } \
+             async function createGlobal(entry) { D.globalContext = makeGlobal(entry); return D.globalContext; } \
+             async function qa(entry) { delete D.globalContextPromise; D.entry = entry; await (D.globalContextPromise = createGlobal(entry)); } \
+             async function Xa() { return await D.globalContextPromise; } \
+             async function nr(ctx) { const loaded = await Ea(ctx.pageId, ctx._pageFilesAll, ctx._globalContext._pageConfigs, ctx._globalContext._pageConfigGlobal); copyDescriptors(ctx, loaded); return ctx; } \
+             async function ar() { const global = await Xa(); const ctx = { pageId: '/page', _globalContext: global, _pageFilesAll: global._pageFilesAll }; await nr(ctx); return ctx; } \
+             async function Sr() { const ctx = await ar(); seen = typeof de(ctx, 'onRenderClient'); } \
+             const entry = { \
+                 pageConfigsSerialized: [{ \
+                     pageId: '/page', \
+                     loadVirtualFilePageEntry: () => ({ moduleExportsPromise: Promise.resolve().then(() => import('./route.js')) }), \
+                     configValuesSerialized: {} \
+                 }], \
+                 pageConfigGlobalSerialized: { configValuesSerialized: {} }, \
+                 pageFilesList: [{ pageId: '/page', filePath: '/src/+Page.client.tsx', fileType: '.page.client', isDefaultPageFile: false }] \
+             }; \
+             var seen = 'pending'; \
+             qa(entry); \
+             Sr(); \
+             seen",
+        );
+        assert_eq!(result.to_js_string(), "function");
+        let result = engine.eval("seen");
+        assert_eq!(result.to_js_string(), "function");
+    }
+
+    #[test]
+    fn vike_on_render_client_hook_runner_accepts_undefined_return() {
+        let mut engine = JsEngine::new();
+        engine.set_step_limit(1_000_000);
+        let result = engine.eval(
+            "var seen = 'pending'; \
+             function assert(cond, msg) { if (!cond) throw new Error(msg); } \
+             async function He(hooks, ctx, makeCtx) { \
+                 if (!hooks.length) return []; \
+                 const runtimeCtx = makeCtx(ctx); \
+                 return await Promise.all(hooks.map(async hook => { \
+                     const hookReturn = await Be(() => hook.hookFn(runtimeCtx), hook, runtimeCtx); \
+                     return { ...hook, hookReturn }; \
+                 })); \
+             } \
+             async function Ga(hook, ctx, makeCtx) { \
+                 const results = await He([hook], ctx, makeCtx); \
+                 const { hookReturn } = results[0]; \
+                 assert(hookReturn === undefined, 'hook returned a value'); \
+                 seen = 'ok'; \
+             } \
+             function Be(run, hook, ctx) { \
+                 let resolve, reject; \
+                 const promise = new Promise((res, rej) => { resolve = res; reject = rej; }); \
+                 (async () => { \
+                     try { resolve(await run()); } catch (err) { reject(err); } \
+                 })(); \
+                 return promise; \
+             } \
+             const hook = { \
+                 hookName: 'onRenderClient', \
+                 hookFilePath: '+onRenderClient.tsx', \
+                 hookTimeout: { error: null, warning: null }, \
+                 hookFn(ctx) { seen = ctx.marker; } \
+             }; \
+             Ga(hook, { marker: 'called' }, ctx => ctx).catch(err => { seen = err.message; }); \
+             seen",
+        );
+        assert_eq!(result.to_js_string(), "ok");
+        let result = engine.eval("seen");
+        assert_eq!(result.to_js_string(), "ok");
+    }
+
+    #[test]
+    fn legacy_iterator_alias_keeps_corejs_iterate_compatible() {
+        let mut engine = JsEngine::new();
+        engine.set_step_limit(1_000_000);
+        let result = engine.eval(
+            "function collect(iterable) { \
+                 const method = iterable[Symbol.iterator] || iterable['@@iterator']; \
+                 if (typeof method !== 'function') throw new TypeError('Target is not iterable'); \
+                 const iterator = method.call(iterable); \
+                 const out = []; \
+                 for (;;) { \
+                     const step = iterator.next(); \
+                     if (step.done) break; \
+                     out.push(step.value); \
+                 } \
+                 return out; \
+             } \
+             Symbol.iterator = '__core_js_private_iterator__'; \
+             const arr = collect([1, 2]).join(','); \
+             const str = collect('ab').join(','); \
+             const map = new Map(); \
+             map.set('k', 'v'); \
+             const entry = collect(map)[0]; \
+             const set = new Set(); \
+             set.add(7); \
+             arr + '|' + str + '|' + entry[0] + ':' + entry[1] + '|' + collect(set)[0]",
+        );
+        assert_eq!(result.to_js_string(), "1,2|a,b|k:v|7");
+    }
+
+    #[test]
+    fn promise_all_accepts_result_from_polyfilled_array_map() {
+        let mut engine = JsEngine::new();
+        engine.set_step_limit(1_000_000);
+        let result = engine.eval(
+            "var seen = 'pending'; \
+             var bind3 = function(fn, that) { return function(a, b, c) { return fn.call(that, a, b, c); }; }; \
+             var toObject = function(value) { return Object(value); }; \
+             var indexedObject = function(value) { return Object(value); }; \
+             var toLength = function(value) { return value >>> 0; }; \
+             var arraySpeciesCreate = function(original, length) { return new Array(length); }; \
+             var push = [].push; \
+             var createMethod = function(TYPE) { \
+                 var IS_MAP = TYPE == 1, IS_FILTER = TYPE == 2, IS_SOME = TYPE == 3; \
+                 var IS_EVERY = TYPE == 4, IS_FIND_INDEX = TYPE == 6, IS_FILTER_OUT = TYPE == 7; \
+                 var NO_HOLES = TYPE == 5 || IS_FIND_INDEX; \
+                 return function(self, callbackfn, that, specificCreate) { \
+                     for (var value, result, O = toObject(self), selfIndexed = indexedObject(O), bound = bind3(callbackfn, that), length = toLength(selfIndexed.length), index = 0, create = specificCreate || arraySpeciesCreate, target = IS_MAP ? create(self, length) : IS_FILTER || IS_FILTER_OUT ? create(self, 0) : undefined; length > index; index++) { \
+                         if ((NO_HOLES || index in selfIndexed) && (result = bound(value = selfIndexed[index], index, O), TYPE)) { \
+                             if (IS_MAP) target[index] = result; \
+                             else if (result) switch (TYPE) { case 3: return true; case 5: return value; case 6: return index; case 2: push.call(target, value); } \
+                             else switch (TYPE) { case 4: return false; case 7: push.call(target, value); } \
+                         } \
+                     } \
+                     return IS_FIND_INDEX ? -1 : IS_SOME || IS_EVERY ? IS_EVERY : target; \
+                 }; \
+             }; \
+             Array.prototype.map = function(callbackfn) { \
+                 return createMethod(1)(this, callbackfn, arguments.length > 1 ? arguments[1] : undefined); \
+             }; \
+             Promise.all = function(iterable) { \
+                 return new Promise(function(resolve, reject) { \
+                     var out = []; \
+                     var pending = 1; \
+                     var index = 0; \
+                     for (var i = 0; i < iterable.length; i++) { \
+                         var slot = index++; \
+                         pending++; \
+                         out.push(undefined); \
+                         Promise.resolve(iterable[i]).then(function(value) { \
+                             out[slot] = value; \
+                             if (--pending === 0) resolve(out); \
+                         }, reject); \
+                     } \
+                     if (--pending === 0) resolve(out); \
+                 }); \
+             }; \
+             async function run() { \
+                 var hooks = [{ hookFn: function(ctx) { seen = ctx.marker; } }]; \
+                 var result = await Promise.all(hooks.map(async function(hook) { \
+                     var hookReturn = await hook.hookFn({ marker: 'called' }); \
+                     return { hookReturn: hookReturn }; \
+                 })); \
+                 seen = Array.isArray(result) + '|' + result.length + '|' + result[0].hookReturn; \
+             } \
+             run().catch(function(err) { seen = err.message; }); \
+             seen",
+        );
+        assert_eq!(result.to_js_string(), "true|1|undefined");
+        let result = engine.eval("seen");
+        assert_eq!(result.to_js_string(), "true|1|undefined");
+    }
+
+    #[test]
+    fn async_map_callback_rejection_does_not_escape_synchronously() {
+        let mut engine = JsEngine::new();
+        engine.set_step_limit(1_000_000);
+        let result = engine.eval(
+            "var seen = 'pending'; \
+             var mapped = [1].map(async function() { \
+                 await Promise.reject('boom'); \
+             }); \
+             seen = Array.isArray(mapped) + '|' + mapped.length + '|' + (typeof mapped[0].then); \
+             Promise.all(mapped).then(function() { seen = 'fulfilled'; }, function(err) { seen = err; }); \
+             seen",
+        );
+        assert_eq!(result.to_js_string(), "true|1|function");
+        let result = engine.eval("seen");
+        assert_eq!(result.to_js_string(), "boom");
     }
 
     #[test]

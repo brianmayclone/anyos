@@ -177,7 +177,7 @@ fn adopt_thenable(vm: &mut Vm, target: &JsValue, thenable: &JsValue) -> bool {
         return true;
     }
 
-    let then_fn = thenable.get_property("then");
+    let then_fn = vm.get_property_with_proto(thenable, "then");
     if !then_fn.is_function() {
         return false;
     }
@@ -508,7 +508,7 @@ pub fn promise_resolve(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if is_internal_promise(&value) {
         return value;
     }
-    if value.is_object() || value.is_function() {
+    if value.is_object() || value.is_array() || value.is_function() {
         let adopted = make_pending_promise(vm);
         if adopt_thenable(vm, &adopted, &value) {
             return adopted;

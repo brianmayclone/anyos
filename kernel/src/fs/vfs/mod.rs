@@ -2210,8 +2210,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                     seek_cache_offset: 0,
                     seek_cache_cluster: 0,
                     entry_dirty: false,
-            append_buffer_offset: 0,
-            append_buffer: Vec::new(),
+                    append_buffer_offset: 0,
+                    append_buffer: Vec::new(),
                 };
                 state.open_files[slot_id as usize] = Some(file);
                 return Ok(slot_id);
@@ -2269,8 +2269,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                     seek_cache_offset: 0,
                     seek_cache_cluster: 0,
                     entry_dirty: false,
-            append_buffer_offset: 0,
-            append_buffer: Vec::new(),
+                    append_buffer_offset: 0,
+                    append_buffer: Vec::new(),
                 };
                 state.open_files[slot_id as usize] = Some(file);
                 return Ok(slot_id);
@@ -2322,8 +2322,8 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                     seek_cache_offset: 0,
                     seek_cache_cluster: 0,
                     entry_dirty: false,
-            append_buffer_offset: 0,
-            append_buffer: Vec::new(),
+                    append_buffer_offset: 0,
+                    append_buffer: Vec::new(),
                 };
                 state.open_files[slot_id as usize] = Some(file);
                 return Ok(slot_id);
@@ -3381,11 +3381,12 @@ fn snapshot_exfat_append_flush(
         }
         _ => return Ok(None),
     };
-    let seek_hint = if file.seek_cache_cluster >= 2 && file.seek_cache_offset <= file.append_buffer_offset {
-        Some((file.seek_cache_offset, file.seek_cache_cluster))
-    } else {
-        None
-    };
+    let seek_hint =
+        if file.seek_cache_cluster >= 2 && file.seek_cache_offset <= file.append_buffer_offset {
+            Some((file.seek_cache_offset, file.seek_cache_cluster))
+        } else {
+            None
+        };
     Ok(Some(PendingExFatAppendFlush {
         backend,
         fs_id: file.fs_id,

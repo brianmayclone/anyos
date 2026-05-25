@@ -507,6 +507,13 @@ pub fn layout_inline_content_with_pseudo(
             line_h = 0;
         }
 
+        // If the current fragment was the break opportunity itself, the wrap
+        // above can move a collapsible space to the beginning of the next line.
+        // CSS whitespace collapsing discards that leading space.
+        if is_collapsible_space && line.children.is_empty() {
+            continue;
+        }
+
         let mut child = frag.layout_box;
         child.x = start_x + line_x + child.x;
         if !child.is_out_of_flow {

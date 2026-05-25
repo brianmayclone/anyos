@@ -5,8 +5,8 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, NodeType, Tag};
 use crate::style::{
-    AlignContent, AlignItems, ComputedStyle, Display, FlexDirection, FlexWrap, JustifyContent,
-    Position, PseudoStyles,
+    AlignContent, AlignItems, BoxSizing, ComputedStyle, Display, FlexDirection, FlexWrap,
+    JustifyContent, Position, PseudoStyles,
 };
 use crate::ImageCache;
 
@@ -120,6 +120,58 @@ fn flex_item_baseline(style: &ComputedStyle, bx: &LayoutBox, is_row: bool) -> i3
     }
 }
 
+fn resolve_intrinsic_width_constraint(raw: i32, containing_w: i32) -> i32 {
+    if raw < 0 {
+        (containing_w.max(0) as i64 * (-raw) as i64 / 10000) as i32
+    } else {
+        raw
+    }
+}
+
+fn resolve_intrinsic_width_calc(calc: (i32, i32), containing_w: i32) -> i32 {
+    let (px100, pct100) = calc;
+    px100 / 100 + (containing_w.max(0) as i64 * pct100 as i64 / 10000) as i32
+}
+
+fn constraint_to_outer_width(style: &ComputedStyle, value: i32, pad_border: i32) -> i32 {
+    if matches!(style.box_sizing, BoxSizing::BorderBox) {
+        value
+    } else {
+        value + pad_border
+    }
+}
+
+fn clamp_intrinsic_outer_width(
+    style: &ComputedStyle,
+    width: i32,
+    pad_border: i32,
+    containing_w: i32,
+) -> i32 {
+    let mut out = width.max(0);
+
+    let min_width = style
+        .min_width_calc
+        .map(|calc| resolve_intrinsic_width_calc(calc, containing_w))
+        .unwrap_or_else(|| resolve_intrinsic_width_constraint(style.min_width, containing_w));
+    if min_width != 0 {
+        out = out.max(constraint_to_outer_width(style, min_width, pad_border).max(0));
+    }
+
+    let max_width = style
+        .max_width_calc
+        .map(|calc| resolve_intrinsic_width_calc(calc, containing_w))
+        .or_else(|| {
+            style
+                .max_width
+                .map(|value| resolve_intrinsic_width_constraint(value, containing_w))
+        });
+    if let Some(max_width) = max_width {
+        out = out.min(constraint_to_outer_width(style, max_width, pad_border).max(0));
+    }
+
+    out
+}
+
 /// Check whether a DOM subtree contains a table descendant with a percentage
 /// main-axis size (`width: %` for row direction, `height: %` for column).
 /// Used to detect flex items that need a "definite post-flexing main size"
@@ -169,7 +221,17 @@ pub(super) fn measure_max_content(
     // Explicit width → use it.
     if let Some(w) = st.width {
         if w > 0 {
-            return w;
+            let pad_border = st.padding_left
+                + st.padding_right
+                + st.border_width * 2
+                + st.border_left.width
+                + st.border_right.width;
+            let outer_w = if matches!(st.box_sizing, BoxSizing::BorderBox) {
+                w
+            } else {
+                w + pad_border
+            };
+            return clamp_intrinsic_outer_width(st, outer_w, pad_border, viewport_w);
         }
     }
 
@@ -186,7 +248,17 @@ pub(super) fn measure_max_content(
     // aspect_ratio is stored as (w/h) * 100.
     if st.aspect_ratio > 0 {
         if let Some(h) = st.height {
-            return (h * st.aspect_ratio / 100).max(0);
+            let pad_border = st.padding_left
+                + st.padding_right
+                + st.border_width * 2
+                + st.border_left.width
+                + st.border_right.width;
+            return clamp_intrinsic_outer_width(
+                st,
+                (h * st.aspect_ratio / 100).max(0) + pad_border,
+                pad_border,
+                viewport_w,
+            );
         }
     }
 
@@ -199,7 +271,12 @@ pub(super) fn measure_max_content(
     if !is_rich_button {
         if let Some(w) = super::intrinsic_form_control_width(dom, styles, node_id, Some(viewport_w))
         {
-            return w;
+            let pad_border = st.padding_left
+                + st.padding_right
+                + st.border_width * 2
+                + st.border_left.width
+                + st.border_right.width;
+            return clamp_intrinsic_outer_width(st, w, pad_border, viewport_w);
         }
     }
 
@@ -246,10 +323,10 @@ pub(super) fn measure_max_content(
                     .attr(node_id, "width")
                     .and_then(|s| s.parse::<i32>().ok())
                     .unwrap_or(info.width as i32);
-                return w + pad_border;
+                return clamp_intrinsic_outer_width(st, w + pad_border, pad_border, viewport_w);
             }
         }
-        return pad_border;
+        return clamp_intrinsic_outer_width(st, pad_border, pad_border, viewport_w);
     }
 
     // Inline <svg> → use rasterised dimensions, but honor definite CSS sizing
@@ -280,7 +357,7 @@ pub(super) fn measure_max_content(
         } else {
             w
         };
-        return content_w + pad_border;
+        return clamp_intrinsic_outer_width(st, content_w + pad_border, pad_border, viewport_w);
     }
 
     let children: Vec<usize> = dom.get(node_id).children.iter().copied().collect();
@@ -311,7 +388,7 @@ pub(super) fn measure_max_content(
                 + cst.margin_left
                 + cst.margin_right;
         }
-        return total + pad_border;
+        return clamp_intrinsic_outer_width(st, total + pad_border, pad_border, viewport_w);
     }
 
     // Flex container → sum of children's max-content widths + gaps.
@@ -336,7 +413,7 @@ pub(super) fn measure_max_content(
                 count += 1;
             }
         }
-        return total + pad_border;
+        return clamp_intrinsic_outer_width(st, total + pad_border, pad_border, viewport_w);
     }
 
     // Float rows inside shrink-to-fit containers (classic nav bars, clearfix
@@ -384,7 +461,7 @@ pub(super) fn measure_max_content(
     if has_floated_child && floated_row_w > max_w {
         max_w = floated_row_w;
     }
-    max_w + pad_border
+    clamp_intrinsic_outer_width(st, max_w + pad_border, pad_border, viewport_w)
 }
 
 fn children_form_inline_run(dom: &Dom, styles: &[ComputedStyle], children: &[NodeId]) -> bool {
@@ -919,7 +996,7 @@ pub fn layout_flex(
                             styles,
                             pseudo,
                             items[i].node_id,
-                            child_avail,
+                            item_main.max(child_avail),
                             images,
                             viewport_w,
                             definite_container_height.unwrap_or(0),
@@ -960,7 +1037,7 @@ pub fn layout_flex(
                         styles,
                         pseudo,
                         items[i].node_id,
-                        child_avail,
+                        item_main.max(child_avail),
                         images,
                         viewport_w,
                         definite_container_height.unwrap_or(0),
@@ -1018,18 +1095,17 @@ pub fn layout_flex(
             if is_row {
                 let target_w = (item_main - child_box.margin.left - child_box.margin.right).max(0);
                 if child_box.width != target_w {
-                    child_box.width = target_w;
-                    // Recompute height from aspect-ratio when width changes.
-                    let st = &styles[items[i].node_id];
-                    if st.aspect_ratio > 0 {
-                        let border2 = child_box.border_width * 2;
-                        let content_w =
-                            (target_w - child_box.padding.left - child_box.padding.right - border2)
-                                .max(0);
-                        let ar_h = content_w * 100 / st.aspect_ratio;
-                        child_box.height =
-                            ar_h + child_box.padding.top + child_box.padding.bottom + border2;
-                    }
+                    child_box = build_block_with_forced_outer_width(
+                        dom,
+                        styles,
+                        pseudo,
+                        items[i].node_id,
+                        item_main.max(target_w),
+                        images,
+                        viewport_w,
+                        definite_container_height.unwrap_or(0),
+                        target_w,
+                    );
                 }
             }
 
@@ -1322,7 +1398,6 @@ pub fn layout_flex(
                     if extra_per_line > 0 {
                         let mut child_idx = 0;
                         for li in 0..lines.len() {
-                            let item_count = lines[li].end - lines[li].start;
                             let new_cross = lines[li].cross_size + extra_per_line;
                             for ii in lines[li].start..lines[li].end {
                                 let item_node = items[ii].node_id;

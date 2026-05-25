@@ -53,8 +53,38 @@ Unsupported service numbers are logged on the serial console and return
 `STATUS_NOT_IMPLEMENTED`:
 
 ```text
-wxe nt: unsupported service nr=<nr> rip=<rip> args=<a1>,<a2>,<a3>,<a4>,...
+wxe nt: unsupported service <name>(<nr>) rip=<rip> args=<a1>,<a2>,<a3>,<a4>,...
 ```
+
+The current WXE-owned NT service profile is:
+
+| ID | Service | Current status |
+| --- | --- | --- |
+| `0x0001` | `NtTerminateProcess` | implemented for current process |
+| `0x0002` | `NtTerminateThread` | implemented for current thread |
+| `0x0003` | `NtClose` | implemented for std handles and fd-backed handles |
+| `0x0004` | `NtReadFile` | implemented for fd-backed handles |
+| `0x0005` | `NtWriteFile` | implemented for fd-backed handles |
+| `0x0006` | `NtDelayExecution` | implemented for relative 100 ns intervals |
+| `0x0007` | `NtQuerySystemTime` | implemented as Windows FILETIME |
+| `0x0008` | `NtQueryPerformanceCounter` | implemented as uptime-ms with 1 kHz frequency |
+| `0x0009` | `NtAllocateVirtualMemory` | implemented with anonymous page mappings |
+| `0x000a` | `NtFreeVirtualMemory` | implemented for anonymous mappings |
+| `0x000b` | `NtProtectVirtualMemory` | validates pointers; protection change is a no-op for now |
+| `0x000c` | `NtQueryInformationProcess` | implemented for class 0 basic info |
+| `0x000d` | `NtQueryInformationThread` | implemented for class 0 basic info |
+| `0x000e` | `NtCreateFile` | implemented for WXE DOS/NT paths backed by anyOS fd handles |
+| `0x000f` | `NtOpenFile` | implemented for WXE DOS/NT paths backed by anyOS fd handles |
+| `0x0010` | `NtQueryInformationFile` | implemented for FileStandardInformation |
+| `0x0100`-`0x010a` | WXE private Win32 helper calls | module/export lookup and first Win32 file helpers used by generated DLLs |
+
+These IDs are also written by `wxe init` to `/System/var/wxe/db/nt-services`
+for the WXE DLL generator and import diagnostics.
+
+WXE process startup maps a fixed per-process block containing a minimal TEB,
+PEB, `RTL_USER_PROCESS_PARAMETERS`, ANSI/UTF-16 command lines and ANSI/UTF-16
+environment blocks. The kernel also keeps a page-directory keyed WXE process
+registry for loaded-module handles and `GetProcAddress` export resolution.
 
 ## Kernel Module Layout
 

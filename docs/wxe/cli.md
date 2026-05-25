@@ -26,9 +26,9 @@ Planned responsibilities:
 | --- | --- |
 | `wxe status` | Show WXE profile, root path, drive mappings, DLL health and `wxed` status |
 | `wxe init` | Create root layout, install WXE DLLs and seed default files |
-| `wxe init --bootstrap-ms --accept-microsoft-licenses` | Also download Microsoft-provided bootstrap payloads from official sources |
+| `wxe init --bootstrap-ms --accept-microsoft-licenses` | Download, unpack and install Microsoft-provided bootstrap payloads from official sources |
 | `wxe repair` | Reinstall missing WXE DLLs and repair default drive directories |
-| `wxe bootstrap-ms` | Download Microsoft-provided bootstrap payloads after explicit license acceptance |
+| `wxe bootstrap-ms` | Download, unpack and install Microsoft-provided bootstrap payloads after explicit license acceptance |
 | `wxe run` | Start one Windows console executable through `SYS_WXE_SPAWN` |
 | `wxe shell` | Open the WXE shell app or run the PTY bridge mode |
 | `wxe inspect` | Print PE machine, subsystem, imports, relocations and missing DLLs/exports |
@@ -75,6 +75,9 @@ Default filesystem layout:
         kernelbase.dll
         msvcrt.dll
         ucrtbase.dll
+        user32.dll
+        gdi32.dll
+        win32u.dll
         api-ms-win-core-*.dll
       Temp/
     Users/
@@ -84,15 +87,21 @@ Default filesystem layout:
   cache/
   db/
     dll-manifest
+    dll-routes
+    nt-services
+    ui-routes
+    anyui-bindings
     drive-map
     init-state
 ```
 
 The root contains WXE-owned compatibility files, not copied Microsoft Windows
-system files. Plain `wxe init` must not download Microsoft binaries. If the
-user explicitly runs `wxe init --bootstrap-ms --accept-microsoft-licenses`, WXE
-downloads the bootstrap payloads listed in
-[`microsoft-payloads.md`](microsoft-payloads.md) into `cache/microsoft`.
+system files. Plain `wxe init` generates WXE PE DLLs from the route manifests
+but must not download Microsoft binaries. If the user explicitly runs
+`wxe init --bootstrap-ms --accept-microsoft-licenses`, WXE downloads the
+bootstrap payloads listed in
+[`microsoft-payloads.md`](microsoft-payloads.md) into `cache/microsoft`, then
+extracts installable archives into `Program Files` inside the WXE `C:` drive.
 
 ## Drive Letters
 
@@ -111,19 +120,18 @@ current directory to `SYS_WXE_SPAWN`.
 
 ## WXE Shell
 
-The target shell process is WXE's own `C:\Windows\System32\cmd.exe`, exposed
-through the Windows `COMSPEC` convention. WXE must not ship Microsoft's
-`cmd.exe`; the file in the WXE root is an anyOS/WXE implementation with
-Windows-compatible command behavior.
+The target shell process is WXE's own command processor exposed through the
+Windows `COMSPEC` convention. WXE must not ship Microsoft's `cmd.exe`. Until a
+native WXE-owned `cmd.exe` payload is added, `/System/bin/wxe shell` provides
+the command processor behavior directly.
 
 `command.com` is intentionally out of scope for the x86_64 WXE layer. It is
 the DOS/Windows 9x command interpreter and, on old 32-bit NT systems, belonged
 to NTVDM-style DOS compatibility. WXE's first ABI target is the NT x86_64
 console world, so `cmd.exe` is the right command processor.
 
-Until WXE can start its PE `cmd.exe`, `/System/bin/wxe shell` may fall back to
-a bootstrap shell (`wxe shell --builtin`) with the same drive-letter state and
-launch path.
+The built-in shell and the later `cmd.exe` payload must share command semantics,
+drive-letter state and executable lookup rules.
 
 Required built-ins:
 
@@ -132,6 +140,11 @@ Required built-ins:
 - `dir`
 - `type`
 - `echo`
+- `copy`
+- `del`, `erase`
+- `mkdir`, `md`
+- `path`
+- `where`
 - `set`
 - `cls`
 - `exit`
