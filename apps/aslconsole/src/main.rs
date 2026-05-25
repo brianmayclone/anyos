@@ -6,7 +6,7 @@ mod asld;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use anyos_std::{ipc, process};
+use anyos_std::{ipc, process, sys};
 use libanyui_client as anyui;
 
 const WIN_W: u32 = 900;
@@ -36,6 +36,8 @@ struct AppState {
     frame_width: usize,
     frame_height: usize,
     framebuffer: Vec<u32>,
+    diagnostic_rows: Vec<String>,
+    next_diagnostic_ms: u32,
     last_error: String,
 }
 
@@ -95,6 +97,8 @@ fn main() {
             frame_width: 0,
             frame_height: 0,
             framebuffer: Vec::new(),
+            diagnostic_rows: Vec::new(),
+            next_diagnostic_ms: 0,
             last_error: String::new(),
         });
     }
@@ -156,6 +160,7 @@ fn poll_console() {
     match asld::request(&command) {
         Ok(resp) if resp.ok => {
             apply_canvas_lines(&resp.lines);
+            apply_diagnostic_fallback();
             app().status.set_text("connected");
             app().last_error.clear();
             redraw();
@@ -200,6 +205,66 @@ fn apply_canvas_lines(lines: &[String]) {
                 apply_framebuffer_row(a, row, data);
             }
             _ => {}
+        }
+    }
+}
+
+fn apply_diagnostic_fallback() {
+    if canvas_has_output() {
+        return;
+    }
+
+    let now = sys::uptime_ms();
+    if now >= app().next_diagnostic_ms {
+        app().next_diagnostic_ms = now.wrapping_add(1000);
+        refresh_diagnostic_rows();
+    }
+    if !app().diagnostic_rows.is_empty() {
+        let rows = app().diagnostic_rows.clone();
+        let row_count = rows.len();
+        app().rows = rows;
+        app().cursor_x = 0;
+        app().cursor_y = row_count.min(ROWS).saturating_sub(1);
+    }
+}
+
+fn canvas_has_output() -> bool {
+    let a = app();
+    a.frame_active || a.rows.iter().any(|row| !row.trim().is_empty())
+}
+
+fn refresh_diagnostic_rows() {
+    let distro = app().distro.clone();
+    let command = format!("VM_STATUS {}", distro);
+    match asld::request(&command) {
+        Ok(resp) if resp.ok => {
+            let backend = asld::field_value(&resp.lines, "backend").unwrap_or("-");
+            let state = asld::field_value(&resp.lines, "run_state").unwrap_or("-");
+            let memory = asld::field_value(&resp.lines, "guest_memory_mb").unwrap_or("-");
+            let exits = asld::field_value(&resp.lines, "total_exits").unwrap_or("0");
+            let recent = asld::field_value(&resp.lines, "recent_exit_count").unwrap_or("0");
+            let boot = asld::field_value(&resp.lines, "boot_summary").unwrap_or("-");
+            let mut rows = blank_rows();
+            rows[0] = String::from("ASL Console: no guest framebuffer or serial output yet");
+            rows[2] = format!("Distro: {}", distro);
+            rows[3] = format!("Backend: {}", backend);
+            rows[4] = format!("State: {}", state);
+            rows[5] = format!("Memory: {} MiB", memory);
+            rows[6] = format!("VM exits: {} total, {} recent", exits, recent);
+            rows[7] = format!("Boot: {}", boot);
+            app().diagnostic_rows = rows;
+        }
+        Ok(resp) => {
+            let mut rows = blank_rows();
+            rows[0] = String::from("ASL Console: VM diagnostics unavailable");
+            rows[2] = resp.message;
+            app().diagnostic_rows = rows;
+        }
+        Err(err) => {
+            let mut rows = blank_rows();
+            rows[0] = String::from("ASL Console: VM diagnostics unavailable");
+            rows[2] = String::from(err);
+            app().diagnostic_rows = rows;
         }
     }
 }

@@ -43,6 +43,7 @@ pub(crate) struct AppState {
     pub(crate) log_area: anyui::TextArea,
     pub(crate) log_text: String,
     pub(crate) last_log_seq: u32,
+    pub(crate) last_asld_log_line: String,
     pub(crate) last_total_exits: u64,
     pub(crate) worker: Option<process::Thread>,
 }
@@ -178,6 +179,7 @@ fn build_ui() -> AppState {
         log_area,
         log_text: String::from("ASL Manager ready.\n"),
         last_log_seq: 0,
+        last_asld_log_line: String::new(),
         last_total_exits: 0,
         worker: None,
     }

@@ -70,6 +70,16 @@ pub fn request(command: &str) -> Result<AsldResponse, &'static str> {
     Err("timed out waiting for asld")
 }
 
+pub fn field_value<'a>(lines: &'a [String], key: &str) -> Option<&'a str> {
+    for line in lines {
+        let mut parts = line.split('\t');
+        if parts.next() == Some(key) {
+            return parts.next();
+        }
+    }
+    None
+}
+
 fn parse_response(raw: &str) -> AsldResponse {
     let trimmed = raw.trim_matches('\n');
     let mut lines = trimmed.split('\n');

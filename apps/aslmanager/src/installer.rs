@@ -205,6 +205,7 @@ pub fn on_timer() {
             crate::app().progress_bar.set_state(100);
         }
     }
+    refresh_asld_logs(false);
 }
 
 pub fn skip_verify() {
@@ -850,9 +851,56 @@ fn log_line(line: &str) {
 }
 
 fn log_line_ui(line: &str) {
+    append_log_area_line(line);
+}
+
+pub fn refresh_asld_logs(force: bool) {
+    static ASLD_LOG_TICKS: AtomicU32 = AtomicU32::new(0);
+    let ticks = ASLD_LOG_TICKS
+        .fetch_add(1, Ordering::AcqRel)
+        .wrapping_add(1);
+    if !force && ticks % 4 != 0 {
+        return;
+    }
+
+    let command = format!("LOGS {}\t80", DISTRO_NAME);
+    let Ok(resp) = asld::request(&command) else {
+        return;
+    };
+    if !resp.ok || resp.lines.is_empty() {
+        return;
+    }
+
+    let mut start = 0usize;
+    if !crate::app().last_asld_log_line.is_empty() {
+        let last = crate::app().last_asld_log_line.clone();
+        let mut found = false;
+        for (index, line) in resp.lines.iter().enumerate() {
+            if *line == last {
+                start = index + 1;
+                found = true;
+            }
+        }
+        if !found {
+            append_log_area_line("[asld] log history advanced; showing newest available entries.");
+        }
+    }
+
+    for line in resp.lines.iter().skip(start) {
+        append_log_area_line(line);
+    }
+    if let Some(last) = resp.lines.last() {
+        crate::app().last_asld_log_line = last.clone();
+    }
+}
+
+fn append_log_area_line(line: &str) {
     crate::app().log_text.push_str(line);
     crate::app().log_text.push('\n');
     crate::app().log_area.set_text(&crate::app().log_text);
+    crate::app()
+        .log_area
+        .set_cursor(crate::app().log_text.len() as u32);
 }
 
 fn show_runtime_unavailable(message: &str, vcpus: &str) {

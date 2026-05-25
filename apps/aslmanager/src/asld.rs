@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use anyos_std::{ipc, process};
 
 const RESPONSE_TIMEOUT_TICKS: u32 = 200;
+const LONG_RESPONSE_TIMEOUT_TICKS: u32 = 1200;
 const RESPONSE_SLEEP_MS: u32 = 20;
 
 pub struct AsldResponse {
@@ -43,7 +44,7 @@ pub fn request(command: &str) -> Result<AsldResponse, &'static str> {
 
     let mut raw = String::new();
     let mut buf = [0u8; 1024];
-    for _ in 0..RESPONSE_TIMEOUT_TICKS {
+    for _ in 0..response_timeout_ticks(command) {
         let n = ipc::pipe_read(reply_pipe, &mut buf);
         if n == u32::MAX {
             let _ = ipc::pipe_close(reply_pipe);
@@ -68,6 +69,14 @@ pub fn request(command: &str) -> Result<AsldResponse, &'static str> {
 
     let _ = ipc::pipe_close(reply_pipe);
     Err("timed out waiting for asld")
+}
+
+fn response_timeout_ticks(command: &str) -> u32 {
+    let verb = command.split_whitespace().next().unwrap_or("");
+    match verb {
+        "START" | "start" | "RESTART" | "restart" => LONG_RESPONSE_TIMEOUT_TICKS,
+        _ => RESPONSE_TIMEOUT_TICKS,
+    }
 }
 
 pub fn field_value<'a>(lines: &'a [String], key: &str) -> Option<&'a str> {
