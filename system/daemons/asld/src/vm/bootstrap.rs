@@ -4,9 +4,9 @@ use crate::errors::AsldError;
 #[cfg(not(target_os = "linux"))]
 use crate::model::DistroConfig;
 
-use super::{
-    BOOT_CODE_ADDR, BOOT_PDPT_ADDR, BOOT_PD_ADDR, BOOT_PML4_ADDR, BOOT_STACK_GUARD, PAGE_SIZE,
-};
+use super::{BOOT_CODE_ADDR, BOOT_PDPT_ADDR, BOOT_PD_ADDR, BOOT_PML4_ADDR, BOOT_STACK_GUARD};
+
+const PAGE_SIZE: usize = 0x1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct BootstrapLayout {
