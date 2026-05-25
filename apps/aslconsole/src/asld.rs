@@ -2,9 +2,11 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::{ipc, process};
+use core::sync::atomic::{AtomicU32, Ordering};
 
-const RESPONSE_TIMEOUT_TICKS: u32 = 200;
+const RESPONSE_TIMEOUT_TICKS: u32 = 5;
 const RESPONSE_SLEEP_MS: u32 = 20;
+static NEXT_REPLY_ID: AtomicU32 = AtomicU32::new(1);
 
 pub struct AsldResponse {
     pub ok: bool,
@@ -17,8 +19,8 @@ pub fn request(command: &str) -> Result<AsldResponse, &'static str> {
         return Err("invalid asld command");
     }
 
-    let pid = process::getpid();
-    let reply_name = format!("asld-{}", pid);
+    let reply_id = next_reply_id();
+    let reply_name = format!("asld-{}", reply_id);
     let old_reply = ipc::pipe_open(&reply_name);
     if old_reply != 0 {
         let _ = ipc::pipe_close(old_reply);
@@ -35,7 +37,7 @@ pub fn request(command: &str) -> Result<AsldResponse, &'static str> {
         return Err("asld is not running");
     }
 
-    let request = format!("{}\t{}\n", pid, command);
+    let request = format!("{}\t{}\n", reply_id, command);
     if ipc::pipe_write(request_pipe, request.as_bytes()) == u32::MAX {
         let _ = ipc::pipe_close(reply_pipe);
         return Err("failed to write asld request");
@@ -68,6 +70,17 @@ pub fn request(command: &str) -> Result<AsldResponse, &'static str> {
 
     let _ = ipc::pipe_close(reply_pipe);
     Err("timed out waiting for asld")
+}
+
+fn next_reply_id() -> u32 {
+    let tid = process::getpid();
+    let seq = NEXT_REPLY_ID.fetch_add(1, Ordering::AcqRel);
+    let id = tid.wrapping_mul(65_537).wrapping_add(seq);
+    if id == 0 {
+        1
+    } else {
+        id
+    }
 }
 
 pub fn field_value<'a>(lines: &'a [String], key: &str) -> Option<&'a str> {

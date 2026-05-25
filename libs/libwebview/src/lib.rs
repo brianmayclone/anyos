@@ -1355,6 +1355,36 @@ impl WebView {
         pending
     }
 
+    /// Use spare idle frames to prepare offscreen tiles ahead of the viewport.
+    ///
+    /// This is intentionally separate from `pending_tiles`: visible viewport
+    /// work must keep its own priority, while this opportunistic path should
+    /// disappear as soon as real user, network, script, or animation work
+    /// arrives.
+    pub fn prerender_idle_tiles(&mut self) -> bool {
+        let root = match self.layout_root {
+            Some(ref root) => root as *const LayoutBox,
+            None => return false,
+        };
+        let scroll_y = self.scroll_view.get_state() as i32;
+        let doc_w = self.viewport_width as u32;
+        let doc_h = (self.total_height_val as u32).max(1);
+
+        // SAFETY: root points into self.layout_root which is not modified during rendering.
+        unsafe {
+            self.renderer.render_idle_prerender(
+                &*root,
+                &self.content_view,
+                &self.images,
+                doc_w,
+                doc_h,
+                self.viewport_height,
+                scroll_y,
+                self.bg_color_cached,
+            )
+        }
+    }
+
     pub fn has_pending_tiles(&self) -> bool {
         self.pending_tiles
     }

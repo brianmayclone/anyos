@@ -973,9 +973,6 @@ fn load_iframe_snapshots(
             continue;
         }
         let image_key = libwebview::iframe_snapshot_key(node_id);
-        if wv.has_decoded_image(&image_key) {
-            continue;
-        }
         eprintln!(
             "[surf-host] loading iframe snapshot: node={} {}x{} {}",
             node_id, width, height, url
@@ -1990,6 +1987,7 @@ fn main() {
 
     // ── Screenshot-only mode ─────────────────────────────────────────────
     if let Some(ref path) = args.screenshot {
+        let mut loaded_frames = HashSet::new();
         if let Some((x, y)) = args.click {
             let mut hit_info = String::from("<none>");
             let hit_node_id = wv.hit_test_node_viewport(x, y, 0);
@@ -2026,6 +2024,17 @@ fn main() {
             wv.run_timers(250);
             wv.tick(250);
             wv.relayout();
+            if load_iframe_snapshots(
+                &mut wv,
+                &current_url,
+                args.js_enabled,
+                args.image_backend,
+                args.load_web_fonts,
+                &mut cookies,
+                &mut loaded_frames,
+            ) {
+                wv.relayout();
+            }
             render_viewport_bounded(&mut wv, 0, "after scripted click");
         }
         for source in &args.eval_sources {
@@ -2093,6 +2102,17 @@ fn main() {
             }
             // Final relayout after timers
             wv.relayout();
+            if load_iframe_snapshots(
+                &mut wv,
+                &current_url,
+                args.js_enabled,
+                args.image_backend,
+                args.load_web_fonts,
+                &mut cookies,
+                &mut loaded_frames,
+            ) {
+                wv.relayout();
+            }
             if std::env::var_os("SURF_DEBUG_LAYOUT_BOXES_AFTER_WAIT").is_some() {
                 if let (Some(root), Some(dom)) = (wv.layout_root_ref(), wv.dom()) {
                     debug_dump_boxes(dom, root, 0, 0, 0);

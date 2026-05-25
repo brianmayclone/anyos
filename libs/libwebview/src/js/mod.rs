@@ -4817,9 +4817,9 @@ mod tests {
             &[String::from(
                 r#"
                 const frame = document.createElement('iframe');
-                let loaded = 0;
+                globalThis.__iframe_loaded = 0;
                 frame.onload = () => {
-                    loaded++;
+                    globalThis.__iframe_loaded = 1;
                     globalThis.__iframe_context_ok =
                         frame.contentDocument !== document &&
                         frame.contentWindow !== window &&
@@ -4828,10 +4828,23 @@ mod tests {
                         typeof frame.contentWindow.requestAnimationFrame === 'function';
                     globalThis.__iframe_query_ok =
                         !!frame.contentDocument.querySelector('.new-todo');
+                    const child = frame.contentDocument.createElement('section');
+                    child.setAttribute('id', 'inside-frame');
+                    child.setAttribute('class', 'todo active');
+                    child.appendChild(frame.contentDocument.createTextNode('ready'));
+                    frame.contentDocument.body.appendChild(child);
+                    globalThis.__iframe_dom_ops_ok =
+                        frame.contentDocument.body.firstChild === child &&
+                        child.parentNode === frame.contentDocument.body &&
+                        child.getAttribute('class') === 'todo active' &&
+                        child.hasAttribute('id') &&
+                        child.matches('.todo') &&
+                        child.closest('section') === child &&
+                        frame.contentWindow.getComputedStyle(child) === child.style &&
+                        frame.contentDocument.createDocumentFragment().nodeType === 11;
                 };
                 document.body.appendChild(frame);
                 frame.src = 'resources/warmup/index.html';
-                globalThis.__iframe_loaded = loaded;
                 globalThis.__iframe_src = frame.src;
                 "#,
             )],
@@ -4842,28 +4855,23 @@ mod tests {
             "unexpected JS exception: {:?}",
             runtime.engine.vm().last_exception
         );
-        assert_eq!(
-            runtime
-                .engine
-                .vm()
-                .get_global("__iframe_loaded")
-                .to_number() as i32,
-            1
-        );
+        assert_eq!(runtime.tick(&dom, 0), 1);
+        let window = runtime.engine.vm().get_global("window");
+        assert_eq!(window.get_property("__iframe_loaded").to_number() as i32, 1);
         assert!(matches!(
-            runtime.engine.vm().get_global("__iframe_context_ok"),
+            window.get_property("__iframe_context_ok"),
             JsValue::Bool(true)
         ));
         assert!(matches!(
-            runtime.engine.vm().get_global("__iframe_query_ok"),
+            window.get_property("__iframe_query_ok"),
+            JsValue::Bool(true)
+        ));
+        assert!(matches!(
+            window.get_property("__iframe_dom_ops_ok"),
             JsValue::Bool(true)
         ));
         assert_eq!(
-            runtime
-                .engine
-                .vm()
-                .get_global("__iframe_src")
-                .to_js_string(),
+            window.get_property("__iframe_src").to_js_string(),
             "resources/warmup/index.html"
         );
     }

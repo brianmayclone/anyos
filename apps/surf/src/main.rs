@@ -104,6 +104,7 @@ const DEFERRED_FONT_BATCH_SIZE: usize = 2;
 const MAX_BACKGROUND_RENDERS_PER_FLUSH: usize = 2;
 const SCRIPT_PUMP_DELAY_MS: u32 = 16;
 const VISUAL_IDLE_TICK_MS: u32 = 250;
+const IDLE_TILE_PRERENDER_MIN_DELAY_MS: u32 = 32;
 const JS_TIMER_ACTIVE_MIN_DELAY_MS: u32 = 16;
 const JS_TIMER_IDLE_MIN_DELAY_MS: u32 = 250;
 const JS_TIMER_QUIET_BACKOFF_AFTER: u16 = 8;
@@ -314,6 +315,8 @@ struct AppState {
     last_scroll_input_ms: u32,
     /// Last time visual-only animation work was allowed to run while idle.
     last_visual_tick_ms: u32,
+    /// Last time Surf spent an idle frame pre-rendering offscreen tiles.
+    last_idle_tile_prerender_ms: u32,
     /// Timer ID for the relayout debounce timer (0 = not running).
     relayout_timer: u32,
     /// Absolute uptime deadline for the pending relayout timer.
@@ -489,7 +492,9 @@ pub(crate) fn start_anim_timer() {
             && !net_worker::has_pending_activity()
             && !net_worker::result_mailboxes_pending()
             && !scroll_interaction_hot();
-        let changed = if st.tabs[active_tab].js_worker_busy {
+        let mut changed = if active_tab >= st.tabs.len() {
+            false
+        } else if st.tabs[active_tab].js_worker_busy {
             if st.tabs[active_tab].webview.has_pending_tiles() && !scroll_interaction_hot() {
                 let scroll_y = st.tabs[active_tab].webview.scroll_view().get_state() as i32;
                 st.tabs[active_tab].webview.render_viewport_at(scroll_y)
@@ -519,6 +524,15 @@ pub(crate) fn start_anim_timer() {
                 IDLE_TICKS = 0;
             }
             return;
+        }
+        if !changed && quiet_visual_idle {
+            let prerender_due = st.last_idle_tile_prerender_ms == 0
+                || now_ms.wrapping_sub(st.last_idle_tile_prerender_ms)
+                    >= IDLE_TILE_PRERENDER_MIN_DELAY_MS;
+            if prerender_due {
+                st.last_idle_tile_prerender_ms = now_ms;
+                changed = st.tabs[active_tab].webview.prerender_idle_tiles();
+            }
         }
         if changed {
             unsafe {
@@ -554,6 +568,7 @@ pub(crate) fn mark_scroll_activity() {
     let st = state();
     st.scroll_render_pending = true;
     st.last_scroll_input_ms = anyos_std::sys::uptime_ms();
+    st.last_idle_tile_prerender_ms = 0;
     ensure_anim_timer();
 }
 
@@ -3271,6 +3286,7 @@ fn main() {
             scroll_render_pending: false,
             last_scroll_input_ms: 0,
             last_visual_tick_ms: 0,
+            last_idle_tile_prerender_ms: 0,
             relayout_timer: 0,
             relayout_due_ms: 0,
             resize_timer: 0,

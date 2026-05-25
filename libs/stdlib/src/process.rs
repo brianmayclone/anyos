@@ -616,10 +616,30 @@ impl Thread {
         core::mem::forget(self);
         code
     }
+
+    /// Non-blocking check for thread completion.
+    /// Returns `Some(exit_code)` once the thread has exited and frees its stack.
+    pub fn try_join(&mut self) -> Option<u32> {
+        if self.tid == 0 {
+            return Some(0);
+        }
+        let code = try_waitpid(self.tid);
+        if code == STILL_RUNNING || code == u32::MAX - 2 {
+            return None;
+        }
+        munmap(self.stack_ptr, self.stack_size);
+        self.tid = 0;
+        self.stack_ptr = core::ptr::null_mut();
+        self.stack_size = 0;
+        Some(code)
+    }
 }
 
 impl Drop for Thread {
     fn drop(&mut self) {
+        if self.tid == 0 {
+            return;
+        }
         // If the thread handle is dropped without join(), we still wait
         // and free the stack to avoid leaking memory.
         waitpid(self.tid);

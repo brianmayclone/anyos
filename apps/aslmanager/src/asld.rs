@@ -2,10 +2,13 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::{ipc, process};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 const RESPONSE_TIMEOUT_TICKS: u32 = 200;
 const LONG_RESPONSE_TIMEOUT_TICKS: u32 = 1200;
+const UI_RESPONSE_TIMEOUT_TICKS: u32 = 5;
 const RESPONSE_SLEEP_MS: u32 = 20;
+static NEXT_REPLY_ID: AtomicU32 = AtomicU32::new(1);
 
 pub struct AsldResponse {
     pub ok: bool,
@@ -14,12 +17,23 @@ pub struct AsldResponse {
 }
 
 pub fn request(command: &str) -> Result<AsldResponse, &'static str> {
+    request_with_timeout(command, response_timeout_ticks(command))
+}
+
+pub fn request_ui(command: &str) -> Result<AsldResponse, &'static str> {
+    request_with_timeout(command, UI_RESPONSE_TIMEOUT_TICKS)
+}
+
+fn request_with_timeout(
+    command: &str,
+    timeout_ticks: u32,
+) -> Result<AsldResponse, &'static str> {
     if command.is_empty() || command.contains('\n') || command.contains('\r') {
         return Err("invalid asld command");
     }
 
-    let pid = process::getpid();
-    let reply_name = format!("asld-{}", pid);
+    let reply_id = next_reply_id();
+    let reply_name = format!("asld-{}", reply_id);
     let old_reply = ipc::pipe_open(&reply_name);
     if old_reply != 0 {
         let _ = ipc::pipe_close(old_reply);
@@ -36,7 +50,7 @@ pub fn request(command: &str) -> Result<AsldResponse, &'static str> {
         return Err("asld is not running");
     }
 
-    let request = format!("{}\t{}\n", pid, command);
+    let request = format!("{}\t{}\n", reply_id, command);
     if ipc::pipe_write(request_pipe, request.as_bytes()) == u32::MAX {
         let _ = ipc::pipe_close(reply_pipe);
         return Err("failed to write asld request");
@@ -44,7 +58,7 @@ pub fn request(command: &str) -> Result<AsldResponse, &'static str> {
 
     let mut raw = String::new();
     let mut buf = [0u8; 1024];
-    for _ in 0..response_timeout_ticks(command) {
+    for _ in 0..timeout_ticks {
         let n = ipc::pipe_read(reply_pipe, &mut buf);
         if n == u32::MAX {
             let _ = ipc::pipe_close(reply_pipe);
@@ -69,6 +83,17 @@ pub fn request(command: &str) -> Result<AsldResponse, &'static str> {
 
     let _ = ipc::pipe_close(reply_pipe);
     Err("timed out waiting for asld")
+}
+
+fn next_reply_id() -> u32 {
+    let tid = process::getpid();
+    let seq = NEXT_REPLY_ID.fetch_add(1, Ordering::AcqRel);
+    let id = tid.wrapping_mul(65_537).wrapping_add(seq);
+    if id == 0 {
+        1
+    } else {
+        id
+    }
 }
 
 fn response_timeout_ticks(command: &str) -> u32 {

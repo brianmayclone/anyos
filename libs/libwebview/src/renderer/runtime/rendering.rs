@@ -472,6 +472,196 @@ impl Renderer {
         pending
     }
 
+    /// Opportunistically prepare offscreen rows after the page has gone idle.
+    ///
+    /// The normal scroll path keeps only a small safety band around the
+    /// viewport so input stays responsive. This path uses spare idle frames to
+    /// rasterize a wider band into the tile cache and materialize canvases only
+    /// for the nearer rows. That gives future scrolls something ready to show
+    /// without turning idle time into a long synchronous full-page render.
+    pub fn render_idle_prerender(
+        &mut self,
+        root: &LayoutBox,
+        parent: &ui::View,
+        images: &ImageCache,
+        doc_w: u32,
+        doc_h: u32,
+        viewport_h: u32,
+        scroll_y: i32,
+        bg_color: u32,
+    ) -> bool {
+        if doc_h == 0 || viewport_h == 0 {
+            return false;
+        }
+
+        let w = doc_w.max(1);
+        let clear_color = if bg_color != 0 { bg_color } else { 0xFFFFFFFF };
+        let vp = viewport_h.max(1) as i32;
+        let doc_h_i32 = doc_h as i32;
+        let max_row = (doc_h - 1) / TILE_HEIGHT;
+
+        self.doc_w = w;
+        self.doc_h = doc_h;
+        self.last_scroll_y = scroll_y;
+
+        let render_y_start = (scroll_y - vp * IDLE_PRERENDER_VIEWPORTS_BEFORE).max(0);
+        let render_y_end = (scroll_y + vp * (IDLE_PRERENDER_VIEWPORTS_AFTER + 1))
+            .min(doc_h_i32)
+            .max(render_y_start + 1);
+        let first_row = render_y_start as u32 / TILE_HEIGHT;
+        let last_row = if render_y_end > 0 {
+            (((render_y_end - 1) as u32) / TILE_HEIGHT).min(max_row)
+        } else {
+            first_row
+        };
+
+        let canvas_y_start = (scroll_y - vp * IDLE_PRERENDER_CANVAS_VIEWPORTS_BEFORE).max(0);
+        let canvas_y_end = (scroll_y + vp * (IDLE_PRERENDER_CANVAS_VIEWPORTS_AFTER + 1))
+            .min(doc_h_i32)
+            .max(canvas_y_start + 1);
+        let canvas_first_row = canvas_y_start as u32 / TILE_HEIGHT;
+        let canvas_last_row = if canvas_y_end > 0 {
+            (((canvas_y_end - 1) as u32) / TILE_HEIGHT).min(max_row)
+        } else {
+            canvas_first_row
+        };
+
+        if !self.display_list_complete {
+            let needs_band_expand = match self.display_list_y_range {
+                Some((built_y_start, built_y_end)) => {
+                    render_y_start < built_y_start || render_y_end > built_y_end
+                }
+                None => true,
+            };
+            if needs_band_expand {
+                let old_range = self.display_list_y_range;
+                let (old_y_start, old_y_end) =
+                    old_range.unwrap_or((render_y_start, render_y_start + vp));
+                let build_y_start = old_y_start.min(render_y_start).max(0);
+                let build_y_end = old_y_end
+                    .max(render_y_end)
+                    .min(doc_h_i32)
+                    .max(build_y_start + 1);
+                crate::debug_surf!(
+                    "[render] idle display-list prewarm range [{}..{})",
+                    build_y_start,
+                    build_y_end
+                );
+                self.hit_regions.clear();
+                self.link_map.clear();
+                for fc in &mut self.form_controls {
+                    fc.seen = false;
+                }
+                self.walk_controls_visible(
+                    root,
+                    0,
+                    0,
+                    parent,
+                    self.submit_cb,
+                    self.submit_cb_ud,
+                    build_y_start,
+                    build_y_end,
+                );
+                self.display_list = DisplayList::build_visible(root, build_y_start, build_y_end);
+                self.display_list_complete = false;
+                self.display_list_y_range = Some((build_y_start, build_y_end));
+                if old_range.is_none() {
+                    self.invalidate_y_range(build_y_start, build_y_end - build_y_start);
+                } else {
+                    if build_y_start < old_y_start {
+                        self.invalidate_y_range(build_y_start, old_y_start - build_y_start);
+                    }
+                    if build_y_end > old_y_end {
+                        self.invalidate_y_range(old_y_end, build_y_end - old_y_end);
+                    }
+                }
+            }
+        }
+
+        let keep_first = first_row.saturating_sub(32);
+        let keep_last = (last_row + 32).min(max_row);
+        self.deactivate_distant_tile_canvases(keep_first, keep_last);
+
+        let prioritized_rows =
+            Self::prioritized_tile_rows(first_row, last_row, scroll_y, viewport_h);
+        let mut rasterized = 0usize;
+        let mut created_canvases = 0usize;
+        let mut pending = false;
+        let mut did_work = false;
+
+        for row in prioritized_rows {
+            let row_y_start = (row * TILE_HEIGHT) as i32;
+            let row_y_end = row_y_start + TILE_HEIGHT as i32;
+            if !self.display_list_complete {
+                let row_covered = self
+                    .display_list_y_range
+                    .map(|(built_y_start, built_y_end)| {
+                        row_y_start < built_y_end && row_y_end > built_y_start
+                    })
+                    .unwrap_or(false);
+                if !row_covered {
+                    pending = true;
+                    continue;
+                }
+            }
+
+            if self.tile_cache.get(row).is_none() {
+                if rasterized >= MAX_TILES_PER_IDLE_PRERENDER_TICK {
+                    pending = true;
+                    continue;
+                }
+                let tile_buf = self.rasterize_tile_dl(images, w, row, doc_h, clear_color);
+                self.tile_cache.insert(row, tile_buf);
+                rasterized += 1;
+                did_work = true;
+            } else {
+                self.tile_cache.touch(row);
+            }
+
+            if row < canvas_first_row || row > canvas_last_row {
+                continue;
+            }
+            if self
+                .tile_canvases
+                .iter()
+                .any(|tc| tc.active && tc.row == row)
+            {
+                continue;
+            }
+            if created_canvases >= MAX_TILE_CANVAS_CREATES_PER_IDLE_PRERENDER_TICK {
+                pending = true;
+                continue;
+            }
+            if self.tile_canvases.len() >= MAX_TILE_CANVASES
+                && !self.tile_canvases.iter().any(|tc| !tc.active)
+            {
+                self.deactivate_farthest_active_tile_canvas(scroll_y, viewport_h);
+            }
+            if self.create_tile_canvas(row, w, doc_h, parent) {
+                created_canvases += 1;
+                did_work = true;
+            } else {
+                pending = true;
+            }
+        }
+
+        if created_canvases > 0 {
+            for fc in &self.form_controls {
+                if fc.control_id != 0 && fc.seen {
+                    ui::Control::from_id(fc.control_id).bring_to_front();
+                }
+            }
+        }
+
+        while self.active_tile_canvas_count() > MAX_TILE_CANVASES {
+            if !self.deactivate_farthest_active_tile_canvas(scroll_y, viewport_h) {
+                break;
+            }
+        }
+
+        pending || did_work
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Internal helpers
     // ─────────────────────────────────────────────────────────────────────

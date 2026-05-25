@@ -17,8 +17,9 @@ use super::classlist;
 use super::selector;
 use super::{
     arg_string, dataset_property_hook, dom_property_hook, get_bridge, make_array,
-    read_all_child_node_ids, read_attribute, read_child_ids, read_inner_html, read_node_type,
-    read_parent_id, read_tag_name, read_text_content, this_node_id, DomMutation, StyleAnimation,
+    push_pending_timer, read_all_child_node_ids, read_attribute, read_child_ids, read_inner_html,
+    read_node_type, read_parent_id, read_tag_name, read_text_content, this_node_id, DomMutation,
+    PendingTimer, StyleAnimation,
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -1667,10 +1668,6 @@ fn iframe_src_get(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 fn iframe_src_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let value = arg_string(args, 0);
     let frame = vm.current_this.clone();
-    #[cfg(feature = "host")]
-    if std::env::var_os("SURF_DEBUG_IFRAME").is_some() {
-        eprintln!("[js-iframe] set src={}", value);
-    }
     frame.set_hidden_property(String::from("_src"), JsValue::String(value.clone()));
 
     let nid = this_node_id(vm);
@@ -1692,17 +1689,27 @@ fn iframe_src_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
 
     let onload = vm.get_property_invoking_getter(&frame, "onload");
-    #[cfg(feature = "host")]
-    if std::env::var_os("SURF_DEBUG_IFRAME").is_some() {
-        eprintln!(
-            "[js-iframe] onload function={} value={}",
-            matches!(onload, JsValue::Function(_)),
-            onload.to_js_string()
-        );
-    }
     if matches!(onload, JsValue::Function(_)) {
-        vm.call_value(&onload, &[], frame);
-        vm.drain_microtasks();
+        if let Some(bridge) = get_bridge(vm) {
+            let id = bridge.next_timer_id;
+            bridge.next_timer_id += 1;
+            push_pending_timer(
+                &mut bridge.timers,
+                PendingTimer {
+                    id,
+                    callback: onload,
+                    this_arg: frame,
+                    args: Vec::new(),
+                    delay_ms: 0,
+                    repeat: false,
+                    elapsed_ms: 0,
+                    is_raf: false,
+                },
+            );
+        } else {
+            vm.call_value(&onload, &[], frame);
+            vm.drain_microtasks();
+        }
     }
     JsValue::Undefined
 }
@@ -1738,6 +1745,37 @@ fn make_synthetic_iframe_context(vm: &mut Vm) -> (JsValue, JsValue) {
         String::from("createElement"),
         native_fn("createElement", iframe_doc_create_element),
     );
+    document.set_property(
+        String::from("createElementNS"),
+        native_fn("createElementNS", iframe_doc_create_element_ns),
+    );
+    document.set_property(
+        String::from("createTextNode"),
+        native_fn("createTextNode", iframe_doc_create_text_node),
+    );
+    document.set_property(
+        String::from("createDocumentFragment"),
+        native_fn(
+            "createDocumentFragment",
+            iframe_doc_create_document_fragment,
+        ),
+    );
+    document.set_property(
+        String::from("importNode"),
+        native_fn("importNode", iframe_doc_import_node),
+    );
+    document.set_property(
+        String::from("addEventListener"),
+        native_fn("addEventListener", iframe_noop),
+    );
+    document.set_property(
+        String::from("removeEventListener"),
+        native_fn("removeEventListener", iframe_noop),
+    );
+    document.set_property(
+        String::from("dispatchEvent"),
+        native_fn("dispatchEvent", iframe_element_dispatch_event),
+    );
 
     window.set_property(String::from("document"), document.clone());
     window.set_property(String::from("self"), window.clone());
@@ -1748,6 +1786,22 @@ fn make_synthetic_iframe_context(vm: &mut Vm) -> (JsValue, JsValue) {
     window.set_property(String::from("screenY"), JsValue::Number(0.0));
     window.set_property(String::from("innerWidth"), JsValue::Number(1024.0));
     window.set_property(String::from("innerHeight"), JsValue::Number(768.0));
+    window.set_property(
+        String::from("addEventListener"),
+        native_fn("addEventListener", iframe_noop),
+    );
+    window.set_property(
+        String::from("removeEventListener"),
+        native_fn("removeEventListener", iframe_noop),
+    );
+    window.set_property(
+        String::from("dispatchEvent"),
+        native_fn("dispatchEvent", iframe_element_dispatch_event),
+    );
+    window.set_property(
+        String::from("getComputedStyle"),
+        native_fn("getComputedStyle", iframe_get_computed_style),
+    );
     for key in [
         "Event",
         "MouseEvent",
@@ -1799,7 +1853,44 @@ fn iframe_doc_get_element_by_id(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 fn iframe_doc_create_element(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    make_synthetic_frame_element(vm, vm.current_this.clone())
+    make_synthetic_frame_element_with_tag(vm, vm.current_this.clone(), _args, 0)
+}
+
+fn iframe_doc_create_element_ns(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    make_synthetic_frame_element_with_tag(vm, vm.current_this.clone(), args, 1)
+}
+
+fn iframe_doc_create_text_node(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let text = arg_string(args, 0);
+    let obj = JsValue::Object(Rc::new(RefCell::new(JsObject::new())));
+    obj.set_property(String::from("__nodeId"), JsValue::Number(-9999.0));
+    obj.set_property(String::from("nodeType"), JsValue::Number(3.0));
+    obj.set_property(
+        String::from("nodeName"),
+        JsValue::String(String::from("#text")),
+    );
+    obj.set_property(String::from("data"), JsValue::String(text.clone()));
+    obj.set_property(String::from("textContent"), JsValue::String(text));
+    obj.set_property(String::from("parentNode"), JsValue::Null);
+    obj
+}
+
+fn iframe_doc_create_document_fragment(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let obj = make_synthetic_frame_element(vm, vm.current_this.clone());
+    obj.set_property(String::from("nodeType"), JsValue::Number(11.0));
+    obj.set_property(
+        String::from("nodeName"),
+        JsValue::String(String::from("#document-fragment")),
+    );
+    obj.set_property(
+        String::from("tagName"),
+        JsValue::String(String::from("#document-fragment")),
+    );
+    obj
+}
+
+fn iframe_doc_import_node(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    args.first().cloned().unwrap_or(JsValue::Null)
 }
 
 fn iframe_doc_query_selector_all(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
@@ -1855,8 +1946,284 @@ fn iframe_return_element(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     make_synthetic_frame_element(vm, document)
 }
 
+fn iframe_get_computed_style(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let style = target.get_property("style");
+    if style.is_undefined() || style.is_null() {
+        make_css_style_declaration(-9999)
+    } else {
+        style
+    }
+}
+
+fn iframe_element_append_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let child = args.first().cloned().unwrap_or(JsValue::Null);
+    if let Some(children) = fragment_children(&child) {
+        for fragment_child in children {
+            iframe_append_child_ref(&vm.current_this, fragment_child);
+        }
+        return child;
+    }
+    iframe_append_child_ref(&vm.current_this, child.clone());
+    child
+}
+
+fn iframe_element_remove_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let child = args.first().cloned().unwrap_or(JsValue::Null);
+    iframe_remove_child_ref(&vm.current_this, &child);
+    clear_js_parent_links(&child);
+    child
+}
+
+fn iframe_element_insert_before(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let child = args.first().cloned().unwrap_or(JsValue::Null);
+    let reference = args.get(1).cloned().unwrap_or(JsValue::Null);
+    if reference.is_null() || reference.is_undefined() {
+        iframe_append_child_ref(&vm.current_this, child.clone());
+    } else {
+        iframe_insert_child_before_ref(&vm.current_this, child.clone(), &reference);
+    }
+    child
+}
+
+fn iframe_element_replace_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let new_child = args.first().cloned().unwrap_or(JsValue::Null);
+    let old_child = args.get(1).cloned().unwrap_or(JsValue::Null);
+    if !old_child.is_null() && !old_child.is_undefined() {
+        iframe_remove_child_ref(&vm.current_this, &old_child);
+        clear_js_parent_links(&old_child);
+    }
+    iframe_append_child_ref(&vm.current_this, new_child);
+    old_child
+}
+
+fn iframe_element_set_attribute(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let mut name = arg_string(args, 0);
+    let value = arg_string(args, 1);
+    if name == "className" {
+        name = String::from("class");
+    }
+    iframe_set_attribute_on(&vm.current_this, &name, &value);
+    JsValue::Undefined
+}
+
+fn iframe_element_get_attribute(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let mut name = arg_string(args, 0);
+    if name == "className" {
+        name = String::from("class");
+    }
+    iframe_get_attribute_from(&vm.current_this, &name)
+}
+
+fn iframe_element_remove_attribute(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let mut name = arg_string(args, 0);
+    if name == "className" {
+        name = String::from("class");
+    }
+    if let JsValue::Object(obj) = &vm.current_this {
+        obj.borrow_mut().properties.remove(&name);
+    }
+    match name.as_str() {
+        "class" => {
+            vm.current_this
+                .set_property(String::from("className"), JsValue::String(String::new()));
+            let class_list = vm.current_this.get_property("classList");
+            class_list.set_property(String::from("__value"), JsValue::String(String::new()));
+        }
+        "id" => vm
+            .current_this
+            .set_property(String::from("id"), JsValue::String(String::new())),
+        _ => {}
+    }
+    JsValue::Undefined
+}
+
+fn iframe_element_has_attribute(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    JsValue::Bool(!iframe_element_get_attribute(vm, args).is_null())
+}
+
+fn iframe_element_matches(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    JsValue::Bool(iframe_matches_selector(
+        &vm.current_this,
+        &arg_string(args, 0),
+    ))
+}
+
+fn iframe_element_closest(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let selector = arg_string(args, 0);
+    if iframe_matches_selector(&vm.current_this, &selector) {
+        vm.current_this.clone()
+    } else {
+        JsValue::Null
+    }
+}
+
+fn iframe_element_clone_node(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let owner = vm.current_this.get_property("ownerDocument");
+    let clone = make_synthetic_frame_element(vm, owner);
+    for key in [
+        "nodeName",
+        "tagName",
+        "id",
+        "className",
+        "value",
+        "textContent",
+    ] {
+        clone.set_property(String::from(key), vm.current_this.get_property(key));
+    }
+    clone
+}
+
+fn iframe_append_child_ref(parent: &JsValue, child: JsValue) {
+    let old_parent = child.get_property("parentNode");
+    if !old_parent.is_null() && !old_parent.is_undefined() {
+        iframe_remove_child_ref(&old_parent, &child);
+    }
+    let children = parent.get_property("children");
+    if let JsValue::Array(arr) = &children {
+        arr.borrow_mut().push(child);
+        refresh_element_children_metadata(parent);
+    }
+}
+
+fn iframe_insert_child_before_ref(parent: &JsValue, child: JsValue, reference: &JsValue) {
+    let old_parent = child.get_property("parentNode");
+    if !old_parent.is_null() && !old_parent.is_undefined() {
+        iframe_remove_child_ref(&old_parent, &child);
+    }
+    let children = parent.get_property("children");
+    if let JsValue::Array(arr) = &children {
+        let mut arr_mut = arr.borrow_mut();
+        let existing = arr_mut
+            .elements
+            .iter()
+            .find(|(_, value)| same_js_reference(value, &child))
+            .map(|(idx, _)| *idx);
+        if let Some(idx) = existing {
+            arr_mut.elements.remove(&idx);
+        }
+        let insert_idx = arr_mut
+            .elements
+            .iter()
+            .find(|(_, value)| same_js_reference(value, reference))
+            .map(|(idx, _)| *idx)
+            .unwrap_or(arr_mut.length);
+        arr_mut.insert_and_shift(insert_idx, child);
+        refresh_element_children_metadata(parent);
+    }
+}
+
+fn iframe_remove_child_ref(parent: &JsValue, child: &JsValue) -> bool {
+    let children = parent.get_property("children");
+    let mut removed = false;
+    if let JsValue::Array(arr) = &children {
+        let mut arr_mut = arr.borrow_mut();
+        let mut next = Vec::new();
+        for value in arr_mut.elements.values() {
+            if same_js_reference(value, child) {
+                removed = true;
+            } else {
+                next.push(value.clone());
+            }
+        }
+        arr_mut.elements.clear();
+        arr_mut.length = 0;
+        for value in next {
+            arr_mut.push(value);
+        }
+        drop(arr_mut);
+        refresh_element_children_metadata(parent);
+    }
+    removed
+}
+
+fn same_js_reference(a: &JsValue, b: &JsValue) -> bool {
+    match (a, b) {
+        (JsValue::Object(a), JsValue::Object(b)) => Rc::ptr_eq(a, b),
+        (JsValue::Array(a), JsValue::Array(b)) => Rc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
+fn iframe_set_attribute_on(target: &JsValue, name: &str, value: &str) {
+    target.set_property(String::from(name), JsValue::String(String::from(value)));
+    match name {
+        "class" => {
+            target.set_property(
+                String::from("className"),
+                JsValue::String(String::from(value)),
+            );
+            let class_list = target.get_property("classList");
+            class_list.set_property(
+                String::from("__value"),
+                JsValue::String(String::from(value)),
+            );
+        }
+        "id" => target.set_property(String::from("id"), JsValue::String(String::from(value))),
+        "value" => target.set_property(String::from("value"), JsValue::String(String::from(value))),
+        _ => {}
+    }
+}
+
+fn iframe_get_attribute_from(target: &JsValue, name: &str) -> JsValue {
+    if name == "class" {
+        let value = target.get_property("className");
+        return if value.is_undefined() {
+            JsValue::Null
+        } else {
+            value
+        };
+    }
+    let value = target.get_property(name);
+    if value.is_undefined() {
+        JsValue::Null
+    } else {
+        value
+    }
+}
+
+fn iframe_matches_selector(target: &JsValue, selector: &str) -> bool {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        return false;
+    }
+    if let Some(id) = selector.strip_prefix('#') {
+        return target.get_property("id").to_js_string() == id;
+    }
+    if let Some(class_name) = selector.strip_prefix('.') {
+        return target
+            .get_property("className")
+            .to_js_string()
+            .split_whitespace()
+            .any(|class| class == class_name);
+    }
+    target
+        .get_property("tagName")
+        .to_js_string()
+        .eq_ignore_ascii_case(selector)
+}
+
+fn make_synthetic_frame_element_with_tag(
+    vm: &mut Vm,
+    owner_document: JsValue,
+    args: &[JsValue],
+    tag_arg_index: usize,
+) -> JsValue {
+    let el = make_synthetic_frame_element(vm, owner_document);
+    let raw = arg_string(args, tag_arg_index);
+    let tag = if raw.is_empty() {
+        String::from("DIV")
+    } else {
+        raw.to_ascii_uppercase()
+    };
+    el.set_property(String::from("nodeName"), JsValue::String(tag.clone()));
+    el.set_property(String::from("tagName"), JsValue::String(tag));
+    el
+}
+
 fn make_synthetic_frame_element(vm: &mut Vm, owner_document: JsValue) -> JsValue {
     let obj = JsValue::Object(Rc::new(RefCell::new(JsObject::new())));
+    obj.set_property(String::from("__nodeId"), JsValue::Number(-9999.0));
     obj.set_property(String::from("nodeType"), JsValue::Number(1.0));
     obj.set_property(
         String::from("nodeName"),
@@ -1871,6 +2238,10 @@ fn make_synthetic_frame_element(vm: &mut Vm, owner_document: JsValue) -> JsValue
     obj.set_property(String::from("textContent"), JsValue::String(String::new()));
     obj.set_property(String::from("className"), JsValue::String(String::new()));
     obj.set_property(String::from("id"), JsValue::String(String::new()));
+    obj.set_property(
+        String::from("classList"),
+        classlist::make_class_list(-9999, ""),
+    );
     obj.set_property(String::from("shadowRoot"), JsValue::Null);
     obj.set_property(String::from("children"), make_array(Vec::new()));
     obj.set_property(String::from("childNodes"), make_array(Vec::new()));
@@ -1896,6 +2267,58 @@ fn make_synthetic_frame_element(vm: &mut Vm, owner_document: JsValue) -> JsValue
     obj.set_property(
         String::from("dispatchEvent"),
         native_fn("dispatchEvent", iframe_element_dispatch_event),
+    );
+    obj.set_property(
+        String::from("appendChild"),
+        native_fn("appendChild", iframe_element_append_child),
+    );
+    obj.set_property(
+        String::from("removeChild"),
+        native_fn("removeChild", iframe_element_remove_child),
+    );
+    obj.set_property(
+        String::from("insertBefore"),
+        native_fn("insertBefore", iframe_element_insert_before),
+    );
+    obj.set_property(
+        String::from("replaceChild"),
+        native_fn("replaceChild", iframe_element_replace_child),
+    );
+    obj.set_property(
+        String::from("setAttribute"),
+        native_fn("setAttribute", iframe_element_set_attribute),
+    );
+    obj.set_property(
+        String::from("getAttribute"),
+        native_fn("getAttribute", iframe_element_get_attribute),
+    );
+    obj.set_property(
+        String::from("removeAttribute"),
+        native_fn("removeAttribute", iframe_element_remove_attribute),
+    );
+    obj.set_property(
+        String::from("hasAttribute"),
+        native_fn("hasAttribute", iframe_element_has_attribute),
+    );
+    obj.set_property(
+        String::from("addEventListener"),
+        native_fn("addEventListener", iframe_noop),
+    );
+    obj.set_property(
+        String::from("removeEventListener"),
+        native_fn("removeEventListener", iframe_noop),
+    );
+    obj.set_property(
+        String::from("matches"),
+        native_fn("matches", iframe_element_matches),
+    );
+    obj.set_property(
+        String::from("closest"),
+        native_fn("closest", iframe_element_closest),
+    );
+    obj.set_property(
+        String::from("cloneNode"),
+        native_fn("cloneNode", iframe_element_clone_node),
     );
     obj.set_property(String::from("click"), native_fn("click", iframe_noop));
     obj.set_property(String::from("focus"), native_fn("focus", iframe_noop));

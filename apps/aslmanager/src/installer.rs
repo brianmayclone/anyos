@@ -46,7 +46,7 @@ pub fn register_controls(
 
 pub fn refresh_status() {
     let installed = artifacts_ready();
-    let status = asld::request(&format!("STATUS {}", DISTRO_NAME));
+    let status = asld::request_ui(&format!("STATUS {}", DISTRO_NAME));
     let state = match status {
         Ok(resp) if resp.ok => {
             String::from(asld::field_value(&resp.lines, "state").unwrap_or("registered"))
@@ -66,8 +66,8 @@ pub fn refresh_runtime_metrics(force: bool) {
         return;
     }
 
-    let vm_status = asld::request(&format!("VM_STATUS {}", DISTRO_NAME));
-    let config = asld::request(&format!("CONFIG_SHOW {}", DISTRO_NAME));
+    let vm_status = asld::request_ui(&format!("VM_STATUS {}", DISTRO_NAME));
+    let config = asld::request_ui(&format!("CONFIG_SHOW {}", DISTRO_NAME));
 
     let mut vcpus = String::from("-");
     if let Ok(resp) = config {
@@ -188,9 +188,13 @@ pub fn on_timer() {
     }
 
     if WORKER_DONE.swap(false, Ordering::AcqRel) {
-        if let Some(thread) = crate::app().worker.take() {
-            let _ = thread.join();
+        if let Some(thread) = crate::app().worker.as_mut() {
+            if thread.try_join().is_none() {
+                WORKER_DONE.store(true, Ordering::Release);
+                return;
+            }
         }
+        let _ = crate::app().worker.take();
         WORKER_ACTIVE.store(false, Ordering::Release);
         crate::app().install_btn.set_enabled(true);
         crate::app().terminal_btn.set_enabled(artifacts_ready());
@@ -864,7 +868,12 @@ pub fn refresh_asld_logs(force: bool) {
     }
 
     let command = format!("LOGS {}\t80", DISTRO_NAME);
-    let Ok(resp) = asld::request(&command) else {
+    let request = if force {
+        asld::request(&command)
+    } else {
+        asld::request_ui(&command)
+    };
+    let Ok(resp) = request else {
         return;
     };
     if !resp.ok || resp.lines.is_empty() {

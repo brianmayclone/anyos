@@ -104,6 +104,8 @@ fn direct_linux_sregs_target_32bit_protected_entry() {
     assert_eq!(sregs.rip, crate::boot::LINUX_KERNEL_LOAD_ADDR as u64);
     assert_eq!(sregs.cs_selector, 0x10);
     assert_eq!(sregs.ds_selector, 0x18);
+    assert_eq!(sregs.fs_selector, 0);
+    assert_eq!(sregs.gs_selector, 0);
     assert_eq!(sregs.ss_selector, 0x18);
     assert_eq!(sregs.tr_selector, 0x20);
     assert_eq!(sregs.tr_ar, 0x008b);

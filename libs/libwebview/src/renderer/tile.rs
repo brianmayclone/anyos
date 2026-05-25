@@ -14,6 +14,12 @@ pub(super) const MAX_TILE_CANVAS_CREATES_PER_IDLE_TICK: usize = 16;
 pub(super) const MAX_TILE_CANVAS_CREATES_PER_SCROLL_TICK: usize = 4;
 pub(super) const MAX_TILES_PER_IDLE_TICK: usize = 24;
 pub(super) const MAX_TILES_PER_SCROLL_TICK: usize = 2;
+pub(super) const IDLE_PRERENDER_VIEWPORTS_BEFORE: i32 = 3;
+pub(super) const IDLE_PRERENDER_VIEWPORTS_AFTER: i32 = 6;
+pub(super) const IDLE_PRERENDER_CANVAS_VIEWPORTS_BEFORE: i32 = 2;
+pub(super) const IDLE_PRERENDER_CANVAS_VIEWPORTS_AFTER: i32 = 3;
+pub(super) const MAX_TILES_PER_IDLE_PRERENDER_TICK: usize = 8;
+pub(super) const MAX_TILE_CANVAS_CREATES_PER_IDLE_PRERENDER_TICK: usize = 8;
 pub(super) const INITIAL_VISIBLE_EXTRA_ROWS: u32 = 1;
 
 struct CachedTile {

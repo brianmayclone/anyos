@@ -10,6 +10,7 @@ use super::{
 };
 use crate::sync::spinlock::Spinlock;
 
+mod diagnostics;
 mod state;
 pub use state::{
     get_dirty_log, get_fpu, get_mp_state, get_regs, get_sregs, inject_exception, inject_irq,
@@ -618,14 +619,18 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
             });
         }
 
-        crate::serial_println!(
-            "[svm] vmexit: code={:#x} info1={:#x} info2={:#x} rip={:#x} cs.base={:#x}",
-            exit_code,
-            exit_info1,
-            exit_info2,
-            vmcb.state.rip,
-            vmcb.state.cs.base
-        );
+        if exit_code == VMEXIT_SHUTDOWN {
+            diagnostics::log_shutdown(vm.npt_root, vcpu, vmcb);
+        } else {
+            crate::serial_println!(
+                "[svm] vmexit: code={:#x} info1={:#x} info2={:#x} rip={:#x} cs.base={:#x}",
+                exit_code,
+                exit_info1,
+                exit_info2,
+                vmcb.state.rip,
+                vmcb.state.cs.base
+            );
+        }
 
         // Handle CPUID internally — fill registers, advance RIP, return synthetic reason.
         if exit_code == VMEXIT_CPUID {
