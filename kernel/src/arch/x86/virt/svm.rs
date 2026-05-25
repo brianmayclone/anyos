@@ -634,10 +634,17 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
 
         // Handle CPUID internally — fill registers, advance RIP, return synthetic reason.
         if exit_code == VMEXIT_CPUID {
+            let cpuid_function = vmcb.state.rax as u32;
+            let cpuid_index = vcpu.guest_gprs.rcx as u32;
             handle_cpuid_exit(&vm.cpuid_table[..vm.cpuid_count], vcpu, vmcb_phys);
             return Some(VmExitInfo {
                 reason: super::exit_reason::CPUID_EMULATED,
                 hw_reason: exit_code as u32,
+                instruction_len: instr_len,
+                io_data: vcpu.guest_gprs.rax,
+                io_data2: vcpu.guest_gprs.rcx,
+                cpuid_function,
+                cpuid_index,
                 ..Default::default()
             });
         }
@@ -892,6 +899,7 @@ unsafe fn handle_cpuid_exit(
         if let Some(entry) = entry_opt {
             if entry.function == leaf && entry.index == subleaf {
                 vmcb.state.rax = entry.eax as u64;
+                vcpu.guest_gprs.rax = entry.eax as u64;
                 vcpu.guest_gprs.rbx = entry.ebx as u64;
                 vcpu.guest_gprs.rcx = entry.ecx as u64;
                 vcpu.guest_gprs.rdx = entry.edx as u64;
@@ -916,6 +924,7 @@ unsafe fn handle_cpuid_exit(
             _ => {}
         }
         vmcb.state.rax = eax as u64;
+        vcpu.guest_gprs.rax = eax as u64;
         vcpu.guest_gprs.rbx = ebx as u64;
         vcpu.guest_gprs.rcx = ecx as u64;
         vcpu.guest_gprs.rdx = edx as u64;
