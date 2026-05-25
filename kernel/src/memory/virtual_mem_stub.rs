@@ -664,11 +664,6 @@ pub fn destroy_user_page_directory(pd: PhysAddr) {
                     continue;
                 }
                 let is_dll = i0 == 0 && i1 == 0 && (32..=63).contains(&i2);
-                let is_identity_map = i0 == 0 && i1 == 0 && i2 < 32;
-
-                if is_identity_map {
-                    continue;
-                }
 
                 let l3 = desc_addr(e2);
                 // Free all mapped pages

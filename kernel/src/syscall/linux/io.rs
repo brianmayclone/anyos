@@ -105,11 +105,18 @@ pub(super) fn linux_dup3(old_fd: u64, new_fd: u64, flags: u64) -> u64 {
 }
 
 pub(super) fn linux_fcntl(fd: u32, cmd: u32, arg: u64) -> u64 {
+    const F_GETFL: u32 = 3;
+    const F_SETFL: u32 = 4;
     const F_GETLK: u32 = 5;
     const F_SETLK: u32 = 6;
     const F_SETLKW: u32 = 7;
     const F_UNLCK: u16 = 2;
     match cmd {
+        F_GETFL => linux_fcntl_getfl(fd),
+        F_SETFL => match handlers::sys_fcntl(fd, cmd, arg as u32) {
+            u32::MAX => linux_err(EBADF),
+            ret => anyos_u32_ret(ret),
+        },
         F_GETLK => {
             if crate::task::scheduler::current_fd_get(fd).is_none() {
                 return linux_err(EBADF);
@@ -136,6 +143,44 @@ pub(super) fn linux_fcntl(fd: u32, cmd: u32, arg: u64) -> u64 {
             ret => anyos_u32_ret(ret),
         },
     }
+}
+
+fn linux_fcntl_getfl(fd: u32) -> u64 {
+    const O_WRONLY: u64 = 0o1;
+    const O_RDWR: u64 = 0o2;
+    const O_APPEND: u64 = 0o2000;
+    const O_NONBLOCK: u64 = 0o4000;
+
+    let Some(entry) = crate::task::scheduler::current_fd_get(fd) else {
+        return linux_err(EBADF);
+    };
+
+    let mut flags = if entry.flags.nonblock { O_NONBLOCK } else { 0 };
+    flags |= match entry.kind {
+        crate::fs::fd_table::FdKind::File { global_id } => {
+            match crate::fs::vfs::get_fd_flags(global_id) {
+                Ok(file_flags) => {
+                    let access = match (file_flags.read, file_flags.write) {
+                        (true, true) => O_RDWR,
+                        (false, true) => O_WRONLY,
+                        _ => 0,
+                    };
+                    access | if file_flags.append { O_APPEND } else { 0 }
+                }
+                Err(_) => return linux_err(EBADF),
+            }
+        }
+        crate::fs::fd_table::FdKind::PipeRead { .. }
+        | crate::fs::fd_table::FdKind::LinuxProc { .. } => 0,
+        crate::fs::fd_table::FdKind::PipeWrite { .. } => O_WRONLY,
+        crate::fs::fd_table::FdKind::Tty
+        | crate::fs::fd_table::FdKind::PtySlave { .. }
+        | crate::fs::fd_table::FdKind::LinuxSocket { .. }
+        | crate::fs::fd_table::FdKind::LinuxFramebuffer { .. } => O_RDWR,
+        crate::fs::fd_table::FdKind::None => return linux_err(EBADF),
+    };
+
+    flags
 }
 
 pub(super) fn linux_flock(fd: u32, operation: u64) -> u64 {

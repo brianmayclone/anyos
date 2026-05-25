@@ -133,11 +133,83 @@ pub fn deliver_pending_signal_default() {
 }
 
 const LINUX_RT_SIGFRAME_MAGIC: u64 = 0x5349_4746_524d_3634;
-const LINUX_RT_SIGFRAME_REGS_OFFSET: u64 = 8;
+const LINUX_SIGINFO_SIZE: u64 = 128;
+const LINUX_RT_SIGFRAME_PRETCODE_OFFSET: u64 = 0;
+const LINUX_UCONTEXT_OFFSET: u64 = LINUX_RT_SIGFRAME_PRETCODE_OFFSET + 8;
+const LINUX_UCONTEXT_MCONTEXT_OFFSET: u64 = 40;
+const LINUX_UCONTEXT_SIGMASK_OFFSET: u64 = 296;
+const LINUX_KERNEL_SIGSET_SIZE: u64 = 8;
+const LINUX_UCONTEXT_SIZE: u64 = LINUX_UCONTEXT_SIGMASK_OFFSET + LINUX_KERNEL_SIGSET_SIZE;
+const LINUX_SIGINFO_OFFSET: u64 = LINUX_UCONTEXT_OFFSET + LINUX_UCONTEXT_SIZE;
+const LINUX_RT_SIGFRAME_MAGIC_OFFSET: u64 = LINUX_SIGINFO_OFFSET + LINUX_SIGINFO_SIZE;
+const LINUX_RT_SIGFRAME_REGS_OFFSET: u64 = LINUX_RT_SIGFRAME_MAGIC_OFFSET + 8;
 const LINUX_RT_SIGFRAME_BLOCKED_OFFSET: u64 = LINUX_RT_SIGFRAME_REGS_OFFSET + 20 * 8;
 const LINUX_RT_SIGFRAME_SIZE: u64 = LINUX_RT_SIGFRAME_BLOCKED_OFFSET + 8;
 const LINUX_X86_64_RED_ZONE_SIZE: u64 = 128;
 const LINUX_SA_NODEFER: u64 = 0x4000_0000;
+const LINUX_UC_SIGCONTEXT_SS: u64 = 0x2;
+const LINUX_UC_STRICT_RESTORE_SS: u64 = 0x4;
+
+fn linux_mask_from_internal(mask: u32) -> u64 {
+    let mut linux = 0u64;
+    for sig in 1..32u32 {
+        if (mask & (1u32 << sig)) != 0 {
+            linux |= 1u64 << (sig - 1);
+        }
+    }
+    linux
+}
+
+unsafe fn write_siginfo(base: u64, sig: u32, info: crate::ipc::signal::SignalInfo) {
+    core::ptr::write_bytes(base as *mut u8, 0, LINUX_SIGINFO_SIZE as usize);
+    *(base as *mut u32) = sig;
+    *((base + 4) as *mut i32) = 0;
+    *((base + 8) as *mut i32) = info.code;
+    *((base + 16) as *mut u32) = info.pid;
+    *((base + 20) as *mut u32) = info.uid;
+    *((base + 24) as *mut u32) = info.status;
+}
+
+unsafe fn write_ucontext_greg(ucontext: u64, index: u64, value: u64) {
+    *((ucontext + LINUX_UCONTEXT_MCONTEXT_OFFSET + index * 8) as *mut u64) = value;
+}
+
+unsafe fn write_ucontext(
+    base: u64,
+    regs: &super::super::SyscallRegs,
+    result: u64,
+    old_blocked: u32,
+) {
+    core::ptr::write_bytes(base as *mut u8, 0, LINUX_UCONTEXT_SIZE as usize);
+
+    *(base as *mut u64) = LINUX_UC_SIGCONTEXT_SS | LINUX_UC_STRICT_RESTORE_SS;
+
+    // Linux x86_64's signal ucontext starts with uc_flags, uc_link, stack_t,
+    // then the UAPI sigcontext. Keep that layout exact so libc/signal helpers
+    // can inspect the frame without seeing our private restore area.
+    write_ucontext_greg(base, 0, regs.r8);
+    write_ucontext_greg(base, 1, regs.r9);
+    write_ucontext_greg(base, 2, regs.r10);
+    write_ucontext_greg(base, 3, regs.r11);
+    write_ucontext_greg(base, 4, regs.r12);
+    write_ucontext_greg(base, 5, regs.r13);
+    write_ucontext_greg(base, 6, regs.r14);
+    write_ucontext_greg(base, 7, regs.r15);
+    write_ucontext_greg(base, 8, regs.rdi);
+    write_ucontext_greg(base, 9, regs.rsi);
+    write_ucontext_greg(base, 10, regs.rbp);
+    write_ucontext_greg(base, 11, regs.rbx);
+    write_ucontext_greg(base, 12, regs.rdx);
+    write_ucontext_greg(base, 13, result);
+    write_ucontext_greg(base, 14, regs.rcx);
+    write_ucontext_greg(base, 15, regs.rsp);
+    write_ucontext_greg(base, 16, regs.rip);
+    write_ucontext_greg(base, 17, regs.rflags);
+    let segments = (regs.cs & 0xffff) | ((regs.ss & 0xffff) << 48);
+    write_ucontext_greg(base, 18, segments);
+    write_ucontext_greg(base, 21, linux_mask_from_internal(old_blocked));
+    *((base + LINUX_UCONTEXT_SIGMASK_OFFSET) as *mut u64) = linux_mask_from_internal(old_blocked);
+}
 
 unsafe fn write_sigframe_regs(base: u64, regs: &super::super::SyscallRegs, result: u64) {
     let values = [
@@ -174,8 +246,8 @@ unsafe fn read_sigframe_reg(base: u64, idx: u64) -> u64 {
 /// Deliver one pending Linux x86_64 signal by building a minimal rt_sigframe.
 ///
 /// The userspace restorer still performs the real `rt_sigreturn` syscall. Our
-/// frame is intentionally compact, but it is sufficient for libc restorers
-/// because only the kernel consumes the frame contents.
+/// private restore state lives after the Linux-shaped rt_sigframe so libc,
+/// unwinders and SA_SIGINFO handlers can inspect the public part safely.
 pub fn deliver_pending_signal_linux64(regs: &mut super::super::SyscallRegs, result: u64) -> u64 {
     use crate::ipc::signal::{SignalState, SIG_DFL, SIG_IGN};
 
@@ -188,6 +260,7 @@ pub fn deliver_pending_signal_linux64(regs: &mut super::super::SyscallRegs, resu
         None => return result,
     };
 
+    let siginfo = crate::task::scheduler::current_signal_info(sig);
     let (handler, flags, restorer, mask) = crate::task::scheduler::current_signal_action(sig);
 
     if handler == SIG_DFL {
@@ -215,17 +288,24 @@ pub fn deliver_pending_signal_linux64(regs: &mut super::super::SyscallRegs, resu
     // like dash can keep wait/job state there across a blocking wait4; placing
     // the rt frame directly below RSP corrupts that state before rt_sigreturn.
     let signal_stack_top = regs.rsp.wrapping_sub(LINUX_X86_64_RED_ZONE_SIZE);
-    let frame_slot = ((signal_stack_top.wrapping_sub(LINUX_RT_SIGFRAME_SIZE + 16)) & !0xf) + 8;
-    let frame_base = frame_slot + 8;
-    if !super::helpers::is_user_range_accessible(frame_slot, LINUX_RT_SIGFRAME_SIZE + 8) {
+    let frame_base =
+        ((signal_stack_top.wrapping_sub(LINUX_RT_SIGFRAME_SIZE)) & !0xf).wrapping_sub(8);
+    if !super::helpers::is_user_range_accessible(frame_base, LINUX_RT_SIGFRAME_SIZE) {
         super::sys_exit(128 + crate::ipc::signal::SIGSEGV);
         return result;
     }
 
     let old_blocked = crate::task::scheduler::current_signal_get_blocked();
     unsafe {
-        *(frame_slot as *mut u64) = restorer;
-        *(frame_base as *mut u64) = LINUX_RT_SIGFRAME_MAGIC;
+        *((frame_base + LINUX_RT_SIGFRAME_PRETCODE_OFFSET) as *mut u64) = restorer;
+        write_ucontext(
+            frame_base + LINUX_UCONTEXT_OFFSET,
+            regs,
+            result,
+            old_blocked,
+        );
+        write_siginfo(frame_base + LINUX_SIGINFO_OFFSET, sig, siginfo);
+        *((frame_base + LINUX_RT_SIGFRAME_MAGIC_OFFSET) as *mut u64) = LINUX_RT_SIGFRAME_MAGIC;
         write_sigframe_regs(frame_base, regs, result);
         *((frame_base + LINUX_RT_SIGFRAME_BLOCKED_OFFSET) as *mut u64) = old_blocked as u64;
     }
@@ -237,7 +317,7 @@ pub fn deliver_pending_signal_linux64(regs: &mut super::super::SyscallRegs, resu
     crate::task::scheduler::current_signal_set_blocked(new_blocked);
 
     crate::serial_verbose_println!(
-        "lxe linux signal: deliver abi=v2 tid={} sig={} handler={:#x} restorer={:#x} frame={:#x} result={:#x} saved_rip={:#x} saved_rsp={:#x} saved_rbp={:#x}",
+        "lxe linux signal: deliver abi=v4 tid={} sig={} handler={:#x} restorer={:#x} frame={:#x} result={:#x} saved_rip={:#x} saved_rsp={:#x} saved_rbp={:#x} si_pid={} si_status={}",
         crate::task::scheduler::current_tid(),
         sig,
         handler,
@@ -246,29 +326,34 @@ pub fn deliver_pending_signal_linux64(regs: &mut super::super::SyscallRegs, resu
         result,
         regs.rip,
         regs.rsp,
-        regs.rbp
+        regs.rbp,
+        siginfo.pid,
+        siginfo.status
     );
 
     regs.rip = handler;
-    regs.rsp = frame_slot;
+    regs.rsp = frame_base;
     regs.rdi = sig as u64;
     // Match Linux x86_64 signal-entry register state: even handlers that were
     // installed without SA_SIGINFO receive valid second/third argument
     // pointers, and RAX is cleared for handlers declared without prototypes.
     regs.rax = 0;
-    regs.rsi = frame_base;
-    regs.rdx = frame_base;
+    regs.rsi = frame_base + LINUX_SIGINFO_OFFSET;
+    regs.rdx = frame_base + LINUX_UCONTEXT_OFFSET;
     0
 }
 
 pub fn linux_rt_sigreturn(regs: &mut super::super::SyscallRegs) -> u64 {
-    let frame_base = regs.rsp;
+    if regs.rsp < 8 {
+        return (-14i64) as u64;
+    }
+    let frame_base = regs.rsp - 8;
     if frame_base == 0
         || !super::helpers::is_user_range_accessible(frame_base, LINUX_RT_SIGFRAME_SIZE)
     {
         return (-14i64) as u64;
     }
-    let magic = unsafe { *(frame_base as *const u64) };
+    let magic = unsafe { *((frame_base + LINUX_RT_SIGFRAME_MAGIC_OFFSET) as *const u64) };
     if magic != LINUX_RT_SIGFRAME_MAGIC {
         crate::serial_verbose_println!(
             "lxe linux rt_sigreturn: bad frame magic={:#x} rsp={:#x}",

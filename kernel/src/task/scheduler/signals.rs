@@ -1,6 +1,7 @@
 //! Signal helpers, parent/child TID management, thread existence checks.
 
 use super::{get_cpu_id, schedule, SCHEDULER};
+use crate::ipc::signal::SignalInfo;
 use crate::task::thread::ThreadState;
 use alloc::vec::Vec;
 
@@ -92,6 +93,27 @@ pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
     false
 }
 
+pub fn send_sigchld_to_thread(tid: u32, child_pid: u32, status: u32) -> bool {
+    const CLD_EXITED: i32 = 1;
+
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(thread) = sched.threads.iter_mut().find(|thread| thread.tid == tid) {
+            thread.signals.send_with_info(
+                crate::ipc::signal::SIGCHLD,
+                SignalInfo {
+                    code: CLD_EXITED,
+                    pid: child_pid,
+                    uid: 0,
+                    status,
+                },
+            );
+            return true;
+        }
+    }
+    false
+}
+
 /// Send a signal to every live thread attached to the given PTY.
 pub fn send_signal_to_pty(pty_id: u32, sig: u32) -> u32 {
     if pty_id == 0 {
@@ -176,6 +198,17 @@ pub fn current_signal_action(sig: u32) -> (u64, u64, u64, u64) {
         }
     }
     (crate::ipc::signal::SIG_DFL, 0, 0, 0)
+}
+
+pub fn current_signal_info(sig: u32) -> SignalInfo {
+    let guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_ref() {
+        let cpu = get_cpu_id();
+        if let Some(idx) = sched.current_idx(cpu) {
+            return sched.threads[idx].signals.get_info(sig);
+        }
+    }
+    SignalInfo::empty()
 }
 
 /// Set the full signal action on the current thread.
@@ -285,6 +318,7 @@ pub fn set_thread_signals(tid: u32, signals: crate::ipc::signal::SignalState) {
             thread.signals.flags = signals.flags;
             thread.signals.restorers = signals.restorers;
             thread.signals.masks = signals.masks;
+            thread.signals.infos = signals.infos;
             thread.signals.blocked = signals.blocked;
             thread.signals.pending = 0;
         }

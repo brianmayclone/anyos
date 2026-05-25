@@ -6,9 +6,12 @@
 use super::helpers::read_user_str;
 #[allow(unused_imports)]
 use super::helpers::{copy_to_user_bytes, is_valid_user_ptr};
-use alloc::vec;
 
-const TCP_RECV_COPY_CHUNK: usize = 256 * 1024;
+// Bound the copy size per syscall and keep the scratch buffer on the kernel
+// stack. Large downloads call recv() thousands of times; heap-allocating a
+// temporary buffer here makes Activity Mon show permanently committed kernel
+// heap pages even after the TCP socket has been closed.
+const TCP_RECV_COPY_CHUNK: usize = 64 * 1024;
 
 // =========================================================================
 // Networking (SYS_NET_*)
@@ -363,11 +366,11 @@ pub fn sys_tcp_recv(socket_id: u32, buf_ptr: u64, len: u32) -> u32 {
         return u32::MAX;
     }
 
-    let mut buf = vec![0u8; recv_len];
-    let result = crate::net::tcp::recv(socket_id, &mut buf, 3000); // 3s timeout (3000 ticks @ 1 kHz)
+    let mut buf = [0u8; TCP_RECV_COPY_CHUNK];
+    let result = crate::net::tcp::recv(socket_id, &mut buf[..recv_len], 3000); // 3s timeout (3000 ticks @ 1 kHz)
     if result != u32::MAX && result > 0 {
         let n = result as usize;
-        if !copy_to_user_bytes(buf_ptr, &buf[..n], TCP_RECV_COPY_CHUNK) {
+        if !copy_to_user_bytes(buf_ptr, &buf[..n], n) {
             return u32::MAX;
         }
     }

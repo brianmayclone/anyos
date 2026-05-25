@@ -24,7 +24,10 @@ const SOL_SOCKET: u64 = 1;
 const SO_ERROR: u64 = 4;
 const SO_RCVTIMEO: u64 = 20;
 const SO_SNDTIMEO: u64 = 21;
-const TCP_RECV_COPY_CHUNK: usize = 256 * 1024;
+// Keep TCP receive scratch space out of the kernel heap. Linux guests and apt
+// often perform large reads; returning a partial read is valid and avoids
+// making transient copy buffers look like leaked TCP data in RAM accounting.
+const TCP_RECV_COPY_CHUNK: usize = 64 * 1024;
 
 const EPHEMERAL_FIRST: u16 = 49152;
 const EPHEMERAL_LAST: u16 = 60999;
@@ -906,21 +909,20 @@ pub(super) fn socket_read(fd: u32, buf_ptr: u64, len: u64) -> u64 {
                     _ => {}
                 }
             }
-            let mut buf = Vec::new();
-            buf.resize(recv_len, 0);
+            let mut buf = [0u8; TCP_RECV_COPY_CHUNK];
             let timeout = if nonblock {
                 0
             } else {
                 3 * crate::arch::hal::timer_frequency_hz() as u32
             };
-            match crate::net::tcp::recv(tcp_id, &mut buf, timeout) {
+            match crate::net::tcp::recv(tcp_id, &mut buf[..recv_len], timeout) {
                 u32::MAX => linux_err(EAGAIN),
                 n => {
                     if n != 0
                         && !handlers::helpers::copy_to_user_bytes(
                             buf_ptr,
                             &buf[..n as usize],
-                            TCP_RECV_COPY_CHUNK,
+                            n as usize,
                         )
                     {
                         return linux_err(EFAULT);

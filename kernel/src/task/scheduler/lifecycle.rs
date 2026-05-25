@@ -286,7 +286,12 @@ fn cleanup_killed_children(children: &[TerminatedChildCleanup]) {
     }
 }
 
-fn defer_fault_exit_cleanup(current_tid: u32, current_code: u32, child_tids: &[u32]) {
+fn defer_fault_exit_cleanup(
+    current_tid: u32,
+    current_code: u32,
+    current_abi_tag: u32,
+    child_tids: &[u32],
+) {
     let mut queue = match DEFERRED_THREAD_CLEANUP.try_lock() {
         Some(q) => q,
         None => {
@@ -301,6 +306,7 @@ fn defer_fault_exit_cleanup(current_tid: u32, current_code: u32, child_tids: &[u
         queue.push(DeferredThreadCleanup {
             tid: child_tid,
             exit_code: 0,
+            abi_tag: 0,
             emit_exit_event: false,
         });
     }
@@ -308,6 +314,7 @@ fn defer_fault_exit_cleanup(current_tid: u32, current_code: u32, child_tids: &[u
         queue.push(DeferredThreadCleanup {
             tid: current_tid,
             exit_code: current_code,
+            abi_tag: current_abi_tag,
             emit_exit_event: true,
         });
     }
@@ -380,6 +387,7 @@ fn defer_fault_pd_destroy(pd: PhysAddr, tid: u32) {
 pub fn exit_current(code: u32) {
     let my_cpu = safe_cpu_id(get_cpu_id());
     let tid: u32;
+    let abi_tag: u32;
     let mut pd_to_destroy: Option<PhysAddr> = None;
     let killed_children: alloc::vec::Vec<TerminatedChildCleanup>;
     let mut wake_kick_cpu: Option<usize> = None;
@@ -404,6 +412,7 @@ pub fn exit_current(code: u32) {
         if sched.threads[idx].is_idle || sched.is_idle_tid(current_tid) {
             return;
         }
+        abi_tag = sched.threads[idx].abi.event_tag();
 
         let parent_tid = sched.threads[idx].parent_tid;
         let tick = crate::arch::hal::timer_current_ticks();
@@ -454,10 +463,17 @@ pub fn exit_current(code: u32) {
         }
         // Send SIGCHLD to parent
         if parent_tid != 0 {
+            let child_uid = sched.threads[idx].uid as u32;
             if let Some(parent_idx) = sched.find_idx(parent_tid) {
-                sched.threads[parent_idx]
-                    .signals
-                    .send(crate::ipc::signal::SIGCHLD);
+                sched.threads[parent_idx].signals.send_with_info(
+                    crate::ipc::signal::SIGCHLD,
+                    crate::ipc::signal::SignalInfo {
+                        code: 1, // CLD_EXITED
+                        pid: current_tid,
+                        uid: child_uid,
+                        status: code,
+                    },
+                );
             }
         }
     } // SCHEDULER lock released here
@@ -485,7 +501,7 @@ pub fn exit_current(code: u32) {
         crate::ipc::event_bus::EVT_PROCESS_EXITED,
         tid,
         code,
-        0,
+        abi_tag,
         0,
     ));
     schedule();
@@ -502,6 +518,7 @@ pub fn exit_current(code: u32) {
 pub fn try_exit_current(code: u32) -> bool {
     let my_cpu = safe_cpu_id(get_cpu_id());
     let tid: u32;
+    let abi_tag: u32;
     let mut pd_to_destroy: Option<PhysAddr> = None;
     let mut killed_sibling_tids = [0u32; MAX_FAULT_PROCESS_CLEANUP];
     let mut killed_sibling_count = 0usize;
@@ -537,6 +554,7 @@ pub fn try_exit_current(code: u32) -> bool {
         if sched.threads[idx].is_idle || sched.is_idle_tid(current_tid) {
             return false;
         }
+        abi_tag = sched.threads[idx].abi.event_tag();
         try_exit_diag_mark(b'G');
 
         let tick = crate::arch::hal::timer_current_ticks();
@@ -603,7 +621,12 @@ pub fn try_exit_current(code: u32) -> bool {
     let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
     crate::arch::hal::switch_page_table(kernel_cr3);
     try_exit_diag_mark(b'Q');
-    defer_fault_exit_cleanup(tid, code, &killed_sibling_tids[..killed_sibling_count]);
+    defer_fault_exit_cleanup(
+        tid,
+        code,
+        abi_tag,
+        &killed_sibling_tids[..killed_sibling_count],
+    );
     if let Some(pd) = pd_to_destroy {
         crate::syscall::windows::cleanup_process(pd.as_u64());
         crate::task::env::cleanup(pd.as_u64());
@@ -625,6 +648,7 @@ pub static mut BAD_RSP_SAVED: u64 = 0;
 pub extern "C" fn bad_rsp_recovery() -> ! {
     let cpu_id = safe_cpu_id(crate::arch::hal::cpu_id());
     let tid = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed);
+    let mut abi_tag = 0u32;
     let mut pd_to_destroy: Option<PhysAddr> = None;
     let mut killed_thread = false;
     let mut killed_sibling_tids = [0u32; MAX_FAULT_PROCESS_CLEANUP];
@@ -655,6 +679,7 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
                     let pri = sched.threads[idx].priority;
                     sched.per_cpu[cpu_id].run_queue.enqueue(current_tid, pri);
                 } else if !sched.threads[idx].is_idle && !sched.is_idle_tid(current_tid) {
+                    abi_tag = sched.threads[idx].abi.event_tag();
                     if let Some(pd) = sched.threads[idx].page_directory {
                         killed_sibling_count = terminate_same_pd_threads_for_fault(
                             sched,
@@ -696,7 +721,12 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
     let kcr3 = crate::memory::virtual_mem::kernel_cr3();
     crate::arch::hal::switch_page_table(kcr3);
     if killed_thread {
-        defer_fault_exit_cleanup(tid, 139, &killed_sibling_tids[..killed_sibling_count]);
+        defer_fault_exit_cleanup(
+            tid,
+            139,
+            abi_tag,
+            &killed_sibling_tids[..killed_sibling_count],
+        );
         if let Some(pd) = pd_to_destroy {
             crate::syscall::windows::cleanup_process(pd.as_u64());
             crate::task::env::cleanup(pd.as_u64());
@@ -717,6 +747,7 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
 /// on its idle stack, even if per-CPU current TID metadata has already drifted.
 pub fn fault_kill_tid_and_idle(tid: u32, signal: u32) -> ! {
     let cpu_id = safe_cpu_id(crate::arch::hal::cpu_id());
+    let mut abi_tag = 0u32;
     let mut pd_to_destroy: Option<PhysAddr> = None;
     let mut killed_sibling_tids = [0u32; MAX_FAULT_PROCESS_CLEANUP];
     let mut killed_sibling_count = 0usize;
@@ -750,6 +781,7 @@ pub fn fault_kill_tid_and_idle(tid: u32, signal: u32) -> ! {
         if let Some(idx) = sched.find_idx(tid) {
             if !sched.threads[idx].is_idle && !sched.is_idle_tid(tid) {
                 let tick = crate::arch::hal::timer_current_ticks();
+                abi_tag = sched.threads[idx].abi.event_tag();
                 if let Some(pd) = sched.threads[idx].page_directory {
                     killed_sibling_count = terminate_same_pd_threads_for_fault(
                         sched,
@@ -784,7 +816,12 @@ pub fn fault_kill_tid_and_idle(tid: u32, signal: u32) -> ! {
 
     let kcr3 = crate::memory::virtual_mem::kernel_cr3();
     crate::arch::hal::switch_page_table(kcr3);
-    defer_fault_exit_cleanup(tid, signal, &killed_sibling_tids[..killed_sibling_count]);
+    defer_fault_exit_cleanup(
+        tid,
+        signal,
+        abi_tag,
+        &killed_sibling_tids[..killed_sibling_count],
+    );
     if let Some(pd) = pd_to_destroy {
         crate::syscall::windows::cleanup_process(pd.as_u64());
         crate::task::env::cleanup(pd.as_u64());
@@ -801,6 +838,7 @@ pub fn kill_thread(tid: u32) -> u32 {
     }
 
     let mut pd_to_destroy: Option<PhysAddr> = None;
+    let abi_tag: u32;
     let is_current;
     let running_on_other_cpu;
     let killed_children: alloc::vec::Vec<TerminatedChildCleanup>;
@@ -825,6 +863,7 @@ pub fn kill_thread(tid: u32) -> u32 {
         if sched.threads[target_idx].is_idle || sched.is_idle_tid(tid) {
             return u32::MAX;
         }
+        abi_tag = sched.threads[target_idx].abi.event_tag();
 
         is_current = sched.per_cpu[cpu_id].current_tid == Some(tid);
         running_on_other_cpu = !is_current
@@ -920,7 +959,7 @@ pub fn kill_thread(tid: u32) -> u32 {
         crate::ipc::event_bus::EVT_PROCESS_EXITED,
         tid,
         u32::MAX - 1,
-        0,
+        abi_tag,
         0,
     ));
 

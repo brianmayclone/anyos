@@ -19,6 +19,9 @@ const EVT_LAUNCH_RESULT: u32 = 0x5002;
 
 /// System event: process exited.
 const EVT_PROCESS_EXITED: u32 = 0x0021;
+/// EVT_PROCESS_EXITED arg3: native anyOS ABI. Linux/WXE exits are CLI/runtime
+/// semantics and must not raise the graphical anyOS CrashDialog.
+const ABI_ANYOS: u32 = 0;
 
 fn main() {
     anyos_std::println!("[sessionhost] starting");
@@ -81,8 +84,9 @@ fn main() {
             if evt[0] == EVT_PROCESS_EXITED {
                 let exited_tid = evt[1];
                 let exit_code = evt[2];
-                if exit_code > 128 && exit_code < 256 {
-                    crash::launch_crash_dialog(exited_tid, exit_code);
+                let abi = evt[3];
+                if exit_code > 128 && exit_code < 256 && abi == ABI_ANYOS {
+                    let _ = crash::launch_crash_dialog(exited_tid, exit_code);
                 }
             }
             continue;

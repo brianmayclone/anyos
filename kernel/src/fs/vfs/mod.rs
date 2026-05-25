@@ -5140,6 +5140,18 @@ pub fn get_fd_path(slot_id: FileDescriptor) -> Result<alloc::string::String, FsE
     Ok(file.path.clone())
 }
 
+/// Get the open-mode flags associated with a global VFS file descriptor.
+pub fn get_fd_flags(slot_id: FileDescriptor) -> Result<FileFlags, FsError> {
+    let vfs = vfs_lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+    let file = state
+        .open_files
+        .get(slot_id as usize)
+        .and_then(|e| e.as_ref())
+        .ok_or(FsError::BadFd)?;
+    Ok(file.flags)
+}
+
 /// Truncate a file to zero length.
 pub fn truncate(path: &str) -> Result<(), FsError> {
     truncate_to(path, 0)

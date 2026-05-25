@@ -10,8 +10,11 @@ use super::{
 };
 use crate::sync::spinlock::Spinlock;
 
+mod bitmap;
+mod cpuid;
 mod cr;
 mod diagnostics;
+mod exception;
 mod state;
 pub use state::{
     get_dirty_log, get_fpu, get_mp_state, get_regs, get_sregs, inject_exception, inject_irq,
@@ -39,6 +42,7 @@ pub const VMEXIT_VMRUN: u64 = 0x80;
 pub const VMEXIT_VMMCALL: u64 = 0x81;
 pub const VMEXIT_WBINVD: u64 = 0x89;
 pub const VMEXIT_XSETBV: u64 = 0x8D;
+pub const VMEXIT_INTR: u64 = 0x60;
 pub const VMEXIT_NPF: u64 = 0x400;
 pub const VMEXIT_INVALID: u64 = u64::MAX;
 
@@ -176,6 +180,7 @@ static VMS: Spinlock<[Option<SvmVm>; MAX_VMS]> = Spinlock::new([const { None }; 
 // ── SVM intercept bits ───────────────────────────────────────────────────
 
 const INTERCEPT_CPUID: u64 = 1 << 18;
+const INTERCEPT_INTR: u64 = 1 << 0;
 const INTERCEPT_HLT: u64 = 1 << 24;
 const INTERCEPT_IOIO_PROT: u64 = 1 << 27;
 const INTERCEPT_MSR_PROT: u64 = 1 << 28;
@@ -266,15 +271,10 @@ pub fn destroy_vm(vm_id: u32) -> bool {
                     if let Some(vcpu) = vcpu_opt.take() {
                         free_page(vcpu.vmcb_phys);
                         if vcpu.iopm_phys != 0 {
-                            // IOPM is 12KB = 3 pages
-                            free_page(vcpu.iopm_phys);
-                            free_page(vcpu.iopm_phys + 0x1000);
-                            free_page(vcpu.iopm_phys + 0x2000);
+                            bitmap::free_pages(vcpu.iopm_phys, 3);
                         }
                         if vcpu.msrpm_phys != 0 {
-                            // MSRPM is 8KB = 2 pages
-                            free_page(vcpu.msrpm_phys);
-                            free_page(vcpu.msrpm_phys + 0x1000);
+                            bitmap::free_pages(vcpu.msrpm_phys, 2);
                         }
                     }
                 }
@@ -400,11 +400,8 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
         };
 
         // Allocate I/O permission map (3 contiguous pages = 12KB)
-        let iopm_phys = match crate::memory::physical::alloc_contiguous(3) {
-            Some(p) => {
-                core::ptr::write_bytes(p.as_u64() as *mut u8, 0xFF, 3 * 4096);
-                p.as_u64()
-            }
+        let iopm_phys = match bitmap::alloc_filled_pages(3, 0xFF) {
+            Some(p) => p,
             None => {
                 free_page(vmcb_phys);
                 return false;
@@ -412,16 +409,11 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
         };
 
         // Allocate MSR permission map (2 contiguous pages = 8KB)
-        let msrpm_phys = match crate::memory::physical::alloc_contiguous(2) {
-            Some(p) => {
-                core::ptr::write_bytes(p.as_u64() as *mut u8, 0xFF, 2 * 4096);
-                p.as_u64()
-            }
+        let msrpm_phys = match bitmap::alloc_filled_pages(2, 0xFF) {
+            Some(p) => p,
             None => {
                 free_page(vmcb_phys);
-                free_page(iopm_phys);
-                free_page(iopm_phys + 0x1000);
-                free_page(iopm_phys + 0x2000);
+                bitmap::free_pages(iopm_phys, 3);
                 return false;
             }
         };
@@ -430,7 +422,8 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
         let vmcb = &mut *(super::phys_to_virt(vmcb_phys) as *mut Vmcb);
 
         // Control area
-        let intercepts = INTERCEPT_CPUID
+        let intercepts = INTERCEPT_INTR
+            | INTERCEPT_CPUID
             | INTERCEPT_HLT
             | INTERCEPT_IOIO_PROT
             | INTERCEPT_MSR_PROT
@@ -446,6 +439,7 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
             | INTERCEPT_XSETBV;
         vmcb.control.intercepts_low = intercepts as u32;
         vmcb.control.intercepts_high = (intercepts >> 32) as u32;
+        vmcb.control.intercept_exceptions = exception::FATAL_INTERCEPTS;
         vmcb.control.intercept_cr_writes = cr::CR_WRITE_INTERCEPTS;
         vmcb.control.iopm_base_pa = iopm_phys;
         vmcb.control.msrpm_base_pa = msrpm_phys;
@@ -560,6 +554,7 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
         // Write non-RAX GPRs into registers before VMRUN, read them back after.
         // RAX is in the VMCB state-save area.
         vmcb.state.rax = vcpu.guest_gprs.rax;
+        vmcb.control.clean_bits = 0;
 
         let gprs_ptr = &mut vcpu.guest_gprs as *mut GuestGprs;
 
@@ -623,6 +618,19 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
 
         if exit_code == VMEXIT_SHUTDOWN {
             diagnostics::log_shutdown(vm.npt_root, vcpu, vmcb);
+        } else if exception::is_exception_exit(exit_code) {
+            crate::serial_println!(
+                "[svm] exception: vector={} info1={:#x} info2={:#x} int_info={:#x} rip={:#x} cr0={:#x} cr3={:#x} cr4={:#x} efer={:#x}",
+                exception::vector(exit_code),
+                exit_info1,
+                exit_info2,
+                vmcb.control.exit_int_info,
+                vmcb.state.rip,
+                vmcb.state.cr0,
+                vmcb.state.cr3,
+                vmcb.state.cr4,
+                vmcb.state.efer
+            );
         } else if !matches!(exit_code, VMEXIT_CPUID | VMEXIT_HLT | VMEXIT_PAUSE) {
             crate::serial_println!(
                 "[svm] vmexit: code={:#x} info1={:#x} info2={:#x} rip={:#x} cs.base={:#x}",
@@ -663,6 +671,7 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
         } else {
             match exit_code {
                 VMEXIT_CPUID => super::exit_reason::CPUID,
+                VMEXIT_INTR => super::exit_reason::EXTERNAL_INTERRUPT,
                 VMEXIT_HLT => super::exit_reason::HLT,
                 VMEXIT_IOIO => super::exit_reason::IO_INSTRUCTION,
                 VMEXIT_MSR => {
@@ -758,6 +767,8 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
         if cr::is_cr_access_exit(exit_code) {
             info.cr_number = cr::cr_number(exit_code);
             info.cr_is_read = cr::cr_is_read(exit_code);
+        } else if exception::is_exception_exit(exit_code) {
+            info.io_data = exception::vector(exit_code) as u64;
         }
 
         Some(info)
@@ -817,6 +828,7 @@ fn svm_exit_instruction_len(exit_code: u64, vmcb: &Vmcb) -> u32 {
 unsafe fn svm_vmrun(vmcb_phys: u64, gprs: *mut GuestGprs) {
     core::arch::asm!(
         "pushfq",
+        "cli",
 
         // Save callee-saved
         "push rbx",
@@ -891,9 +903,9 @@ unsafe fn svm_vmrun(vmcb_phys: u64, gprs: *mut GuestGprs) {
         "pop r12",
         "pop rbp",
         "pop rbx",
+        "stgi",
         "popfq",
         "cld",
-        "stgi",
 
         inout("rax") vmcb_phys => _,
         in("rsi") gprs,
@@ -926,19 +938,8 @@ unsafe fn handle_cpuid_exit(
     }
 
     if !found {
-        let (eax, ebx, mut ecx, edx) = crate::arch::x86::cpuid::cpuid(leaf, subleaf);
-        match leaf {
-            // Leaf 1: mask VMX capability and set hypervisor-present.
-            1 => {
-                ecx &= !(1 << 5); // clear VMX (ECX bit 5)
-                ecx |= 1 << 31; // set Hypervisor Present (ECX bit 31)
-            }
-            // Leaf 0x8000_0001: mask SVM capability (ECX bit 2).
-            0x8000_0001 => {
-                ecx &= !(1 << 2);
-            }
-            _ => {}
-        }
+        let (eax, ebx, ecx, edx) = crate::arch::x86::cpuid::cpuid(leaf, subleaf);
+        let (eax, ebx, ecx, edx) = cpuid::sanitize(leaf, subleaf, eax, ebx, ecx, edx);
         vmcb.state.rax = eax as u64;
         vcpu.guest_gprs.rax = eax as u64;
         vcpu.guest_gprs.rbx = ebx as u64;

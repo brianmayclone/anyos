@@ -53,17 +53,16 @@ fn crash_log_path(tid: u32) -> String {
     )
 }
 
-pub fn launch_crash_dialog(tid: u32, signal: u32) {
+pub fn launch_crash_dialog(tid: u32, signal: u32) -> bool {
     let mut report = [0u8; core::mem::size_of::<CrashReport>()];
     let bytes_read = anyos_std::sys::get_crash_info(tid, &mut report) as usize;
     if bytes_read < report.len() {
-        report[0..4].copy_from_slice(&tid.to_le_bytes());
-        report[4..8].copy_from_slice(&signal.to_le_bytes());
         anyos_std::println!(
-            "[sessionhost/crash] no full crash report for tid={} signal={}",
+            "[sessionhost/crash] suppressing dialog: no crash report for tid={} signal={}",
             tid,
             signal
         );
+        return false;
     }
 
     let path = crash_log_path(tid);
@@ -77,9 +76,11 @@ pub fn launch_crash_dialog(tid: u32, signal: u32) {
                 "[sessionhost/crash] failed to write crash report '{}'",
                 path
             );
+            return false;
         }
     }
     let args = format!("{} {}", CRASH_DIALOG_ARG0, path);
     anyos_std::println!("[sessionhost/crash] launching crashdialog args='{}'", args);
     anyos_std::process::spawn(CRASH_DIALOG_PATH, &args);
+    true
 }

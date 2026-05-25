@@ -60,7 +60,7 @@ deb [signed-by={}] {} {}-security {}\n",
     );
     let _ = write_bytes_atomic(
         &alloc::format!("{}/etc/apt/apt.conf.d/99lxe", rootfs),
-        b"APT::Cache-Start \"134217728\";\nAPT::Cache-Grow \"16777216\";\nAPT::Cache-Limit \"0\";\nAcquire::Check-Valid-Until \"false\";\nAcquire::Languages \"none\";\nAcquire::PDiffs \"false\";\nAcquire::Queue-Mode \"access\";\nAcquire::http::Pipeline-Depth \"0\";\nAcquire::http::No-Cache \"true\";\nAcquire::http::No-Store \"true\";\n",
+        b"APT::Cache-Start \"134217728\";\nAPT::Cache-Grow \"16777216\";\nAPT::Cache-Limit \"0\";\nDir::Log::Planner \"/dev/null\";\nAcquire::Check-Valid-Until \"false\";\nAcquire::Languages \"none\";\nAcquire::PDiffs \"false\";\nAcquire::Queue-Mode \"access\";\nAcquire::http::Pipeline-Depth \"0\";\nAcquire::http::No-Cache \"true\";\nAcquire::http::No-Store \"true\";\n",
     );
     reset_apt_binary_cache_once(rootfs);
     ensure_linux_account_files(rootfs);

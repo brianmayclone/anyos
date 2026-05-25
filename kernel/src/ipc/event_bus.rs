@@ -25,6 +25,7 @@ pub const EVT_NETWORK_LINK_DOWN: u32 = 0x0006;
 pub const EVT_NETWORK_DHCP_DONE: u32 = 0x0007;
 pub const EVT_BOOT_COMPLETE: u32 = 0x0010;
 pub const EVT_PROCESS_SPAWNED: u32 = 0x0020;
+/// arg1 = tid, arg2 = exit code, arg3 = ABI tag (0=anyOS, 1=Linux, 2=Windows)
 pub const EVT_PROCESS_EXITED: u32 = 0x0021;
 pub const EVT_RESOLUTION_CHANGED: u32 = 0x0040;
 /// arg1 = monitor count

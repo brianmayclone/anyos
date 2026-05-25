@@ -37,6 +37,25 @@ pub const SIG_DFL: u64 = 0;
 /// Sentinel value meaning "ignore this signal" (matches libc SIG_IGN = 1).
 pub const SIG_IGN: u64 = 1;
 
+#[derive(Clone, Copy)]
+pub struct SignalInfo {
+    pub code: i32,
+    pub pid: u32,
+    pub uid: u32,
+    pub status: u32,
+}
+
+impl SignalInfo {
+    pub const fn empty() -> Self {
+        Self {
+            code: 0,
+            pid: 0,
+            uid: 0,
+            status: 0,
+        }
+    }
+}
+
 /// Per-process signal state: pending mask, blocked mask, and handler table.
 ///
 /// Handler values: 0 = SIG_DFL, 1 = SIG_IGN, >1 = user-space function address.
@@ -54,6 +73,8 @@ pub struct SignalState {
     pub restorers: [u64; 32],
     /// Per-signal handler mask.
     pub masks: [u64; 32],
+    /// Last queued siginfo payload for each pending signal.
+    pub infos: [SignalInfo; 32],
 }
 
 impl SignalState {
@@ -66,13 +87,19 @@ impl SignalState {
             flags: [0; 32],
             restorers: [0; 32],
             masks: [0; 32],
+            infos: [SignalInfo::empty(); 32],
         }
     }
 
     /// Mark a signal as pending. SIGKILL and SIGSTOP cannot be blocked.
     pub fn send(&mut self, sig: u32) {
+        self.send_with_info(sig, SignalInfo::empty());
+    }
+
+    pub fn send_with_info(&mut self, sig: u32, info: SignalInfo) {
         if sig > 0 && sig < 32 {
             self.pending |= 1 << sig;
+            self.infos[sig as usize] = info;
         }
     }
 
@@ -155,6 +182,14 @@ impl SignalState {
                 self.restorers[idx],
                 self.masks[idx],
             )
+        }
+    }
+
+    pub fn get_info(&self, sig: u32) -> SignalInfo {
+        if sig >= 32 {
+            SignalInfo::empty()
+        } else {
+            self.infos[sig as usize]
         }
     }
 

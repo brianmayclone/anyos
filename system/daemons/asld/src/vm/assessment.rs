@@ -26,6 +26,7 @@ pub(super) fn assess_boot_exit(exit: &VmExitInfo) -> ExitAssessment {
         },
         exit_reason::CPUID_EMULATED
         | exit_reason::CR_ACCESS_EMULATED
+        | exit_reason::EXTERNAL_INTERRUPT
         | exit_reason::CPUID
         | exit_reason::PAUSE => ExitAssessment {
             ready: false,
@@ -78,6 +79,7 @@ pub(super) fn assess_runtime_exit(exit: &VmExitInfo) -> RuntimeExitAssessment {
     match exit.reason {
         exit_reason::CPUID_EMULATED
         | exit_reason::CR_ACCESS_EMULATED
+        | exit_reason::EXTERNAL_INTERRUPT
         | exit_reason::CPUID
         | exit_reason::PAUSE => RuntimeExitAssessment::Continue,
         exit_reason::HLT | exit_reason::HLT_EMULATED => RuntimeExitAssessment::Record(

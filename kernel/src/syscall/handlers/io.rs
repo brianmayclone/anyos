@@ -16,6 +16,7 @@ const WRITE_COPY_CHUNK: usize = 16 * 1024;
 const MAX_FILE_WRITE_COPY_CHUNK: usize = 128 * 1024;
 const FILE_READ_COPY_CHUNK: usize = 128 * 1024;
 const PIPE_READ_COPY_CHUNK: usize = 16 * 1024;
+const EAGAIN_SENTINEL: u32 = u32::MAX - 10;
 
 /// sys_write - Write to a file descriptor
 /// fd=1 -> stdout (pipe if configured, else serial), fd=2 -> stderr (same), fd>=3 -> VFS file
@@ -72,7 +73,7 @@ pub fn sys_write(fd: u32, buf_ptr: u64, len: u32) -> u32 {
                         use crate::ipc::anon_pipe::PIPE_BUF_SIZE;
                         let avail = crate::ipc::anon_pipe::bytes_available(pipe_id);
                         if avail >= PIPE_BUF_SIZE as u32 {
-                            return u32::MAX - 10; // EAGAIN sentinel
+                            return EAGAIN_SENTINEL;
                         }
                     }
                     crate::ipc::anon_pipe::write(pipe_id, &buf)
@@ -193,7 +194,7 @@ pub fn sys_read(fd: u32, buf_ptr: u64, len: u32) -> u32 {
                         // O_NONBLOCK: return EAGAIN (-11 as u32) if pipe is empty and open
                         let avail = crate::ipc::anon_pipe::bytes_available(pipe_id);
                         if avail == 0 && !crate::ipc::anon_pipe::is_write_closed(pipe_id) {
-                            return u32::MAX - 10; // EAGAIN sentinel
+                            return EAGAIN_SENTINEL;
                         }
                     }
                     read_anon_pipe_to_user(pipe_id, buf_ptr, len as usize)
@@ -236,10 +237,14 @@ fn read_anon_pipe_to_user(pipe_id: u32, buf_ptr: u64, len: usize) -> u32 {
     let copy_len = len.min(PIPE_READ_COPY_CHUNK);
     let mut chunk = alloc::vec![0u8; copy_len];
     let n = crate::ipc::anon_pipe::read(pipe_id, &mut chunk);
-    if n == 0 {
-        return 0;
+    if n == 0 || n == EAGAIN_SENTINEL {
+        return n;
     }
-    if !copy_to_user_bytes(buf_ptr, &chunk[..n as usize], PIPE_READ_COPY_CHUNK) {
+    let n_usize = n as usize;
+    if n_usize > copy_len {
+        return u32::MAX;
+    }
+    if !copy_to_user_bytes(buf_ptr, &chunk[..n_usize], PIPE_READ_COPY_CHUNK) {
         return u32::MAX;
     }
     n
@@ -249,10 +254,14 @@ fn read_pty_to_user(pty_id: u32, buf_ptr: u64, len: usize, blocking: bool) -> u3
     let copy_len = len.min(PIPE_READ_COPY_CHUNK);
     let mut chunk = alloc::vec![0u8; copy_len];
     let n = crate::ipc::pty::read_slave(pty_id, &mut chunk, blocking);
-    if n == 0 {
-        return 0;
+    if n == 0 || n == EAGAIN_SENTINEL {
+        return n;
     }
-    if !copy_to_user_bytes(buf_ptr, &chunk[..n as usize], PIPE_READ_COPY_CHUNK) {
+    let n_usize = n as usize;
+    if n_usize > copy_len {
+        return u32::MAX;
+    }
+    if !copy_to_user_bytes(buf_ptr, &chunk[..n_usize], PIPE_READ_COPY_CHUNK) {
         return u32::MAX;
     }
     n
@@ -262,10 +271,14 @@ fn read_tty_pipe_to_user(pipe: u32, buf_ptr: u64, len: usize, blocking: bool) ->
     let copy_len = len.min(PIPE_READ_COPY_CHUNK);
     let mut chunk = alloc::vec![0u8; copy_len];
     let n = read_tty_pipe(pipe, &mut chunk, blocking);
-    if n == 0 || n == u32::MAX - 10 {
+    if n == 0 || n == EAGAIN_SENTINEL {
         return n;
     }
-    if !copy_to_user_bytes(buf_ptr, &chunk[..n as usize], PIPE_READ_COPY_CHUNK) {
+    let n_usize = n as usize;
+    if n_usize > copy_len {
+        return u32::MAX;
+    }
+    if !copy_to_user_bytes(buf_ptr, &chunk[..n_usize], PIPE_READ_COPY_CHUNK) {
         return u32::MAX;
     }
     n
@@ -278,7 +291,7 @@ fn read_tty_pipe(pipe: u32, buf: &mut [u8], blocking: bool) -> u32 {
             return n;
         }
         if !blocking {
-            return u32::MAX - 10;
+            return EAGAIN_SENTINEL;
         }
         let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
         crate::task::scheduler::sleep_until(wake_at);

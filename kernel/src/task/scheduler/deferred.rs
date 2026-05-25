@@ -83,6 +83,7 @@ pub(super) static DEFERRED_PD_DESTROY: Spinlock<DeferredPdQueue> =
 pub(super) struct DeferredThreadCleanup {
     pub tid: u32,
     pub exit_code: u32,
+    pub abi_tag: u32,
     pub emit_exit_event: bool,
 }
 
@@ -149,7 +150,7 @@ pub(super) fn process_deferred_thread_cleanup(entry: DeferredThreadCleanup) {
             crate::ipc::event_bus::EVT_PROCESS_EXITED,
             entry.tid,
             entry.exit_code,
-            0,
+            entry.abi_tag,
             0,
         ));
     }

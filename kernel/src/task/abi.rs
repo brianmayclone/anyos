@@ -14,3 +14,13 @@ pub enum AbiPersonality {
     LinuxX86_64,
     WindowsX86_64,
 }
+
+impl AbiPersonality {
+    pub const fn event_tag(self) -> u32 {
+        match self {
+            AbiPersonality::AnyOs => 0,
+            AbiPersonality::LinuxX86_64 => 1,
+            AbiPersonality::WindowsX86_64 => 2,
+        }
+    }
+}

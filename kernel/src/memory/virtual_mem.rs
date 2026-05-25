@@ -9,7 +9,7 @@
 
 use crate::boot_info::BootInfo;
 use crate::memory::address::{PhysAddr, VirtAddr};
-use crate::memory::physical;
+use crate::memory::{physical, physmap};
 use crate::memory::FRAME_SIZE;
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
@@ -987,6 +987,57 @@ pub fn kernel_phys_offset() -> u64 {
     KERNEL_PHYS_OFFSET.load(Ordering::Acquire)
 }
 
+#[inline]
+fn read_table_entry_phys(table_phys: u64, index: usize) -> u64 {
+    let table = physmap::phys_to_virt_or_identity(PhysAddr::new(table_phys & ADDR_MASK))
+        as *const u64;
+    unsafe { table.add(index).read_volatile() }
+}
+
+/// Return the kernel-owned low identity PDE used by native anyOS tasks.
+///
+/// Linux/LXE and Windows tasks intentionally have no low identity window; their
+/// low user mappings can live in the same PD[0..31] range and must be reclaimed
+/// as ordinary user pages on process exit.
+fn kernel_low_identity_pde(pdi: usize) -> Option<u64> {
+    if pdi >= 32 {
+        return None;
+    }
+
+    let kernel_pml4 = unsafe { PML4_PHYS };
+    if kernel_pml4 == 0 {
+        return None;
+    }
+
+    let pml4e = read_table_entry_phys(kernel_pml4, 0);
+    if pml4e & PAGE_PRESENT == 0 {
+        return None;
+    }
+
+    let pdpte = read_table_entry_phys(pml4e & ADDR_MASK, 0);
+    if pdpte & PAGE_PRESENT == 0 || pdpte & PAGE_HUGE != 0 {
+        return None;
+    }
+
+    let pde = read_table_entry_phys(pdpte & ADDR_MASK, pdi);
+    if pde & PAGE_PRESENT == 0 || pde & PAGE_HUGE != 0 {
+        return None;
+    }
+
+    Some(pde)
+}
+
+fn is_kernel_low_identity_pde(pml4i: usize, pdpti: usize, pdi: usize, pde: u64) -> bool {
+    if pml4i != 0 || pdpti != 0 || pde & PAGE_PRESENT == 0 || pde & PAGE_HUGE != 0 {
+        return false;
+    }
+
+    match kernel_low_identity_pde(pdi) {
+        Some(kernel_pde) => (pde & ADDR_MASK) == (kernel_pde & ADDR_MASK),
+        None => false,
+    }
+}
+
 /// Get the current page table root physical address (CR3).
 pub fn current_cr3() -> u64 {
     let cr3: u64;
@@ -1077,28 +1128,12 @@ fn create_user_page_directory_inner(map_low_identity: bool) -> Option<PhysAddr> 
                 new_pd_ptr.add(i).write_volatile(0);
             }
 
-            // Copy identity-map PD entries [0..31] from the current address space
-            // when it has them. Linux/LXE tasks intentionally use a no-low-identity
-            // address space; touching recursive_pd_base(0) there would fault.
-            let low_identity_pd = {
-                let pml4e0 = cur_pml4.read_volatile();
-                if pml4e0 & PAGE_PRESENT != 0 {
-                    let pdpt0 = recursive_pdpt_base(VirtAddr::new(0)) as *const u64;
-                    let pdpte0 = pdpt0.read_volatile();
-                    if pdpte0 & PAGE_PRESENT != 0 {
-                        Some(recursive_pd_base(VirtAddr::new(0)) as *const u64)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            };
-            if let Some(kernel_pd) = low_identity_pd {
-                for i in 0..32 {
-                    new_pd_ptr
-                        .add(i)
-                        .write_volatile(kernel_pd.add(i).read_volatile());
+            // Copy only the real kernel-owned low identity PDEs. Looking at the
+            // current address space is wrong when a Linux/LXE task creates a
+            // native child: its low user mappings are not the compatibility map.
+            for i in 0..32 {
+                if let Some(pde) = kernel_low_identity_pde(i) {
+                    new_pd_ptr.add(i).write_volatile(pde);
                 }
             }
 
@@ -1695,9 +1730,12 @@ pub fn destroy_user_page_directory(pml4_phys: PhysAddr) {
                     // DLLs at 0x04000000-0x07FFFFFF: PML4[0], PDPT[0], PD[32..63]
                     let is_dll = pml4i == 0 && pdpti == 0 && pdi >= 32 && pdi <= 63;
 
-                    // Identity-map entries (PD[0..31]) share PTs with the kernel.
-                    // Don't free their PT frames or the physical pages they map.
-                    let is_identity_map = pml4i == 0 && pdpti == 0 && pdi < 32;
+                    // Native anyOS low-identity entries share PTs with the
+                    // kernel. No-low-identity processes may legitimately have
+                    // private user mappings in this same virtual range, so
+                    // compare the PT frame against the kernel's real PDE.
+                    let is_identity_map =
+                        is_kernel_low_identity_pde(pml4i, pdpti, pdi, pde);
 
                     if is_identity_map {
                         continue; // Skip entirely — kernel owns these PTs
