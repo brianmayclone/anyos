@@ -53,7 +53,18 @@ macro_rules! surf_log {
 mod bookmarks;
 mod callbacks;
 mod config;
-mod deflate;
+mod deflate {
+    use alloc::vec::Vec;
+
+    const MAX_DECOMPRESSED_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+    pub(crate) fn decompress_gzip(data: &[u8]) -> Option<Vec<u8>> {
+        libzip::gzip::gzip_decompress_with_limit(data, MAX_DECOMPRESSED_BODY_BYTES).ok()
+    }
+
+    pub(crate) use libzip::inflate::inflate as decompress_deflate;
+    pub(crate) use libzip::zlib::zlib_decompress as decompress_zlib;
+}
 mod devtools;
 mod http;
 mod js_worker;

@@ -2291,6 +2291,7 @@ dependencies = [
  "libsvg_client",
  "libtls",
  "libwebview",
+ "libzip",
 ]
 
 [[package]]

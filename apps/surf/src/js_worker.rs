@@ -56,6 +56,7 @@ static RESULT_LOCK: AtomicBool = AtomicBool::new(false);
 static RESULT_NOTIFY_PENDING: AtomicBool = AtomicBool::new(false);
 static ACTIVE_WORKERS: AtomicU32 = AtomicU32::new(0);
 static BUSY_WORKERS: AtomicU32 = AtomicU32::new(0);
+const JS_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 static mut REQUEST_QUEUE: Option<VecDeque<JsWorkerRequest>> = None;
 static mut RESULT_QUEUE: Option<Vec<JsWorkerResult>> = None;
@@ -144,12 +145,17 @@ fn ensure_worker() {
     {
         return;
     }
-    match anyos_std::process::Thread::spawn_with_stack(worker_entry, 1024 * 1024, "surf-js") {
+    match anyos_std::process::Thread::spawn_with_stack(
+        worker_entry,
+        JS_WORKER_STACK_BYTES,
+        "surf-js",
+    ) {
         Ok(handle) => {
             core::mem::forget(handle);
             anyos_std::println!(
-                "[surf-js-worker {:>8}ms] worker thread started",
-                anyos_std::sys::uptime_ms()
+                "[surf-js-worker {:>8}ms] worker thread started (stack={} bytes)",
+                anyos_std::sys::uptime_ms(),
+                JS_WORKER_STACK_BYTES
             );
         }
         Err(_) => {

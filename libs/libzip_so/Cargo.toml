@@ -1,5 +1,5 @@
 [package]
-name = "libzip"
+name = "libzip_so"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,7 +8,9 @@ host = []
 embedded = []
 
 [lib]
-crate-type = ["rlib"]
+name = "libzip"
+path = "../libzip/src/lib.rs"
+crate-type = ["staticlib"]
 
 [dependencies]
 libheap = { path = "../libheap" }
@@ -20,3 +22,5 @@ opt-level = 2
 
 [profile.release]
 panic = "abort"
+
+[workspace]

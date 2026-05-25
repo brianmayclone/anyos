@@ -303,6 +303,7 @@ set(STDLIB_DEPS
 file(GLOB_RECURSE _WS_RS CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/bin/*/src/*.rs"
   "${CMAKE_SOURCE_DIR}/apps/*/src/*.rs"
+  "${CMAKE_SOURCE_DIR}/libs/libzip/src/*.rs"
   "${CMAKE_SOURCE_DIR}/libs/libnode/src/*.rs"
   "${CMAKE_SOURCE_DIR}/libs/libuv/src/*.rs"
   "${CMAKE_SOURCE_DIR}/libs/libwxecore/src/*.rs"
@@ -315,6 +316,7 @@ file(GLOB_RECURSE _WS_RS CONFIGURE_DEPENDS
 file(GLOB _WS_TOMLS CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/bin/*/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/apps/*/Cargo.toml"
+  "${CMAKE_SOURCE_DIR}/libs/libzip/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/libs/libnode/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/libs/libuv/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/libs/libwxecore/Cargo.toml"
@@ -640,6 +642,44 @@ function(add_shared_lib NAME SRC_DIR)
   set(DLL_BINS ${DLL_BINS} ${SYSROOT_DIR}/Libraries/${NAME}.so PARENT_SCOPE)
 endfunction()
 
+function(add_shared_lib_from_manifest NAME MANIFEST_DIR EXPORTS_DIR SOURCE_DIR)
+  set(LIB_A "${SHLIB_TARGET_DIR}/${USER_TARGET_TRIPLE}/release/lib${NAME}.a")
+  set(LIB_SO "${CMAKE_BINARY_DIR}/shlib/${NAME}.so")
+  file(GLOB_RECURSE _SL_RS CONFIGURE_DEPENDS "${SOURCE_DIR}/src/*.rs")
+  add_custom_command(
+    OUTPUT ${LIB_A}
+    COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
+      ${CARGO_EXECUTABLE} build --release --quiet
+      --manifest-path ${MANIFEST_DIR}/Cargo.toml
+      --target ${USER_TARGET_JSON}
+      --target-dir ${SHLIB_TARGET_DIR}
+      ${ANYOS_BUILD_STD_ARGS}
+    DEPENDS
+      ${MANIFEST_DIR}/Cargo.toml
+      ${SOURCE_DIR}/Cargo.toml
+      ${_SL_RS}
+      ${USER_TARGET_JSON}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Building shared library: ${NAME} (Cargo)"
+  )
+  add_custom_command(
+    OUTPUT ${LIB_SO}
+    COMMAND ${ANYLD_EXECUTABLE} -q
+      -o ${LIB_SO}
+      -e ${EXPORTS_DIR}/exports.def
+      ${LIB_A}
+    DEPENDS ${LIB_A} ${EXPORTS_DIR}/exports.def ${ANYLD_EXECUTABLE}
+    COMMENT "Linking ${NAME}.so (anyld)"
+  )
+  add_custom_command(
+    OUTPUT ${SYSROOT_DIR}/Libraries/${NAME}.so
+    COMMAND ${CMAKE_COMMAND} -E copy ${LIB_SO} ${SYSROOT_DIR}/Libraries/${NAME}.so
+    DEPENDS ${LIB_SO}
+    COMMENT "Installing ${NAME}.so to sysroot"
+  )
+  set(DLL_BINS ${DLL_BINS} ${SYSROOT_DIR}/Libraries/${NAME}.so PARENT_SCOPE)
+endfunction()
+
 # GPU drivers (.drv) — built like shared libs but installed to System/Drivers/gpu/
 set(DRV_TARGET_DIR "${CMAKE_BINARY_DIR}/drv-target")
 function(add_gpu_driver NAME SRC_DIR)
@@ -690,7 +730,12 @@ add_gpu_driver(virgl ${CMAKE_SOURCE_DIR}/drivers/gpu/virgl)
 add_shared_lib(libanyui ${CMAKE_SOURCE_DIR}/libs/libanyui)
 add_shared_lib(libfont ${CMAKE_SOURCE_DIR}/libs/libfont)
 add_shared_lib(libdb ${CMAKE_SOURCE_DIR}/libs/libdb)
-add_shared_lib(libzip ${CMAKE_SOURCE_DIR}/libs/libzip)
+add_shared_lib_from_manifest(
+  libzip
+  ${CMAKE_SOURCE_DIR}/libs/libzip_so
+  ${CMAKE_SOURCE_DIR}/libs/libzip
+  ${CMAKE_SOURCE_DIR}/libs/libzip
+)
 add_shared_lib(libini ${CMAKE_SOURCE_DIR}/libs/libini)
 add_shared_lib(libsvg ${CMAKE_SOURCE_DIR}/libs/libsvg)
 add_shared_lib(libgl ${CMAKE_SOURCE_DIR}/libs/libgl)
@@ -744,6 +789,7 @@ if(NOT ANYOS_ARCH STREQUAL "arm64")
   set(_LIBHTTP_A "${SHLIB_TARGET_DIR}/${USER_TARGET_TRIPLE}/release/liblibhttp.a")
   set(_LIBHTTP_SO "${CMAKE_BINARY_DIR}/shlib/libhttp.so")
   file(GLOB_RECURSE _LIBHTTP_RS CONFIGURE_DEPENDS "${_LIBHTTP_SRC}/src/*.rs")
+  file(GLOB_RECURSE _LIBZIP_RS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/libs/libzip/src/*.rs")
   file(GLOB_RECURSE _LIBTLS_RS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/libs/libtls/src/*.rs")
 
   # Step 1: Cargo → static archive (.a) — libtls is built as a Cargo dependency
@@ -759,6 +805,8 @@ if(NOT ANYOS_ARCH STREQUAL "arm64")
       ${_LIBHTTP_SRC}/Cargo.toml
       ${_LIBHTTP_SRC}/build.rs
       ${_LIBHTTP_RS}
+      ${CMAKE_SOURCE_DIR}/libs/libzip/Cargo.toml
+      ${_LIBZIP_RS}
       ${_LIBTLS_RS}
       ${USER_TARGET_JSON}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}

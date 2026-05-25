@@ -621,7 +621,7 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
 
         if exit_code == VMEXIT_SHUTDOWN {
             diagnostics::log_shutdown(vm.npt_root, vcpu, vmcb);
-        } else {
+        } else if !matches!(exit_code, VMEXIT_CPUID | VMEXIT_HLT | VMEXIT_PAUSE) {
             crate::serial_println!(
                 "[svm] vmexit: code={:#x} info1={:#x} info2={:#x} rip={:#x} cs.base={:#x}",
                 exit_code,
@@ -793,6 +793,8 @@ fn svm_exit_instruction_len(exit_code: u64, vmcb: &Vmcb) -> u32 {
 /// VMRUN with GPR save/restore.
 unsafe fn svm_vmrun(vmcb_phys: u64, gprs: *mut GuestGprs) {
     core::arch::asm!(
+        "pushfq",
+
         // Save callee-saved
         "push rbx",
         "push rbp",
@@ -829,6 +831,7 @@ unsafe fn svm_vmrun(vmcb_phys: u64, gprs: *mut GuestGprs) {
 
         // rax = VMCB physical address (already in rax from input)
         "vmrun",
+        "cld",
 
         // After VMRUN: guest state saved in VMCB, host restored
         // Save guest GPRs. RSI was guest RSI, need gprs pointer from stack.
@@ -865,6 +868,9 @@ unsafe fn svm_vmrun(vmcb_phys: u64, gprs: *mut GuestGprs) {
         "pop r12",
         "pop rbp",
         "pop rbx",
+        "popfq",
+        "cld",
+        "stgi",
 
         inout("rax") vmcb_phys => _,
         in("rsi") gprs,

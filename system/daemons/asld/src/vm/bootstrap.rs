@@ -1,3 +1,5 @@
+use alloc::format;
+
 use crate::errors::AsldError;
 #[cfg(not(target_os = "linux"))]
 use crate::model::DistroConfig;
@@ -118,7 +120,7 @@ pub(super) fn direct_linux_sregs(layout: &crate::boot::DirectLinuxLayout) -> Gue
     const CR0_PE: u64 = 1 << 0;
     const CR0_ET: u64 = 1 << 4;
     const CR0_NE: u64 = 1 << 5;
-    const SEGMENT_LIMIT: u32 = 0xFFFFF;
+    const SEGMENT_LIMIT: u32 = 0xFFFF_FFFF;
 
     GuestSregs {
         cs_selector: BOOT_CS,
@@ -179,7 +181,7 @@ pub(super) fn bootstrap_sregs(layout: &BootstrapLayout) -> GuestSregs {
     const CR4_PAE: u64 = 1 << 5;
     const EFER_LME: u64 = 1 << 8;
     const EFER_LMA: u64 = 1 << 10;
-    const SEGMENT_LIMIT: u32 = 0xFFFFF;
+    const SEGMENT_LIMIT: u32 = 0xFFFF_FFFF;
 
     GuestSregs {
         cs_selector: 0x08,
@@ -238,6 +240,21 @@ pub(super) fn configure_direct_linux_vcpu(
     let layout = crate::boot::prepare_direct_linux_boot(config, guest_memory, guest_memory_size)?;
     let regs = direct_linux_gprs(&layout);
     let sregs = direct_linux_sregs(&layout);
+    crate::log::info(
+        "vm",
+        &format!(
+            "direct-linux sregs: rip={:#x} cs={:#x}/{:#x} ds={:#x}/{:#x} ss={:#x}/{:#x} gdtr={:#x}:{:#x}",
+            sregs.rip,
+            sregs.cs_selector,
+            sregs.cs_ar,
+            sregs.ds_selector,
+            sregs.ds_ar,
+            sregs.ss_selector,
+            sregs.ss_ar,
+            sregs.gdtr_base,
+            sregs.gdtr_limit
+        ),
+    );
 
     if vcpu.set_regs(&regs).is_err() {
         return Err(AsldError::BackendUnavailable("avm set_regs failed"));

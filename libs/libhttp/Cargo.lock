@@ -21,6 +21,7 @@ dependencies = [
  "libheap",
  "libsyscall",
  "libtls",
+ "libzip",
 ]
 
 [[package]]
@@ -30,3 +31,11 @@ version = "0.1.0"
 [[package]]
 name = "libtls"
 version = "0.1.0"
+
+[[package]]
+name = "libzip"
+version = "0.1.0"
+dependencies = [
+ "libheap",
+ "libsyscall",
+]

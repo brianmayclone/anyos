@@ -11,6 +11,7 @@ libdns = { path = "../libdns" }
 libheap = { path = "../libheap" }
 libsyscall = { path = "../libsyscall" }
 libtls = { path = "../libtls" }
+libzip = { path = "../libzip", features = ["embedded"] }
 
 [profile.dev]
 panic = "abort"

@@ -18,7 +18,20 @@
 
 extern crate alloc;
 
-pub mod deflate;
+pub mod deflate {
+    extern crate alloc;
+
+    use alloc::vec::Vec;
+
+    const MAX_DECOMPRESSED_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+    pub fn decompress_gzip(data: &[u8]) -> Option<Vec<u8>> {
+        libzip::gzip::gzip_decompress_with_limit(data, MAX_DECOMPRESSED_BODY_BYTES).ok()
+    }
+
+    pub use libzip::inflate::inflate as decompress_deflate;
+    pub use libzip::zlib::zlib_decompress as decompress_zlib;
+}
 pub mod http;
 pub mod syscall;
 pub mod tls;

@@ -13,7 +13,7 @@
 //! All public functions are `extern "C"` with `#[no_mangle]` for use via `dl_sym()`.
 
 #![cfg_attr(not(feature = "host"), no_std)]
-#![cfg_attr(not(feature = "host"), no_main)]
+#![cfg_attr(all(not(feature = "host"), not(feature = "embedded")), no_main)]
 
 extern crate alloc;
 
@@ -33,7 +33,7 @@ use zip::{ZipReader, ZipWriter};
 
 // ── Allocator ───────────────────────────────────────────────────────────────
 
-#[cfg(not(feature = "host"))]
+#[cfg(all(not(feature = "host"), not(feature = "embedded")))]
 libheap::dll_allocator!(
     crate::syscall::sbrk,
     crate::syscall::mmap,
@@ -42,7 +42,7 @@ libheap::dll_allocator!(
 
 // ── Panic handler ───────────────────────────────────────────────────────────
 
-#[cfg(not(feature = "host"))]
+#[cfg(all(not(feature = "host"), not(feature = "embedded")))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     syscall::exit(1);
