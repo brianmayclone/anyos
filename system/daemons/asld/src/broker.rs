@@ -57,6 +57,27 @@ pub fn console_canvas_snapshot(name: &str) -> Result<Vec<String>, AsldError> {
     request_lines("aslconsoled", &format!("CANVAS {}", name))
 }
 
+pub fn write_console_framebuffer_preview(
+    name: &str,
+    width: u16,
+    height: u16,
+    pixels: &[u16],
+) -> Result<(), AsldError> {
+    if pixels.is_empty() {
+        return Ok(());
+    }
+    request(
+        "aslconsoled",
+        &format!(
+            "FRAME {}\t{}\t{}\t{}",
+            name,
+            width,
+            height,
+            encode_rgb565(pixels)
+        ),
+    )
+}
+
 pub fn network_tx_frame(name: &str, bytes: &[u8]) -> Result<(), AsldError> {
     if bytes.is_empty() {
         return Ok(());
@@ -238,6 +259,17 @@ fn encode_hex(bytes: &[u8]) -> String {
     for byte in bytes {
         out.push(HEX[(byte >> 4) as usize] as char);
         out.push(HEX[(byte & 0xf) as usize] as char);
+    }
+    out
+}
+
+fn encode_rgb565(pixels: &[u16]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::new();
+    for pixel in pixels {
+        for shift in [12u16, 8, 4, 0] {
+            out.push(HEX[((pixel >> shift) & 0xf) as usize] as char);
+        }
     }
     out
 }

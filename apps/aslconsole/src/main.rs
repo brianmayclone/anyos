@@ -32,6 +32,10 @@ struct AppState {
     rows: Vec<String>,
     cursor_x: usize,
     cursor_y: usize,
+    frame_active: bool,
+    frame_width: usize,
+    frame_height: usize,
+    framebuffer: Vec<u32>,
     last_error: String,
 }
 
@@ -87,6 +91,10 @@ fn main() {
             rows: blank_rows(),
             cursor_x: 0,
             cursor_y: 0,
+            frame_active: false,
+            frame_width: 0,
+            frame_height: 0,
+            framebuffer: Vec::new(),
             last_error: String::new(),
         });
     }
@@ -160,9 +168,15 @@ fn poll_console() {
 fn apply_canvas_lines(lines: &[String]) {
     let a = app();
     a.rows = blank_rows();
+    a.frame_active = false;
     for line in lines {
         let mut parts = line.splitn(3, '\t');
         match parts.next().unwrap_or("") {
+            "kind" => {
+                if parts.next().unwrap_or("") == "framebuffer" {
+                    a.frame_active = true;
+                }
+            }
             "row" => {
                 let row = parse_usize(parts.next().unwrap_or(""));
                 let text = parts.next().unwrap_or("");
@@ -172,6 +186,19 @@ fn apply_canvas_lines(lines: &[String]) {
             }
             "cursor_x" => a.cursor_x = parse_usize(parts.next().unwrap_or("0")).min(COLS - 1),
             "cursor_y" => a.cursor_y = parse_usize(parts.next().unwrap_or("0")).min(ROWS - 1),
+            "fb_width" => a.frame_width = parse_usize(parts.next().unwrap_or("0")),
+            "fb_height" => {
+                a.frame_height = parse_usize(parts.next().unwrap_or("0"));
+                let len = a.frame_width.saturating_mul(a.frame_height);
+                if len > 0 && a.framebuffer.len() != len {
+                    a.framebuffer = alloc::vec![BG; len];
+                }
+            }
+            "fb_row" => {
+                let row = parse_usize(parts.next().unwrap_or(""));
+                let data = parts.next().unwrap_or("");
+                apply_framebuffer_row(a, row, data);
+            }
             _ => {}
         }
     }
@@ -187,6 +214,10 @@ fn show_error(message: &str) {
 fn redraw() {
     let a = app();
     a.canvas.clear(BG);
+    if a.frame_active && a.frame_width > 0 && a.frame_height > 0 {
+        draw_framebuffer(a);
+        return;
+    }
     let cell_w = cell_width().max(1);
     let cell_h = cell_height().max(1);
     for row in 0..ROWS {
@@ -199,6 +230,62 @@ fn redraw() {
     let cx = PADDING_X + (a.cursor_x as i32 * cell_w);
     let cy = PADDING_Y + (a.cursor_y as i32 * cell_h) + cell_h - 3;
     a.canvas.fill_rect(cx, cy, cell_w as u32, 2, CURSOR);
+}
+
+fn apply_framebuffer_row(a: &mut AppState, row: usize, data: &str) {
+    if row >= a.frame_height || a.frame_width == 0 {
+        return;
+    }
+    let start = row.saturating_mul(a.frame_width);
+    let end = start.saturating_add(a.frame_width);
+    if end > a.framebuffer.len() || data.len() < a.frame_width.saturating_mul(4) {
+        return;
+    }
+    let bytes = data.as_bytes();
+    for col in 0..a.frame_width {
+        let index = col * 4;
+        let Some(pixel) = parse_rgb565(&bytes[index..index + 4]) else {
+            return;
+        };
+        a.framebuffer[start + col] = rgb565_to_argb(pixel);
+    }
+}
+
+fn draw_framebuffer(a: &AppState) {
+    let ptr = a.canvas.get_buffer();
+    if ptr.is_null() {
+        return;
+    }
+    let cw = a.canvas.get_stride() as usize;
+    let ch = a.canvas.get_height() as usize;
+    if cw == 0 || ch == 0 || a.framebuffer.is_empty() {
+        return;
+    }
+    let (rw, rh) = scaled_size(cw, ch, a.frame_width, a.frame_height);
+    let ox = (cw.saturating_sub(rw)) / 2;
+    let oy = (ch.saturating_sub(rh)) / 2;
+    unsafe {
+        for y in 0..rh {
+            let sy = y * a.frame_height / rh;
+            for x in 0..rw {
+                let sx = x * a.frame_width / rw;
+                let dst = (oy + y) * cw + ox + x;
+                let src = sy * a.frame_width + sx;
+                *ptr.add(dst) = a.framebuffer[src];
+            }
+        }
+    }
+}
+
+fn scaled_size(cw: usize, ch: usize, sw: usize, sh: usize) -> (usize, usize) {
+    if sw == 0 || sh == 0 {
+        return (0, 0);
+    }
+    if cw.saturating_mul(sh) <= ch.saturating_mul(sw) {
+        (cw, (cw.saturating_mul(sh) / sw).max(1))
+    } else {
+        ((ch.saturating_mul(sw) / sh).max(1), ch)
+    }
 }
 
 fn send_key(ke: &anyui::KeyEvent) {
@@ -321,4 +408,34 @@ fn parse_usize(text: &str) -> usize {
         n = n.saturating_mul(10).saturating_add((b - b'0') as usize);
     }
     n
+}
+
+fn parse_rgb565(bytes: &[u8]) -> Option<u16> {
+    if bytes.len() != 4 {
+        return None;
+    }
+    let mut value = 0u16;
+    for &byte in bytes {
+        value = (value << 4) | hex_nibble(byte)? as u16;
+    }
+    Some(value)
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn rgb565_to_argb(pixel: u16) -> u32 {
+    let r = ((pixel >> 11) & 0x1f) as u32;
+    let g = ((pixel >> 5) & 0x3f) as u32;
+    let b = (pixel & 0x1f) as u32;
+    let r8 = (r << 3) | (r >> 2);
+    let g8 = (g << 2) | (g >> 4);
+    let b8 = (b << 3) | (b >> 2);
+    0xff00_0000 | (r8 << 16) | (g8 << 8) | b8
 }

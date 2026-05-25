@@ -21,6 +21,8 @@ const DEFAULT_CANVAS_WIDTH: usize = 80;
 const DEFAULT_CANVAS_HEIGHT: usize = 25;
 const MAX_CANVAS_WIDTH: usize = 240;
 const MAX_CANVAS_HEIGHT: usize = 100;
+const MAX_FRAME_WIDTH: usize = 160;
+const MAX_FRAME_HEIGHT: usize = 100;
 
 const DIRS: &[&str] = &["config"];
 const DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
@@ -49,9 +51,11 @@ struct ConsoleSession {
 struct ConsoleState {
     sessions: Vec<ConsoleSession>,
     canvases: Vec<TextCanvas>,
+    framebuffers: Vec<FramebufferCanvas>,
     attach_count: u32,
     rejected_count: u32,
     write_count: u32,
+    frame_update_count: u32,
     canvas_update_count: u32,
     output_bytes: u64,
     last_attach_ms: u32,
@@ -67,6 +71,15 @@ struct TextCanvas {
     cursor_y: usize,
     cells: Vec<u8>,
     ansi: AnsiState,
+}
+
+#[derive(Clone)]
+struct FramebufferCanvas {
+    distro: String,
+    width: usize,
+    height: usize,
+    pixels: Vec<u16>,
+    updated_ms: u32,
 }
 
 #[derive(Clone)]
@@ -100,9 +113,11 @@ fn main() {
     let mut state = ConsoleState {
         sessions: Vec::new(),
         canvases: Vec::new(),
+        framebuffers: Vec::new(),
         attach_count: 0,
         rejected_count: 0,
         write_count: 0,
+        frame_update_count: 0,
         canvas_update_count: 0,
         output_bytes: 0,
         last_attach_ms: 0,
@@ -170,9 +185,11 @@ fn dispatch(state: &mut ConsoleState, cmd: &str) -> String {
         "STATUS" | "status" => ok_lines(alloc::vec![
             format!("sessions\t{}", state.sessions.len()),
             format!("canvases\t{}", state.canvases.len()),
+            format!("framebuffers\t{}", state.framebuffers.len()),
             format!("attach_count\t{}", state.attach_count),
             format!("rejected_count\t{}", state.rejected_count),
             format!("write_count\t{}", state.write_count),
+            format!("frame_update_count\t{}", state.frame_update_count),
             format!("canvas_update_count\t{}", state.canvas_update_count),
             format!("output_bytes\t{}", state.output_bytes),
             format!("last_attach_ms\t{}", state.last_attach_ms),
@@ -217,13 +234,25 @@ fn dispatch(state: &mut ConsoleState, cmd: &str) -> String {
                 format!("bytes\t{}", bytes.len()),
             ])
         }
+        "FRAME" | "frame" => {
+            let Some(frame) = parse_frame(rest) else {
+                state.rejected_count = state.rejected_count.wrapping_add(1);
+                return err("invalid_frame");
+            };
+            store_framebuffer(state, frame);
+            state.frame_update_count = state.frame_update_count.wrapping_add(1);
+            state.canvas_update_count = state.canvas_update_count.wrapping_add(1);
+            state.last_write_ms = sys::uptime_ms();
+            write_status(state);
+            ok_lines(alloc::vec![String::from("frame\tstored")])
+        }
         "CANVAS" | "canvas" => {
             let distro = rest.trim();
             if !valid_token(distro) {
                 state.rejected_count = state.rejected_count.wrapping_add(1);
                 return err("invalid_canvas");
             }
-            ok_lines(canvas_for_distro(state, distro).snapshot_lines())
+            ok_lines(canvas_snapshot_lines(state, distro))
         }
         "RESIZE" | "resize" => {
             let Some((distro, width, height)) = parse_resize(rest) else {
@@ -242,6 +271,7 @@ fn dispatch(state: &mut ConsoleState, cmd: &str) -> String {
             let distro = rest.trim();
             state.sessions.retain(|session| session.distro != distro);
             state.canvases.retain(|canvas| canvas.distro != distro);
+            state.framebuffers.retain(|frame| frame.distro != distro);
             write_status(state);
             ok_lines(alloc::vec![format!("sessions\t{}", state.sessions.len())])
         }
@@ -253,12 +283,14 @@ fn write_status(state: &ConsoleState) {
     let _ = fs::mkdir("/System/var");
     let _ = fs::mkdir("/System/var/asl");
     let mut text = format!(
-        "health=ready\nsessions={}\ncanvases={}\nattach_count={}\nrejected_count={}\nwrite_count={}\ncanvas_update_count={}\noutput_bytes={}\nlast_attach_ms={}\nlast_write_ms={}\n",
+        "health=ready\nsessions={}\ncanvases={}\nframebuffers={}\nattach_count={}\nrejected_count={}\nwrite_count={}\nframe_update_count={}\ncanvas_update_count={}\noutput_bytes={}\nlast_attach_ms={}\nlast_write_ms={}\n",
         state.sessions.len(),
         state.canvases.len(),
+        state.framebuffers.len(),
         state.attach_count,
         state.rejected_count,
         state.write_count,
+        state.frame_update_count,
         state.canvas_update_count,
         state.output_bytes,
         state.last_attach_ms,
@@ -276,6 +308,29 @@ fn parse_write(rest: &str) -> Option<(&str, Vec<u8>)> {
         return None;
     }
     Some((fields[0], decode_hex(fields[1])?))
+}
+
+fn parse_frame(rest: &str) -> Option<FramebufferCanvas> {
+    let fields = split_tab_fields(rest);
+    if fields.len() != 4 || !valid_token(fields[0]) {
+        return None;
+    }
+    let width = parse_usize(fields[1])?;
+    let height = parse_usize(fields[2])?;
+    if !(1..=MAX_FRAME_WIDTH).contains(&width) || !(1..=MAX_FRAME_HEIGHT).contains(&height) {
+        return None;
+    }
+    let pixels = decode_rgb565(fields[3])?;
+    if pixels.len() != width.saturating_mul(height) {
+        return None;
+    }
+    Some(FramebufferCanvas {
+        distro: String::from(fields[0]),
+        width,
+        height,
+        pixels,
+        updated_ms: sys::uptime_ms(),
+    })
 }
 
 fn parse_resize(rest: &str) -> Option<(&str, usize, usize)> {
@@ -302,6 +357,33 @@ fn canvas_for_distro<'a>(state: &'a mut ConsoleState, distro: &str) -> &'a mut T
     state.canvases.push(TextCanvas::new(distro));
     let last = state.canvases.len().saturating_sub(1);
     &mut state.canvases[last]
+}
+
+fn store_framebuffer(state: &mut ConsoleState, frame: FramebufferCanvas) {
+    if let Some(existing) = state
+        .framebuffers
+        .iter_mut()
+        .find(|existing| existing.distro == frame.distro)
+    {
+        *existing = frame;
+        return;
+    }
+    state.framebuffers.push(frame);
+}
+
+fn canvas_snapshot_lines(state: &mut ConsoleState, distro: &str) -> Vec<String> {
+    let mut lines = {
+        let canvas = canvas_for_distro(state, distro);
+        canvas.snapshot_lines()
+    };
+    if let Some(frame) = state
+        .framebuffers
+        .iter()
+        .find(|frame| frame.distro == distro)
+    {
+        lines.extend(frame.snapshot_lines());
+    }
+    lines
 }
 
 fn deliver_console_bytes(state: &ConsoleState, distro: &str, bytes: &[u8]) -> u32 {
@@ -401,6 +483,24 @@ fn decode_hex(value: &str) -> Option<Vec<u8>> {
         let low = hex_value(bytes[index + 1])?;
         out.push((high << 4) | low);
         index += 2;
+    }
+    Some(out)
+}
+
+fn decode_rgb565(value: &str) -> Option<Vec<u16>> {
+    if value.len() % 4 != 0 {
+        return None;
+    }
+    let mut out = Vec::new();
+    let bytes = value.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let mut pixel = 0u16;
+        for _ in 0..4 {
+            pixel = (pixel << 4) | hex_value(bytes[index])? as u16;
+            index += 1;
+        }
+        out.push(pixel);
     }
     Some(out)
 }
@@ -607,6 +707,27 @@ impl TextCanvas {
     }
 }
 
+impl FramebufferCanvas {
+    fn snapshot_lines(&self) -> Vec<String> {
+        let mut lines = alloc::vec![
+            String::from("kind\tframebuffer"),
+            format!("fb_width\t{}", self.width),
+            format!("fb_height\t{}", self.height),
+            format!("fb_updated_ms\t{}", self.updated_ms),
+        ];
+        for row in 0..self.height {
+            let start = row * self.width;
+            let end = start + self.width;
+            lines.push(format!(
+                "fb_row\t{}\t{}",
+                row,
+                encode_rgb565(&self.pixels[start..end])
+            ));
+        }
+        lines
+    }
+}
+
 impl Default for AnsiState {
     fn default() -> Self {
         Self {
@@ -681,6 +802,17 @@ fn row_string(row: &[u8]) -> String {
         } else {
             ' '
         });
+    }
+    out
+}
+
+fn encode_rgb565(pixels: &[u16]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::new();
+    for pixel in pixels {
+        for shift in [12u16, 8, 4, 0] {
+            out.push(HEX[((pixel >> shift) & 0xf) as usize] as char);
+        }
     }
     out
 }

@@ -1,7 +1,7 @@
 use super::super::{GuestFpuState, GuestGprs, GuestSregs, VcpuMpState};
 use super::{
-    find_vm, find_vm_mut, vcpu_index, Vmcb, VmcbSegment, DIRTY_LOG_SLOTS, DIRTY_LOG_WORDS_PER_SLOT,
-    VMS,
+    avm_segment_attr_to_svm, find_vm, find_vm_mut, svm_segment_attr_to_avm, vcpu_index, Vmcb,
+    VmcbSegment, DIRTY_LOG_SLOTS, DIRTY_LOG_WORDS_PER_SLOT, VMS,
 };
 
 pub fn get_regs(vm_id: u32, vcpu_id: u32) -> Option<GuestGprs> {
@@ -51,35 +51,35 @@ pub fn get_sregs(vm_id: u32, vcpu_id: u32) -> Option<GuestSregs> {
             cs_selector: vmcb.state.cs.selector,
             cs_base: vmcb.state.cs.base,
             cs_limit: vmcb.state.cs.limit,
-            cs_ar: vmcb.state.cs.attrib as u32,
+            cs_ar: svm_segment_attr_to_avm(vmcb.state.cs.attrib),
             ds_selector: vmcb.state.ds.selector,
             ds_base: vmcb.state.ds.base,
             ds_limit: vmcb.state.ds.limit,
-            ds_ar: vmcb.state.ds.attrib as u32,
+            ds_ar: svm_segment_attr_to_avm(vmcb.state.ds.attrib),
             es_selector: vmcb.state.es.selector,
             es_base: vmcb.state.es.base,
             es_limit: vmcb.state.es.limit,
-            es_ar: vmcb.state.es.attrib as u32,
+            es_ar: svm_segment_attr_to_avm(vmcb.state.es.attrib),
             fs_selector: vmcb.state.fs.selector,
             fs_base: vmcb.state.fs.base,
             fs_limit: vmcb.state.fs.limit,
-            fs_ar: vmcb.state.fs.attrib as u32,
+            fs_ar: svm_segment_attr_to_avm(vmcb.state.fs.attrib),
             gs_selector: vmcb.state.gs.selector,
             gs_base: vmcb.state.gs.base,
             gs_limit: vmcb.state.gs.limit,
-            gs_ar: vmcb.state.gs.attrib as u32,
+            gs_ar: svm_segment_attr_to_avm(vmcb.state.gs.attrib),
             ss_selector: vmcb.state.ss.selector,
             ss_base: vmcb.state.ss.base,
             ss_limit: vmcb.state.ss.limit,
-            ss_ar: vmcb.state.ss.attrib as u32,
+            ss_ar: svm_segment_attr_to_avm(vmcb.state.ss.attrib),
             tr_selector: vmcb.state.tr.selector,
             tr_base: vmcb.state.tr.base,
             tr_limit: vmcb.state.tr.limit,
-            tr_ar: vmcb.state.tr.attrib as u32,
+            tr_ar: svm_segment_attr_to_avm(vmcb.state.tr.attrib),
             ldtr_selector: vmcb.state.ldtr.selector,
             ldtr_base: vmcb.state.ldtr.base,
             ldtr_limit: vmcb.state.ldtr.limit,
-            ldtr_ar: vmcb.state.ldtr.attrib as u32,
+            ldtr_ar: svm_segment_attr_to_avm(vmcb.state.ldtr.attrib),
             gdtr_base: vmcb.state.gdtr.base,
             gdtr_limit: vmcb.state.gdtr.limit,
             idtr_base: vmcb.state.idtr.base,
@@ -116,49 +116,49 @@ pub fn set_sregs(vm_id: u32, vcpu_id: u32, sregs: &GuestSregs) -> bool {
             selector: sregs.cs_selector,
             base: sregs.cs_base,
             limit: sregs.cs_limit,
-            attrib: sregs.cs_ar as u16,
+            attrib: avm_segment_attr_to_svm(sregs.cs_ar),
         };
         vmcb.state.ds = VmcbSegment {
             selector: sregs.ds_selector,
             base: sregs.ds_base,
             limit: sregs.ds_limit,
-            attrib: sregs.ds_ar as u16,
+            attrib: avm_segment_attr_to_svm(sregs.ds_ar),
         };
         vmcb.state.es = VmcbSegment {
             selector: sregs.es_selector,
             base: sregs.es_base,
             limit: sregs.es_limit,
-            attrib: sregs.es_ar as u16,
+            attrib: avm_segment_attr_to_svm(sregs.es_ar),
         };
         vmcb.state.fs = VmcbSegment {
             selector: sregs.fs_selector,
             base: sregs.fs_base,
             limit: sregs.fs_limit,
-            attrib: sregs.fs_ar as u16,
+            attrib: avm_segment_attr_to_svm(sregs.fs_ar),
         };
         vmcb.state.gs = VmcbSegment {
             selector: sregs.gs_selector,
             base: sregs.gs_base,
             limit: sregs.gs_limit,
-            attrib: sregs.gs_ar as u16,
+            attrib: avm_segment_attr_to_svm(sregs.gs_ar),
         };
         vmcb.state.ss = VmcbSegment {
             selector: sregs.ss_selector,
             base: sregs.ss_base,
             limit: sregs.ss_limit,
-            attrib: sregs.ss_ar as u16,
+            attrib: avm_segment_attr_to_svm(sregs.ss_ar),
         };
         vmcb.state.tr = VmcbSegment {
             selector: sregs.tr_selector,
             base: sregs.tr_base,
             limit: sregs.tr_limit,
-            attrib: sregs.tr_ar as u16,
+            attrib: avm_segment_attr_to_svm(sregs.tr_ar),
         };
         vmcb.state.ldtr = VmcbSegment {
             selector: sregs.ldtr_selector,
             base: sregs.ldtr_base,
             limit: sregs.ldtr_limit,
-            attrib: sregs.ldtr_ar as u16,
+            attrib: avm_segment_attr_to_svm(sregs.ldtr_ar),
         };
         vmcb.state.gdtr.base = sregs.gdtr_base;
         vmcb.state.gdtr.limit = sregs.gdtr_limit;

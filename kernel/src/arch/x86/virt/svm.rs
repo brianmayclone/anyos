@@ -30,6 +30,7 @@ pub const VMEXIT_MSR: u64 = 0x7C;
 pub const VMEXIT_SHUTDOWN: u64 = 0x7F;
 pub const VMEXIT_XSETBV: u64 = 0x73;
 pub const VMEXIT_NPF: u64 = 0x400;
+pub const VMEXIT_INVALID: u64 = u64::MAX;
 
 // ── VMCB structures ─────────────────────────────────────────────────────
 
@@ -556,6 +557,32 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
         let exit_info2 = vmcb.control.exit_info2;
         let instr_len = svm_exit_instruction_len(exit_code, vmcb);
 
+        if exit_code == VMEXIT_INVALID {
+            vcpu.mp_state = VcpuMpState::Halted;
+            crate::serial_println!(
+                "[svm] vmentry failed: invalid guest state rip={:#x} cr0={:#x} cr3={:#x} cr4={:#x} efer={:#x} cs={:#x}/{:#x} ds={:#x}/{:#x} ss={:#x}/{:#x}",
+                vmcb.state.rip,
+                vmcb.state.cr0,
+                vmcb.state.cr3,
+                vmcb.state.cr4,
+                vmcb.state.efer,
+                vmcb.state.cs.selector,
+                vmcb.state.cs.attrib,
+                vmcb.state.ds.selector,
+                vmcb.state.ds.attrib,
+                vmcb.state.ss.selector,
+                vmcb.state.ss.attrib,
+            );
+            return Some(VmExitInfo {
+                reason: super::exit_reason::INVALID_GUEST_STATE,
+                hw_reason: u32::MAX,
+                qualification: exit_info1,
+                guest_phys_addr: exit_info2,
+                instruction_len: instr_len,
+                ..Default::default()
+            });
+        }
+
         crate::serial_println!(
             "[svm] vmexit: code={:#x} info1={:#x} info2={:#x} rip={:#x} cs.base={:#x}",
             exit_code,
@@ -589,6 +616,7 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
                 }
             }
             VMEXIT_SHUTDOWN => super::exit_reason::SHUTDOWN,
+            VMEXIT_INVALID => super::exit_reason::INVALID_GUEST_STATE,
             VMEXIT_NPF => super::exit_reason::EPT_VIOLATION,
             // SVM-specific intercepts mapped to portable codes
             0x6E => super::exit_reason::VMCALL,    // VMMCALL
@@ -672,6 +700,25 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
 
         Some(info)
     }
+}
+
+fn avm_segment_attr_to_svm(ar: u32) -> u16 {
+    // AVM exposes VMX/KVM-style access-right bytes; SVM stores AVL/L/DB/G in
+    // bits 8..11 instead of 12..15.
+    let low = ar & 0x00ff;
+    let vmx_high = (ar >> 12) & 0x0f;
+    if vmx_high != 0 || (ar & 0x1_0000) != 0 {
+        (low | (vmx_high << 8)) as u16
+    } else {
+        (ar & 0x0fff) as u16
+    }
+}
+
+fn svm_segment_attr_to_avm(attr: u16) -> u32 {
+    // Return the public AVM encoding so userspace sees identical sregs on VMX
+    // and SVM backends.
+    let attr = attr as u32;
+    (attr & 0x00ff) | ((attr & 0x0f00) << 4)
 }
 
 fn svm_exit_instruction_len(exit_code: u64, vmcb: &Vmcb) -> u32 {

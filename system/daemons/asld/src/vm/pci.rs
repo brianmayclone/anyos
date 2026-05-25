@@ -46,7 +46,9 @@ impl Default for PciBus {
         };
         bus.devices.push(PciDevice::host_bridge());
         bus.devices.push(PciDevice::isa_bridge());
+        bus.devices.push(PciDevice::bochs_vga());
         bus.devices.push(PciDevice::e1000());
+        bus.devices.push(PciDevice::virtio_gpu());
         bus
     }
 }
@@ -170,6 +172,57 @@ impl PciDevice {
         dev
     }
 
+    fn bochs_vga() -> Self {
+        let mut dev = Self::new(0, 2, 0);
+        dev.write_ro16(0x00, 0x1234);
+        dev.write_ro16(0x02, 0x1111);
+        dev.write_rw16(0x04, 0x0000, 0x0007);
+        dev.write_ro16(0x06, 0x0010);
+        dev.write_ro8(0x08, 0x02);
+        dev.write_ro8(0x0a, 0x00);
+        dev.write_ro8(0x0b, 0x03);
+        dev.write_ro8(0x0e, 0x00);
+        dev.write_rw32(0x10, 0xfd00_0000, 0xff00_0000);
+        dev.write_ro16(0x2c, 0x1234);
+        dev.write_ro16(0x2e, 0x1111);
+        dev.bars[0] = PciBar {
+            offset: 0x10,
+            value: 0xfd00_0000,
+            size_mask: 0xff00_0000,
+            probe: false,
+        };
+        dev
+    }
+
+    fn virtio_gpu() -> Self {
+        let mut dev = Self::new(0, 4, 0);
+        dev.write_ro16(0x00, 0x1af4);
+        dev.write_ro16(0x02, 0x1050);
+        dev.write_rw16(0x04, 0x0000, 0x0007);
+        dev.write_ro16(0x06, 0x0010);
+        dev.write_ro8(0x08, 0x01);
+        dev.write_ro8(0x0a, 0x00);
+        dev.write_ro8(0x0b, 0x03);
+        dev.write_ro8(0x0e, 0x00);
+        dev.write_rw32(0x10, 0xfe00_0000, 0xffff_f000);
+        dev.write_ro16(0x2c, 0x1af4);
+        dev.write_ro16(0x2e, 0x1100);
+        dev.write_ro8(0x34, 0x40);
+        dev.write_ro8(0x3c, 10);
+        dev.write_ro8(0x3d, 1);
+        dev.write_virtio_cap(0x40, 0x50, 1, 0x000, 0x038, None);
+        dev.write_virtio_cap(0x50, 0x64, 2, 0x100, 0x100, Some(2));
+        dev.write_virtio_cap(0x64, 0x74, 3, 0x200, 0x001, None);
+        dev.write_virtio_cap(0x74, 0x00, 4, 0x300, 0x010, None);
+        dev.bars[0] = PciBar {
+            offset: 0x10,
+            value: 0xfe00_0000,
+            size_mask: 0xffff_f000,
+            probe: false,
+        };
+        dev
+    }
+
     fn new(bus: u8, device: u8, function: u8) -> Self {
         Self {
             bus,
@@ -282,6 +335,34 @@ impl PciDevice {
         let bytes = mask.to_le_bytes();
         self.writable_mask[offset as usize..offset as usize + 4].copy_from_slice(&bytes);
     }
+
+    fn write_ro32(&mut self, offset: u8, value: u32) {
+        write_u32(&mut self.config, offset, value);
+    }
+
+    fn write_virtio_cap(
+        &mut self,
+        offset: u8,
+        next: u8,
+        cfg_type: u8,
+        bar_offset: u32,
+        length: u32,
+        notify_multiplier: Option<u32>,
+    ) {
+        self.write_ro8(offset, 0x09);
+        self.write_ro8(offset + 1, next);
+        self.write_ro8(
+            offset + 2,
+            if notify_multiplier.is_some() { 20 } else { 16 },
+        );
+        self.write_ro8(offset + 3, cfg_type);
+        self.write_ro8(offset + 4, 0);
+        self.write_ro32(offset + 8, bar_offset);
+        self.write_ro32(offset + 12, length);
+        if let Some(multiplier) = notify_multiplier {
+            self.write_ro32(offset + 16, multiplier);
+        }
+    }
 }
 
 fn is_pci_config_port(port: u16) -> bool {
@@ -359,6 +440,19 @@ mod tests {
         let class = inl(&mut bus, PCI_CONFIG_DATA_START);
         assert_eq!((class >> 24) & 0xff, 0x02);
         assert_eq!((class >> 16) & 0xff, 0x00);
+    }
+
+    #[test]
+    fn enumerates_vga_and_virtio_gpu_devices() {
+        let mut bus = PciBus::default();
+        outl(&mut bus, PCI_CONFIG_ADDRESS, 0x8000_1000);
+        assert_eq!(inl(&mut bus, PCI_CONFIG_DATA_START), 0x1111_1234);
+
+        outl(&mut bus, PCI_CONFIG_ADDRESS, 0x8000_2000);
+        assert_eq!(inl(&mut bus, PCI_CONFIG_DATA_START), 0x1050_1af4);
+
+        outl(&mut bus, PCI_CONFIG_ADDRESS, 0x8000_2034);
+        assert_eq!(inl(&mut bus, PCI_CONFIG_DATA_START) & 0xff, 0x40);
     }
 
     #[test]

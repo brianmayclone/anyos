@@ -21,6 +21,8 @@ mod serial;
 mod tests;
 #[cfg(not(target_os = "linux"))]
 mod vcpu;
+mod vga;
+mod virtio;
 use apic::ApicState;
 #[cfg(not(target_os = "linux"))]
 use apic::{apic_mmio_action, is_apic_mmio};
@@ -87,6 +89,8 @@ pub struct VmInstance {
     ide: IdeController,
     net: AslNetDevice,
     e1000: E1000Device,
+    display: vga::GuestFramebuffer,
+    virtio_gpu: virtio::VirtioGpuDevice,
     apic: ApicState,
     msrs: MsrState,
 }
@@ -151,6 +155,8 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         ide: IdeController::disabled(),
         net: AslNetDevice::default(),
         e1000: E1000Device::default(),
+        display: vga::GuestFramebuffer::default(),
+        virtio_gpu: virtio::VirtioGpuDevice::default(),
         apic: ApicState::default(),
         msrs: MsrState::default(),
     })
@@ -299,6 +305,8 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         ide,
         net: AslNetDevice::default(),
         e1000: E1000Device::default(),
+        display: vga::GuestFramebuffer::default(),
+        virtio_gpu: virtio::VirtioGpuDevice::default(),
         apic: ApicState::default(),
         msrs: MsrState::default(),
     })
@@ -501,6 +509,12 @@ fn handle_emulated_exit(
         return Ok(true);
     }
     if handle_platform_io_exit(instance, vcpu, exit)? {
+        return Ok(true);
+    }
+    if vga::handle_vga_exit(instance, vcpu, exit)? {
+        return Ok(true);
+    }
+    if virtio::handle_virtio_gpu_exit(instance, vcpu, exit)? {
         return Ok(true);
     }
     if handle_e1000_mmio_exit(instance, vcpu, exit)? {
