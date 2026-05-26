@@ -99,7 +99,7 @@ pub fn debug_wait4_snapshot(tag: &str, pid: i64, options: u64) {
             };
         }
         for t in sched.threads.iter() {
-            if t.parent_tid == current_tid {
+            if t.parent_tid == current_tid && !t.pd_shared {
                 child_count += 1;
                 if t.state == ThreadState::Terminated && t.exit_code.is_some() {
                     waitable_count += 1;
@@ -246,6 +246,7 @@ pub fn waitpid_any() -> (u32, u32) {
         // Check for already-terminated children
         if let Some(child_idx) = sched.threads.iter().position(|t| {
             t.parent_tid == current_tid
+                && !t.pd_shared
                 && t.state == ThreadState::Terminated
                 && t.exit_code.is_some()
         }) {
@@ -258,6 +259,7 @@ pub fn waitpid_any() -> (u32, u32) {
         // whose exit_code is already consumed is no longer waitable.
         let has_children = sched.threads.iter().any(|t| {
             t.parent_tid == current_tid
+                && !t.pd_shared
                 && (t.state != ThreadState::Terminated || t.exit_code.is_some())
         });
         if !has_children {
@@ -266,7 +268,7 @@ pub fn waitpid_any() -> (u32, u32) {
 
         // Set blocking waiters on all non-terminated children so exit_current wakes us.
         for t in sched.threads.iter_mut() {
-            if t.parent_tid == current_tid && t.state != ThreadState::Terminated {
+            if t.parent_tid == current_tid && !t.pd_shared && t.state != ThreadState::Terminated {
                 t.exit_waiter_tid = Some(current_tid);
             }
         }
@@ -289,6 +291,7 @@ pub fn waitpid_any() -> (u32, u32) {
             if let Some(sched) = guard.as_mut() {
                 if let Some(child_idx) = sched.threads.iter().position(|t| {
                     t.parent_tid == current_tid
+                        && !t.pd_shared
                         && t.state == ThreadState::Terminated
                         && t.exit_code.is_some()
                 }) {
@@ -299,6 +302,7 @@ pub fn waitpid_any() -> (u32, u32) {
                 // No children at all → ECHILD
                 let has_children = sched.threads.iter().any(|t| {
                     t.parent_tid == current_tid
+                        && !t.pd_shared
                         && (t.state != ThreadState::Terminated || t.exit_code.is_some())
                 });
                 if !has_children {
@@ -325,20 +329,25 @@ pub fn try_waitpid_any() -> (u32, u32) {
         None => return (u32::MAX, u32::MAX),
     };
     if let Some(child_idx) = sched.threads.iter().position(|t| {
-        t.parent_tid == current_tid && t.state == ThreadState::Terminated && t.exit_code.is_some()
+        t.parent_tid == current_tid
+            && !t.pd_shared
+            && t.state == ThreadState::Terminated
+            && t.exit_code.is_some()
     }) {
         let child_tid = sched.threads[child_idx].tid;
         let code = consume_exit_status(&mut sched.threads[child_idx]);
         return (child_tid, code);
     }
     let has_children = sched.threads.iter().any(|t| {
-        t.parent_tid == current_tid && (t.state != ThreadState::Terminated || t.exit_code.is_some())
+        t.parent_tid == current_tid
+            && !t.pd_shared
+            && (t.state != ThreadState::Terminated || t.exit_code.is_some())
     });
     if !has_children {
         (u32::MAX, u32::MAX)
     } else {
         for t in sched.threads.iter_mut() {
-            if t.parent_tid == current_tid && t.state != ThreadState::Terminated {
+            if t.parent_tid == current_tid && !t.pd_shared && t.state != ThreadState::Terminated {
                 t.retain_exit_status = true;
             }
         }

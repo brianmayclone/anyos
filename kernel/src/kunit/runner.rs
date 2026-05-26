@@ -27,6 +27,7 @@ static UNIT_SUITES: &[&TestSuite] = &[
     &super::tests::capabilities_tests::SUITE,
     &super::tests::syscall_safety_tests::SUITE,
     &super::tests::ipc_tests::SUITE,
+    &super::tests::vfs_readahead_tests::SUITE,
 ];
 
 /// Run all pure unit tests.  Call after `memory::heap::init()`.

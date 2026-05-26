@@ -230,6 +230,7 @@ fn linux_visible_mode(anyos_type: u32, mode: u32) -> u32 {
             1 => 0o755,
             2 => 0o666,
             3 => 0o777,
+            4 | 5 => 0o666,
             _ => 0o644,
         };
     }
@@ -408,12 +409,16 @@ pub(super) fn linux_fstat(fd: u32, stat_ptr: u64) -> u64 {
                 }
                 Err(_) => linux_err(EBADF),
             },
-            FdKind::PipeRead { .. }
-            | FdKind::PipeWrite { .. }
-            | FdKind::Tty
-            | FdKind::PtySlave { .. }
-            | FdKind::LinuxSocket { .. } => {
+            FdKind::PipeRead { .. } | FdKind::PipeWrite { .. } => {
+                write_linux_stat(stat_ptr, 0, 2, 4, 0, 0, 0, 0o666, 0);
+                0
+            }
+            FdKind::Tty | FdKind::PtySlave { .. } => {
                 write_linux_stat(stat_ptr, 0, 2, 2, 0, 0, 0, 0o666, 0);
+                0
+            }
+            FdKind::LinuxSocket { .. } => {
+                write_linux_stat(stat_ptr, 0, 2, 5, 0, 0, 0, 0o666, 0);
                 0
             }
             FdKind::LinuxProc { file, pid, .. } => linux_write_proc_stat(stat_ptr, file, pid),
@@ -516,12 +521,16 @@ fn linux_fstatx(fd: u32, statx_ptr: u64) -> u64 {
                 }
                 Err(_) => linux_err(EBADF),
             },
-            FdKind::PipeRead { .. }
-            | FdKind::PipeWrite { .. }
-            | FdKind::Tty
-            | FdKind::PtySlave { .. }
-            | FdKind::LinuxSocket { .. } => {
+            FdKind::PipeRead { .. } | FdKind::PipeWrite { .. } => {
+                write_linux_statx(statx_ptr, 0, 2, 4, 0, 0, 0, 0o666, 0);
+                0
+            }
+            FdKind::Tty | FdKind::PtySlave { .. } => {
                 write_linux_statx(statx_ptr, 0, 2, 2, 0, 0, 0, 0o666, 0);
+                0
+            }
+            FdKind::LinuxSocket { .. } => {
+                write_linux_statx(statx_ptr, 0, 2, 5, 0, 0, 0, 0o666, 0);
                 0
             }
             FdKind::LinuxProc { file, pid, .. } => linux_write_proc_statx(statx_ptr, file, pid),

@@ -1039,6 +1039,16 @@ fn load_elf64(
     if entry < min_user_vaddr || entry >= 0x0000_8000_0000_0000 {
         return Err("ELF64 entry point outside valid user address range");
     }
+    if !virtual_mem::is_mapped_in_pd(pd_phys, VirtAddr::new(entry & !0xFFF)) {
+        crate::serial_verbose_println!(
+            "ELF64 loader: entry page not mapped entry={:#x} load_bias={:#x} phnum={} brk={:#x}",
+            entry,
+            load_bias,
+            ph_num,
+            brk
+        );
+        return Err("ELF64 entry point page is not mapped");
+    }
 
     Ok(ElfLoadResult {
         entry,

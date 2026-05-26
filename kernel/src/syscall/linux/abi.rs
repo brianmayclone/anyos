@@ -22,6 +22,8 @@ pub(super) fn write_linux_stat(
         1 => 0o040000,
         2 => 0o020000,
         3 => 0o120000,
+        4 => 0o010000,
+        5 => 0o140000,
         _ => 0o100000,
     };
     let full_mode = file_type_bits | (mode & 0o7777);
@@ -81,6 +83,8 @@ pub(super) fn write_linux_statx(
         1 => 0o040000,
         2 => 0o020000,
         3 => 0o120000,
+        4 => 0o010000,
+        5 => 0o140000,
         _ => 0o100000,
     };
     let full_mode = file_type_bits | (mode & 0o7777);

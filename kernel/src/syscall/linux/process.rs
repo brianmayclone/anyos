@@ -81,24 +81,127 @@ pub(super) fn linux_clone(
     const CSIGNAL: u64 = 0xff;
     const SIGCHLD: u64 = 17;
     const CLONE_VM: u64 = 0x0000_0100;
+    const CLONE_FS: u64 = 0x0000_0200;
+    const CLONE_FILES: u64 = 0x0000_0400;
+    const CLONE_SIGHAND: u64 = 0x0000_0800;
+    const CLONE_THREAD: u64 = 0x0001_0000;
+    const CLONE_SYSVSEM: u64 = 0x0004_0000;
+    const CLONE_SETTLS: u64 = 0x0008_0000;
     const CLONE_PARENT_SETTID: u64 = 0x0010_0000;
     const CLONE_CHILD_CLEARTID: u64 = 0x0020_0000;
     const CLONE_CHILD_SETTID: u64 = 0x0100_0000;
-    const CLONE_THREAD: u64 = 0x0001_0000;
-    const CLONE_SETTLS: u64 = 0x0008_0000;
+    const SUPPORTED_THREAD_FLAGS: u64 = CSIGNAL
+        | CLONE_VM
+        | CLONE_FS
+        | CLONE_FILES
+        | CLONE_SIGHAND
+        | CLONE_THREAD
+        | CLONE_SYSVSEM
+        | CLONE_SETTLS
+        | CLONE_PARENT_SETTID
+        | CLONE_CHILD_CLEARTID
+        | CLONE_CHILD_SETTID;
 
     let signal = flags & CSIGNAL;
     if signal != 0 && signal != SIGCHLD {
         return linux_err(EINVAL);
     }
+
     if (flags & (CLONE_VM | CLONE_THREAD | CLONE_SETTLS)) != 0 || tls != 0 {
+        if (flags & !SUPPORTED_THREAD_FLAGS) != 0 {
+            crate::serial_verbose_println!(
+                "lxe linux clone: unsupported thread flags={:#x} child_stack={:#x} tls={:#x}",
+                flags,
+                child_stack,
+                tls
+            );
+            return linux_err(ENOSYS);
+        }
+        if (flags & CLONE_THREAD) != 0 && ((flags & CLONE_VM) == 0 || (flags & CLONE_SIGHAND) == 0)
+        {
+            return linux_err(EINVAL);
+        }
+        if (flags & CLONE_SIGHAND) != 0 && (flags & CLONE_VM) == 0 {
+            return linux_err(EINVAL);
+        }
+        if child_stack == 0
+            || child_stack >= 0x0000_8000_0000_0000
+            || !handlers::helpers::is_user_range_accessible(child_stack.saturating_sub(8), 8)
+        {
+            return linux_err(EFAULT);
+        }
+        if (flags & CLONE_PARENT_SETTID) != 0
+            && (parent_tidptr == 0
+                || !handlers::helpers::is_user_range_accessible(parent_tidptr, 4))
+        {
+            return linux_err(EFAULT);
+        }
+        let child_set_tidptr = if (flags & CLONE_CHILD_SETTID) != 0 {
+            if child_tidptr == 0 || !handlers::helpers::is_user_range_accessible(child_tidptr, 4) {
+                return linux_err(EFAULT);
+            }
+            child_tidptr
+        } else {
+            0
+        };
+        let clear_child_tidptr = if (flags & CLONE_CHILD_CLEARTID) != 0 {
+            if child_tidptr == 0 || !handlers::helpers::is_user_range_accessible(child_tidptr, 4) {
+                return linux_err(EFAULT);
+            }
+            child_tidptr
+        } else {
+            0
+        };
+
+        let fs_base = if (flags & CLONE_SETTLS) != 0 {
+            tls
+        } else {
+            crate::task::scheduler::current_thread_linux_fs_base()
+        };
+        let child_regs = crate::task::loader::ForkChildRegs {
+            rbx: regs.rbx,
+            rcx: regs.rcx,
+            rdx: regs.rdx,
+            rsi: regs.rsi,
+            rdi: regs.rdi,
+            rbp: regs.rbp,
+            r8: regs.r8,
+            r9: regs.r9,
+            r10: regs.r10,
+            r11: regs.r11,
+            r12: regs.r12,
+            r13: regs.r13,
+            r14: regs.r14,
+            r15: regs.r15,
+            rip: regs.rip,
+            cs: regs.cs,
+            rflags: regs.rflags,
+            rsp: child_stack,
+            ss: regs.ss,
+            fs_base,
+            child_tidptr: child_set_tidptr,
+        };
+        let child_tid =
+            crate::task::scheduler::create_linux_clone_thread(child_regs, clear_child_tidptr);
         crate::serial_verbose_println!(
-            "lxe linux clone: unsupported flags={:#x} child_stack={:#x} tls={:#x}",
+            "lxe linux clone-thread: tid={} flags={:#x} child_stack={:#x} parent_tidptr={:#x} child_tidptr={:#x} tls={:#x} -> child={}",
+            crate::task::scheduler::current_tid(),
             flags,
             child_stack,
-            tls
+            parent_tidptr,
+            child_tidptr,
+            tls,
+            child_tid
         );
-        return linux_err(ENOSYS);
+        if child_tid == 0 {
+            return linux_err(ENOMEM);
+        }
+        if (flags & CLONE_PARENT_SETTID) != 0 && parent_tidptr != 0 {
+            unsafe {
+                write_u32(parent_tidptr, 0, child_tid);
+            }
+        }
+        return child_tid as u64;
     }
     if child_stack != 0 {
         crate::serial_verbose_println!(
@@ -155,6 +258,69 @@ pub(super) fn linux_clone(
     child_tid as u64
 }
 
+pub(super) fn linux_clone3(regs: &SyscallRegs, args_ptr: u64, size: u64) -> u64 {
+    const CLONE_ARGS_MIN_SIZE: u64 = 64;
+    const CLONE_ARGS_KNOWN_SIZE: u64 = 88;
+
+    if args_ptr == 0 || size < CLONE_ARGS_MIN_SIZE {
+        return linux_err(EINVAL);
+    }
+    let readable = size.min(CLONE_ARGS_KNOWN_SIZE);
+    if !handlers::helpers::is_user_range_accessible(args_ptr, readable) {
+        return linux_err(EFAULT);
+    }
+
+    let read_arg = |offset: u64| -> u64 {
+        if offset + 8 <= readable {
+            unsafe { read_u64(args_ptr, offset) }
+        } else {
+            0
+        }
+    };
+
+    let flags = read_arg(0);
+    let pidfd = read_arg(8);
+    let child_tid = read_arg(16);
+    let parent_tid = read_arg(24);
+    let exit_signal = read_arg(32);
+    let stack = read_arg(40);
+    let stack_size = read_arg(48);
+    let tls = read_arg(56);
+    let set_tid = read_arg(64);
+    let set_tid_size = read_arg(72);
+    let cgroup = read_arg(80);
+
+    if pidfd != 0 || set_tid != 0 || set_tid_size != 0 || cgroup != 0 {
+        crate::serial_verbose_println!(
+            "lxe linux clone3: unsupported pidfd={:#x} set_tid={:#x} set_tid_size={} cgroup={:#x}",
+            pidfd,
+            set_tid,
+            set_tid_size,
+            cgroup
+        );
+        return linux_err(ENOSYS);
+    }
+
+    let child_stack = if stack != 0 && stack_size != 0 {
+        match stack.checked_add(stack_size) {
+            Some(value) => value,
+            None => return linux_err(EINVAL),
+        }
+    } else {
+        stack
+    };
+    let clone_flags = flags | (exit_signal & 0xff);
+    crate::serial_verbose_println!(
+        "lxe linux clone3: flags={:#x} exit_signal={} stack={:#x} size={:#x} tls={:#x}",
+        flags,
+        exit_signal,
+        stack,
+        stack_size,
+        tls
+    );
+    linux_clone(regs, clone_flags, child_stack, parent_tid, child_tid, tls)
+}
+
 pub(super) fn linux_fork(regs: &SyscallRegs) -> u64 {
     let child_tid = handlers::sys_fork(regs);
     crate::serial_verbose_println!(
@@ -198,33 +364,35 @@ pub(super) fn linux_execve(filename_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> u
         Err(errno) => return linux_err(errno),
     };
 
-    let mut argv = match read_exec_string_array(argv_ptr, 64) {
+    let argv = match read_exec_string_array(argv_ptr, 64) {
         Ok(argv) => argv,
         Err(errno) => return linux_err(errno),
     };
-    if argv.is_empty() {
-        argv.push(linux_path.clone());
-    }
     let envp = match read_exec_string_array(envp_ptr, 128) {
         Ok(envp) => envp,
         Err(errno) => return linux_err(errno),
     };
+    let (exec_linux_path, exec_resolved, argv) =
+        match resolve_linux_exec_target(linux_path.clone(), resolved.clone(), argv) {
+            Ok(target) => target,
+            Err(errno) => return linux_err(errno),
+        };
 
     crate::serial_verbose_println!(
         "lxe linux execve: tid={} linux='{}' resolved='{}' argv0='{}' argc={} envc={}",
         crate::task::scheduler::current_tid(),
-        linux_path,
-        resolved,
+        exec_linux_path,
+        exec_resolved,
         argv.first().map(|s| s.as_str()).unwrap_or(""),
         argv.len(),
         envp.len()
     );
 
-    let err = crate::task::loader::exec_current_linux_process(&resolved, &argv, &envp);
+    let err = crate::task::loader::exec_current_linux_process(&exec_resolved, &argv, &envp);
     crate::serial_verbose_println!(
         "lxe linux execve: failed linux='{}' resolved='{}': {}",
-        linux_path,
-        resolved,
+        exec_linux_path,
+        exec_resolved,
         err
     );
     if err.contains("read program file") || err.contains("path not found") {
@@ -232,6 +400,99 @@ pub(super) fn linux_execve(filename_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> u
     } else {
         linux_err(ENOEXEC)
     }
+}
+
+fn resolve_linux_exec_target(
+    mut linux_path: String,
+    mut resolved: String,
+    mut argv: Vec<String>,
+) -> Result<(String, String, Vec<String>), i32> {
+    if argv.is_empty() {
+        argv.push(linux_path.clone());
+    }
+
+    for _ in 0..4 {
+        let data = crate::fs::vfs::read_file_to_vec(&resolved).map_err(|_| ENOENT)?;
+        let Some((interpreter, interpreter_arg)) = parse_shebang(&data) else {
+            return Ok((linux_path, resolved, argv));
+        };
+        if !interpreter.starts_with('/') {
+            return Err(ENOEXEC);
+        }
+
+        let interpreter_linux = crate::fs::path::normalize(&interpreter);
+        let interpreter_translated = linux_translate_absolute_path(&interpreter_linux);
+        let interpreter_resolved =
+            linux_resolve_translated_path(&interpreter_translated, true, false)?;
+
+        let script_linux_path = linux_path;
+        let mut script_argv = Vec::new();
+        script_argv.push(interpreter_linux.clone());
+        if let Some(arg) = interpreter_arg {
+            script_argv.push(arg);
+        }
+        script_argv.push(script_linux_path.clone());
+        for arg in argv.iter().skip(1) {
+            script_argv.push(arg.clone());
+        }
+
+        crate::serial_verbose_println!(
+            "lxe linux execve: shebang script='{}' interp='{}' resolved='{}' argc={}",
+            script_linux_path,
+            interpreter_linux,
+            interpreter_resolved,
+            script_argv.len()
+        );
+
+        linux_path = interpreter_linux;
+        resolved = interpreter_resolved;
+        argv = script_argv;
+    }
+
+    Err(ELOOP)
+}
+
+fn parse_shebang(data: &[u8]) -> Option<(String, Option<String>)> {
+    if data.len() < 2 || data[0] != b'#' || data[1] != b'!' {
+        return None;
+    }
+
+    let max = data.len().min(256);
+    let mut end = 2;
+    while end < max && data[end] != b'\n' {
+        end += 1;
+    }
+
+    let mut start = 2;
+    while start < end && matches!(data[start], b' ' | b'\t') {
+        start += 1;
+    }
+    while end > start && matches!(data[end - 1], b' ' | b'\t' | b'\r') {
+        end -= 1;
+    }
+    if start >= end {
+        return None;
+    }
+
+    let mut interp_end = start;
+    while interp_end < end && !matches!(data[interp_end], b' ' | b'\t' | b'\r') {
+        interp_end += 1;
+    }
+
+    let interpreter = core::str::from_utf8(&data[start..interp_end]).ok()?;
+    let mut arg_start = interp_end;
+    while arg_start < end && matches!(data[arg_start], b' ' | b'\t') {
+        arg_start += 1;
+    }
+    let interpreter_arg = if arg_start < end {
+        Some(String::from(
+            core::str::from_utf8(&data[arg_start..end]).ok()?,
+        ))
+    } else {
+        None
+    };
+
+    Some((String::from(interpreter), interpreter_arg))
 }
 
 fn read_exec_string_array(ptr: u64, max_entries: usize) -> Result<Vec<String>, i32> {

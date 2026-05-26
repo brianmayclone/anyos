@@ -134,6 +134,10 @@ debian-archive-keyring
 dash
 bash
 coreutils
+diffutils
+gzip
+tar
+xz-utils
 libpam-runtime
 login
 passwd
@@ -258,9 +262,9 @@ Defaults:
 | `apt/suite` | `bookworm` |
 | `apt/component` | `main` |
 | `apt/arch` | `amd64` |
-| `apt/index_required_packages_csv` | `apt,base-files,base-passwd,bash,coreutils,dash,debian-archive-keyring,libc6,libgcc-s1,libpam-runtime,libstdc++6,login,passwd,zlib1g` |
+| `apt/index_required_packages_csv` | `apt,base-files,base-passwd,bash,coreutils,dash,debian-archive-keyring,diffutils,gzip,libc-bin,libc6,libgcc-s1,libpam-runtime,libstdc++6,login,ncurses-base,passwd,tar,xz-utils,zlib1g` |
 | `apt/download_attempts` | `4` |
-| `bootstrap/packages_csv` | `base-files,base-passwd,libc6,libgcc-s1,libstdc++6,zlib1g,apt,debian-archive-keyring,dash,bash,coreutils,libpam-runtime,login,passwd,libcom-err2,mc,procps,htop,gcc,make` |
+| `bootstrap/packages_csv` | `base-files,base-passwd,libc-bin,libc6,libgcc-s1,libstdc++6,zlib1g,apt,debian-archive-keyring,dash,bash,coreutils,diffutils,gzip,tar,xz-utils,ncurses-base,libpam-runtime,login,passwd,libcom-err2,mc,procps,htop,gcc,make` |
 | `tools/wget` | `/System/bin/wget` |
 
 All path values are normalized by trimming trailing slashes.

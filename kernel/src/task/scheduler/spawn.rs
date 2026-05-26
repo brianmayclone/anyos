@@ -205,6 +205,165 @@ pub fn create_thread_in_current_process(
     tid
 }
 
+/// Create a Linux ABI thread from clone()/clone3() inside the current address
+/// space. The child resumes through the fork return trampoline so the syscall
+/// returns twice: child sees RAX=0, parent sees the new TID.
+#[cfg(target_arch = "x86_64")]
+pub fn create_linux_clone_thread(
+    regs: crate::task::loader::ForkChildRegs,
+    clear_child_tid: u64,
+) -> u32 {
+    let (
+        pd,
+        brk,
+        brk_start,
+        parent_pri,
+        parent_cwd,
+        parent_rootfs,
+        parent_caps,
+        parent_uid,
+        parent_gid,
+        parent_linux_real_uid,
+        parent_linux_saved_uid,
+        parent_linux_fs_uid,
+        parent_linux_real_gid,
+        parent_linux_saved_gid,
+        parent_linux_fs_gid,
+        parent_stdout_pipe,
+        parent_stdin_pipe,
+        parent_pty_id,
+        parent_pcid,
+        parent_mmap_next,
+        parent_user_pages,
+        parent_fd_table,
+        parent_signals,
+        parent_args,
+        parent_name,
+        parent_fpu_data,
+    ) = {
+        crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_CREATE_THREAD);
+        let guard = SCHEDULER.lock();
+        let cpu_id = get_cpu_id();
+        let sched = match guard.as_ref() {
+            Some(s) => s,
+            None => return 0,
+        };
+        let current_tid = match sched.per_cpu[cpu_id].current_tid {
+            Some(t) => t,
+            None => return 0,
+        };
+        let idx = match sched.find_idx(current_tid) {
+            Some(i) => i,
+            None => return 0,
+        };
+        let thread = &sched.threads[idx];
+        if thread.abi != crate::task::abi::AbiPersonality::LinuxX86_64 {
+            return 0;
+        }
+        let pd = match thread.page_directory {
+            Some(pd) => pd,
+            None => return 0,
+        };
+        (
+            pd,
+            thread.brk,
+            thread.brk_start,
+            thread.priority,
+            thread.cwd,
+            thread.linux_rootfs,
+            thread.capabilities,
+            thread.uid,
+            thread.gid,
+            thread.linux_real_uid,
+            thread.linux_saved_uid,
+            thread.linux_fs_uid,
+            thread.linux_real_gid,
+            thread.linux_saved_gid,
+            thread.linux_fs_gid,
+            thread.stdout_pipe,
+            thread.stdin_pipe,
+            thread.pty_id,
+            thread.pcid,
+            thread.mmap_next,
+            thread.user_pages,
+            thread.fd_table.clone(),
+            thread.signals.clone(),
+            thread.args,
+            thread.name,
+            thread.fpu_state.data,
+        )
+    };
+
+    let name_len = parent_name
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(parent_name.len());
+    let name = core::str::from_utf8(&parent_name[..name_len]).unwrap_or("linux-thread");
+    let priority = parent_pri.min(crate::task::abi::LINUX_MAX_USER_PRIORITY);
+    let tid = spawn_blocked(crate::task::loader::fork_child_trampoline, priority, name);
+    if tid == 0 {
+        return 0;
+    }
+
+    let installed = {
+        crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_CREATE_THREAD);
+        let mut guard = SCHEDULER.lock();
+        let sched = match guard.as_mut() {
+            Some(s) => s,
+            None => return 0,
+        };
+        if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+            thread.page_directory = Some(pd);
+            thread.pcid = parent_pcid;
+            thread
+                .context
+                .set_page_table(pd.as_u64() | parent_pcid as u64);
+            thread.context.checksum = thread.context.compute_checksum();
+            thread.is_user = true;
+            thread.brk = brk;
+            thread.brk_start = brk_start;
+            thread.abi = crate::task::abi::AbiPersonality::LinuxX86_64;
+            thread.pd_shared = true;
+            thread.cwd = parent_cwd;
+            thread.linux_rootfs = parent_rootfs;
+            thread.capabilities = parent_caps;
+            thread.uid = parent_uid;
+            thread.gid = parent_gid;
+            thread.linux_real_uid = parent_linux_real_uid;
+            thread.linux_saved_uid = parent_linux_saved_uid;
+            thread.linux_fs_uid = parent_linux_fs_uid;
+            thread.linux_real_gid = parent_linux_real_gid;
+            thread.linux_saved_gid = parent_linux_saved_gid;
+            thread.linux_fs_gid = parent_linux_fs_gid;
+            thread.stdout_pipe = parent_stdout_pipe;
+            thread.stdin_pipe = parent_stdin_pipe;
+            thread.pty_id = parent_pty_id;
+            thread.mmap_next = parent_mmap_next;
+            thread.user_pages = parent_user_pages;
+            thread.fd_table = parent_fd_table.clone();
+            let mut signals = parent_signals.clone();
+            signals.pending = 0;
+            thread.signals = signals;
+            thread.args = parent_args;
+            thread.fpu_state.data = parent_fpu_data;
+            thread.linux_fs_base = regs.fs_base;
+            thread.linux_clear_child_tid = clear_child_tid;
+            true
+        } else {
+            false
+        }
+    };
+    if !installed {
+        super::kill_thread(tid);
+        return 0;
+    }
+
+    incref_fd_table(&parent_fd_table);
+    crate::task::loader::store_pending_fork(tid, regs);
+    super::wake_thread(tid);
+    tid
+}
+
 fn incref_fd_table(table: &FdTable) {
     for entry in table.iter_open() {
         match entry.kind {

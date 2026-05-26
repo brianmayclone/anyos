@@ -6,13 +6,15 @@ const VECTOR_TS: u32 = 10;
 const VECTOR_NP: u32 = 11;
 const VECTOR_SS: u32 = 12;
 const VECTOR_GP: u32 = 13;
+const VECTOR_PF: u32 = 14;
 
 pub(super) const FATAL_INTERCEPTS: u32 = (1 << VECTOR_UD)
     | (1 << VECTOR_DF)
     | (1 << VECTOR_TS)
     | (1 << VECTOR_NP)
     | (1 << VECTOR_SS)
-    | (1 << VECTOR_GP);
+    | (1 << VECTOR_GP)
+    | (1 << VECTOR_PF);
 
 pub(super) fn is_exception_exit(exit_code: u64) -> bool {
     (0x40..=0x5f).contains(&exit_code)

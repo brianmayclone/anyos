@@ -49,6 +49,7 @@ const EISDIR: i32 = 21;
 const ENOTTY: i32 = 25;
 const ENODEV: i32 = 19;
 const EFBIG: i32 = 27;
+const ESPIPE: i32 = 29;
 const EPERM: i32 = 1;
 const ESRCH: i32 = 3;
 const EINTR: i32 = 4;
@@ -255,6 +256,7 @@ const LINUX_SYS_GETRANDOM: u64 = 318;
 const LINUX_SYS_COPY_FILE_RANGE: u64 = 326;
 const LINUX_SYS_STATX: u64 = 332;
 const LINUX_SYS_RSEQ: u64 = 334;
+const LINUX_SYS_CLONE3: u64 = 435;
 const LINUX_SYS_FACCESSAT2: u64 = 439;
 
 const LINUX_AT_FDCWD: i32 = -100;
@@ -391,6 +393,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_SETSOCKOPT => linux_setsockopt(a1 as u32, a2, a3, a4, a5),
         LINUX_SYS_GETSOCKOPT => linux_getsockopt(a1 as u32, a2, a3, a4, a5),
         LINUX_SYS_CLONE => linux_clone(regs, a1, a2, a3, a4, a5),
+        LINUX_SYS_CLONE3 => linux_clone3(regs, a1, a2),
         LINUX_SYS_FORK => linux_fork(regs),
         LINUX_SYS_VFORK => linux_vfork(regs),
         LINUX_SYS_EXECVE => linux_execve(a1, a2, a3),
@@ -654,6 +657,7 @@ pub(crate) fn syscall_name(num: u32) -> &'static str {
         LINUX_SYS_PIPE2 => "pipe2",
         LINUX_SYS_GETRANDOM => "getrandom",
         LINUX_SYS_STATX => "statx",
+        LINUX_SYS_CLONE3 => "clone3",
         _ => "unknown-linux",
     }
 }

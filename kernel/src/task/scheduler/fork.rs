@@ -132,6 +132,7 @@ pub fn exec_update_thread(tid: u32, new_pd: PhysAddr, brk: u64, user_pages: u32)
         thread.context.set_page_table(new_pd.as_u64());
         thread.brk = brk;
         thread.brk_start = brk;
+        thread.pd_shared = false;
         // Linux clears clear_child_tid across execve; otherwise the exiting
         // replacement image can corrupt four bytes at a stale TLS address.
         thread.linux_clear_child_tid = 0;

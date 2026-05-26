@@ -224,6 +224,15 @@ const ATTR_ARCHIVE: u16 = 0x0020;
 /// Custom symlink attribute (bit 10, unused by exFAT spec).
 const ATTR_SYMLINK: u16 = 0x0400;
 
+#[inline]
+fn align_up_u64(value: u64, align: u64) -> u64 {
+    if align == 0 {
+        value
+    } else {
+        value.saturating_add(align - 1) / align * align
+    }
+}
+
 // =====================================================================
 // exFAT timestamp conversion
 // =====================================================================
@@ -523,6 +532,8 @@ pub struct ExFatReadPlan {
 }
 
 impl ExFatReadPlan {
+    const PREFETCH_CHUNK_SECTORS: u32 = 64;
+
     /// Execute the read plan — reads sectors from storage.
     /// **Must be called WITHOUT the VFS lock held.**
     pub fn execute(&self) -> Result<Vec<u8>, FsError> {
@@ -620,6 +631,63 @@ impl ExFatReadPlan {
         }
 
         Ok(copied)
+    }
+
+    /// Opportunistically read a byte range into the global block cache.
+    ///
+    /// Prefetch is deliberately best-effort: I/O failure or a short plan stops
+    /// the prefetch, but never changes the caller-visible read result.
+    pub fn prefetch_range(&self, file_offset: u64, len: usize) {
+        if len == 0 || file_offset >= self.file_size {
+            return;
+        }
+
+        let prefetch_start = align_up_u64(file_offset, 512);
+        let prefetch_end = align_up_u64(
+            file_offset.saturating_add(len as u64).min(self.file_size),
+            512,
+        );
+        if prefetch_start >= prefetch_end {
+            return;
+        }
+
+        let chunk_bytes = Self::PREFETCH_CHUNK_SECTORS as usize * 512;
+        let mut scratch = vec![0u8; chunk_bytes];
+        let mut run_file_start = self.base_offset;
+
+        for &(abs_lba, sector_count) in &self.runs {
+            let run_bytes = sector_count as u64 * 512;
+            let run_file_end = run_file_start + run_bytes;
+
+            if run_file_end <= prefetch_start {
+                run_file_start = run_file_end;
+                continue;
+            }
+            if run_file_start >= prefetch_end {
+                break;
+            }
+
+            let overlap_start = prefetch_start.max(run_file_start);
+            let overlap_end = prefetch_end.min(run_file_end);
+            let first_sector = ((overlap_start - run_file_start) / 512) as u32;
+            let sectors = ((overlap_end - overlap_start) / 512) as u32;
+            let mut done = 0u32;
+            while done < sectors {
+                let batch = (sectors - done).min(Self::PREFETCH_CHUNK_SECTORS);
+                let bytes = batch as usize * 512;
+                if !disk_read_sectors(
+                    self.disk_id,
+                    abs_lba + first_sector + done,
+                    batch,
+                    &mut scratch[..bytes],
+                ) {
+                    return;
+                }
+                done += batch;
+            }
+
+            run_file_start = run_file_end;
+        }
     }
 
     /// Execute a sector-aligned overwrite into an existing file range.

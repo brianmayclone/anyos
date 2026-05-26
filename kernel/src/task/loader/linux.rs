@@ -535,6 +535,13 @@ fn load_linux_image_into_pd(
         entry_point = interp_result.entry;
         linux_elf.interp_base = interp_load_bias;
         total_user_pages += interp_result.pages_mapped;
+        crate::serial_verbose_println!(
+            "lxe loader: PT_INTERP '{}' entry={:#x} base={:#x} pages={}",
+            interp_path,
+            entry_point,
+            interp_load_bias,
+            interp_result.pages_mapped
+        );
     }
 
     let stack_top = write_linux_initial_stack_vectors(
@@ -567,7 +574,9 @@ fn build_spawn_argv(path: &str, args: &str) -> alloc::vec::Vec<alloc::string::St
 
 fn default_envp() -> alloc::vec::Vec<alloc::string::String> {
     alloc::vec![
-        alloc::string::String::from("PATH=/usr/bin:/bin"),
+        alloc::string::String::from(
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        ),
         alloc::string::String::from("HOME=/root"),
         alloc::string::String::from("PWD=/"),
         alloc::string::String::from("TERM=xterm-256color"),
@@ -798,15 +807,21 @@ pub fn exec_current_linux_process(
     }
     crate::task::env::rekey_env(old_pd.0, new_pd.0);
 
+    #[cfg(target_arch = "x86_64")]
+    let new_cr3 = match crate::task::scheduler::current_thread_context_page_table() {
+        Some(cr3) if cr3 != 0 => cr3,
+        _ => new_pd.as_u64(),
+    };
+
     unsafe {
         #[cfg(target_arch = "x86_64")]
         {
-            let new_cr3 = match crate::task::scheduler::current_thread_context_page_table() {
-                Some(cr3) if cr3 != 0 => cr3,
-                _ => new_pd.as_u64(),
-            };
             core::arch::asm!("cli", options(nomem, nostack));
-            core::arch::asm!("mov cr3, {}", in(reg) new_cr3);
+            core::arch::asm!(
+                "mov cr3, {}",
+                in(reg) crate::memory::virtual_mem::kernel_cr3(),
+                options(nostack)
+            );
             crate::arch::x86::power::wrmsr(0xC000_0100, 0);
         }
         #[cfg(target_arch = "aarch64")]
@@ -822,6 +837,7 @@ pub fn exec_current_linux_process(
 
     #[cfg(target_arch = "x86_64")]
     unsafe {
+        core::arch::asm!("mov cr3, {}", in(reg) new_cr3, options(nostack));
         jump_to_user_mode(result.entry, result.stack_top)
     }
 

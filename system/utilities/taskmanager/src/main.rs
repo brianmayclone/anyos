@@ -343,6 +343,9 @@ fn wire_events() {
                 let name_len = task.name_len.min(name.len());
                 name[..name_len].copy_from_slice(&task.name[..name_len]);
 
+                let name = core::str::from_utf8(&name[..name_len]).unwrap_or("");
+                let killable = tid > 3 && !name.starts_with("idle/") && dr.kind != 1;
+                set_selected_task(a, tid, killable);
                 if dr.kind == 1 {
                     if let Some(pos) = a.expanded_leaders.iter().position(|&t| t == tid) {
                         a.expanded_leaders.remove(pos);
@@ -351,9 +354,6 @@ fn wire_events() {
                     }
                     update_process_grid(a);
                 }
-                let name = core::str::from_utf8(&name[..name_len]).unwrap_or("");
-                let killable = tid > 3 && !name.starts_with("idle/") && dr.kind != 1;
-                set_selected_task(a, tid, killable);
             }
         }
     });
@@ -1253,6 +1253,8 @@ fn update_process_grid(a: &mut AppState) {
             }
         }
     }
+
+    restore_process_grid_selection(a);
 }
 
 fn draw_top_io_processes(a: &AppState, x: i32, y: i32, _w: u32) {
@@ -1406,6 +1408,39 @@ fn set_selected_task(a: &mut AppState, tid: u32, killable: bool) {
     a.selected_tid = tid;
     a.kill_btn.set_enabled(killable);
     a.focus_btn.set_enabled(tid != INVALID_TID);
+}
+
+fn restore_process_grid_selection(a: &mut AppState) {
+    if a.selected_tid == INVALID_TID {
+        a.proc_grid.set_selected_row(u32::MAX);
+        return;
+    }
+
+    if let Some((row, killable)) = process_row_for_tid(a, a.selected_tid) {
+        a.proc_grid.set_selected_row(row);
+        set_selected_task(a, a.selected_tid, killable);
+    } else {
+        set_selected_task(a, INVALID_TID, false);
+        a.proc_grid.set_selected_row(u32::MAX);
+    }
+}
+
+fn process_row_for_tid(a: &AppState, tid: u32) -> Option<(u32, bool)> {
+    for (ri, dr) in a.display_rows.iter().enumerate() {
+        let task_idx = dr.task_idx as usize;
+        if task_idx >= a.tasks.len() {
+            continue;
+        }
+        let task = &a.tasks[task_idx];
+        if task.tid != tid {
+            continue;
+        }
+
+        let name = core::str::from_utf8(&task.name[..task.name_len]).unwrap_or("");
+        let killable = tid > 3 && !name.starts_with("idle/") && dr.kind != 1;
+        return Some((ri as u32, killable));
+    }
+    None
 }
 
 fn validate_selected_task(a: &mut AppState) {

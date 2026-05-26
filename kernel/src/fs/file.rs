@@ -85,6 +85,38 @@ pub struct OpenFile {
     /// visible file offset or size.
     pub append_buffer_offset: u32,
     pub append_buffer: Vec<u8>,
+    /// Sequential read-ahead state for files whose backend can cheaply build
+    /// sector plans outside the VFS lock.
+    pub readahead: ReadAheadState,
+}
+
+/// Per-open-file read-ahead state.
+///
+/// This belongs to the open file description, not the inode, so duplicated file
+/// descriptors share a sequential stream while independent opens do not poison
+/// each other's prediction state.
+#[derive(Debug, Clone, Copy)]
+pub struct ReadAheadState {
+    /// Offset expected for the next sequential read.
+    pub next_offset: u32,
+    /// Current adaptive window in bytes.
+    pub window_bytes: u32,
+    /// Highest file offset already scheduled for prefetch.
+    pub prefetched_until: u32,
+}
+
+impl ReadAheadState {
+    pub const fn new(position: u32) -> Self {
+        Self {
+            next_offset: position,
+            window_bytes: 0,
+            prefetched_until: position,
+        }
+    }
+
+    pub fn reset(&mut self, position: u32) {
+        *self = Self::new(position);
+    }
 }
 
 #[derive(Debug, Clone)]

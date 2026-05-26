@@ -283,31 +283,41 @@ pub(super) fn linux_pipe2(pipefd_ptr: u64, linux_flags: u64) -> u64 {
 
 pub(super) fn linux_lseek(fd: u32, offset: u64, whence: u64) -> u64 {
     if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
-        if let crate::fs::fd_table::FdKind::LinuxProc {
-            file,
-            pid,
-            position,
-        } = entry.kind
-        {
-            let size = linux_proc_content_len(file, pid) as i64;
-            let base = match whence {
-                0 => 0,
-                1 => position as i64,
-                2 => size,
-                _ => return linux_err(EINVAL),
-            };
-            let next = base.saturating_add(offset as i64);
-            if next < 0 || next > u32::MAX as i64 {
-                return linux_err(EINVAL);
+        match entry.kind {
+            crate::fs::fd_table::FdKind::File { .. } => {}
+            crate::fs::fd_table::FdKind::LinuxProc {
+                file,
+                pid,
+                position,
+            } => {
+                let size = linux_proc_content_len(file, pid) as i64;
+                let base = match whence {
+                    0 => 0,
+                    1 => position as i64,
+                    2 => size,
+                    _ => return linux_err(EINVAL),
+                };
+                let next = base.saturating_add(offset as i64);
+                if next < 0 || next > u32::MAX as i64 {
+                    return linux_err(EINVAL);
+                }
+                if !crate::task::scheduler::current_fd_set_linux_proc_position(fd, next as u32) {
+                    return linux_err(EBADF);
+                }
+                return next as u64;
             }
-            if !crate::task::scheduler::current_fd_set_linux_proc_position(fd, next as u32) {
-                return linux_err(EBADF);
+            crate::fs::fd_table::FdKind::LinuxFramebuffer { position } => {
+                return linux_fb_lseek(fd, position, offset, whence);
             }
-            return next as u64;
+            crate::fs::fd_table::FdKind::PipeRead { .. }
+            | crate::fs::fd_table::FdKind::PipeWrite { .. }
+            | crate::fs::fd_table::FdKind::Tty
+            | crate::fs::fd_table::FdKind::PtySlave { .. }
+            | crate::fs::fd_table::FdKind::LinuxSocket { .. } => return linux_err(ESPIPE),
+            crate::fs::fd_table::FdKind::None => return linux_err(EBADF),
         }
-        if let crate::fs::fd_table::FdKind::LinuxFramebuffer { position } = entry.kind {
-            return linux_fb_lseek(fd, position, offset, whence);
-        }
+    } else {
+        return linux_err(EBADF);
     }
     anyos_u32_ret(handlers::sys_lseek(fd, offset as u32, whence as u32))
 }
