@@ -98,7 +98,12 @@ pub(super) fn linux_newfstatat(dirfd: i32, path_ptr: u64, stat_ptr: u64, flags: 
     linux_stat_translated(&path, stat_ptr, (flags & LINUX_AT_SYMLINK_NOFOLLOW) != 0)
 }
 
-pub(super) fn linux_access(path_ptr: u64, _mode: u64) -> u64 {
+pub(super) fn linux_access(path_ptr: u64, mode: u64) -> u64 {
+    const ACCESS_MODE_MASK: u64 = 0x7; // R_OK | W_OK | X_OK
+
+    if (mode & !ACCESS_MODE_MASK) != 0 {
+        return linux_err(EINVAL);
+    }
     let raw_path = match super::handlers::helpers::read_user_str_safe(path_ptr) {
         Some(path) => path,
         None => return linux_err(EFAULT),
@@ -118,12 +123,7 @@ pub(super) fn linux_access(path_ptr: u64, _mode: u64) -> u64 {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
-    match crate::fs::vfs::stat(&resolved) {
-        Ok(_) => 0,
-        Err(crate::fs::vfs::FsError::NotFound) => linux_err(ENOENT),
-        Err(crate::fs::vfs::FsError::PermissionDenied) => linux_err(EACCES),
-        Err(e) => linux_fs_err(e),
-    }
+    linux_access_translated(&resolved, mode, true)
 }
 
 pub(super) fn linux_open_linux_path(path: &str, linux_flags: u64) -> u64 {
@@ -981,7 +981,15 @@ pub(super) fn linux_unlink_path(path_ptr: u64) -> u64 {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
-    linux_unlink_translated(&path)
+    linux_unlink_translated(&path, false)
+}
+
+pub(super) fn linux_rmdir_path(path_ptr: u64) -> u64 {
+    let path = match linux_translate_user_path(path_ptr) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    linux_unlink_translated(&path, true)
 }
 
 pub(super) fn linux_unlinkat(dirfd: i32, path_ptr: u64, flags: u64) -> u64 {
@@ -992,16 +1000,37 @@ pub(super) fn linux_unlinkat(dirfd: i32, path_ptr: u64, flags: u64) -> u64 {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
-    linux_unlink_translated(&path)
+    linux_unlink_translated(&path, (flags & LINUX_AT_REMOVEDIR) != 0)
 }
 
-pub(super) fn linux_unlink_translated(path: &str) -> u64 {
+pub(super) fn linux_unlink_translated(path: &str, remove_dir: bool) -> u64 {
     if linux_is_protected_rootfs_path(path) {
         crate::serial_verbose_println!(
             "lxe linux unlink: blocked protected rootfs path '{}'",
             path
         );
         return linux_err(EBUSY);
+    }
+    match crate::fs::vfs::lstat(path) {
+        Ok(st) => {
+            let is_dir = st.file_type == crate::fs::file::FileType::Directory && !st.is_symlink;
+            if remove_dir {
+                if !is_dir {
+                    let ret = linux_err(ENOTDIR);
+                    trace::trace_path_op("rmdir", path, None, ret);
+                    return ret;
+                }
+            } else if is_dir {
+                let ret = linux_err(EISDIR);
+                trace::trace_path_op("unlink", path, None, ret);
+                return ret;
+            }
+        }
+        Err(e) => {
+            let ret = linux_fs_err(e);
+            trace::trace_path_op(if remove_dir { "rmdir" } else { "unlink" }, path, None, ret);
+            return ret;
+        }
     }
     let ret = match crate::fs::vfs::delete(path) {
         Ok(()) => {
@@ -1010,7 +1039,7 @@ pub(super) fn linux_unlink_translated(path: &str) -> u64 {
         }
         Err(e) => linux_fs_err(e),
     };
-    trace::trace_path_op("unlink", path, None, ret);
+    trace::trace_path_op(if remove_dir { "rmdir" } else { "unlink" }, path, None, ret);
     ret
 }
 
@@ -1327,11 +1356,76 @@ fn linux_faccessat_impl(dirfd: i32, path_ptr: u64, mode: u64, flags: u64) -> u64
         crate::fs::vfs::lstat(&resolved)
     };
     match ret {
-        Ok(_) => {
-            let _ = mode;
-            0
-        }
+        Ok(st) => linux_check_access(&st, mode),
         Err(e) => linux_fs_err(e),
+    }
+}
+
+fn linux_access_translated(path: &str, mode: u64, follow_last: bool) -> u64 {
+    let ret = if follow_last {
+        crate::fs::vfs::stat(path)
+    } else {
+        crate::fs::vfs::lstat(path)
+    };
+    match ret {
+        Ok(st) => linux_check_access(&st, mode),
+        Err(crate::fs::vfs::FsError::NotFound) => linux_err(ENOENT),
+        Err(crate::fs::vfs::FsError::PermissionDenied) => linux_err(EACCES),
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+fn linux_check_access(st: &crate::fs::vfs::StatResult, mode: u64) -> u64 {
+    const X_OK: u64 = 1;
+    const W_OK: u64 = 2;
+    const R_OK: u64 = 4;
+
+    if mode == 0 {
+        return 0;
+    }
+
+    let type_val = if st.is_symlink {
+        3
+    } else {
+        match st.file_type {
+            crate::fs::file::FileType::Directory => 1,
+            crate::fs::file::FileType::Device => 2,
+            _ => 0,
+        }
+    };
+    let bits = linux_visible_mode(type_val, st.mode as u32);
+    let uid = crate::task::scheduler::current_thread_uid();
+    let gid = crate::task::scheduler::current_thread_gid();
+
+    if uid == 0 {
+        if (mode & X_OK) != 0 && (bits & 0o111) == 0 {
+            return linux_err(EACCES);
+        }
+        return 0;
+    }
+
+    let shift = if uid == st.uid {
+        6
+    } else if gid == st.gid {
+        3
+    } else {
+        0
+    };
+    let class_bits = (bits >> shift) & 0o7;
+    let mut required = 0u32;
+    if (mode & R_OK) != 0 {
+        required |= 0o4;
+    }
+    if (mode & W_OK) != 0 {
+        required |= 0o2;
+    }
+    if (mode & X_OK) != 0 {
+        required |= 0o1;
+    }
+    if (class_bits & required) == required {
+        0
+    } else {
+        linux_err(EACCES)
     }
 }
 

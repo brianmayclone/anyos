@@ -421,7 +421,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_FCHDIR => linux_fchdir(a1 as u32),
         LINUX_SYS_RENAME => linux_rename(a1, a2),
         LINUX_SYS_MKDIR => linux_mkdir(a1, a2),
-        LINUX_SYS_RMDIR => linux_unlink_path(a1),
+        LINUX_SYS_RMDIR => linux_rmdir_path(a1),
         LINUX_SYS_CREAT => linux_creat(a1),
         LINUX_SYS_LINK => linux_link(a1, a2),
         LINUX_SYS_UNLINK => linux_unlink_path(a1),

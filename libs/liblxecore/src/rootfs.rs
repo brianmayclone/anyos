@@ -36,6 +36,7 @@ pub(crate) fn ensure_rootfs_layout(config: &LxeConfig) {
     ensure_dir(&alloc::format!("{}/etc/pam.d", rootfs));
     ensure_dir(&alloc::format!("{}/root", rootfs));
     ensure_linux_apt_dirs(rootfs);
+    cleanup_dpkg_temp_state(rootfs);
     let apt_keyring = "/usr/share/keyrings/debian-archive-keyring.gpg";
     let apt_security_base = debian_security_base(&config.apt_base);
     let _ = write_bytes_atomic(
@@ -68,6 +69,7 @@ deb [signed-by={}] {} {}-security {}\n",
     ensure_linux_network_files(rootfs);
     ensure_linux_timezone_files(rootfs);
     ensure_linux_terminal_files(rootfs);
+    ensure_linux_dpkg_helper_modes(rootfs);
 }
 
 fn reset_apt_binary_cache_once(rootfs: &str) {
@@ -217,6 +219,60 @@ fn ensure_linux_apt_dirs(rootfs: &str) {
     ensure_rootfs_file(rootfs, "/var/lib/dpkg/available", b"", 0o644);
 }
 
+fn cleanup_dpkg_temp_state(rootfs: &str) {
+    for linux_path in ["/var/lib/dpkg/tmp.ci", "/var/lib/dpkg/reassemble.deb"] {
+        remove_tree(&linux_path_in_rootfs(rootfs, linux_path), 0);
+    }
+}
+
+fn remove_tree(path: &str, depth: u32) {
+    if depth > 32 {
+        return;
+    }
+    let mut stat_buf = [0u32; 7];
+    if fs::lstat(path, &mut stat_buf) != 0 {
+        return;
+    }
+    let is_dir = stat_buf[0] == FS_TYPE_DIRECTORY && (stat_buf[2] & 1) == 0;
+    if is_dir {
+        let mut buf = [0u8; fs::READDIR_LONG_ENTRY_SIZE * 96];
+        loop {
+            let count = fs::readdir_long(path, &mut buf);
+            if count == u32::MAX {
+                break;
+            }
+
+            let mut removed = 0u32;
+            let max_entries = (count as usize).min(buf.len() / fs::READDIR_LONG_ENTRY_SIZE);
+            for idx in 0..max_entries {
+                let off = idx * fs::READDIR_LONG_ENTRY_SIZE;
+                let name_len = u16::from_le_bytes([buf[off + 2], buf[off + 3]]) as usize;
+                if name_len == 0 || name_len > 256 {
+                    continue;
+                }
+                let name_start = off + 8;
+                let name_end = name_start + name_len;
+                let Ok(name) = core::str::from_utf8(&buf[name_start..name_end]) else {
+                    continue;
+                };
+                if name == "." || name == ".." {
+                    continue;
+                }
+                let child = alloc::format!("{}/{}", path, name);
+                remove_tree(&child, depth + 1);
+                if fs::lstat(&child, &mut [0u32; 7]) != 0 {
+                    removed += 1;
+                }
+            }
+
+            if removed == 0 || count as usize <= max_entries {
+                break;
+            }
+        }
+    }
+    let _ = fs::unlink(path);
+}
+
 fn ensure_linux_network_files(rootfs: &str) {
     ensure_rootfs_file(
         rootfs,
@@ -302,8 +358,21 @@ fn ensure_linux_terminal_files(rootfs: &str) {
     ensure_dir_recursive(&linux_path_in_rootfs(rootfs, "/etc/profile.d"));
     ensure_rootfs_file(
         rootfs,
+        "/etc/profile.d/anyos-path.sh",
+        b"case \":$PATH:\" in *:/usr/local/sbin:*) ;; *) PATH=\"/usr/local/sbin:$PATH\" ;; esac\ncase \":$PATH:\" in *:/usr/sbin:*) ;; *) PATH=\"$PATH:/usr/sbin\" ;; esac\ncase \":$PATH:\" in *:/sbin:*) ;; *) PATH=\"$PATH:/sbin\" ;; esac\nexport PATH\n",
+        0o644,
+    );
+    ensure_rootfs_file(
+        rootfs,
         "/etc/profile.d/anyos-term.sh",
         b"case \"$TERM\" in\n  \"\"|anyos|unknown|xterm-256-color) export TERM=xterm-256color ;;\nesac\n",
+        0o644,
+    );
+    ensure_rootfs_line(
+        rootfs,
+        "/etc/bash.bashrc",
+        "# anyOS LXE PATH",
+        "# anyOS LXE PATH\ncase \":$PATH:\" in *:/usr/local/sbin:*) ;; *) PATH=\"/usr/local/sbin:$PATH\" ;; esac\ncase \":$PATH:\" in *:/usr/sbin:*) ;; *) PATH=\"$PATH:/usr/sbin\" ;; esac\ncase \":$PATH:\" in *:/sbin:*) ;; *) PATH=\"$PATH:/sbin\" ;; esac\nexport PATH\n",
         0o644,
     );
     ensure_rootfs_line(
@@ -319,6 +388,30 @@ fn ensure_linux_terminal_files(rootfs: &str) {
     if path_exists_no_follow(&canonical) && !path_exists_no_follow(&dashed) {
         ensure_parent_dirs(&dashed);
         let _ = fs::symlink("xterm-256color", &dashed);
+    }
+}
+
+fn ensure_linux_dpkg_helper_modes(rootfs: &str) {
+    for linux_path in [
+        "/usr/bin/dpkg",
+        "/usr/bin/dpkg-deb",
+        "/usr/bin/dpkg-divert",
+        "/usr/bin/dpkg-fsys-usrunmess",
+        "/usr/bin/dpkg-maintscript-helper",
+        "/usr/bin/dpkg-query",
+        "/usr/bin/dpkg-realpath",
+        "/usr/bin/dpkg-split",
+        "/usr/bin/dpkg-statoverride",
+        "/usr/bin/dpkg-trigger",
+        "/usr/sbin/dpkg-preconfigure",
+        "/usr/sbin/dpkg-reconfigure",
+        "/usr/sbin/start-stop-daemon",
+        "/sbin/start-stop-daemon",
+    ] {
+        let path = linux_path_in_rootfs(rootfs, linux_path);
+        if path_exists_no_follow(&path) {
+            let _ = fs::chmod(&path, 0o755);
+        }
     }
 }
 
