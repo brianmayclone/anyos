@@ -286,6 +286,92 @@ fn cleanup_killed_children(children: &[TerminatedChildCleanup]) {
     }
 }
 
+/// Linux execve() replaces the whole thread group.  Our LXE pthreads are
+/// represented as scheduler threads sharing one page directory; if the execing
+/// thread destroys that old page directory while a sibling is still queued or
+/// running, the sibling can execute through freed page tables.
+///
+/// Returns true when the caller may immediately destroy `old_pd`.  If any
+/// sibling was observed running on another CPU, the caller must leave the old
+/// address space intact; the sibling has been marked terminated and kicked, but
+/// may not have left userspace yet.
+pub fn terminate_exec_siblings(current_tid: u32, old_pd: PhysAddr) -> bool {
+    let tick = crate::arch::hal::timer_current_ticks();
+    let mut cleanup_tids = alloc::vec::Vec::new();
+    let mut kick_cpus = alloc::vec::Vec::new();
+    let mut saw_running_sibling = false;
+
+    {
+        let mut guard = SCHEDULER.lock();
+        let sched = match guard.as_mut() {
+            Some(s) => s,
+            None => return true,
+        };
+
+        let mut idx = 0usize;
+        while idx < sched.threads.len() {
+            let should_kill = {
+                let thread = &sched.threads[idx];
+                thread.tid != current_tid
+                    && thread.page_directory == Some(old_pd)
+                    && !thread.is_idle
+                    && !sched.is_idle_tid(thread.tid)
+                    && thread.state != ThreadState::Terminated
+            };
+            if !should_kill {
+                idx += 1;
+                continue;
+            }
+
+            let tid = sched.threads[idx].tid;
+            for (cpu_id, cpu) in sched.per_cpu.iter().enumerate() {
+                if cpu.current_tid == Some(tid) {
+                    saw_running_sibling = true;
+                    if !kick_cpus.contains(&cpu_id) {
+                        kick_cpus.push(cpu_id);
+                    }
+                }
+            }
+
+            sched.remove_from_all_queues(tid);
+            let waiter = sched.threads[idx].exit_waiter_tid;
+            sched.threads[idx].state = ThreadState::Terminated;
+            sched.threads[idx].exit_code = Some(9);
+            sched.threads[idx].terminated_at_tick = Some(tick);
+            sched.threads[idx].page_directory = None;
+            sched.threads[idx].exit_waiter_tid = None;
+            sched.threads[idx].retain_exit_status = false;
+            sched.threads[idx].parent_tid = 0;
+            if let Some(waiter_tid) = waiter {
+                sched.wake_thread_inner(waiter_tid);
+            }
+            cleanup_tids.push(tid);
+            idx += 1;
+        }
+    }
+
+    for cpu in kick_cpus {
+        kick_resched_cpu(cpu);
+    }
+    for tid in cleanup_tids.iter().copied() {
+        cleanup_thread_resources(tid);
+    }
+    if !cleanup_tids.is_empty() {
+        crate::serial_verbose_println!(
+            "lxe execve: terminated {} sibling thread(s) sharing old pd={:#x}{}",
+            cleanup_tids.len(),
+            old_pd.as_u64(),
+            if saw_running_sibling {
+                " (old pd retained: sibling still running)"
+            } else {
+                ""
+            }
+        );
+    }
+
+    !saw_running_sibling
+}
+
 fn defer_fault_exit_cleanup(
     current_tid: u32,
     current_code: u32,

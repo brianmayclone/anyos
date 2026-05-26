@@ -8,6 +8,7 @@ use anyos_std::{
 
 const FS_TYPE_REGULAR: u32 = 0;
 const FS_TYPE_DIRECTORY: u32 = 1;
+const COPY_CHUNK: usize = 128 * 1024;
 const LXE_APT_UID: u16 = 100;
 const LXE_ROOT_GID: u16 = 0;
 const UTC_TZIF: &[u8] = b"TZif\0\
@@ -738,7 +739,7 @@ pub(crate) fn copy_file(src: &str, dst: &str) -> bool {
     ensure_parent_dirs(dst);
     let temp = temp_file_path(dst);
     let _ = fs::unlink(&temp);
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; COPY_CHUNK];
     let mut copied = 0u32;
     let copied_all = {
         let mut output = match fs::File::create(&temp) {

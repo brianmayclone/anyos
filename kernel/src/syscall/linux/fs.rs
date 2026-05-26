@@ -1197,22 +1197,30 @@ pub(super) fn linux_futimesat(dirfd: i32, path_ptr: u64, times_ptr: u64) -> u64 
             }
         }
     }
+    if path_ptr == 0 {
+        return match linux_fd_path(dirfd as u32) {
+            Ok(path) => match crate::fs::vfs::stat(&path) {
+                Ok(_) => 0,
+                Err(e) => linux_fs_err(e),
+            },
+            Err(errno) => linux_err(errno),
+        };
+    }
+
     let path = match linux_translate_at_path(dirfd, path_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
-    match crate::fs::vfs::stat(&path) {
-        Ok(_) => 0,
-        Err(e) => linux_fs_err(e),
-    }
+    linux_utime_path(&path, false)
 }
 
 pub(super) fn linux_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u64) -> u64 {
     const AT_SYMLINK_NOFOLLOW: u64 = LINUX_AT_SYMLINK_NOFOLLOW;
+    const AT_EMPTY_PATH: u64 = LINUX_AT_EMPTY_PATH;
     const UTIME_NOW: i64 = 1_073_741_823;
     const UTIME_OMIT: i64 = 1_073_741_822;
 
-    if (flags & !AT_SYMLINK_NOFOLLOW) != 0 {
+    if (flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) != 0 {
         return linux_err(EINVAL);
     }
     if times_ptr != 0 {
@@ -1231,11 +1239,36 @@ pub(super) fn linux_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: 
             }
         }
     }
+    if path_ptr == 0 {
+        return match linux_fd_path(dirfd as u32) {
+            Ok(path) => linux_utime_path(&path, false),
+            Err(errno) => linux_err(errno),
+        };
+    }
+
+    let raw_path = match super::handlers::helpers::read_user_str_safe(path_ptr) {
+        Some(path) => path,
+        None => return linux_err(EFAULT),
+    };
+    if raw_path.is_empty() && (flags & AT_EMPTY_PATH) != 0 {
+        return match linux_fd_path(dirfd as u32) {
+            Ok(path) => linux_utime_path(&path, false),
+            Err(errno) => linux_err(errno),
+        };
+    }
+    if raw_path.is_empty() {
+        return linux_err(ENOENT);
+    }
+
     let path = match linux_translate_at_path(dirfd, path_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
-    let ret = if (flags & AT_SYMLINK_NOFOLLOW) != 0 {
+    linux_utime_path(&path, (flags & AT_SYMLINK_NOFOLLOW) != 0)
+}
+
+fn linux_utime_path(path: &str, nofollow: bool) -> u64 {
+    let ret = if nofollow {
         crate::fs::vfs::lstat(&path)
     } else {
         crate::fs::vfs::stat(&path)

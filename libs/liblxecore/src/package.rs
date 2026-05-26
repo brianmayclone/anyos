@@ -17,6 +17,7 @@ use anyos_std::{
 
 const FS_TYPE_DIRECTORY: u32 = 1;
 const DOWNLOAD_PROGRESS_STEP: u32 = 512 * 1024;
+const FILE_SCAN_CHUNK: usize = 128 * 1024;
 
 static mut DOWNLOAD_LAST_PRINT: u32 = 0;
 static mut APT_INDEX_READY: bool = false;
@@ -1326,7 +1327,7 @@ fn find_package_in_index(config: &LxeConfig, wanted: &str) -> Option<PackageInfo
             return find_package_in_compressed_index(config, wanted);
         }
     };
-    let mut chunk = [0u8; 4096];
+    let mut chunk = [0u8; FILE_SCAN_CHUNK];
     let mut para = Vec::with_capacity(1024);
     let mut newline_run = 0usize;
 
@@ -2499,7 +2500,7 @@ fn read_gzip_trailer(path: &str, size: u32) -> Option<(u32, u32)> {
 fn compressed_file_crc32(path: &str) -> Option<u32> {
     let mut file = fs::File::open(path).ok()?;
     let mut crc = 0xffff_ffffu32;
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; FILE_SCAN_CHUNK];
     loop {
         let n = file.read(&mut buf).ok()?;
         if n == 0 {
@@ -2726,7 +2727,7 @@ fn missing_required_package_names(path: &str, required: &[String]) -> Vec<String
         Ok(file) => file,
         Err(_) => return clone_package_names(required),
     };
-    let mut chunk = [0u8; 4096];
+    let mut chunk = [0u8; FILE_SCAN_CHUNK];
     let mut para = Vec::with_capacity(1024);
     let mut newline_run = 0usize;
 
@@ -2810,7 +2811,7 @@ fn package_name_present(path: &str, package: &str) -> bool {
     at_start.extend_from_slice(package.as_bytes());
     at_start.push(b'\n');
 
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; FILE_SCAN_CHUNK];
     let mut window = Vec::new();
     let keep = pattern.len().max(at_start.len()).saturating_sub(1);
     let mut first = true;

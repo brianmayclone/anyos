@@ -5415,9 +5415,6 @@ pub fn truncate_to(path: &str, new_size: u32) -> Result<(), FsError> {
             return Ok(());
         }
         if mnt_fs_type == FsType::ExFat {
-            if new_size != 0 {
-                return Err(FsError::NotSupported);
-            }
             let exfat = state
                 .mounted_exfat
                 .iter_mut()
@@ -5431,7 +5428,7 @@ pub fn truncate_to(path: &str, new_size: u32) -> Result<(), FsError> {
                 return Err(FsError::NotADirectory);
             }
             let pc = crate::fs::exfat::decode_inode(pr_inode).0;
-            return exfat.truncate_file(pc, filename);
+            return exfat.truncate_file_to(pc, filename, new_size);
         }
         if new_size != 0 {
             return Err(FsError::NotSupported);
@@ -5449,6 +5446,18 @@ pub fn truncate_to(path: &str, new_size: u32) -> Result<(), FsError> {
     }
 
     // --- Generic root-FS dispatch (Phase 6 Step 6). ---
+    if state.root_fs_type == Some(FsType::ExFat) {
+        let exfat_drv = state.exfat_fs.as_ref().ok_or(FsError::IoError)?;
+        let mut exfat = exfat_drv.lock_inner();
+        let (parent_path, filename) = split_parent_name(path)?;
+        let parent = resolve_exfat_path(&exfat, parent_path, true)?;
+        if parent.file_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+        let pc = crate::fs::exfat::decode_inode(parent.inode).0;
+        return exfat.truncate_file_to(pc, filename, new_size);
+    }
+
     let root = state.root_fs().ok_or(FsError::IoError)?;
     if new_size == 0 {
         return root.truncate_by_path(path);
@@ -5463,6 +5472,66 @@ pub fn truncate_to(path: &str, new_size: u32) -> Result<(), FsError> {
 /// Resize an open file description.
 pub fn ftruncate_to(slot_id: FileDescriptor, new_size: u32) -> Result<(), FsError> {
     flush_exfat_append_buffer(slot_id)?;
+    let exfat_plan = {
+        let vfs = vfs_lock();
+        let state = vfs.as_ref().ok_or(FsError::IoError)?;
+        let file = state
+            .open_files
+            .get(slot_id as usize)
+            .and_then(|e| e.as_ref())
+            .ok_or(FsError::BadFd)?;
+        if file.file_type == FileType::Directory {
+            return Err(FsError::IsADirectory);
+        }
+        if !file.flags.write {
+            return Err(FsError::BadFd);
+        }
+        let driver = match file.fs_id {
+            3 => state.exfat_fs.as_ref().map(Arc::clone),
+            6 => state.mounted_exfat_handle_for_path(&file.path),
+            _ => None,
+        };
+        driver.map(|driver| {
+            let filename = file.path.rsplit('/').next().unwrap_or("");
+            (
+                driver,
+                file.path.clone(),
+                String::from(filename),
+                file.parent_cluster,
+                file.inode,
+                file.size,
+            )
+        })
+    };
+
+    if let Some((driver, path, filename, parent_cluster, inode, old_size)) = exfat_plan {
+        if filename.is_empty() {
+            return Err(FsError::InvalidPath);
+        }
+        let new_inode = {
+            let mut exfat = driver.lock_inner();
+            exfat.truncate_open_file_to(parent_cluster, &filename, inode, old_size, new_size)?
+        };
+        let mut vfs = vfs_lock();
+        let state = vfs.as_mut().ok_or(FsError::IoError)?;
+        let file = state
+            .open_files
+            .get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
+            .ok_or(FsError::BadFd)?;
+        if file.path == path {
+            file.inode = new_inode;
+            file.size = new_size;
+            file.entry_dirty = false;
+            file.readahead.reset(file.position);
+            if new_size == 0 {
+                file.seek_cache_offset = 0;
+                file.seek_cache_cluster = 0;
+            }
+        }
+        return Ok(());
+    }
+
     let (path, fs_id) = {
         let vfs = vfs_lock();
         let state = vfs.as_ref().ok_or(FsError::IoError)?;

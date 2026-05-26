@@ -792,6 +792,7 @@ pub fn exec_current_linux_process(
     close_current_cloexec_fds();
 
     crate::task::scheduler::current_signal_reset_caught_for_exec();
+    let old_pd_can_destroy = crate::task::scheduler::terminate_exec_siblings(tid, old_pd);
     crate::task::scheduler::exec_update_thread(tid, new_pd, result.brk, result.user_pages);
     crate::task::scheduler::set_thread_mmap_next(tid, mmap_start);
     crate::task::scheduler::set_thread_abi(tid, crate::task::abi::AbiPersonality::LinuxX86_64);
@@ -832,8 +833,16 @@ pub fn exec_current_linux_process(
         }
     }
 
-    crate::memory::vma::destroy_process(old_pd);
-    virtual_mem::destroy_user_page_directory(old_pd);
+    if old_pd_can_destroy {
+        crate::memory::vma::destroy_process(old_pd);
+        virtual_mem::destroy_user_page_directory(old_pd);
+    } else {
+        crate::serial_verbose_println!(
+            "lxe execve: retained old pd={:#x} after exec of '{}' to avoid cross-CPU page-table UAF",
+            old_pd.as_u64(),
+            load_path
+        );
+    }
 
     #[cfg(target_arch = "x86_64")]
     unsafe {

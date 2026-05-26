@@ -615,7 +615,8 @@ pub(super) fn linux_wait4(
         return linux_err(ECHILD);
     };
 
-    if log_wait4 || (child_tid != u32::MAX && child_tid != u32::MAX - 1) {
+    let still_running = child_tid == u32::MAX - 1 || code == u32::MAX - 1;
+    if log_wait4 || (!still_running && child_tid != u32::MAX) {
         crate::serial_verbose_println!(
             "lxe linux wait4: result tid={} pid={} -> child={} code={}",
             crate::task::scheduler::current_tid(),
@@ -642,12 +643,13 @@ pub(super) fn linux_wait4(
         }
         return ret;
     }
-    if child_tid == u32::MAX - 1 || code == u32::MAX - 1 {
+    if still_running {
         if log_wait4 {
             crate::serial_verbose_println!(
-                "lxe linux wait4: WNOHANG-none tid={} pid={}",
+                "lxe linux wait4: WNOHANG-none tid={} pid={} child={}",
                 crate::task::scheduler::current_tid(),
-                pid
+                pid,
+                child_tid
             );
         }
         return 0;

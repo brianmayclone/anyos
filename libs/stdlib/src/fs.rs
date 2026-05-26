@@ -423,6 +423,8 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+const READ_TO_END_CHUNK: usize = 128 * 1024;
+
 /// Trait for types that can read bytes.
 pub trait Read {
     /// Read some bytes into `buf`. Returns the number of bytes read (0 = EOF).
@@ -431,13 +433,20 @@ pub trait Read {
     /// Read all bytes until EOF into a `Vec<u8>`.
     fn read_to_end(&mut self, out: &mut Vec<u8>) -> error::Result<usize> {
         let mut total = 0;
-        let mut tmp = [0u8; 1024];
         loop {
-            let n = self.read(&mut tmp)?;
+            let start = out.len();
+            out.resize(start + READ_TO_END_CHUNK, 0);
+            let n = match self.read(&mut out[start..]) {
+                Ok(n) => n,
+                Err(e) => {
+                    out.truncate(start);
+                    return Err(e);
+                }
+            };
+            out.truncate(start + n);
             if n == 0 {
                 break;
             }
-            out.extend_from_slice(&tmp[..n]);
             total += n;
         }
         Ok(total)

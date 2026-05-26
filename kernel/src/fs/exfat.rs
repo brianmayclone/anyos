@@ -3479,16 +3479,94 @@ impl ExFatFs {
         }
     }
 
-    /// Truncate a file to zero length.
-    pub fn truncate_file(&mut self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
+    /// Resize an open file and update its directory entry.
+    ///
+    /// `inode`/`old_size` may describe newer in-memory write state than the
+    /// directory entry currently on disk.  This matters for POSIX
+    /// `ftruncate()`: callers often write a replacement file and then trim it
+    /// to the final offset before the VFS has committed the exFAT stream entry.
+    pub fn truncate_open_file_to(
+        &mut self,
+        parent_cluster: u32,
+        name: &str,
+        inode: u32,
+        old_size: u32,
+        new_size: u32,
+    ) -> Result<u32, FsError> {
+        let (start_cluster, was_contiguous) = decode_inode(inode);
+
+        if new_size == 0 {
+            if start_cluster >= 2 {
+                self.free_chain(start_cluster, was_contiguous, old_size as u64)?;
+            }
+            self.update_entry(parent_cluster, name, 0, 0)?;
+            return Ok(0);
+        }
+
+        let mut current_inode = start_cluster;
+        if current_inode >= 2 && was_contiguous {
+            self.materialize_contiguous_chain(current_inode, old_size as u64)?;
+        }
+
+        if new_size <= old_size {
+            if current_inode < 2 {
+                return Err(FsError::IoError);
+            }
+            self.update_entry(parent_cluster, name, new_size, current_inode)?;
+            return Ok(current_inode);
+        }
+
+        let mut current_size = old_size;
+        let mut hint: Option<(u32, u32)> = None;
+        let chunk_len = (self.cluster_size() as usize).min(64 * 1024).max(1);
+        let zeros = vec![0u8; chunk_len];
+        while current_size < new_size {
+            let remaining = (new_size - current_size) as usize;
+            let write_len = remaining.min(zeros.len());
+            let (new_inode, new_file_size, hint_offset, hint_cluster) = self
+                .write_file_with_hint(
+                    current_inode,
+                    current_size,
+                    &zeros[..write_len],
+                    current_size,
+                    hint,
+                )?;
+            current_inode = new_inode;
+            current_size = new_file_size;
+            hint = Some((hint_offset, hint_cluster));
+        }
+
+        self.update_entry(parent_cluster, name, new_size, current_inode)?;
+        Ok(current_inode)
+    }
+
+    /// Truncate/extend a file to an arbitrary length.
+    pub fn truncate_file_to(
+        &mut self,
+        parent_cluster: u32,
+        name: &str,
+        new_size: u32,
+    ) -> Result<(), FsError> {
         let raw = self.read_dir_raw(parent_cluster)?;
         let found = self
             .find_entry_in_buf(&raw, name)
             .ok_or(FsError::NotFound)?;
-        if found.first_cluster >= 2 {
-            self.free_chain(found.first_cluster, found.contiguous, found.data_length)?;
+        if found.attributes & ATTR_DIRECTORY != 0 {
+            return Err(FsError::IsADirectory);
         }
-        self.update_entry(parent_cluster, name, 0, 0)
+        let old_size = if found.data_length > u32::MAX as u64 {
+            return Err(FsError::IoError);
+        } else {
+            found.data_length as u32
+        };
+        let inode = encode_inode(found.first_cluster, found.contiguous);
+        self.truncate_open_file_to(parent_cluster, name, inode, old_size, new_size)?;
+        Ok(())
+    }
+
+    /// Truncate a file to zero length.
+    pub fn truncate_file(&mut self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
+        self.truncate_file_to(parent_cluster, name, 0)
     }
 
     // =================================================================
