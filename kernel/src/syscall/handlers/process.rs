@@ -29,6 +29,7 @@ pub fn sys_exit(status: u32) -> u32 {
         unsafe {
             *(clear_child_tid as *mut u32) = 0;
         }
+        crate::syscall::linux::futex_wake_addr(clear_child_tid, 1);
     }
 
     // Close all open file descriptors and decref global resources.

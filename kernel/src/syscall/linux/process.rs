@@ -1,7 +1,35 @@
 use super::*;
+use crate::sync::spinlock::Spinlock;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 static WAIT4_DEBUG_SEQ: AtomicU32 = AtomicU32::new(0);
+
+const LINUX_FUTEX_WAIT_SLOTS: usize = 64;
+const LINUX_FUTEX_WAITERS_PER_SLOT: usize = 8;
+const LINUX_FUTEX_WAKE_BATCH: usize =
+    LINUX_FUTEX_WAIT_SLOTS * LINUX_FUTEX_WAITERS_PER_SLOT;
+
+const FUTEX_WAIT: u64 = 0;
+const FUTEX_WAKE: u64 = 1;
+const FUTEX_WAIT_BITSET: u64 = 9;
+const FUTEX_WAKE_BITSET: u64 = 10;
+const FUTEX_CMD_MASK: u64 = 0x7f;
+
+#[derive(Clone, Copy)]
+struct LinuxFutexSlot {
+    uaddr: u64,
+    tids: [u32; LINUX_FUTEX_WAITERS_PER_SLOT],
+}
+
+impl LinuxFutexSlot {
+    const EMPTY: Self = Self {
+        uaddr: 0,
+        tids: [0; LINUX_FUTEX_WAITERS_PER_SLOT],
+    };
+}
+
+static LINUX_FUTEX_WAITERS: Spinlock<[LinuxFutexSlot; LINUX_FUTEX_WAIT_SLOTS]> =
+    Spinlock::new([LinuxFutexSlot::EMPTY; LINUX_FUTEX_WAIT_SLOTS]);
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
@@ -1470,11 +1498,199 @@ pub(super) fn linux_setrlimit(resource: u64, limit_ptr: u64) -> u64 {
     0
 }
 
-pub(super) fn linux_futex(_uaddr: u64, op: u64, _val: u64) -> u64 {
-    let cmd = op & 0x7F;
+fn futex_read_u32(uaddr: u64) -> Result<u32, i32> {
+    if (uaddr & 0x3) != 0 {
+        return Err(EINVAL);
+    }
+    if !handlers::helpers::is_user_range_accessible(uaddr, 4) {
+        return Err(EFAULT);
+    }
+    Ok(unsafe { core::ptr::read_volatile(uaddr as *const u32) })
+}
+
+fn futex_add_waiter_locked(
+    slots: &mut [LinuxFutexSlot; LINUX_FUTEX_WAIT_SLOTS],
+    uaddr: u64,
+    tid: u32,
+) -> bool {
+    let mut target_idx = None;
+    let mut empty_idx = None;
+    for (idx, slot) in slots.iter().enumerate() {
+        if slot.uaddr == uaddr {
+            target_idx = Some(idx);
+            break;
+        }
+        if slot.uaddr == 0 && empty_idx.is_none() {
+            empty_idx = Some(idx);
+        }
+    }
+
+    let idx = match target_idx.or(empty_idx) {
+        Some(idx) => idx,
+        None => return false,
+    };
+    if slots[idx].uaddr == 0 {
+        slots[idx].uaddr = uaddr;
+    }
+
+    for waiter in slots[idx].tids.iter() {
+        if *waiter == tid {
+            return true;
+        }
+    }
+    for waiter in slots[idx].tids.iter_mut() {
+        if *waiter == 0 {
+            *waiter = tid;
+            return true;
+        }
+    }
+    false
+}
+
+fn futex_remove_waiter_locked(
+    slots: &mut [LinuxFutexSlot; LINUX_FUTEX_WAIT_SLOTS],
+    uaddr: u64,
+    tid: u32,
+) -> bool {
+    for slot in slots.iter_mut() {
+        if slot.uaddr != uaddr {
+            continue;
+        }
+        let mut removed = false;
+        for waiter in slot.tids.iter_mut() {
+            if *waiter == tid {
+                *waiter = 0;
+                removed = true;
+            }
+        }
+        if slot.tids.iter().all(|tid| *tid == 0) {
+            slot.uaddr = 0;
+        }
+        return removed;
+    }
+    false
+}
+
+pub(crate) fn futex_wake_addr(uaddr: u64, max_waiters: u32) -> u32 {
+    if uaddr == 0 || max_waiters == 0 {
+        return 0;
+    }
+
+    let limit = (max_waiters as usize).min(LINUX_FUTEX_WAKE_BATCH);
+    let mut tids = [0u32; LINUX_FUTEX_WAKE_BATCH];
+    let mut count = 0usize;
+    {
+        let mut slots = LINUX_FUTEX_WAITERS.lock();
+        for slot in slots.iter_mut() {
+            if slot.uaddr != uaddr {
+                continue;
+            }
+            for waiter in slot.tids.iter_mut() {
+                if *waiter != 0 && count < limit {
+                    tids[count] = *waiter;
+                    count += 1;
+                    *waiter = 0;
+                }
+            }
+            if slot.tids.iter().all(|tid| *tid == 0) {
+                slot.uaddr = 0;
+            }
+            break;
+        }
+    }
+
+    for tid in tids.iter().take(count) {
+        crate::task::scheduler::wake_thread(*tid);
+    }
+    count as u32
+}
+
+fn futex_relative_deadline(timeout_ptr: u64) -> Result<Option<u32>, i32> {
+    if timeout_ptr == 0 {
+        return Ok(None);
+    }
+    if !handlers::helpers::is_user_range_accessible(timeout_ptr, 16) {
+        return Err(EFAULT);
+    }
+    let sec = unsafe { core::ptr::read_unaligned(timeout_ptr as *const i64) };
+    let nsec = unsafe { core::ptr::read_unaligned((timeout_ptr + 8) as *const i64) };
+    if sec < 0 || !(0..1_000_000_000).contains(&nsec) {
+        return Err(EINVAL);
+    }
+
+    let hz = crate::arch::hal::timer_frequency_hz().max(1) as u128;
+    let ns = (sec as u128)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(nsec as u128);
+    let ticks = ns.saturating_mul(hz).saturating_add(999_999_999) / 1_000_000_000;
+    let ticks = ticks.min(u32::MAX as u128) as u32;
+    Ok(Some(
+        crate::arch::hal::timer_current_ticks().wrapping_add(ticks),
+    ))
+}
+
+fn linux_futex_wait(uaddr: u64, expected: u64, timeout_ptr: u64) -> u64 {
+    let expected = expected as u32;
+    match futex_read_u32(uaddr) {
+        Ok(value) if value == expected => {}
+        Ok(_) => return linux_err(EAGAIN),
+        Err(errno) => return linux_err(errno),
+    }
+
+    let deadline = match futex_relative_deadline(timeout_ptr) {
+        Ok(deadline) => deadline,
+        Err(errno) => return linux_err(errno),
+    };
+    let tid = crate::task::scheduler::current_tid();
+
+    {
+        let mut slots = LINUX_FUTEX_WAITERS.lock();
+        if !futex_add_waiter_locked(&mut slots, uaddr, tid) {
+            return linux_err(ENOMEM);
+        }
+        match futex_read_u32(uaddr) {
+            Ok(value) if value == expected => {
+                if let Some(wake_at) = deadline {
+                    crate::task::scheduler::prepare_to_block_until(wake_at);
+                } else {
+                    crate::task::scheduler::prepare_to_block_current();
+                }
+            }
+            Ok(_) => {
+                futex_remove_waiter_locked(&mut slots, uaddr, tid);
+                return linux_err(EAGAIN);
+            }
+            Err(errno) => {
+                futex_remove_waiter_locked(&mut slots, uaddr, tid);
+                return linux_err(errno);
+            }
+        }
+    }
+
+    crate::task::scheduler::schedule();
+
+    let timed_out = {
+        let mut slots = LINUX_FUTEX_WAITERS.lock();
+        futex_remove_waiter_locked(&mut slots, uaddr, tid)
+    };
+    if timed_out && deadline.is_some() {
+        return linux_err(ETIMEDOUT);
+    }
+    0
+}
+
+pub(super) fn linux_futex(
+    uaddr: u64,
+    op: u64,
+    val: u64,
+    timeout_ptr: u64,
+    _uaddr2: u64,
+    _val3: u64,
+) -> u64 {
+    let cmd = op & FUTEX_CMD_MASK;
     match cmd {
-        0 => linux_err(EAGAIN), // FUTEX_WAIT
-        1 => 0,                 // FUTEX_WAKE
+        FUTEX_WAIT | FUTEX_WAIT_BITSET => linux_futex_wait(uaddr, val, timeout_ptr),
+        FUTEX_WAKE | FUTEX_WAKE_BITSET => futex_wake_addr(uaddr, val as u32) as u64,
         _ => linux_err(ENOSYS),
     }
 }

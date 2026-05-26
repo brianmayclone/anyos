@@ -458,23 +458,26 @@ pub fn contention_backoff(attempts: &mut u32) {
 }
 
 /// Block the current thread unconditionally (no wake condition).
-pub fn block_current_thread() {
-    {
-        crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_BLOCK_CURRENT);
-        let mut guard = SCHEDULER.lock();
-        let cpu_id = get_cpu_id();
-        let sched = match guard.as_mut() {
-            Some(s) => s,
-            None => return,
-        };
-        if let Some(idx) = sched.current_idx(cpu_id) {
-            // CRITICAL: Set Blocked first, then clear save_complete
-            // (same rationale as waitpid).
-            sched.threads[idx].last_cpu = cpu_id;
-            sched.threads[idx].wake_at_tick = None;
-            sched.threads[idx].state = ThreadState::Blocked;
-            sched.threads[idx].context.save_complete = 0;
-        }
+pub fn prepare_to_block_current() {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_BLOCK_CURRENT);
+    let mut guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
+    if let Some(idx) = sched.current_idx(cpu_id) {
+        // CRITICAL: Set Blocked first, then clear save_complete
+        // (same rationale as waitpid).
+        sched.threads[idx].last_cpu = cpu_id;
+        sched.threads[idx].wake_at_tick = None;
+        sched.threads[idx].state = ThreadState::Blocked;
+        sched.threads[idx].context.save_complete = 0;
     }
+}
+
+/// Block the current thread unconditionally (no wake condition).
+pub fn block_current_thread() {
+    prepare_to_block_current();
     schedule();
 }

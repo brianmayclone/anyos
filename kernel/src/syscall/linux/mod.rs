@@ -30,6 +30,7 @@ use process::*;
 use procfs::*;
 use socket::*;
 
+pub(crate) use process::futex_wake_addr;
 pub(crate) use socket::{socket_decref, socket_incref};
 
 pub(crate) fn set_trace_enabled(enabled: bool) {
@@ -70,6 +71,7 @@ const ENOTCONN: i32 = 107;
 const EALREADY: i32 = 114;
 const EINPROGRESS: i32 = 115;
 const EPROTONOSUPPORT: i32 = 93;
+const ETIMEDOUT: i32 = 110;
 
 const LINUX_SYS_READ: u64 = 0;
 const LINUX_SYS_WRITE: u64 = 1;
@@ -493,7 +495,7 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_SETRLIMIT => linux_setrlimit(a1, a2),
         LINUX_SYS_GETTID => crate::task::scheduler::current_tid() as u64,
         LINUX_SYS_TIME => linux_time(a1),
-        LINUX_SYS_FUTEX => linux_futex(a1, a2, a3),
+        LINUX_SYS_FUTEX => linux_futex(a1, a2, a3, a4, a5, a6),
         LINUX_SYS_SCHED_SETAFFINITY => linux_sched_setaffinity(linux_i32_arg(a1), a2, a3),
         LINUX_SYS_SCHED_GETAFFINITY => linux_sched_getaffinity(linux_i32_arg(a1), a2, a3),
         LINUX_SYS_GETDENTS => linux_getdents(a1 as u32, a2, a3),

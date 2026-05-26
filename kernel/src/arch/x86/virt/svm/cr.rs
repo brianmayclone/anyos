@@ -7,6 +7,7 @@ pub(super) const CR_WRITE_INTERCEPTS: u16 = (1 << 0) | (1 << 3) | (1 << 4) | (1 
 const VMEXIT_CR_WRITE_BASE: u64 = 0x010;
 const EFER_LME: u64 = 1 << 8;
 const EFER_LMA: u64 = 1 << 10;
+const CS_ATTR_LONG: u16 = 1 << 9;
 const CR0_NE: u64 = 1 << 5;
 const CR0_PG: u64 = 1 << 31;
 
@@ -50,24 +51,28 @@ pub(super) unsafe fn emulate_cr_access(
     npt_root: u64,
 ) -> bool {
     let cr = cr_number(exit_code);
+    let mut written = None;
     let decoded_len;
     if exit_code >= VMEXIT_CR_WRITE_BASE {
         let Some(instr) = decode_cr_instruction(vmcb, cr, true, npt_root) else {
             return false;
         };
         decoded_len = instr.len;
-        let value = guest_gpr_read(&vcpu.guest_gprs, vmcb, instr.gpr);
+        let raw_value = guest_gpr_read(&vcpu.guest_gprs, vmcb, instr.gpr);
+        let value = normalize_cr_operand(vmcb, raw_value);
         if !write_guest_cr(vmcb, cr, value) {
             return false;
         }
+        written = Some((raw_value, value));
     } else {
         let Some(instr) = decode_cr_instruction(vmcb, cr, false, npt_root) else {
             return false;
         };
         decoded_len = instr.len;
-        let Some(value) = read_guest_cr(vmcb, cr) else {
+        let Some(mut value) = read_guest_cr(vmcb, cr) else {
             return false;
         };
+        value = normalize_cr_operand(vmcb, value);
         guest_gpr_write(&mut vcpu.guest_gprs, vmcb, instr.gpr, value);
     }
 
@@ -82,7 +87,28 @@ pub(super) unsafe fn emulate_cr_access(
 
     vmcb.state.rip = vmcb.state.rip.wrapping_add(advance as u64);
     vcpu.guest_gprs.rsp = vmcb.state.rsp;
+    if let Some((raw_value, value)) = written {
+        crate::serial_verbose_println!(
+            "[svm] cr{} write raw={:#x} value={:#x} rip={:#x} cr0={:#x} cr3={:#x} cr4={:#x} efer={:#x}",
+            cr,
+            raw_value,
+            value,
+            vmcb.state.rip,
+            vmcb.state.cr0,
+            vmcb.state.cr3,
+            vmcb.state.cr4,
+            vmcb.state.efer
+        );
+    }
     true
+}
+
+fn normalize_cr_operand(vmcb: &Vmcb, value: u64) -> u64 {
+    if vmcb.state.efer & EFER_LMA != 0 && vmcb.state.cs.attrib & CS_ATTR_LONG != 0 {
+        value
+    } else {
+        value & 0xffff_ffff
+    }
 }
 
 struct CrInstruction {
