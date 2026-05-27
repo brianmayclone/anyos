@@ -35,6 +35,12 @@ const TOMBSTONE: u16 = 0xFFFE;
 /// Maximum linear probes before falling back to a rare full-table/slot scan.
 const MAX_PROBES: usize = 32;
 
+/// Clean read-cache inserts must stay cheap under streaming I/O.  A perfect
+/// LRU victim scan over all 16K sectors costs more than the NVMe read it is
+/// trying to cache, so clean inserts sample a small ring window and skip the
+/// insert if that window is all dirty.
+const CLEAN_INSERT_SCAN_LIMIT: usize = 128;
+
 const MAX_DISKS: usize = 16;
 const KEY_SEAL: u64 = 0xB10C_CACE_D15C_5AFE;
 
@@ -403,40 +409,9 @@ impl BlockCache {
             }
         }
 
-        // Find LRU victim (lowest tick, prefer clean over dirty)
-        let mut victim = 0usize;
-        let mut min_tick = u32::MAX;
-        // First pass: find an empty slot, starting from a rolling hint so filling
-        // the cache is O(n) instead of O(n^2).
-        for step in 0..self.slots.len() {
-            let i = (self.next_free_hint + step) % self.slots.len();
-            self.quarantine_slot(i, "victim-scan");
-            if self.slots[i].key == 0 {
-                victim = i;
-                min_tick = 0;
-                self.next_free_hint = (i + 1) % self.slots.len();
-                break;
-            }
-        }
-        // Second pass: find oldest clean entry
-        if min_tick != 0 {
-            for i in 0..self.slots.len() {
-                self.quarantine_slot(i, "victim-scan");
-                if !self.slots[i].dirty && self.slots[i].tick < min_tick {
-                    min_tick = self.slots[i].tick;
-                    victim = i;
-                }
-            }
-        }
-        // If all entries are dirty, evict oldest dirty entry
-        if min_tick == u32::MAX {
-            for i in 0..self.slots.len() {
-                if self.slots[i].tick < min_tick {
-                    min_tick = self.slots[i].tick;
-                    victim = i;
-                }
-            }
-        }
+        let Some(victim) = self.choose_insert_victim(dirty, scan_context) else {
+            return;
+        };
 
         // Remove old entry from hash table
         let old_key = self.slots[victim].key;
@@ -464,6 +439,64 @@ impl BlockCache {
         } else {
             self.insert_hash(key, victim as u16);
         }
+    }
+
+    fn choose_insert_victim(&mut self, dirty: bool, scan_context: &str) -> Option<usize> {
+        let len = self.slots.len();
+        if len == 0 {
+            return None;
+        }
+
+        let scan_limit = CLEAN_INSERT_SCAN_LIMIT.min(len);
+        let mut first_clean = None;
+        let mut dirty_victim = None;
+        let mut min_dirty_tick = u32::MAX;
+        for step in 0..scan_limit {
+            let i = (self.next_free_hint + step) % len;
+            self.quarantine_slot(i, scan_context);
+            if self.slots[i].key == 0 {
+                self.next_free_hint = (i + 1) % len;
+                return Some(i);
+            }
+            if !self.slots[i].dirty && first_clean.is_none() {
+                first_clean = Some(i);
+                if !dirty {
+                    break;
+                }
+            }
+            if dirty && self.slots[i].tick < min_dirty_tick {
+                min_dirty_tick = self.slots[i].tick;
+                dirty_victim = Some(i);
+            }
+        }
+
+        if let Some(i) = first_clean {
+            self.next_free_hint = (i + 1) % len;
+            return Some(i);
+        }
+
+        if !dirty {
+            return None;
+        }
+
+        for step in scan_limit..len {
+            let i = (self.next_free_hint + step) % len;
+            self.quarantine_slot(i, scan_context);
+            if self.slots[i].key == 0 || !self.slots[i].dirty {
+                self.next_free_hint = (i + 1) % len;
+                return Some(i);
+            }
+            if self.slots[i].tick < min_dirty_tick {
+                min_dirty_tick = self.slots[i].tick;
+                dirty_victim = Some(i);
+            }
+        }
+
+        if let Some(i) = dirty_victim {
+            self.next_free_hint = (i + 1) % len;
+            return Some(i);
+        }
+        None
     }
 
     /// Insert multiple consecutive sectors from a buffer.

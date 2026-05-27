@@ -22,6 +22,7 @@ const REG_PI: u64 = 0x0C;
 const REG_VS: u64 = 0x10;
 
 const GHC_AE: u32 = 1 << 31;
+const CAP_S64A: u32 = 1 << 31;
 
 // ── Per-Port Registers (base = 0x100 + port * 0x80) ─
 const PORT_CLB: u64 = 0x00;
@@ -103,11 +104,14 @@ struct PrdtSpec {
 
 const EMPTY_PRDT_SPEC: PrdtSpec = PrdtSpec { phys: 0, len: 0 };
 
-fn direct_dma_target_ok(phys: u64, len: usize) -> bool {
+fn direct_dma_target_ok(phys: u64, len: usize, dma_64bit: bool) -> bool {
     let end = match phys.checked_add(len as u64) {
         Some(end) => end,
         None => return false,
     };
+    if !dma_64bit && end > 0x1_0000_0000 {
+        return false;
+    }
     if phys < LEGACY_LOW_DMA_CUTOFF {
         return false;
     }
@@ -178,6 +182,7 @@ struct AhciController {
     bounce_virt_slots: [u64; AHCI_MAX_COMMAND_SLOTS],
     slot_count: u8,
     ncq_supported: bool,
+    dma_64bit: bool,
     total_sectors: u64,
     irq: u8,
     interrupt_driven: bool,
@@ -283,6 +288,7 @@ unsafe fn dma_zero(phys: u64, len: usize) {
 fn build_prdt_from_virt(
     ptr: *const u8,
     len: usize,
+    dma_64bit: bool,
     out: &mut [PrdtSpec; MAX_PRDT],
 ) -> Option<usize> {
     if len == 0 {
@@ -297,7 +303,7 @@ fn build_prdt_from_virt(
         let phys = virtual_mem::virt_to_phys(VirtAddr::new(virt as u64))?;
         let page_left = 4096 - (virt & 0xFFF);
         let chunk = page_left.min(len - done).min(PRDT_MAX_BYTES as usize);
-        if !direct_dma_target_ok(phys, chunk) {
+        if !direct_dma_target_ok(phys, chunk, dma_64bit) {
             return None;
         }
 
@@ -440,6 +446,51 @@ unsafe fn primary_active_commands(ahci: &AhciController) -> u32 {
     } else {
         ci
     }
+}
+
+#[inline]
+unsafe fn command_slot_active(ahci: &AhciController, slot: usize, command: u8) -> bool {
+    let bit = 1u32 << slot;
+    let ci = port_read(ahci.mmio_base, ahci.active_port, PORT_CI);
+    if is_ncq_command(command) {
+        (ci | port_read(ahci.mmio_base, ahci.active_port, PORT_SACT)) & bit != 0
+    } else {
+        ci & bit != 0
+    }
+}
+
+#[inline]
+unsafe fn log_command_timeout(
+    ahci: &AhciController,
+    slot: usize,
+    command: u8,
+    lba: u64,
+    where_: &str,
+) {
+    crate::serial_println!(
+        "AHCI: command timeout (slot={}, cmd={:#x}, lba={}, {}, CI={:#x}, SACT={:#x}, TFD={:#x}, IS={:#x}, SERR={:#x})",
+        slot,
+        command,
+        lba,
+        where_,
+        port_read(ahci.mmio_base, ahci.active_port, PORT_CI),
+        port_read(ahci.mmio_base, ahci.active_port, PORT_SACT),
+        port_read(ahci.mmio_base, ahci.active_port, PORT_TFD),
+        port_read(ahci.mmio_base, ahci.active_port, PORT_IS),
+        port_read(ahci.mmio_base, ahci.active_port, PORT_SERR),
+    );
+}
+
+unsafe fn recover_primary_port(ahci: &AhciController) {
+    stop_port(ahci.mmio_base, ahci.active_port);
+    port_write(ahci.mmio_base, ahci.active_port, PORT_SERR, 0xFFFF_FFFF);
+    port_write(ahci.mmio_base, ahci.active_port, PORT_IS, 0xFFFF_FFFF);
+    AHCI_SLOT_IRQ_FIRED.store(0, Ordering::Release);
+    AHCI_SLOT_SUBMITTED.store(0, Ordering::Release);
+    for waiter in &AHCI_SLOT_WAITERS {
+        waiter.store(0, Ordering::Release);
+    }
+    start_port(ahci.mmio_base, ahci.active_port);
 }
 
 // ── Port Start / Stop ───────────────────────────────
@@ -695,10 +746,11 @@ unsafe fn identify_disk_on_port(ahci: &AhciController, port: u32) -> u64 {
 /// Timeout for AHCI commands: ~5 seconds expressed in timer ticks.
 /// Computed from the HAL timer frequency at call time.
 const AHCI_TIMEOUT_MS: u64 = 5000;
-/// Flush-cache commands should normally complete immediately.  In QEMU some
-/// AHCI setups never complete 0xEA, and a full data-command timeout would
-/// freeze all filesystem I/O behind the storage lock.
-const AHCI_FLUSH_TIMEOUT_MS: u64 = 250;
+/// Flush-cache commands are allowed to take longer than ordinary MMIO command
+/// handoff, especially in virtualized setups where the host may need to commit
+/// dirty image data. Keep this below the data-command timeout but high enough
+/// to avoid false boot-time failures.
+const AHCI_FLUSH_TIMEOUT_MS: u64 = 1000;
 
 /// Number of retries after a timeout before giving up.
 const AHCI_MAX_RETRIES: u32 = 1;
@@ -824,8 +876,7 @@ unsafe fn issue_command_once(
     // sustained readback issues many DMA commands and a long busy-spin here
     // starves render/input threads even though the I/O can sleep on IRQs.
     for _ in 0..AHCI_FAST_SPIN_ITERS {
-        let active = primary_active_commands(ahci);
-        if active & slot_bit == 0 {
+        if !command_slot_active(ahci, slot, command) {
             let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
             if tfd & 0x01 != 0 {
                 if waiter_tid > 0 {
@@ -869,8 +920,7 @@ unsafe fn wait_for_interrupt_completion(
     let sleep_interval = (hz / 1000).max(1);
 
     loop {
-        let active = primary_active_commands(ahci);
-        if active & slot_bit == 0 {
+        if !command_slot_active(ahci, slot, command) {
             AHCI_SLOT_WAITERS[slot].store(0, Ordering::Release);
             let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
             if tfd & 0x01 != 0 {
@@ -891,12 +941,7 @@ unsafe fn wait_for_interrupt_completion(
         let now = crate::arch::hal::timer_current_ticks();
         if now.wrapping_sub(start) >= timeout_ticks {
             AHCI_SLOT_WAITERS[slot].store(0, Ordering::Release);
-            crate::serial_println!(
-                "AHCI: command timeout (slot={}, cmd={:#x}, lba={}, interrupt wait)",
-                slot,
-                command,
-                lba
-            );
+            log_command_timeout(ahci, slot, command, lba, "interrupt wait");
             return false;
         }
 
@@ -965,7 +1010,9 @@ unsafe fn issue_command_prdt_on_acquired_slot(
         return false;
     }
 
-    // On failure, retry once after resetting the port
+    // On failure, retry after resetting the command engine.  Even commands
+    // without retries still get a final recovery below so stale CI/SACT state
+    // cannot poison later I/O.
     let max_retries = command_max_retries(command);
     for retry in 0..max_retries {
         crate::serial_println!(
@@ -976,12 +1023,7 @@ unsafe fn issue_command_prdt_on_acquired_slot(
             max_retries
         );
 
-        // Reset the port to clear any stuck state
-        stop_port(ahci.mmio_base, ahci.active_port);
-        // Clear all errors
-        port_write(ahci.mmio_base, ahci.active_port, PORT_SERR, 0xFFFF_FFFF);
-        port_write(ahci.mmio_base, ahci.active_port, PORT_IS, 0xFFFF_FFFF);
-        start_port(ahci.mmio_base, ahci.active_port);
+        recover_primary_port(ahci);
 
         if issue_command_once(ahci, slot, command, lba, count, prdt, write) {
             if started_recovery {
@@ -990,6 +1032,8 @@ unsafe fn issue_command_prdt_on_acquired_slot(
             return true;
         }
     }
+
+    recover_primary_port(ahci);
 
     if started_recovery {
         AHCI_RECOVERY.store(false, Ordering::Release);
@@ -1146,7 +1190,6 @@ unsafe fn issue_command_on_port(
 /// Polled completion check with timeout (used during boot or as IRQ timeout fallback).
 /// Uses tick-based timing when available, falls back to iteration count during early boot.
 unsafe fn poll_completion(ahci: &AhciController, slot: usize, command: u8) -> bool {
-    let slot_bit = 1u32 << slot;
     let hz = crate::arch::hal::timer_frequency_hz() as u32;
 
     if hz > 0 {
@@ -1157,8 +1200,7 @@ unsafe fn poll_completion(ahci: &AhciController, slot: usize, command: u8) -> bo
         let mut spins = 0usize;
         let mut backoff_attempts = 0u32;
         loop {
-            let active = primary_active_commands(ahci);
-            if active & slot_bit == 0 {
+            if !command_slot_active(ahci, slot, command) {
                 let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
                 if tfd & 0x01 != 0 {
                     crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
@@ -1176,7 +1218,7 @@ unsafe fn poll_completion(ahci: &AhciController, slot: usize, command: u8) -> bo
 
             let now = crate::arch::hal::timer_current_ticks();
             if now.wrapping_sub(start) >= timeout_ticks {
-                crate::serial_println!("AHCI: poll_completion timeout (slot={})", slot);
+                log_command_timeout(ahci, slot, command, 0, "poll");
                 return false;
             }
 
@@ -1190,8 +1232,7 @@ unsafe fn poll_completion(ahci: &AhciController, slot: usize, command: u8) -> bo
     } else {
         // Early boot fallback — iteration count (no timer yet)
         for _ in 0..10_000_000 {
-            let active = primary_active_commands(ahci);
-            if active & slot_bit == 0 {
+            if !command_slot_active(ahci, slot, command) {
                 let tfd = port_read(ahci.mmio_base, ahci.active_port, PORT_TFD);
                 if tfd & 0x01 != 0 {
                     crate::serial_verbose_println!("AHCI: command error, TFD={:#x}", tfd);
@@ -1240,7 +1281,9 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
         let mut prdt = [EMPTY_PRDT_SPEC; MAX_PRDT];
 
         let ok =
-            if let Some(prdt_len) = build_prdt_from_virt(dst as *const u8, byte_count, &mut prdt) {
+            if let Some(prdt_len) =
+                build_prdt_from_virt(dst as *const u8, byte_count, ahci.dma_64bit, &mut prdt)
+            {
                 unsafe {
                     issue_command_prdt(
                         ahci,
@@ -1313,7 +1356,9 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
         let src = unsafe { buf.as_ptr().add(offset) };
         let mut prdt = [EMPTY_PRDT_SPEC; MAX_PRDT];
 
-        let ok = if let Some(prdt_len) = build_prdt_from_virt(src, byte_count, &mut prdt) {
+        let ok = if let Some(prdt_len) =
+            build_prdt_from_virt(src, byte_count, ahci.dma_64bit, &mut prdt)
+        {
             unsafe {
                 issue_command_prdt(
                     ahci,
@@ -1465,6 +1510,7 @@ pub fn init_and_register(pci: &PciDevice) {
 
         // Read capabilities
         let cap = mmio_read32(mmio_base, REG_CAP);
+        let dma_64bit = (cap & CAP_S64A) != 0;
         let num_ports = (cap & 0x1F) + 1;
         let pi = mmio_read32(mmio_base, REG_PI);
         let vs = mmio_read32(mmio_base, REG_VS);
@@ -1472,11 +1518,12 @@ pub fn init_and_register(pci: &PciDevice) {
         let vs_minor = vs & 0xFFFF;
 
         crate::serial_verbose_println!(
-            "  AHCI: version {}.{:02x}, {} ports, PI={:#06x}",
+            "  AHCI: version {}.{:02x}, {} ports, PI={:#06x}, 64-bit DMA={}",
             vs_major,
             vs_minor,
             num_ports,
-            pi
+            pi,
+            dma_64bit as u8
         );
 
         // Debug marker: write 0xAA to port 0 IE to confirm AHCI init runs.
@@ -1730,6 +1777,7 @@ pub fn init_and_register(pci: &PciDevice) {
             bounce_virt_slots,
             slot_count: configured_slots as u8,
             ncq_supported: false,
+            dma_64bit,
             total_sectors: 0,
             irq,
             interrupt_driven: false,

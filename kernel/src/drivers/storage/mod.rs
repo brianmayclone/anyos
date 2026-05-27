@@ -148,8 +148,9 @@ static LAST_READ_END_LBA: AtomicU32 = AtomicU32::new(0);
 static READAHEAD_LEVEL: AtomicU32 = AtomicU32::new(64);
 const READAHEAD_MIN: u32 = 16; //   8 KiB
 const READAHEAD_MAX: u32 = 512; // 256 KiB
+const INLINE_READAHEAD_MAX: u32 = 256; // 128 KiB pulled into the foreground miss
 const READ_CACHE_POPULATE_MAX: u32 = 64; // avoid polluting cache with 64K+ streams
-const READAHEAD_TRIGGER_MAX: u32 = 128;
+const READAHEAD_TRIGGER_MAX: u32 = 512;
 
 /// Reusable readahead buffer pool.
 ///
@@ -740,11 +741,12 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
         }
     };
 
-    let prefetch_lba = miss_lba.saturating_add(miss_count);
-    let prefetch_count = readahead;
-    let total_fetch = miss_count;
+    let inline_readahead = readahead.min(INLINE_READAHEAD_MAX);
+    let total_fetch = miss_count.saturating_add(inline_readahead);
+    let prefetch_lba = miss_lba.saturating_add(total_fetch);
+    let prefetch_count = readahead.saturating_sub(inline_readahead);
     let fetch_bytes = total_fetch as usize * 512;
-    let populate_after_read = miss_count <= READ_CACHE_POPULATE_MAX;
+    let populate_after_read = miss_count <= READ_CACHE_POPULATE_MAX || inline_readahead > 0;
     if cache_active {
         LAST_READ_END_LBA.store(
             prefetch_lba.saturating_add(prefetch_count),
