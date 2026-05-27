@@ -243,6 +243,8 @@ static DISK_SECTORS: [AtomicU64; MAX_DISKS] = {
     // deshalb der `[const { ... }; N]` Trick.
     [const { AtomicU64::new(0) }; MAX_DISKS]
 };
+static DISK_WRITE_GENERATION: [AtomicU64; MAX_DISKS] =
+    [const { AtomicU64::new(0) }; MAX_DISKS];
 
 /// Hinterlegt die Sektor-Anzahl einer physischen Disk.
 ///
@@ -262,6 +264,19 @@ pub fn disk_sector_count(disk_id: u8) -> u64 {
         return 0;
     }
     DISK_SECTORS[disk_id as usize].load(Ordering::Relaxed)
+}
+
+fn bump_disk_write_generation(disk_id: u8) {
+    if (disk_id as usize) < MAX_DISKS {
+        DISK_WRITE_GENERATION[disk_id as usize].fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+fn disk_write_generation(disk_id: u8) -> u64 {
+    if (disk_id as usize) >= MAX_DISKS {
+        return 0;
+    }
+    DISK_WRITE_GENERATION[disk_id as usize].load(Ordering::Acquire)
 }
 
 fn has_io_override(disk_id: u8) -> bool {
@@ -965,6 +980,7 @@ pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> b
         if crate::fs::blockcache::should_flush_before_write_back(disk_id, count) {
             crate::fs::blockcache::writeback_flush(disk_id);
         }
+        bump_disk_write_generation(disk_id);
         crate::fs::blockcache::write_back(disk_id, lba, count, &buf[..data_len]);
         return true;
     }
@@ -972,12 +988,16 @@ pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> b
     // Large write or no cache: go directly to disk
     let result = async_io::write_sectors_wait(disk_id, lba, count, buf, IO_OP_WRITE);
     if result && cache_active {
+        bump_disk_write_generation(disk_id);
         // Direct/bulk writes already reached the backend. Keeping a clean copy
         // of every streamed sector in the read cache turns large writes into
         // thousands of cache insertions and LRU scans. Drop any stale entries
         // instead; the next read can fetch the data from disk or from the
         // filesystem's own higher-level cache.
         crate::fs::blockcache::invalidate(disk_id, lba, count);
+    }
+    if result && !cache_active {
+        bump_disk_write_generation(disk_id);
     }
     result
 }
@@ -1047,6 +1067,9 @@ pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8
         return false;
     }
     let result = async_io::write_sectors_wait(disk_id, lba, count, buf, IO_OP_WRITEBACK);
+    if result {
+        bump_disk_write_generation(disk_id);
+    }
     result
 }
 

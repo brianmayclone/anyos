@@ -122,6 +122,10 @@ struct NvmeController {
     /// PRP list page used when the bounce transfer spans more than two pages.
     prp_list_phys: u64,
     prp_list_virt: u64,
+    /// Per in-flight PRP list pages for queued direct I/O.
+    io_prp_list_phys: [u64; NVME_IO_QUEUE_DEPTH],
+    io_prp_list_virt: [u64; NVME_IO_QUEUE_DEPTH],
+    io_depth: usize,
     /// Queue depths
     admin_sq_tail: u16,
     admin_cq_head: u16,
@@ -149,6 +153,20 @@ const BOUNCE_SECTORS: u32 = 256;
 const BOUNCE_SIZE: usize = BOUNCE_SECTORS as usize * 512;
 const BOUNCE_PAGES: usize = BOUNCE_SIZE / 4096; // 32 pages
 const PRP_LIST_ENTRIES: usize = 512; // one 4 KiB page of u64 PRP entries
+const MAX_DIRECT_PRP_PAGES: usize = PRP_LIST_ENTRIES + 1;
+const NVME_IO_QUEUE_DEPTH: usize = 8;
+const NVME_QUEUED_CMD_SECTORS: u32 = 32;
+
+#[derive(Clone, Copy)]
+struct NvmeInflight {
+    active: bool,
+    command_id: u16,
+}
+
+const EMPTY_INFLIGHT: NvmeInflight = NvmeInflight {
+    active: false,
+    command_id: 0,
+};
 
 // ── MMIO Helpers ────────────────────────────────────
 
@@ -249,8 +267,7 @@ unsafe fn admin_submit(ctrl: &mut NvmeController, cmd: &NvmeCommand) -> Option<N
     None
 }
 
-/// Submit an I/O command and wait for completion.
-unsafe fn io_submit(ctrl: &mut NvmeController, cmd: &NvmeCommand) -> Option<NvmeCompletion> {
+unsafe fn io_submit_nowait(ctrl: &mut NvmeController, cmd: &NvmeCommand) {
     let sq_entry = (ctrl.iosq_phys + ctrl.io_sq_tail as u64 * 64) as *mut NvmeCommand;
     fence(Ordering::SeqCst);
     core::ptr::write_volatile(sq_entry, *cmd);
@@ -258,31 +275,93 @@ unsafe fn io_submit(ctrl: &mut NvmeController, cmd: &NvmeCommand) -> Option<Nvme
 
     ctrl.io_sq_tail = (ctrl.io_sq_tail + 1) % IO_QUEUE_SIZE;
     write_sq_doorbell(ctrl, 1, ctrl.io_sq_tail);
+}
 
+unsafe fn io_poll_completion(ctrl: &mut NvmeController) -> Option<NvmeCompletion> {
     let cq_entry_ptr = (ctrl.iocq_phys + ctrl.io_cq_head as u64 * 16) as *const NvmeCompletion;
-    for _ in 0..10_000_000 {
-        let cqe = core::ptr::read_volatile(cq_entry_ptr);
-        let phase = (cqe.status & 1) != 0;
-        if phase == ctrl.io_phase {
-            ctrl.io_cq_head = (ctrl.io_cq_head + 1) % IO_QUEUE_SIZE;
-            if ctrl.io_cq_head == 0 {
-                ctrl.io_phase = !ctrl.io_phase;
-            }
-            write_cq_doorbell(ctrl, 1, ctrl.io_cq_head);
+    let cqe = core::ptr::read_volatile(cq_entry_ptr);
+    let phase = (cqe.status & 1) != 0;
+    if phase != ctrl.io_phase {
+        return None;
+    }
 
-            // Check status (bits 1-15, shift right 1)
-            let sc = (cqe.status >> 1) & 0x7FFF;
-            if sc != 0 {
-                crate::serial_verbose_println!("NVMe: I/O error, status={:#06x}", sc);
-                return None;
-            }
-            fence(Ordering::SeqCst);
+    ctrl.io_cq_head = (ctrl.io_cq_head + 1) % IO_QUEUE_SIZE;
+    if ctrl.io_cq_head == 0 {
+        ctrl.io_phase = !ctrl.io_phase;
+    }
+    write_cq_doorbell(ctrl, 1, ctrl.io_cq_head);
+    fence(Ordering::SeqCst);
+    Some(cqe)
+}
+
+unsafe fn io_wait_completion(ctrl: &mut NvmeController) -> Option<NvmeCompletion> {
+    for spin in 0..10_000_000usize {
+        if let Some(cqe) = io_poll_completion(ctrl) {
             return Some(cqe);
         }
-        core::hint::spin_loop();
+        if spin % 256 == 0 && crate::task::scheduler::current_tid() > 0 {
+            crate::task::scheduler::schedule();
+        } else {
+            core::hint::spin_loop();
+        }
     }
     crate::serial_verbose_println!("NVMe: I/O command timeout");
     None
+}
+
+#[inline]
+fn cqe_status(cqe: &NvmeCompletion) -> u16 {
+    (cqe.status >> 1) & 0x7FFF
+}
+
+/// Submit an I/O command and wait for completion.
+unsafe fn io_submit(ctrl: &mut NvmeController, cmd: &NvmeCommand) -> Option<NvmeCompletion> {
+    io_submit_nowait(ctrl, cmd);
+    loop {
+        let cqe = io_wait_completion(ctrl)?;
+        let sc = cqe_status(&cqe);
+        if sc != 0 {
+            crate::serial_verbose_println!("NVMe: I/O error, status={:#06x}", sc);
+            return None;
+        }
+        if cqe.command_id == cmd.command_id {
+            return Some(cqe);
+        }
+        crate::serial_verbose_println!(
+            "NVMe: ignoring stale completion command_id={} while waiting for {}",
+            cqe.command_id,
+            cmd.command_id
+        );
+    }
+}
+
+unsafe fn wait_for_known_completion(
+    ctrl: &mut NvmeController,
+    inflight: &mut [NvmeInflight; NVME_IO_QUEUE_DEPTH],
+) -> bool {
+    loop {
+        let cqe = match io_wait_completion(ctrl) {
+            Some(cqe) => cqe,
+            None => return false,
+        };
+        let sc = cqe_status(&cqe);
+        if sc != 0 {
+            crate::serial_verbose_println!("NVMe: queued I/O error, status={:#06x}", sc);
+            return false;
+        }
+
+        for slot in inflight.iter_mut() {
+            if slot.active && slot.command_id == cqe.command_id {
+                slot.active = false;
+                return true;
+            }
+        }
+
+        crate::serial_verbose_println!(
+            "NVMe: ignoring stale completion command_id={}",
+            cqe.command_id
+        );
+    }
 }
 
 unsafe fn setup_data_prps(
@@ -320,6 +399,220 @@ unsafe fn setup_data_prps(
     true
 }
 
+unsafe fn setup_data_prps_from_virt(
+    cmd: &mut NvmeCommand,
+    ptr: *const u8,
+    byte_count: usize,
+    prp_list_phys: u64,
+    prp_list_virt: u64,
+) -> bool {
+    if byte_count == 0 {
+        return false;
+    }
+
+    let start = ptr as usize;
+    let first_phys = match virtual_mem::virt_to_phys(VirtAddr::new(start as u64)) {
+        Some(phys) => phys,
+        None => return false,
+    };
+
+    cmd.prp1 = first_phys;
+    cmd.prp2 = 0;
+
+    let first_page_left = 4096 - (start & 0xFFF);
+    if byte_count <= first_page_left {
+        return true;
+    }
+
+    let mut remaining = byte_count - first_page_left;
+    let mut virt = start + first_page_left;
+    let pages_after_first = (remaining + 4095) / 4096;
+    if pages_after_first == 0 {
+        return true;
+    }
+    if pages_after_first > PRP_LIST_ENTRIES {
+        return false;
+    }
+
+    let second_phys = match virtual_mem::virt_to_phys(VirtAddr::new(virt as u64)) {
+        Some(phys) => phys,
+        None => return false,
+    };
+    if pages_after_first == 1 {
+        cmd.prp2 = second_phys;
+        return true;
+    }
+    if prp_list_phys == 0 || prp_list_virt == 0 {
+        return false;
+    }
+
+    let list = prp_list_virt as *mut u64;
+    core::ptr::write_bytes(list, 0, PRP_LIST_ENTRIES);
+    core::ptr::write_volatile(list, second_phys);
+    remaining = remaining.saturating_sub(4096);
+    virt += 4096;
+
+    let mut idx = 1usize;
+    while remaining > 0 {
+        if idx >= PRP_LIST_ENTRIES {
+            return false;
+        }
+        let phys = match virtual_mem::virt_to_phys(VirtAddr::new(virt as u64)) {
+            Some(phys) => phys,
+            None => return false,
+        };
+        core::ptr::write_volatile(list.add(idx), phys);
+        idx += 1;
+        let step = remaining.min(4096);
+        remaining -= step;
+        virt += step;
+    }
+
+    cmd.prp2 = prp_list_phys;
+    true
+}
+
+fn direct_prps_mappable(ptr: *const u8, byte_count: usize) -> bool {
+    if byte_count == 0 {
+        return false;
+    }
+
+    let start = ptr as usize;
+    if virtual_mem::virt_to_phys(VirtAddr::new(start as u64)).is_none() {
+        return false;
+    }
+
+    let first_page_left = 4096 - (start & 0xFFF);
+    if byte_count <= first_page_left {
+        return true;
+    }
+
+    let pages_after_first = (byte_count - first_page_left + 4095) / 4096;
+    if pages_after_first > PRP_LIST_ENTRIES {
+        return false;
+    }
+
+    let mut remaining = byte_count - first_page_left;
+    let mut virt = start + first_page_left;
+    while remaining > 0 {
+        if virtual_mem::virt_to_phys(VirtAddr::new(virt as u64)).is_none() {
+            return false;
+        }
+        let step = remaining.min(4096);
+        remaining -= step;
+        virt += step;
+    }
+
+    true
+}
+
+fn queued_direct_range_mappable(
+    ctrl: &NvmeController,
+    ptr: *const u8,
+    len: usize,
+    count: u32,
+) -> bool {
+    if ctrl.io_depth < 2 || count <= NVME_QUEUED_CMD_SECTORS {
+        return false;
+    }
+
+    let mut offset = 0usize;
+    let mut remaining = count;
+    while remaining > 0 {
+        let batch = remaining.min(NVME_QUEUED_CMD_SECTORS);
+        let byte_count = batch as usize * ctrl.sector_size as usize;
+        if offset + byte_count > len {
+            return false;
+        }
+        let chunk_ptr = unsafe { ptr.add(offset) };
+        if !direct_prps_mappable(chunk_ptr, byte_count) {
+            return false;
+        }
+        offset += byte_count;
+        remaining -= batch;
+    }
+
+    true
+}
+
+unsafe fn queued_direct_transfer(
+    ctrl: &mut NvmeController,
+    opcode: u8,
+    lba: u32,
+    count: u32,
+    ptr: *const u8,
+    len: usize,
+) -> bool {
+    let depth = ctrl
+        .io_depth
+        .min(NVME_IO_QUEUE_DEPTH)
+        .min((IO_QUEUE_SIZE as usize).saturating_sub(1));
+    if depth < 2 {
+        return false;
+    }
+
+    let mut inflight = [EMPTY_INFLIGHT; NVME_IO_QUEUE_DEPTH];
+    let mut outstanding = 0usize;
+    let mut offset = 0usize;
+    let mut cur_lba = lba as u64;
+    let mut remaining = count;
+
+    while remaining > 0 || outstanding > 0 {
+        while remaining > 0 && outstanding < depth {
+            let slot = match inflight[..depth].iter().position(|s| !s.active) {
+                Some(slot) => slot,
+                None => break,
+            };
+
+            let batch = remaining.min(NVME_QUEUED_CMD_SECTORS);
+            let byte_count = batch as usize * ctrl.sector_size as usize;
+            if offset + byte_count > len {
+                return false;
+            }
+
+            let mut cmd = NvmeCommand::zeroed();
+            if !setup_data_prps_from_virt(
+                &mut cmd,
+                ptr.add(offset),
+                byte_count,
+                ctrl.io_prp_list_phys[slot],
+                ctrl.io_prp_list_virt[slot],
+            ) {
+                return false;
+            }
+
+            cmd.opcode = opcode;
+            cmd.command_id = ctrl.next_cmd_id;
+            ctrl.next_cmd_id = ctrl.next_cmd_id.wrapping_add(1);
+            cmd.nsid = 1;
+            cmd.cdw10 = cur_lba as u32;
+            cmd.cdw11 = (cur_lba >> 32) as u32;
+            cmd.cdw12 = batch - 1;
+
+            inflight[slot] = NvmeInflight {
+                active: true,
+                command_id: cmd.command_id,
+            };
+            io_submit_nowait(ctrl, &cmd);
+
+            outstanding += 1;
+            offset += byte_count;
+            cur_lba += batch as u64;
+            remaining -= batch;
+        }
+
+        if outstanding == 0 {
+            break;
+        }
+        if !wait_for_known_completion(ctrl, &mut inflight) {
+            return false;
+        }
+        outstanding -= 1;
+    }
+
+    true
+}
+
 // ── Public API ──────────────────────────────────────
 
 /// Read sectors from NVMe namespace 1.
@@ -332,23 +625,63 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
         Some(c) => c,
         None => return false,
     };
+    let total_bytes = count as usize * ctrl.sector_size as usize;
+    if total_bytes > buf.len() {
+        return false;
+    }
+    if queued_direct_range_mappable(ctrl, buf.as_ptr(), buf.len(), count) {
+        return unsafe {
+            queued_direct_transfer(
+                ctrl,
+                NVM_CMD_READ,
+                lba,
+                count,
+                buf.as_mut_ptr() as *const u8,
+                buf.len(),
+            )
+        };
+    }
+
     let mut offset = 0usize;
     let mut remaining = count;
     let mut cur_lba = lba as u64;
 
     while remaining > 0 {
-        let max_batch = (BOUNCE_SIZE / ctrl.sector_size as usize).max(1) as u32;
-        let batch = remaining.min(max_batch);
-        let byte_count = batch as usize * ctrl.sector_size as usize;
-
         let mut cmd = NvmeCommand::zeroed();
+        let direct_max_batch =
+            ((MAX_DIRECT_PRP_PAGES * 4096) / ctrl.sector_size as usize).max(1) as u32;
+        let mut batch = remaining.min(direct_max_batch);
+        let mut byte_count = batch as usize * ctrl.sector_size as usize;
+        if offset + byte_count > buf.len() {
+            return false;
+        }
+
+        let dst = unsafe { buf.as_mut_ptr().add(offset) };
+        let direct = unsafe {
+            setup_data_prps_from_virt(
+                &mut cmd,
+                dst as *const u8,
+                byte_count,
+                ctrl.prp_list_phys,
+                ctrl.prp_list_virt,
+            )
+        };
+        if !direct {
+            let max_batch = (BOUNCE_SIZE / ctrl.sector_size as usize).max(1) as u32;
+            batch = remaining.min(max_batch);
+            byte_count = batch as usize * ctrl.sector_size as usize;
+            if offset + byte_count > buf.len() {
+                return false;
+            }
+            if !unsafe { setup_data_prps(ctrl, &mut cmd, byte_count) } {
+                return false;
+            }
+        }
+
         cmd.opcode = NVM_CMD_READ;
         cmd.command_id = ctrl.next_cmd_id;
         ctrl.next_cmd_id = ctrl.next_cmd_id.wrapping_add(1);
         cmd.nsid = 1;
-        if !unsafe { setup_data_prps(ctrl, &mut cmd, byte_count) } {
-            return false;
-        }
         cmd.cdw10 = cur_lba as u32; // Starting LBA (low 32)
         cmd.cdw11 = (cur_lba >> 32) as u32; // Starting LBA (high 32)
         cmd.cdw12 = batch - 1; // Number of logical blocks (0-based)
@@ -358,12 +691,11 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
             return false;
         }
 
-        // Copy from bounce buffer to caller's buffer
-        let src = ctrl.bounce_virt as *const u8;
-        let end = (offset + byte_count).min(buf.len());
-        let copy_len = end - offset;
-        unsafe {
-            core::ptr::copy_nonoverlapping(src, buf[offset..].as_mut_ptr(), copy_len);
+        if !direct {
+            let src = ctrl.bounce_virt as *const u8;
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, dst, byte_count);
+            }
         }
 
         offset += byte_count;
@@ -384,31 +716,59 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
         Some(c) => c,
         None => return false,
     };
+    let total_bytes = count as usize * ctrl.sector_size as usize;
+    if total_bytes > buf.len() {
+        return false;
+    }
+    if queued_direct_range_mappable(ctrl, buf.as_ptr(), buf.len(), count) {
+        return unsafe {
+            queued_direct_transfer(ctrl, NVM_CMD_WRITE, lba, count, buf.as_ptr(), buf.len())
+        };
+    }
+
     let mut offset = 0usize;
     let mut remaining = count;
     let mut cur_lba = lba as u64;
 
     while remaining > 0 {
-        let max_batch = (BOUNCE_SIZE / ctrl.sector_size as usize).max(1) as u32;
-        let batch = remaining.min(max_batch);
-        let byte_count = batch as usize * ctrl.sector_size as usize;
-
-        // Copy data to bounce buffer
-        let dst = ctrl.bounce_virt as *mut u8;
-        let end = (offset + byte_count).min(buf.len());
-        let copy_len = end - offset;
-        unsafe {
-            core::ptr::copy_nonoverlapping(buf[offset..].as_ptr(), dst, copy_len);
+        let mut cmd = NvmeCommand::zeroed();
+        let direct_max_batch =
+            ((MAX_DIRECT_PRP_PAGES * 4096) / ctrl.sector_size as usize).max(1) as u32;
+        let mut batch = remaining.min(direct_max_batch);
+        let mut byte_count = batch as usize * ctrl.sector_size as usize;
+        if offset + byte_count > buf.len() {
+            return false;
         }
 
-        let mut cmd = NvmeCommand::zeroed();
+        let src = unsafe { buf.as_ptr().add(offset) };
+        if !unsafe {
+            setup_data_prps_from_virt(
+                &mut cmd,
+                src,
+                byte_count,
+                ctrl.prp_list_phys,
+                ctrl.prp_list_virt,
+            )
+        } {
+            let max_batch = (BOUNCE_SIZE / ctrl.sector_size as usize).max(1) as u32;
+            batch = remaining.min(max_batch);
+            byte_count = batch as usize * ctrl.sector_size as usize;
+            if offset + byte_count > buf.len() {
+                return false;
+            }
+            let dst = ctrl.bounce_virt as *mut u8;
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, dst, byte_count);
+            }
+            if !unsafe { setup_data_prps(ctrl, &mut cmd, byte_count) } {
+                return false;
+            }
+        }
+
         cmd.opcode = NVM_CMD_WRITE;
         cmd.command_id = ctrl.next_cmd_id;
         ctrl.next_cmd_id = ctrl.next_cmd_id.wrapping_add(1);
         cmd.nsid = 1;
-        if !unsafe { setup_data_prps(ctrl, &mut cmd, byte_count) } {
-            return false;
-        }
         cmd.cdw10 = cur_lba as u32;
         cmd.cdw11 = (cur_lba >> 32) as u32;
         cmd.cdw12 = batch - 1;
@@ -596,6 +956,31 @@ pub fn init_and_register(pci: &PciDevice) {
         core::ptr::write_bytes(prp_list_phys as *mut u8, 0, 4096);
     }
 
+    let mut io_prp_list_phys = [0u64; NVME_IO_QUEUE_DEPTH];
+    let mut io_prp_list_virt = [0u64; NVME_IO_QUEUE_DEPTH];
+    let mut io_depth = 0usize;
+    for slot in 0..NVME_IO_QUEUE_DEPTH {
+        let phys = match physical::alloc_frame() {
+            Some(p) => p.as_u64(),
+            None => break,
+        };
+        virtual_mem::map_page(VirtAddr::new(phys), PhysAddr::new(phys), 0x03);
+        unsafe {
+            core::ptr::write_bytes(phys as *mut u8, 0, 4096);
+        }
+        io_prp_list_phys[slot] = phys;
+        io_prp_list_virt[slot] = phys;
+        io_depth += 1;
+    }
+    if io_depth < 2 {
+        crate::serial_verbose_println!(
+            "  NVMe: queued direct I/O disabled (PRP lists={})",
+            io_depth
+        );
+    } else {
+        crate::serial_verbose_println!("  NVMe: queued direct I/O depth={}", io_depth);
+    }
+
     let mut ctrl = NvmeController {
         mmio_base: base,
         doorbell_stride: dstrd as u32,
@@ -607,6 +992,9 @@ pub fn init_and_register(pci: &PciDevice) {
         bounce_virt: bounce_phys, // identity-mapped
         prp_list_phys,
         prp_list_virt: prp_list_phys,
+        io_prp_list_phys,
+        io_prp_list_virt,
+        io_depth,
         admin_sq_tail: 0,
         admin_cq_head: 0,
         admin_phase: true,

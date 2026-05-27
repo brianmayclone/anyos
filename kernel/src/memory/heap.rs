@@ -150,6 +150,9 @@ static mut PERCPU_BUCKETS: [PerCpuBuckets; PERCPU_MAX_CPUS] = {
     [INIT; PERCPU_MAX_CPUS]
 };
 
+static PERCPU_BUCKET_FREE_BYTES: [AtomicUsize; PERCPU_MAX_CPUS] =
+    [const { AtomicUsize::new(0) }; PERCPU_MAX_CPUS];
+
 /// Round `size` up to the next size class. Returns the index, or None
 /// if the request exceeds the largest class (then the request goes
 /// directly to the per-CPU cache / global free list).
@@ -192,22 +195,27 @@ unsafe fn bucket_alloc(cpu: usize, sci: usize) -> *mut u8 {
     }
     if !is_in_heap(bucket.head as usize) {
         // Corrupted head — drop the whole bucket rather than dereference.
+        let cached = bucket.count.saturating_mul(size_class_size(sci));
         bucket.head = core::ptr::null_mut();
         bucket.count = 0;
+        counter_sub(&PERCPU_BUCKET_FREE_BYTES[cpu], cached);
         return core::ptr::null_mut();
     }
     let node = bucket.head;
     let next = (*node).next;
     if !next.is_null() && !is_in_heap(next as usize) {
         // Corrupted link inside the bucket — drop the chain.
+        let cached = bucket.count.saturating_mul(size_class_size(sci));
         bucket.head = core::ptr::null_mut();
         bucket.count = 0;
+        counter_sub(&PERCPU_BUCKET_FREE_BYTES[cpu], cached);
         return core::ptr::null_mut();
     }
     bucket.head = next;
     if bucket.count > 0 {
         bucket.count -= 1;
     }
+    counter_sub(&PERCPU_BUCKET_FREE_BYTES[cpu], size_class_size(sci));
     node as *mut u8
 }
 
@@ -225,6 +233,7 @@ unsafe fn bucket_dealloc(cpu: usize, ptr: *mut u8, sci: usize) -> bool {
     (*node).next = bucket.head;
     bucket.head = node;
     bucket.count += 1;
+    counter_add(&PERCPU_BUCKET_FREE_BYTES[cpu], size_class_size(sci));
     true
 }
 
@@ -249,6 +258,43 @@ static mut PERCPU_CACHES: [PerCpuCache; PERCPU_MAX_CPUS] = {
     [INIT; PERCPU_MAX_CPUS]
 };
 
+static PERCPU_CACHE_FREE_BYTES: [AtomicUsize; PERCPU_MAX_CPUS] =
+    [const { AtomicUsize::new(0) }; PERCPU_MAX_CPUS];
+
+#[inline(always)]
+fn counter_add(counter: &AtomicUsize, bytes: usize) {
+    if bytes != 0 {
+        counter.fetch_add(bytes, Ordering::Relaxed);
+    }
+}
+
+#[inline(always)]
+fn counter_sub(counter: &AtomicUsize, bytes: usize) {
+    if bytes == 0 {
+        return;
+    }
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_sub(bytes);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn cached_free_bytes() -> usize {
+    let mut total = 0usize;
+    let mut cpu = 0usize;
+    while cpu < PERCPU_MAX_CPUS {
+        total = total
+            .saturating_add(PERCPU_BUCKET_FREE_BYTES[cpu].load(Ordering::Relaxed))
+            .saturating_add(PERCPU_CACHE_FREE_BYTES[cpu].load(Ordering::Relaxed));
+        cpu += 1;
+    }
+    total
+}
+
 /// Try to allocate from the per-CPU local free list (lock-free, IF=0).
 /// Returns null if no suitable block found locally.
 ///
@@ -271,8 +317,10 @@ unsafe fn percpu_alloc(cpu: usize, size: usize) -> *mut u8 {
             // Corrupted or cyclic free list — discard everything we've seen
             // so the next alloc starts from a clean slate via the global
             // path. We can't coalesce safely once the chain is broken.
+            let cached = cache.cached_bytes;
             cache.free_list = core::ptr::null_mut();
             cache.cached_bytes = 0;
+            counter_sub(&PERCPU_CACHE_FREE_BYTES[cpu], cached);
             return core::ptr::null_mut();
         }
         let block_size = (*current).size;
@@ -288,6 +336,7 @@ unsafe fn percpu_alloc(cpu: usize, size: usize) -> *mut u8 {
                     (*prev).next = new_block;
                 }
                 cache.cached_bytes -= size;
+                counter_sub(&PERCPU_CACHE_FREE_BYTES[cpu], size);
             } else {
                 // Use entire block
                 if prev.is_null() {
@@ -296,6 +345,7 @@ unsafe fn percpu_alloc(cpu: usize, size: usize) -> *mut u8 {
                     (*prev).next = (*current).next;
                 }
                 cache.cached_bytes -= block_size;
+                counter_sub(&PERCPU_CACHE_FREE_BYTES[cpu], block_size);
             }
             return current as *mut u8;
         }
@@ -323,6 +373,7 @@ unsafe fn percpu_dealloc(cpu: usize, ptr: *mut u8, size: usize) {
     (*block).next = cache.free_list;
     cache.free_list = block;
     cache.cached_bytes += size;
+    counter_add(&PERCPU_CACHE_FREE_BYTES[cpu], size);
 
     // Flush half back to global if over threshold
     if cache.cached_bytes > PERCPU_CACHE_MAX {
@@ -342,6 +393,7 @@ unsafe fn percpu_flush_half(cpu: usize) {
         cache.free_list = (*block).next;
         let bsize = (*block).size;
         cache.cached_bytes -= bsize;
+        counter_sub(&PERCPU_CACHE_FREE_BYTES[cpu], bsize);
         flushed += bsize;
 
         // Insert into global free list (sorted by address)
@@ -547,6 +599,7 @@ unsafe impl GlobalAlloc for LockedHeap {
             (*block).next = cache.free_list;
             cache.free_list = block;
             cache.cached_bytes += effective_size;
+            counter_add(&PERCPU_CACHE_FREE_BYTES[cpu], effective_size);
 
             if cache.cached_bytes > PERCPU_CACHE_MAX {
                 // Need global lock to flush back
@@ -884,6 +937,7 @@ pub fn heap_stats() -> (usize, usize) {
             total_free += (*current).size;
             current = (*current).next;
         }
+        total_free = total_free.saturating_add(cached_free_bytes()).min(committed);
         HEAP_ALLOCATOR.release(flags);
         (committed.saturating_sub(total_free), committed)
     }
@@ -952,9 +1006,10 @@ pub fn validate_heap() {
         }
 
         crate::serial_verbose_println!(
-            "  Heap check: {} free block(s), {} KiB free / {} KiB committed",
+            "  Heap check: {} free block(s), {} KiB global free + {} KiB cached free / {} KiB committed",
             count,
             total_free / 1024,
+            cached_free_bytes() / 1024,
             HEAP_COMMITTED.load(Ordering::Acquire) / 1024
         );
         HEAP_ALLOCATOR.release(flags);

@@ -17,6 +17,7 @@ const WORKER_COUNT: usize = 2;
 const WORKER_PRIORITY: u8 = 96;
 const MAX_PENDING_REQUESTS: usize = 128;
 const MAX_ASYNC_PREFETCH_SECTORS: u32 = 128;
+const MAX_MERGED_PREFETCH_SECTORS: u32 = 1024;
 const MAX_PENDING_PREFETCH_REQUESTS: usize = 24;
 const MAX_PENDING_PREFETCH_WITH_FOREGROUND: usize = 6;
 const PREFETCH_CACHE_POPULATE_SECTORS: u32 = 32;
@@ -46,6 +47,7 @@ struct AsyncRequest {
     lba: u32,
     count: u32,
     op_kind: u32,
+    cache_generation: u64,
     buffer: AsyncBuffer,
     completion: Option<Arc<IoCompletion>>,
 }
@@ -143,6 +145,42 @@ impl AsyncQueue {
         }
         false
     }
+
+    fn try_merge_prefetch(&mut self, req: &AsyncRequest) -> bool {
+        if req.op != AsyncOp::Prefetch || req.completion.is_some() || req.count == 0 {
+            return false;
+        }
+
+        for existing in self.pending.iter_mut().rev() {
+            if existing.op != AsyncOp::Prefetch
+                || existing.disk_id != req.disk_id
+                || existing.op_kind != req.op_kind
+                || existing.cache_generation != req.cache_generation
+                || existing.completion.is_some()
+            {
+                continue;
+            }
+
+            let existing_end = existing.lba as u64 + existing.count as u64;
+            if existing_end != req.lba as u64 {
+                continue;
+            }
+            let merged = existing.count.saturating_add(req.count);
+            if merged > MAX_MERGED_PREFETCH_SECTORS {
+                continue;
+            }
+
+            if let AsyncBuffer::Owned(buf) = &mut existing.buffer {
+                let new_len = merged as usize * 512;
+                if new_len > buf.len() {
+                    buf.resize(new_len, 0);
+                }
+                existing.count = merged;
+                return true;
+            }
+        }
+        false
+    }
 }
 
 struct IoCompletionState {
@@ -225,6 +263,9 @@ fn can_queue() -> bool {
 fn enqueue(req: AsyncRequest) -> bool {
     let wake_tid = {
         let mut queue = QUEUE.lock();
+        if queue.try_merge_prefetch(&req) {
+            return true;
+        }
         if !queue.make_room_for(req.priority) {
             DROPPED.fetch_add(1, Ordering::Relaxed);
             return false;
@@ -291,6 +332,7 @@ pub fn read_sectors_wait(disk_id: u8, lba: u32, count: u32, buf: &mut [u8], op_k
         lba,
         count,
         op_kind,
+        cache_generation: 0,
         buffer: AsyncBuffer::Borrowed {
             addr: buf.as_mut_ptr() as usize,
             len: buf.len(),
@@ -323,6 +365,7 @@ pub fn write_sectors_wait(disk_id: u8, lba: u32, count: u32, buf: &[u8], op_kind
         lba,
         count,
         op_kind,
+        cache_generation: 0,
         buffer: AsyncBuffer::Borrowed {
             addr: buf.as_ptr() as usize,
             len: buf.len(),
@@ -356,6 +399,7 @@ pub fn prefetch_sectors(disk_id: u8, lba: u32, count: u32) {
             lba: lba + done,
             count: batch,
             op_kind: super::IO_OP_READAHEAD,
+            cache_generation: super::disk_write_generation(disk_id),
             buffer: AsyncBuffer::Owned(vec![0u8; bytes]),
             completion: None,
         };
@@ -427,7 +471,11 @@ fn process_request(mut req: AsyncRequest) {
                     req.op_kind,
                 );
                 if ok {
-                    populate_prefetch_cache(req.disk_id, req.lba, req.count, &mut buf[..bytes]);
+                    let generation_still_current =
+                        super::disk_write_generation(req.disk_id) == req.cache_generation;
+                    if generation_still_current {
+                        populate_prefetch_cache(req.disk_id, req.lba, req.count, &mut buf[..bytes]);
+                    }
                 }
                 (ok, if ok { bytes } else { 0 })
             }
