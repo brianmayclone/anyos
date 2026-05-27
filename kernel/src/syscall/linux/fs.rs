@@ -36,7 +36,10 @@ pub(super) fn linux_openat(dirfd: i32, path_ptr: u64, linux_flags: u64) -> u64 {
 }
 
 pub(super) fn linux_stat(path_ptr: u64, stat_ptr: u64, nofollow: bool) -> u64 {
-    if path_ptr == 0 || stat_ptr == 0 {
+    if path_ptr == 0
+        || stat_ptr == 0
+        || !super::handlers::helpers::is_user_range_accessible(stat_ptr, 144)
+    {
         return linux_err(EFAULT);
     }
     let raw_path = match super::handlers::helpers::read_user_str_safe(path_ptr) {
@@ -58,7 +61,7 @@ pub(super) fn linux_stat(path_ptr: u64, stat_ptr: u64, nofollow: bool) -> u64 {
 }
 
 pub(super) fn linux_newfstatat(dirfd: i32, path_ptr: u64, stat_ptr: u64, flags: u64) -> u64 {
-    if stat_ptr == 0 {
+    if stat_ptr == 0 || !super::handlers::helpers::is_user_range_accessible(stat_ptr, 144) {
         return linux_err(EFAULT);
     }
     let raw_path = if path_ptr == 0 {
@@ -383,7 +386,7 @@ pub(super) fn linux_stat_translated(path: &str, stat_ptr: u64, nofollow: bool) -
 }
 
 pub(super) fn linux_fstat(fd: u32, stat_ptr: u64) -> u64 {
-    if stat_ptr == 0 {
+    if stat_ptr == 0 || !super::handlers::helpers::is_user_range_accessible(stat_ptr, 144) {
         return linux_err(EFAULT);
     }
 

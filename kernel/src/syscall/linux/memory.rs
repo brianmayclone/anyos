@@ -133,11 +133,13 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
             }
         }
     } else {
-        // Keep LXE anonymous mappings eager for now. The lazy reserve path can
-        // turn a userspace page fault into a global kernel stall under heavy
-        // APT/dynamic-loader activity; APT's cache size is handled in rootfs
-        // config instead.
-        handlers::sys_mmap_u64(len)
+        let no_access = (prot & (LINUX_PROT_READ | LINUX_PROT_WRITE | LINUX_PROT_EXEC)) == 0;
+        let large_anon = anonymous && len >= 16 * 1024 * 1024;
+        if anonymous && (no_access || large_anon) {
+            handlers::sys_mmap_reserve_u64(len)
+        } else {
+            handlers::sys_mmap_u64(len)
+        }
     };
     if mapped == u64::MAX {
         crate::serial_verbose_println!(

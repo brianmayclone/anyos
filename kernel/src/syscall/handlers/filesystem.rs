@@ -243,7 +243,9 @@ pub fn sys_getcwd(buf_ptr: u64, buf_size: u32) -> u32 {
         }
         return 1;
     }
-    len as u32
+    let nul = len.min(buf_size.saturating_sub(1) as usize);
+    buf[nul] = 0;
+    nul as u32
 }
 
 pub fn sys_chdir(path_ptr: u64) -> u32 {

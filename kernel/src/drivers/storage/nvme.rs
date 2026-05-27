@@ -796,7 +796,21 @@ pub fn init_and_register(pci: &PciDevice) {
         crate::serial_verbose_println!("  NVMe: BAR0 is I/O port (expected MMIO)");
         return;
     }
-    let mmio_phys = (bar0 & 0xFFFFF000) as u64;
+    let bar_type = (bar0 >> 1) & 0x3;
+    let mmio_phys = if bar_type == 2 {
+        ((pci.bars[1] as u64) << 32) | ((bar0 & !0xF) as u64)
+    } else {
+        (bar0 & !0xF) as u64
+    };
+    if mmio_phys == 0 {
+        crate::serial_verbose_println!("  NVMe: BAR0 is zero, cannot initialize");
+        return;
+    }
+    crate::serial_verbose_println!(
+        "  NVMe: BAR0 MMIO phys={:#014x} ({})",
+        mmio_phys,
+        if bar_type == 2 { "64-bit" } else { "32-bit" }
+    );
 
     // Enable PCI bus mastering + memory
     let cmd = pci_config_read32(pci.bus, pci.device, pci.function, 0x04);

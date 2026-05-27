@@ -48,6 +48,9 @@
 #
 # ── Storage ───────────────────────────────────────────────────────────────────
 #   --ide         Use legacy IDE (PIO) instead of AHCI (DMA) for disk I/O
+#   --nvme        Use NVMe PCIe storage for the main disk instead of AHCI
+#                   Do not combine with --tempdisk/--disk yet; those attach
+#                   additional AHCI controllers in the current launcher.
 #   --cdrom       Boot from ISO image (CD-ROM) instead of hard drive
 #   --tempdisk    Attach a fresh 2 GB empty hard disk (recreated each start).
 #                   Useful for testing ISO installations: --cdrom --tempdisk
@@ -107,6 +110,7 @@
 # ── Examples ──────────────────────────────────────────────────────────────────
 #   ./run.sh                                    # Bochs VGA, PS/2 input, NAT
 #   ./run.sh --kvm                              # Same + KVM acceleration
+#   ./run.sh --kvm --nvme                       # Main disk as NVMe PCIe device
 #   ./run.sh --virtio --res 1920x1080 --kvm     # VirtIO GPU, PS/2 input, KVM
 #   ./run.sh --virgl --kvm --audio              # 3D accelerated + audio
 #   ./run.sh --kvm --tablet --kbd ch            # KVM, USB tablet, Swiss layout
@@ -124,6 +128,7 @@ CDROM_MODE=false
 VGA="std"
 VGA_LABEL="Bochs VGA (standard)"
 IDE_MODE=false
+NVME_MODE=false
 AUDIO_FLAGS=""
 AUDIO_LABEL=""
 USB_FLAGS=""
@@ -363,6 +368,9 @@ for arg in "$@"; do
         --ide)
             IDE_MODE=true
             ;;
+        --nvme)
+            NVME_MODE=true
+            ;;
         --cdrom)
             CDROM_MODE=true
             ;;
@@ -474,7 +482,7 @@ for arg in "$@"; do
             PERSIST_POWER=true
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--displays N] [--ide] [--cdrom] [--tempdisk] [--disk PATH[:SIZE] ...] [--audio] [--usb | --tablet] [--uefi | --bios] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--spice | --spice-app | --clipboard] [--arm64] [--headless] [--snapshot] [--persist-power]"
+            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--displays N] [--ide | --nvme] [--cdrom] [--tempdisk] [--disk PATH[:SIZE] ...] [--audio] [--usb | --tablet] [--uefi | --bios] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--spice | --spice-app | --clipboard] [--arm64] [--headless] [--snapshot] [--persist-power]"
             exit 1
             ;;
     esac
@@ -482,6 +490,17 @@ done
 
 if [ "$EXPECT_RES" = true ]; then
     echo "Error: --res requires a WIDTHxHEIGHT argument (e.g. --res 1280x1024)"
+    exit 1
+fi
+
+if [ "$IDE_MODE" = true ] && [ "$NVME_MODE" = true ]; then
+    echo "Error: --ide and --nvme are mutually exclusive"
+    exit 1
+fi
+
+if [ "$NVME_MODE" = true ] && { [ "$TEMPDISK" = true ] || [ "${#DISK_SPECS[@]}" -gt 0 ]; }; then
+    echo "Error: --nvme cannot be combined with --tempdisk/--disk yet"
+    echo "Reason: extra disks are currently attached as AHCI controllers and can steal the active storage backend."
     exit 1
 fi
 
@@ -938,8 +957,13 @@ elif [ "$UEFI_MODE" = true ]; then
     fi
 
     BIOS_FLAGS="-drive if=pflash,format=raw,readonly=on,file=$OVMF_FW"
-    DRIVE_FLAGS="-device ahci,id=ahci0 -drive id=disk0,file=\"$IMAGE\",format=raw,if=none -device ide-hd,drive=disk0,bus=ahci0.0"
-    DRIVE_LABEL="UEFI (GPT, AHCI)"
+    if [ "$NVME_MODE" = true ]; then
+        DRIVE_FLAGS="-drive id=disk0,file=\"$IMAGE\",format=raw,if=none -device nvme,drive=disk0,serial=anyos-nvme0"
+        DRIVE_LABEL="UEFI (GPT, NVMe)"
+    else
+        DRIVE_FLAGS="-device ahci,id=ahci0 -drive id=disk0,file=\"$IMAGE\",format=raw,if=none -device ide-hd,drive=disk0,bus=ahci0.0"
+        DRIVE_LABEL="UEFI (GPT, AHCI)"
+    fi
 
     if [ ! -f "$OVMF_FW" ]; then
         echo "Error: OVMF firmware not found at $OVMF_FW"
@@ -952,6 +976,9 @@ else
     if [ "$IDE_MODE" = true ]; then
         DRIVE_FLAGS="-drive format=raw,file=\"$IMAGE\""
         DRIVE_LABEL="IDE (PIO)"
+    elif [ "$NVME_MODE" = true ]; then
+        DRIVE_FLAGS="-drive id=hd0,if=none,format=raw,file=\"$IMAGE\" -device nvme,drive=hd0,serial=anyos-nvme0"
+        DRIVE_LABEL="NVMe (PCIe)"
     else
         DRIVE_FLAGS="-drive id=hd0,if=none,format=raw,file=\"$IMAGE\" -device ich9-ahci,id=ahci -device ide-hd,drive=hd0,bus=ahci.0"
         DRIVE_LABEL="AHCI (DMA)"

@@ -71,7 +71,11 @@ fn is_user_page_accessible(addr: u64) -> bool {
     if !is_valid_user_ptr(addr, 1) {
         return false;
     }
-    crate::memory::virtual_mem::virt_to_phys(VirtAddr(addr)).is_some()
+    if crate::memory::virtual_mem::virt_to_phys(VirtAddr(addr)).is_some() {
+        return true;
+    }
+    crate::memory::virtual_mem::handle_user_mmap_demand_page(addr)
+        && crate::memory::virtual_mem::virt_to_phys(VirtAddr(addr)).is_some()
 }
 
 /// Check that a user-space range is valid and currently mapped in the active
