@@ -99,30 +99,71 @@ pub fn find_app_bundle_by_stem(name: &str) -> Option<String> {
     None
 }
 
-/// Read the display name from a .app bundle's Info.conf.
-/// Falls back to the folder name minus ".app" if Info.conf is missing or has no `name=` key.
-pub fn app_bundle_name(bundle_path: &str) -> String {
-    // Try reading Info.conf
+fn app_bundle_info_value(bundle_path: &str, key: &str) -> Option<String> {
     let mut conf_path = String::from(bundle_path);
     conf_path.push_str("/Info.conf");
 
     let fd = fs::open(&conf_path, 0);
-    if fd != u32::MAX {
-        let mut buf = [0u8; 512];
-        let n = fs::read(fd, &mut buf);
-        fs::close(fd);
-        if n > 0 && n != u32::MAX {
-            if let Ok(text) = core::str::from_utf8(&buf[..n as usize]) {
-                for line in text.split('\n') {
-                    let line = line.trim();
-                    if let Some(rest) = line.strip_prefix("name=") {
-                        if !rest.is_empty() {
-                            return String::from(rest);
-                        }
-                    }
-                }
+    if fd == u32::MAX {
+        return None;
+    }
+    let mut buf = [0u8; 1024];
+    let n = fs::read(fd, &mut buf);
+    fs::close(fd);
+    if n == 0 || n == u32::MAX {
+        return None;
+    }
+
+    let text = core::str::from_utf8(&buf[..n as usize]).ok()?;
+    for line in text.split('\n') {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(idx) = line.find('=') {
+            let k = line[..idx].trim();
+            let v = line[idx + 1..].trim();
+            if k == key && !v.is_empty() {
+                return Some(String::from(v));
             }
         }
+    }
+    None
+}
+
+/// Find an app bundle by folder stem, display name, or executable name.
+///
+/// This is useful for process/window tracking where the kernel-visible process
+/// name can come from the bundle folder or from the executable in `Info.conf`.
+pub fn find_app_bundle_by_name(name: &str) -> Option<String> {
+    let name_lower = name.to_ascii_lowercase();
+    for bundle_path in collect_app_bundles() {
+        let folder = bundle_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(bundle_path.as_str());
+        if let Some(stem) = folder.strip_suffix(".app") {
+            if stem.to_ascii_lowercase() == name_lower {
+                return Some(bundle_path);
+            }
+        }
+        if app_bundle_name(&bundle_path).to_ascii_lowercase() == name_lower {
+            return Some(bundle_path);
+        }
+        if let Some(exec) = app_bundle_info_value(&bundle_path, "exec") {
+            if exec.to_ascii_lowercase() == name_lower {
+                return Some(bundle_path);
+            }
+        }
+    }
+    None
+}
+
+/// Read the display name from a .app bundle's Info.conf.
+/// Falls back to the folder name minus ".app" if Info.conf is missing or has no `name=` key.
+pub fn app_bundle_name(bundle_path: &str) -> String {
+    if let Some(name) = app_bundle_info_value(bundle_path, "name") {
+        return name;
     }
 
     // Fallback: derive from folder name

@@ -276,6 +276,65 @@ fn point_in_rect(px: i32, py: i32, rx: i32, ry: i32, rw: u32, rh: u32) -> bool {
     px >= rx && py >= ry && px < rx + rw as i32 && py < ry + rh as i32
 }
 
+fn resolve_app_path_for_process_name(name: &str) -> String {
+    anyos_std::icons::find_app_bundle_by_name(name)
+        .unwrap_or_else(|| alloc::format!("/System/bin/{}", name))
+}
+
+fn dock_item_matches_process_name(item: &DockItem, name: &str) -> bool {
+    let raw_basename = item.bin_path.rsplit('/').next().unwrap_or("");
+    let basename = raw_basename.strip_suffix(".app").unwrap_or(raw_basename);
+    if basename.eq_ignore_ascii_case(name) {
+        return true;
+    }
+
+    if item.bin_path.ends_with(".app") {
+        let display_name = anyos_std::icons::app_bundle_name(&item.bin_path);
+        if display_name.as_str().eq_ignore_ascii_case(name) {
+            return true;
+        }
+    }
+
+    anyos_std::icons::find_app_bundle_by_name(name)
+        .map(|bundle| bundle == item.bin_path)
+        .unwrap_or(false)
+}
+
+fn thread_name_for_tid(tid: u32) -> Option<String> {
+    let cached = {
+        let a = app();
+        a.tid_names
+            .iter()
+            .find(|(t, _)| *t == tid)
+            .map(|(_, n)| n.clone())
+    };
+    let queried = events::query_thread_name(tid);
+
+    let name = match (cached, queried) {
+        (Some(cached), Some(queried)) => {
+            if queried.len() > cached.len() {
+                queried
+            } else {
+                cached
+            }
+        }
+        (Some(cached), None) => cached,
+        (None, Some(queried)) => queried,
+        (None, None) => return None,
+    };
+
+    let a = app();
+    if let Some((_, cached_name)) = a.tid_names.iter_mut().find(|(t, _)| *t == tid) {
+        if cached_name.as_str() != name.as_str() {
+            *cached_name = name.clone();
+        }
+    } else {
+        a.tid_names.push((tid, name.clone()));
+    }
+
+    Some(name)
+}
+
 fn update_auto_hide_hot_from_cursor() {
     let a = app();
     let (dx, dy, dw, dh) = dock_window_rect_for_progress(
@@ -1183,36 +1242,27 @@ fn finalize_drag(mouse_x: i32, mouse_y: i32) {
 
 /// Handle window opened event — add transient dock item for windowed apps.
 fn handle_window_opened(app_tid: u32) {
-    let a = app();
-
     // Already tracked (pinned or previously added)?
-    if a.items.iter().any(|it| it.tid == app_tid) {
+    if app().items.iter().any(|it| it.tid == app_tid) {
         return;
     }
 
-    // Look up cached TID→name from EVT_PROCESS_SPAWNED
-    let name = match a.tid_names.iter().find(|(t, _)| *t == app_tid) {
-        Some((_, n)) => n.clone(),
-        None => return, // Unknown process, skip
+    // Prefer the sysinfo name: EVT_PROCESS_SPAWNED only carries 12 bytes.
+    let name = match thread_name_for_tid(app_tid) {
+        Some(n) => n,
+        None => return,
     };
 
     if should_hide_from_dock(name.as_str()) {
         return;
     }
 
-    let icon_size = a.settings.icon_size;
-    let mag_size = a.settings.mag_size;
-    let magnification = a.settings.magnification;
-
-    let bin_path = {
-        let app_path = alloc::format!("/Applications/{}.app", name);
-        let mut stat_buf = [0u32; 7];
-        if anyos_std::fs::stat(&app_path, &mut stat_buf) == 0 && stat_buf[0] == 1 {
-            app_path
-        } else {
-            alloc::format!("/System/bin/{}", name)
-        }
+    let (icon_size, mag_size, magnification) = {
+        let a = app();
+        (a.settings.icon_size, a.settings.mag_size, a.settings.magnification)
     };
+
+    let bin_path = resolve_app_path_for_process_name(&name);
     let icon_path = anyos_std::icons::app_icon_path(&bin_path);
     let icon = load_ico_icon(&icon_path, icon_size);
     let icon_hires = if magnification {
@@ -1399,12 +1449,10 @@ fn process_system_events() {
                     continue;
                 }
 
-                // Match pinned items by binary basename
+                // Match pinned items by bundle/display/executable name.
                 for item in a.items.iter_mut() {
                     if item.pinned && item.tid == 0 {
-                        let raw_basename = item.bin_path.rsplit('/').next().unwrap_or("");
-                        let basename = raw_basename.strip_suffix(".app").unwrap_or(raw_basename);
-                        if basename == name.as_str() {
+                        if dock_item_matches_process_name(item, name.as_str()) {
                             item.tid = spawned_tid;
                             item.running = true;
                             a.needs_redraw = true;
@@ -1485,19 +1533,9 @@ fn reconcile_window_list() {
             continue;
         }
 
-        // Look up name from tid_names cache or query kernel
-        let name = match a.tid_names.iter().find(|(t, _)| *t == tid) {
-            Some((_, n)) => n.clone(),
-            None => {
-                // Not in cache — query from kernel
-                if let Some(n) = events::query_thread_name(tid) {
-                    let a = app();
-                    a.tid_names.push((tid, n.clone()));
-                    n
-                } else {
-                    continue;
-                }
-            }
+        let name = match thread_name_for_tid(tid) {
+            Some(n) => n,
+            None => continue,
         };
 
         if should_hide_from_dock(name.as_str()) {
@@ -1509,9 +1547,7 @@ fn reconcile_window_list() {
         let mut matched_pinned = false;
         for item in a.items.iter_mut() {
             if item.pinned && item.tid == 0 {
-                let raw_basename = item.bin_path.rsplit('/').next().unwrap_or("");
-                let basename = raw_basename.strip_suffix(".app").unwrap_or(raw_basename);
-                if basename == name.as_str() {
+                if dock_item_matches_process_name(item, name.as_str()) {
                     item.tid = tid;
                     item.running = true;
                     a.needs_redraw = true;
@@ -1529,15 +1565,7 @@ fn reconcile_window_list() {
         let mag_size = a.settings.mag_size;
         let magnification = a.settings.magnification;
 
-        let bin_path = {
-            let app_path = alloc::format!("/Applications/{}.app", name);
-            let mut stat_buf = [0u32; 7];
-            if anyos_std::fs::stat(&app_path, &mut stat_buf) == 0 && stat_buf[0] == 1 {
-                app_path
-            } else {
-                alloc::format!("/System/bin/{}", name)
-            }
-        };
+        let bin_path = resolve_app_path_for_process_name(&name);
         let icon_path = anyos_std::icons::app_icon_path(&bin_path);
         let icon = load_ico_icon(&icon_path, icon_size);
         let icon_hires = if magnification {

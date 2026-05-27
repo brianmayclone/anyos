@@ -766,6 +766,22 @@ struct DetachedStat {
     follow_last: bool,
 }
 
+enum DetachedAttrsBackend {
+    CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
+    ExFat(Arc<ExFatFsDriver>),
+}
+
+enum DetachedAttrsOp {
+    Mode(u16),
+    Owner { uid: u16, gid: u16 },
+}
+
+struct DetachedAttrs {
+    backend: DetachedAttrsBackend,
+    path: String,
+    op: DetachedAttrsOp,
+}
+
 enum DetachedReadlinkBackend {
     CoreFs(Arc<crate::fs::corefs::CoreFsDriver>),
     ExFat(Arc<ExFatFsDriver>),
@@ -1593,6 +1609,92 @@ fn prepare_detached_stat(path: &str, follow_last: bool) -> Option<DetachedStat> 
         path: String::from(q),
         follow_last,
     })
+}
+
+fn prepare_detached_attrs(path: &str, op: DetachedAttrsOp) -> Result<Option<DetachedAttrs>, FsError> {
+    if is_dev_path(path) {
+        return Ok(None);
+    }
+
+    let vfs = vfs_lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points)
+    {
+        let q = if relative_path.is_empty() {
+            String::from("/")
+        } else {
+            String::from(relative_path)
+        };
+        return match mnt_fs_type {
+            FsType::CoreFs => {
+                let driver = state
+                    .mounted_corefs
+                    .iter()
+                    .find(|(p, _)| p == mount_path)
+                    .map(|(_, driver)| Arc::clone(driver))
+                    .ok_or(FsError::NotFound)?;
+                Ok(Some(DetachedAttrs {
+                    backend: DetachedAttrsBackend::CoreFs(driver),
+                    path: q,
+                    op,
+                }))
+            }
+            FsType::ExFat => {
+                let driver = state
+                    .mounted_exfat
+                    .iter()
+                    .find(|(p, _)| p == mount_path)
+                    .map(|(_, driver)| Arc::clone(driver))
+                    .ok_or(FsError::IoError)?;
+                Ok(Some(DetachedAttrs {
+                    backend: DetachedAttrsBackend::ExFat(driver),
+                    path: q,
+                    op,
+                }))
+            }
+            _ => Ok(None),
+        };
+    }
+
+    let q = String::from(if path.is_empty() { "/" } else { path });
+    if state.root_fs_type == Some(FsType::CoreFs) {
+        return Ok(state.corefs_driver.as_ref().map(|driver| DetachedAttrs {
+            backend: DetachedAttrsBackend::CoreFs(Arc::clone(driver)),
+            path: q,
+            op,
+        }));
+    }
+    if state.root_fs_type == Some(FsType::ExFat) {
+        return Ok(state.exfat_fs.as_ref().map(|driver| DetachedAttrs {
+            backend: DetachedAttrsBackend::ExFat(Arc::clone(driver)),
+            path: q,
+            op,
+        }));
+    }
+
+    Ok(None)
+}
+
+fn execute_detached_attrs(plan: DetachedAttrs) -> Result<(), FsError> {
+    match plan.backend {
+        DetachedAttrsBackend::CoreFs(driver) => match plan.op {
+            DetachedAttrsOp::Mode(mode) => {
+                Filesystem::set_mode_by_path(driver.as_ref(), &plan.path, mode)
+            }
+            DetachedAttrsOp::Owner { uid, gid } => {
+                Filesystem::set_owner_by_path(driver.as_ref(), &plan.path, uid, gid)
+            }
+        },
+        DetachedAttrsBackend::ExFat(driver) => match plan.op {
+            DetachedAttrsOp::Mode(mode) => {
+                Filesystem::set_mode_by_path(driver.as_ref(), &plan.path, mode)
+            }
+            DetachedAttrsOp::Owner { uid, gid } => {
+                Filesystem::set_owner_by_path(driver.as_ref(), &plan.path, uid, gid)
+            }
+        },
+    }
 }
 
 fn prepare_detached_readlink(path: &str) -> Option<DetachedReadlink> {
@@ -6310,6 +6412,10 @@ pub fn get_permissions(path: &str) -> Result<(u16, u16, u16), FsError> {
 
 /// Set the mode bits for a path.
 pub fn set_mode(path: &str, mode: u16) -> Result<(), FsError> {
+    if let Some(plan) = prepare_detached_attrs(path, DetachedAttrsOp::Mode(mode))? {
+        return execute_detached_attrs(plan);
+    }
+
     let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::NotFound)?;
 
@@ -6352,6 +6458,10 @@ pub fn set_mode(path: &str, mode: u16) -> Result<(), FsError> {
 
 /// Set the owner (uid, gid) for a path.
 pub fn set_owner(path: &str, uid: u16, gid: u16) -> Result<(), FsError> {
+    if let Some(plan) = prepare_detached_attrs(path, DetachedAttrsOp::Owner { uid, gid })? {
+        return execute_detached_attrs(plan);
+    }
+
     let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::NotFound)?;
 
