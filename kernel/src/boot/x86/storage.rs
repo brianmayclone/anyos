@@ -27,6 +27,7 @@ pub(super) fn init_storage_and_userspace(
     // all live on the larger root partition.
     fs::vfs::mount_boot_if_present();
     fs::vfs::mount_devfs();
+    drivers::storage::async_io::init();
     maybe_mount_cdrom_root();
     try_mount_corefs_partitions();
     crate::boot::reset_root_tmp_dir_or_halt();

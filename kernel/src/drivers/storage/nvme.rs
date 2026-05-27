@@ -9,7 +9,7 @@ use crate::drivers::pci::{pci_config_read32, pci_config_write32, PciDevice};
 use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::{physical, virtual_mem};
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{fence, AtomicBool, Ordering};
 
 // ── MMIO virtual base ───────────────────────────────
 
@@ -119,6 +119,9 @@ struct NvmeController {
     /// Bounce buffer for DMA
     bounce_phys: u64,
     bounce_virt: u64,
+    /// PRP list page used when the bounce transfer spans more than two pages.
+    prp_list_phys: u64,
+    prp_list_virt: u64,
     /// Queue depths
     admin_sq_tail: u16,
     admin_cq_head: u16,
@@ -145,6 +148,7 @@ const IO_QUEUE_SIZE: u16 = 64;
 const BOUNCE_SECTORS: u32 = 256;
 const BOUNCE_SIZE: usize = BOUNCE_SECTORS as usize * 512;
 const BOUNCE_PAGES: usize = BOUNCE_SIZE / 4096; // 32 pages
+const PRP_LIST_ENTRIES: usize = 512; // one 4 KiB page of u64 PRP entries
 
 // ── MMIO Helpers ────────────────────────────────────
 
@@ -216,7 +220,9 @@ unsafe fn admin_submit(ctrl: &mut NvmeController, cmd: &NvmeCommand) -> Option<N
     // Write command to admin SQ
     let sq_entry = (ctrl.asq_phys + ctrl.admin_sq_tail as u64 * 64) as *mut NvmeCommand;
     // Use identity-mapped virtual = physical for queue access
+    fence(Ordering::SeqCst);
     core::ptr::write_volatile(sq_entry, *cmd);
+    fence(Ordering::SeqCst);
 
     // Advance tail
     ctrl.admin_sq_tail = (ctrl.admin_sq_tail + 1) % ADMIN_QUEUE_SIZE;
@@ -234,6 +240,7 @@ unsafe fn admin_submit(ctrl: &mut NvmeController, cmd: &NvmeCommand) -> Option<N
                 ctrl.admin_phase = !ctrl.admin_phase;
             }
             write_cq_doorbell(ctrl, 0, ctrl.admin_cq_head);
+            fence(Ordering::SeqCst);
             return Some(cqe);
         }
         core::hint::spin_loop();
@@ -245,7 +252,9 @@ unsafe fn admin_submit(ctrl: &mut NvmeController, cmd: &NvmeCommand) -> Option<N
 /// Submit an I/O command and wait for completion.
 unsafe fn io_submit(ctrl: &mut NvmeController, cmd: &NvmeCommand) -> Option<NvmeCompletion> {
     let sq_entry = (ctrl.iosq_phys + ctrl.io_sq_tail as u64 * 64) as *mut NvmeCommand;
+    fence(Ordering::SeqCst);
     core::ptr::write_volatile(sq_entry, *cmd);
+    fence(Ordering::SeqCst);
 
     ctrl.io_sq_tail = (ctrl.io_sq_tail + 1) % IO_QUEUE_SIZE;
     write_sq_doorbell(ctrl, 1, ctrl.io_sq_tail);
@@ -267,12 +276,48 @@ unsafe fn io_submit(ctrl: &mut NvmeController, cmd: &NvmeCommand) -> Option<Nvme
                 crate::serial_verbose_println!("NVMe: I/O error, status={:#06x}", sc);
                 return None;
             }
+            fence(Ordering::SeqCst);
             return Some(cqe);
         }
         core::hint::spin_loop();
     }
     crate::serial_verbose_println!("NVMe: I/O command timeout");
     None
+}
+
+unsafe fn setup_data_prps(
+    ctrl: &mut NvmeController,
+    cmd: &mut NvmeCommand,
+    byte_count: usize,
+) -> bool {
+    if byte_count == 0 || byte_count > BOUNCE_SIZE {
+        return false;
+    }
+
+    cmd.prp1 = ctrl.bounce_phys;
+    cmd.prp2 = 0;
+
+    let pages = (byte_count + 4095) / 4096;
+    if pages <= 1 {
+        return true;
+    }
+    if pages == 2 {
+        cmd.prp2 = ctrl.bounce_phys + 4096;
+        return true;
+    }
+
+    let list_entries = pages - 1;
+    if list_entries > PRP_LIST_ENTRIES {
+        return false;
+    }
+
+    let list = ctrl.prp_list_virt as *mut u64;
+    core::ptr::write_bytes(list, 0, PRP_LIST_ENTRIES);
+    for page in 1..pages {
+        core::ptr::write_volatile(list.add(page - 1), ctrl.bounce_phys + page as u64 * 4096);
+    }
+    cmd.prp2 = ctrl.prp_list_phys;
+    true
 }
 
 // ── Public API ──────────────────────────────────────
@@ -292,7 +337,8 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
     let mut cur_lba = lba as u64;
 
     while remaining > 0 {
-        let batch = remaining.min(BOUNCE_SECTORS);
+        let max_batch = (BOUNCE_SIZE / ctrl.sector_size as usize).max(1) as u32;
+        let batch = remaining.min(max_batch);
         let byte_count = batch as usize * ctrl.sector_size as usize;
 
         let mut cmd = NvmeCommand::zeroed();
@@ -300,10 +346,8 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
         cmd.command_id = ctrl.next_cmd_id;
         ctrl.next_cmd_id = ctrl.next_cmd_id.wrapping_add(1);
         cmd.nsid = 1;
-        cmd.prp1 = ctrl.bounce_phys;
-        // PRP2: for transfers > 4 KiB, point to next page
-        if byte_count > 4096 {
-            cmd.prp2 = ctrl.bounce_phys + 4096;
+        if !unsafe { setup_data_prps(ctrl, &mut cmd, byte_count) } {
+            return false;
         }
         cmd.cdw10 = cur_lba as u32; // Starting LBA (low 32)
         cmd.cdw11 = (cur_lba >> 32) as u32; // Starting LBA (high 32)
@@ -345,7 +389,8 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
     let mut cur_lba = lba as u64;
 
     while remaining > 0 {
-        let batch = remaining.min(BOUNCE_SECTORS);
+        let max_batch = (BOUNCE_SIZE / ctrl.sector_size as usize).max(1) as u32;
+        let batch = remaining.min(max_batch);
         let byte_count = batch as usize * ctrl.sector_size as usize;
 
         // Copy data to bounce buffer
@@ -361,9 +406,8 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
         cmd.command_id = ctrl.next_cmd_id;
         ctrl.next_cmd_id = ctrl.next_cmd_id.wrapping_add(1);
         cmd.nsid = 1;
-        cmd.prp1 = ctrl.bounce_phys;
-        if byte_count > 4096 {
-            cmd.prp2 = ctrl.bounce_phys + 4096;
+        if !unsafe { setup_data_prps(ctrl, &mut cmd, byte_count) } {
+            return false;
         }
         cmd.cdw10 = cur_lba as u32;
         cmd.cdw11 = (cur_lba >> 32) as u32;
@@ -536,6 +580,22 @@ pub fn init_and_register(pci: &PciDevice) {
         virtual_mem::map_page(VirtAddr::new(p), PhysAddr::new(p), 0x03);
     }
 
+    let prp_list_phys = match physical::alloc_frame() {
+        Some(p) => p.as_u64(),
+        None => {
+            crate::serial_verbose_println!("  NVMe: alloc PRP list failed");
+            return;
+        }
+    };
+    virtual_mem::map_page(
+        VirtAddr::new(prp_list_phys),
+        PhysAddr::new(prp_list_phys),
+        0x03,
+    );
+    unsafe {
+        core::ptr::write_bytes(prp_list_phys as *mut u8, 0, 4096);
+    }
+
     let mut ctrl = NvmeController {
         mmio_base: base,
         doorbell_stride: dstrd as u32,
@@ -545,6 +605,8 @@ pub fn init_and_register(pci: &PciDevice) {
         iocq_phys,
         bounce_phys,
         bounce_virt: bounce_phys, // identity-mapped
+        prp_list_phys,
+        prp_list_virt: prp_list_phys,
         admin_sq_tail: 0,
         admin_cq_head: 0,
         admin_phase: true,

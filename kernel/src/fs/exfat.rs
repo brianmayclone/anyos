@@ -19,10 +19,18 @@ fn disk_read_sectors(disk_id: u32, abs_lba: u32, count: u32, buf: &mut [u8]) -> 
     crate::drivers::storage::read_sectors_on_disk(disk_id as u8, abs_lba, count, buf)
 }
 
+#[cfg(target_arch = "x86_64")]
+fn disk_prefetch_sectors(disk_id: u32, abs_lba: u32, count: u32) {
+    crate::drivers::storage::prefetch_sectors_on_disk(disk_id as u8, abs_lba, count);
+}
+
 #[cfg(target_arch = "aarch64")]
 fn disk_read_sectors(_disk_id: u32, abs_lba: u32, count: u32, buf: &mut [u8]) -> bool {
     crate::drivers::arm::storage::read_sectors(abs_lba, count, buf)
 }
+
+#[cfg(target_arch = "aarch64")]
+fn disk_prefetch_sectors(_disk_id: u32, _abs_lba: u32, _count: u32) {}
 
 /// Disk-aware storage write.
 #[cfg(target_arch = "x86_64")]
@@ -532,7 +540,7 @@ pub struct ExFatReadPlan {
 }
 
 impl ExFatReadPlan {
-    const PREFETCH_CHUNK_SECTORS: u32 = 64;
+    const PREFETCH_CHUNK_SECTORS: u32 = 256;
 
     /// Execute the read plan — reads sectors from storage.
     /// **Must be called WITHOUT the VFS lock held.**
@@ -651,8 +659,6 @@ impl ExFatReadPlan {
             return;
         }
 
-        let chunk_bytes = Self::PREFETCH_CHUNK_SECTORS as usize * 512;
-        let mut scratch = vec![0u8; chunk_bytes];
         let mut run_file_start = self.base_offset;
 
         for &(abs_lba, sector_count) in &self.runs {
@@ -674,15 +680,7 @@ impl ExFatReadPlan {
             let mut done = 0u32;
             while done < sectors {
                 let batch = (sectors - done).min(Self::PREFETCH_CHUNK_SECTORS);
-                let bytes = batch as usize * 512;
-                if !disk_read_sectors(
-                    self.disk_id,
-                    abs_lba + first_sector + done,
-                    batch,
-                    &mut scratch[..bytes],
-                ) {
-                    return;
-                }
+                disk_prefetch_sectors(self.disk_id, abs_lba + first_sector + done, batch);
                 done += batch;
             }
 
@@ -3523,14 +3521,13 @@ impl ExFatFs {
         while current_size < new_size {
             let remaining = (new_size - current_size) as usize;
             let write_len = remaining.min(zeros.len());
-            let (new_inode, new_file_size, hint_offset, hint_cluster) = self
-                .write_file_with_hint(
-                    current_inode,
-                    current_size,
-                    &zeros[..write_len],
-                    current_size,
-                    hint,
-                )?;
+            let (new_inode, new_file_size, hint_offset, hint_cluster) = self.write_file_with_hint(
+                current_inode,
+                current_size,
+                &zeros[..write_len],
+                current_size,
+                hint,
+            )?;
             current_inode = new_inode;
             current_size = new_file_size;
             hint = Some((hint_offset, hint_cluster));

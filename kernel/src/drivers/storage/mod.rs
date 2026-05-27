@@ -9,6 +9,7 @@
 //! cache (`fs::blockcache`).
 
 pub mod ahci;
+pub mod async_io;
 pub mod ata;
 pub mod atapi;
 pub mod blockdev;
@@ -95,7 +96,10 @@ const MAX_LOCKED_IO_SECTORS: u32 = 64;
 const MAX_LOCKED_READAHEAD_SECTORS: u32 = 64;
 const MAX_LOCKED_WRITE_SECTORS: u32 = 64;
 const MAX_LOCKED_WRITEBACK_SECTORS: u32 = 64;
+const MAX_LOCKED_DMA_IO_SECTORS: u32 = 256;
+const MAX_LOCKED_LSI_IO_SECTORS: u32 = 128;
 const MAX_UNLOCKED_AHCI_IO_SECTORS: u32 = 512;
+const RESPONSIVE_CACHE_BATCH_SECTORS: u32 = 16;
 const IO_OP_UNKNOWN: u32 = 0;
 const IO_OP_READ: u32 = 1;
 const IO_OP_READAHEAD: u32 = 2;
@@ -470,7 +474,29 @@ fn io_lock_required(disk_id: u8, op_kind: u32) -> bool {
 }
 
 #[inline]
-fn locked_io_batch_sectors(op_kind: u32) -> u32 {
+fn locked_io_batch_sectors(disk_id: u8, op_kind: u32) -> u32 {
+    if disk_id == 0 {
+        match unsafe { BACKEND } {
+            StorageBackend::Nvme | StorageBackend::Ahci => {
+                if matches!(
+                    op_kind,
+                    IO_OP_READ | IO_OP_READAHEAD | IO_OP_WRITE | IO_OP_WRITEBACK
+                ) {
+                    return MAX_LOCKED_DMA_IO_SECTORS;
+                }
+            }
+            StorageBackend::LsiScsi => {
+                if matches!(
+                    op_kind,
+                    IO_OP_READ | IO_OP_READAHEAD | IO_OP_WRITE | IO_OP_WRITEBACK
+                ) {
+                    return MAX_LOCKED_LSI_IO_SECTORS;
+                }
+            }
+            StorageBackend::Ata => {}
+        }
+    }
+
     if op_kind == IO_OP_WRITEBACK {
         MAX_LOCKED_WRITEBACK_SECTORS
     } else if op_kind == IO_OP_READAHEAD {
@@ -489,6 +515,54 @@ fn schedule_between_io_chunks() {
     }
 }
 
+#[inline]
+fn schedule_between_cache_batches() {
+    if crate::task::scheduler::current_tid() > 0 {
+        crate::task::scheduler::schedule();
+    }
+}
+
+fn overlay_cached_responsive(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> u32 {
+    let mut done = 0u32;
+    let mut found = 0u32;
+    while done < count {
+        let batch = (count - done).min(RESPONSIVE_CACHE_BATCH_SECTORS);
+        let offset = done as usize * 512;
+        let bytes = batch as usize * 512;
+        if offset + bytes > buf.len() {
+            break;
+        }
+        found += crate::fs::blockcache::overlay_cached(
+            disk_id,
+            lba + done,
+            batch,
+            &mut buf[offset..offset + bytes],
+        );
+        done += batch;
+        if done < count {
+            schedule_between_cache_batches();
+        }
+    }
+    found
+}
+
+fn populate_cached_responsive(disk_id: u8, lba: u32, count: u32, data: &[u8]) {
+    let mut done = 0u32;
+    while done < count {
+        let batch = (count - done).min(RESPONSIVE_CACHE_BATCH_SECTORS);
+        let offset = done as usize * 512;
+        let bytes = batch as usize * 512;
+        if offset + bytes > data.len() {
+            break;
+        }
+        crate::fs::blockcache::populate(disk_id, lba + done, batch, &data[offset..offset + bytes]);
+        done += batch;
+        if done < count {
+            schedule_between_cache_batches();
+        }
+    }
+}
+
 fn read_sectors_raw_chunked(
     disk_id: u8,
     lba: u32,
@@ -499,7 +573,7 @@ fn read_sectors_raw_chunked(
     let mut done = 0u32;
     let use_lock = io_lock_required(disk_id, op_kind);
     let max_batch = if use_lock {
-        locked_io_batch_sectors(op_kind)
+        locked_io_batch_sectors(disk_id, op_kind)
     } else {
         MAX_UNLOCKED_AHCI_IO_SECTORS
     };
@@ -535,7 +609,7 @@ fn write_sectors_raw_chunked(disk_id: u8, lba: u32, count: u32, buf: &[u8], op_k
     let mut done = 0u32;
     let use_lock = io_lock_required(disk_id, op_kind);
     let max_batch = if use_lock {
-        locked_io_batch_sectors(op_kind)
+        locked_io_batch_sectors(disk_id, op_kind)
     } else {
         MAX_UNLOCKED_AHCI_IO_SECTORS
     };
@@ -666,11 +740,16 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
         }
     };
 
-    let total_fetch = miss_count + readahead;
+    let prefetch_lba = miss_lba.saturating_add(miss_count);
+    let prefetch_count = readahead;
+    let total_fetch = miss_count;
     let fetch_bytes = total_fetch as usize * 512;
     let populate_after_read = miss_count <= READ_CACHE_POPULATE_MAX;
     if cache_active {
-        LAST_READ_END_LBA.store(miss_lba + total_fetch, Ordering::Relaxed);
+        LAST_READ_END_LBA.store(
+            prefetch_lba.saturating_add(prefetch_count),
+            Ordering::Relaxed,
+        );
     }
 
     // Prefer a pool buffer to avoid a heap allocation per read (see
@@ -680,7 +759,7 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
         if fetch_bytes <= READAHEAD_BUF_BYTES {
             if let Some(lease) = acquire_readahead_slot() {
                 let big_buf = readahead_slot_bytes(&lease, fetch_bytes);
-                let ok = read_sectors_raw_chunked(
+                let ok = async_io::read_sectors_wait(
                     disk_id,
                     miss_lba,
                     total_fetch,
@@ -688,12 +767,12 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
                     IO_OP_READAHEAD,
                 );
                 if ok {
-                    crate::fs::blockcache::overlay_cached(disk_id, miss_lba, total_fetch, big_buf);
+                    overlay_cached_responsive(disk_id, miss_lba, total_fetch, big_buf);
                     let needed = miss_count as usize * 512;
                     let copy_end = needed.min(buf.len() - miss_offset);
                     buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);
                     if populate_after_read {
-                        crate::fs::blockcache::populate(
+                        populate_cached_responsive(
                             disk_id,
                             miss_lba,
                             total_fetch,
@@ -706,7 +785,7 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
                 }
             } else {
                 let mut big_buf = alloc::vec![0u8; fetch_bytes];
-                let ok = read_sectors_raw_chunked(
+                let ok = async_io::read_sectors_wait(
                     disk_id,
                     miss_lba,
                     total_fetch,
@@ -714,17 +793,12 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
                     IO_OP_READAHEAD,
                 );
                 if ok {
-                    crate::fs::blockcache::overlay_cached(
-                        disk_id,
-                        miss_lba,
-                        total_fetch,
-                        &mut big_buf,
-                    );
+                    overlay_cached_responsive(disk_id, miss_lba, total_fetch, &mut big_buf);
                     let needed = miss_count as usize * 512;
                     let copy_end = needed.min(buf.len() - miss_offset);
                     buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);
                     if populate_after_read {
-                        crate::fs::blockcache::populate(disk_id, miss_lba, total_fetch, &big_buf);
+                        populate_cached_responsive(disk_id, miss_lba, total_fetch, &big_buf);
                     }
                     true
                 } else {
@@ -733,7 +807,7 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
             }
         } else {
             let mut big_buf = alloc::vec![0u8; fetch_bytes];
-            let ok = read_sectors_raw_chunked(
+            let ok = async_io::read_sectors_wait(
                 disk_id,
                 miss_lba,
                 total_fetch,
@@ -741,12 +815,12 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
                 IO_OP_READAHEAD,
             );
             if ok {
-                crate::fs::blockcache::overlay_cached(disk_id, miss_lba, total_fetch, &mut big_buf);
+                overlay_cached_responsive(disk_id, miss_lba, total_fetch, &mut big_buf);
                 let needed = miss_count as usize * 512;
                 let copy_end = needed.min(buf.len() - miss_offset);
                 buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);
                 if populate_after_read {
-                    crate::fs::blockcache::populate(disk_id, miss_lba, total_fetch, &big_buf);
+                    populate_cached_responsive(disk_id, miss_lba, total_fetch, &big_buf);
                 }
                 true
             } else {
@@ -755,7 +829,7 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
         }
     } else {
         // No readahead: read directly into caller buffer
-        let ok = read_sectors_raw_chunked(
+        let ok = async_io::read_sectors_wait(
             disk_id,
             miss_lba,
             miss_count,
@@ -765,7 +839,7 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
         if ok && cache_active {
             let fetched_bytes = miss_count as usize * 512;
             if buf.len() >= miss_offset + fetched_bytes {
-                crate::fs::blockcache::overlay_cached(
+                overlay_cached_responsive(
                     disk_id,
                     miss_lba,
                     miss_count,
@@ -775,7 +849,7 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
             // Populate cache with small/random reads only. Large streaming reads
             // otherwise evict useful metadata and pay one cache insert per sector.
             if populate_after_read && buf.len() >= miss_offset + fetched_bytes {
-                crate::fs::blockcache::populate(
+                populate_cached_responsive(
                     disk_id,
                     miss_lba,
                     miss_count,
@@ -786,7 +860,23 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
         ok
     };
 
+    if result && prefetch_count > 0 {
+        async_io::prefetch_sectors(disk_id, prefetch_lba, prefetch_count);
+    }
+
     result
+}
+
+/// Queue a best-effort background read into the block cache.
+///
+/// Filesystems use this for sequential readahead after they have already
+/// returned the caller-visible bytes. If async workers are not running yet, the
+/// request is simply ignored.
+pub fn prefetch_sectors_on_disk(disk_id: u8, lba: u32, count: u32) {
+    if count == 0 || !check_backend_io_bounds(disk_id, lba, count, "prefetch") {
+        return;
+    }
+    async_io::prefetch_sectors(disk_id, lba, count);
 }
 
 /// Raw read without cache — dispatches to the active backend.
@@ -878,7 +968,7 @@ pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> b
     }
 
     // Large write or no cache: go directly to disk
-    let result = write_sectors_raw_chunked(disk_id, lba, count, buf, IO_OP_WRITE);
+    let result = async_io::write_sectors_wait(disk_id, lba, count, buf, IO_OP_WRITE);
     if result && cache_active {
         // Direct/bulk writes already reached the backend. Keeping a clean copy
         // of every streamed sector in the read cache turns large writes into
@@ -954,7 +1044,7 @@ pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8
         );
         return false;
     }
-    let result = write_sectors_raw_chunked(disk_id, lba, count, buf, IO_OP_WRITEBACK);
+    let result = async_io::write_sectors_wait(disk_id, lba, count, buf, IO_OP_WRITEBACK);
     result
 }
 
