@@ -117,7 +117,7 @@ pub(super) fn linux_fb_pwrite(buf_ptr: u64, len: u64, offset: u64) -> u64 {
     }
 }
 
-pub(super) fn linux_fb_lseek(fd: u32, position: u32, offset: u64, whence: u64) -> u64 {
+pub(super) fn linux_fb_lseek(fd: u32, position: u32, offset: i64, whence: u32) -> u64 {
     let size = linux_fb_size() as i64;
     let base = match whence {
         0 => 0,
@@ -125,7 +125,7 @@ pub(super) fn linux_fb_lseek(fd: u32, position: u32, offset: u64, whence: u64) -
         2 => size,
         _ => return linux_err(EINVAL),
     };
-    let next = base.saturating_add(offset as i64);
+    let next = base.saturating_add(offset);
     if next < 0 || next > u32::MAX as i64 {
         return linux_err(EINVAL);
     }

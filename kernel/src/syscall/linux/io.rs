@@ -282,9 +282,23 @@ pub(super) fn linux_pipe2(pipefd_ptr: u64, linux_flags: u64) -> u64 {
 }
 
 pub(super) fn linux_lseek(fd: u32, offset: u64, whence: u64) -> u64 {
+    let signed_offset = offset as i64;
+    if signed_offset <= i32::MIN as i64 || signed_offset > i32::MAX as i64 {
+        return linux_err(EINVAL);
+    }
+    let whence = match whence {
+        0 | 1 | 2 => whence as u32,
+        _ => return linux_err(EINVAL),
+    };
+
     if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
         match entry.kind {
-            crate::fs::fd_table::FdKind::File { .. } => {}
+            crate::fs::fd_table::FdKind::File { global_id } => {
+                return match crate::fs::vfs::lseek(global_id, signed_offset as i32, whence) {
+                    Ok(pos) => pos as u64,
+                    Err(e) => linux_err(fs_errno(e)),
+                };
+            }
             crate::fs::fd_table::FdKind::LinuxProc {
                 file,
                 pid,
@@ -295,9 +309,9 @@ pub(super) fn linux_lseek(fd: u32, offset: u64, whence: u64) -> u64 {
                     0 => 0,
                     1 => position as i64,
                     2 => size,
-                    _ => return linux_err(EINVAL),
+                    _ => unreachable!(),
                 };
-                let next = base.saturating_add(offset as i64);
+                let next = base.saturating_add(signed_offset);
                 if next < 0 || next > u32::MAX as i64 {
                     return linux_err(EINVAL);
                 }
@@ -307,7 +321,7 @@ pub(super) fn linux_lseek(fd: u32, offset: u64, whence: u64) -> u64 {
                 return next as u64;
             }
             crate::fs::fd_table::FdKind::LinuxFramebuffer { position } => {
-                return linux_fb_lseek(fd, position, offset, whence);
+                return linux_fb_lseek(fd, position, signed_offset, whence);
             }
             crate::fs::fd_table::FdKind::PipeRead { .. }
             | crate::fs::fd_table::FdKind::PipeWrite { .. }
@@ -319,7 +333,6 @@ pub(super) fn linux_lseek(fd: u32, offset: u64, whence: u64) -> u64 {
     } else {
         return linux_err(EBADF);
     }
-    anyos_u32_ret(handlers::sys_lseek(fd, offset as u32, whence as u32))
 }
 
 pub(super) fn linux_pread64(fd: u32, buf_ptr: u64, len: u64, offset: u64) -> u64 {
