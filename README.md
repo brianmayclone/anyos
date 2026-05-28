@@ -8,7 +8,8 @@
 
 macOS-inspired desktop with window compositor, OpenGL ES 2.0 (hardware-accelerated via VirGL/SVGA3D),<br>
 full TCP/IP network stack with WiFi, USB 3.0, 7 filesystems, audio, TrueType fonts,<br>
-SMP multi-core scheduler (up to 16 CPUs), and a self-hosted Rust compiler — all running bare-metal on x86_64.<br>
+SMP multi-core scheduler (up to 16 CPUs), swap-file support, confd-backed system configuration,<br>
+LXE/WXE compatibility work, and a self-hosted Rust compiler — all running bare-metal on x86_64.<br>
 An **AArch64 port** targeting Raspberry Pi 4/5 is in active development.
 
 <br>
@@ -18,8 +19,8 @@ An **AArch64 port** targeting Raspberry Pi 4/5 is in active development.
 ![x86_64](https://img.shields.io/badge/Arch-x86__64-4B7BEC?style=flat-square)
 ![AArch64](https://img.shields.io/badge/Arch-AArch64-7B4BEC?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/License-MIT-2ecc71?style=flat-square)
-![Programs](https://img.shields.io/badge/Programs-174+-e67e22?style=flat-square)
-![Syscalls](https://img.shields.io/badge/Syscalls-232-9b59b6?style=flat-square)
+![Programs](https://img.shields.io/badge/Programs-190+-e67e22?style=flat-square)
+![Syscalls](https://img.shields.io/badge/Syscalls-238-9b59b6?style=flat-square)
 
 <br>
 
@@ -36,6 +37,16 @@ An **AArch64 port** targeting Raspberry Pi 4/5 is in active development.
 <br>
 
 > **A learning project** created purely for fun and curiosity. It demonstrates how operating systems work under the hood — from bootloader to desktop environment — all without relying on any existing OS or standard library. **Contributions are welcome!**
+
+## Current Focus
+
+- **LXE** — direct Linux x86_64 ELF64 compatibility without a VM. The current path covers Debian-style rootfs setup, dynamic glibc binaries via `PT_INTERP`, Linux stack/env/auxv setup, path translation, procfs pieces, and a growing Linux syscall subset.
+- **Swap files** — the kernel now provides the swap mechanism (`swapon`/`swapoff`, slot/page I/O, `/proc/meminfo`, `sysinfo`, `free`, and Activity Monitor stats). Boot policy belongs to `/System/init`: it reads `system/kernel/swap/*` from `confd`, prepares the configured fixed-size file, then enables it. There is no kernel-read `/System/etc/swap.conf`.
+- **WXE (in progress)** — direct Windows x86_64 PE/COFF compatibility without a VM. The first console-tier path maps WXE System32 PE DLLs, resolves imports/forwarders, builds a fixed PEB/process parameter block, and exposes early file/console APIs.
+- **confd system policy** — central registry-backed configuration is replacing ad-hoc config files for system-owned policy, including kernel swap defaults and service settings.
+- **AArch64 / Raspberry Pi** — active port work for Raspberry Pi 4/5 with the portable kernel subsystems shared with x86_64.
+
+---
 
 ## Cargo Build Modes
 
@@ -114,8 +125,8 @@ custom-target `build-std` artifacts with anyOS builds.
 - **SMP support** — multi-core (up to 16 CPUs) via LAPIC/IOAPIC with per-CPU idle threads and work stealing
 - **Per-process address spaces** with isolated PML4 page directories
 - **Ring 3 user mode** with dual syscall interface: `SYSCALL/SYSRET` (64-bit) and `INT 0x80` (32-bit compat)
-- **232 system calls** across 22 categories (process, file I/O, networking, IPC, display, audio, USB, permissions, signals, debugging, hardware virtualization, ...)
-- **Physical + virtual memory manager** with kernel heap allocator
+- **238 system calls** across 22 categories (process, file I/O, networking, IPC, display, audio, USB, permissions, signals, debugging, hardware virtualization, ...)
+- **Physical + virtual memory manager** with kernel heap allocator, mmap/VMA support, swap backing areas, and swap statistics
 - **7 filesystems**: exFAT (primary, with symlinks, mount points, chmod/chown), FAT12/16/32, NTFS (read-only), ISO 9660 (Rock Ridge), OverlayFS, SMB/CIFS, devfs
 - **Storage drivers**: ATA PIO, **AHCI** (SATA DMA), **NVMe** (PCIe), ATAPI (CD-ROM), **SDHCI** (SD/SDHC/SDXC cards), LSI SCSI
 - **ELF loader** for user programs (ELF64 native + ELF32 compat)
@@ -125,6 +136,7 @@ custom-target `build-std` artifacts with anyOS builds.
 - **POSIX compatibility**: `fork`, `exec`, `pipe`, `dup2`, `signals` (13 signals: SIGHUP–SIGTTOU, job control with SIGTSTP/SIGCONT), `poll()` for pipes and files
 - **Security hardening**: NX-bit / DEP (EFER.NXE + per-segment ELF page flags), ASLR (stack + mmap randomization via RDRAND/TSC), up to 256 FDs per process with separated socket namespace
 - **User identity system** — UID/GID, user accounts, groups, authentication
+- **confd-backed kernel policy** — init-owned `kernel` namespace for early system policy such as `kernel/swap/enabled`, `kernel/swap/path`, and `kernel/swap/size_mb`
 - **Runtime app permissions** — per-user capability grants with consent dialog on first launch, reviewable in Settings
 - **Thermal monitoring** — Intel/AMD CPU temperature sensors and LM75/TMP75 external sensors via SMBus
 - **I2C/SMBus support** — device detection, byte/word/block read/write for touchpads, sensors, and other I2C peripherals
@@ -221,6 +233,12 @@ custom-target `build-std` artifacts with anyOS builds.
 - **VMware**: vmmouse absolute mouse input, SVGA II 2D acceleration, SVGA3D hardware 3D
 - **QEMU/KVM**: Bochs VGA, E1000, AC'97/HDA, AHCI, NVMe, VirtIO (GPU, Net, RNG, Balloon, Serial)
 
+### Compatibility Layers
+
+- **LXE (Linux Experience Extension)** — runs Linux x86_64 ELF64 programs directly through an explicit Linux ABI personality. It includes the `lxe` CLI, `liblxecore`, kernel-side Linux syscall translation, Linux path/procfs helpers, and Debian Bookworm-oriented rootfs/package workflows.
+- **WXE (Windows Experience Extension, in development)** — runs Windows x86_64 PE/COFF programs through an explicit Windows ABI personality. Current work focuses on console programs, PE import/export resolution, WXE DLL mapping, Windows-style paths, and early NT/kernel32-style file and console APIs.
+- Native anyOS spawning remains separate from LXE/WXE; compatibility mode is entered only through the explicit `lxe`, `wxe`, `SYS_LXE_SPAWN`, or `SYS_WXE_SPAWN` paths.
+
 ### CoreVM (standalone project)
 
 > **Note:** CoreVM has been spun off into its own standalone product — a full x86 KVM hypervisor platform. It is no longer bundled with anyOS. Visit the [CoreVM repository](https://github.com/nicosommelier/corevm) for more information.
@@ -285,13 +303,13 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 
 ### User Programs
 
-174+ command-line and GUI applications:
+190+ command-line and GUI applications:
 
-**GUI Applications (32):** anyOS Code (IDE), anyMail (email client), anyZilla (FTP client), App Store, Benchmark, Calculator, Clipboard Manager, Clock, Diagnostics, Diff/Merge (Meld-like), Font Viewer, Forger (3D voxel world), FTP Settings, GL Demo (3D physics), Icon Viewer, Image Viewer, **Installer**, Keyboard, Markdown Viewer, Minesweeper, Notepad, Notifications, Paint, **Runner**, Screenshot, Surf (web browser), **Updater**, Video Player, VNC Settings, Web Manager, anyui Demo, Button Demo
+**GUI Applications (46 app bundles, including):** anyOS Code (IDE), anyMail (email client), anyZilla (FTP client), App Store, Benchmark, Calculator, Clipboard Manager, Clock, Diagnostics, Diff/Merge (Meld-like), Disk Usage, Font Viewer, Forger (3D voxel world), FTP Settings, GL Demo (3D physics), Icon Viewer, Image Viewer, **Installer**, Keyboard, **LXE Manager**, **LXE Shell**, Markdown Viewer, Minesweeper, Mouse Test, Notepad, Notifications, Paint, **Runner**, Screenshot, Service Manager, Config Explorer, Surf (web browser), **Updater**, Video Player, VNC Settings, Web Manager, anyui Demo, Button Demo, ASL Manager, ASL Console, VM Manager
 
-**System Services (22):** Init, Login, Compositor, Terminal, Finder, Settings, Activity Monitor, Permission Dialog, Shell (dash), Audio Monitor, Network Monitor, Input Monitor, Event Viewer, Disk Utility, amid (statistics daemon), notifyd (notifications), anybout (about), anytrace (tracing), crashdialog, desktopd, sessionhost, textmode_console
+**System Services and daemons:** Init, confd, Login, Compositor, Terminal, Finder, Settings, Activity Monitor, Permission Dialog, Shell (dash), Audio Monitor, Network Monitor, Input Monitor, Event Viewer, Disk Utility, amid (statistics daemon), lxed, notifyd (notifications), logd, crond, desktopd, displayd, fontd, networkd, sessionhost, textmode_console
 
-**CLI Utilities (122):**
+**CLI Utilities (140+):**
 
 | Category | Programs |
 |----------|----------|
@@ -302,11 +320,12 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 | User Mgmt | `chmod` `chown` `su` `sudo` `listuser` `listgroups` `adduser` `deluser` `addgroup` `delgroup` `passwd` |
 | Shell & Process | `env` `set` `export` `pwd` `clear` `sleep` `seq` `yes` `true` `false` `nice` `kill` `killall` `reboot` |
 | Shell Builtins | `alias` `unalias` `eval` (via dash) |
-| System Admin | `svc` `logd` `crond` `crontab` `ami` `apkg` `sync` `bcedit` `install` |
+| System Admin | `svc` `logd` `crond` `crontab` `ami` `apkg` `sync` `swapon` `swapoff` `bcedit` `install` |
 | Settings Store | `sget` `sstore` `sdel` `ac` |
+| Compatibility | `lxe` `lxed` `lxediag` `wxe` |
 | Binary/Hex | `hexdump` `xxd` |
 | Multimedia | `play` `pipes` `jp2a` |
-| Dev Tools | `cc` (TCC) `nasm` `make` `git` `crust` `ccargo` `open` `vi` `nvi` `nano` `jscript` |
+| Dev Tools | `cc` (TCC) `nasm` `make` `git` `crust` `ccargo` `open` `vi` `nvi` `nano` `jscript` `node` `npm` |
 | System | `vdagent` |
 
 ---
@@ -517,11 +536,13 @@ anyos/
       fs/                  VFS, exFAT, FAT12/16/32, NTFS, ISO 9660, OverlayFS, SMB/CIFS, devfs
       graphics/            Framebuffer management
       ipc/                 Pipes, anonymous pipes, event bus, shared memory, message queues, signals
-      memory/              Physical allocator, virtual memory, heap
+      memory/              Physical allocator, virtual memory, heap, swap backing-store manager
       net/                 Ethernet, ARP, IPv4, ICMP, UDP, TCP, DHCP, DNS
       sync/                Spinlock, mutex
-      syscall/             232 syscall handlers
-      task/                Scheduler, context switch, ELF loader, DLL loader, KDRV loader
+      syscall/             238 syscall handlers, native/Linux/Windows ABI personalities
+        linux/               LXE syscall, path, procfs, socket, and memory translation
+        windows/             WXE syscall and Windows path translation
+      task/                Scheduler, context switch, ELF/PE loader, DLL loader, KDRV loader
       crypto/              MD5 hash
   drivers/               Userspace GPU drivers (.drv shared libraries)
     gpu/
@@ -550,6 +571,8 @@ anyos/
     libsvg_client/         Client crate for libsvg
     libjs/                 libjs.so — JavaScript engine
     libwebview/            libwebview.so — HTML/CSS/JS rendering engine
+    liblxecore/            LXE rootfs, package, runtime, and confd-backed config helpers
+    libwxecore/            WXE root/drives, PE inspection, bootstrap, and confd-backed config helpers
     libm/                  libm.so — Hardware-accelerated math (SSE2 + x87 FPU)
     libm_client/           Client crate for libm
     libcxx/                libcxx — C++20 standard library
@@ -562,17 +585,23 @@ anyos/
     libheap/               Heap allocator
     libsyscall/            Low-level syscall interface
     libunwind/             Stack unwinding support
-  bin/                   CLI program sources (122 Rust programs)
+  bin/                   CLI program sources (140+ Rust user programs)
+    lxe/                   Linux compatibility CLI
+    wxe/                   Windows compatibility CLI
+    swapon/                Enable a kernel swap backing file
+    swapoff/               Disable a kernel swap backing file
     ftpd/                  FTP server daemon
     vncd/                  VNC server daemon
     sshd/                  SSH server daemon
-  apps/                  GUI application sources (33 .app bundles)
+  apps/                  GUI application sources
     anymail/               Email client with IMAP/SMTP, address book, autocomplete
     anyzilla/              FTP client (FileZilla-like, dual-pane, PASV transfers)
     diff/                  Diff/merge tool (Meld-like, syntax highlighting, themes)
     store/                 App Store
-  system/                System programs (22)
-    init/                  Init system (PID 1)
+  system/                System programs, daemons, and desktop utilities
+    init/                  Init system (PID 1), service bootstrap, kernel policy via confd
+    daemons/confd/         System configuration registry daemon
+    daemons/lxed/          LXE service daemon
     login/                 Login manager
     shell/                 POSIX shell (dash)
     audiomon/              Audio monitor daemon
@@ -610,7 +639,7 @@ anyos/
     encode_mjv.py          MJV video encoder
   scripts/               Build, run, debug scripts (.sh, run.ps1 for Windows QEMU)
   sysroot/               Disk filesystem template
-  docs/                  API documentation
+  docs/                  API, architecture, LXE/WXE, and kernel configuration documentation
 ```
 
 </details>
@@ -648,8 +677,12 @@ DLIB programs link against lightweight client stub crates (e.g. `libimage_client
 
 - **[Bootloader](docs/bootloader.md)** — BIOS two-stage bootloader, boot.cfg configuration, graphical boot menu, UEFI boot, chainloading
 - **[Architecture Overview](docs/architecture.md)** — Boot process, memory layout, scheduling, IPC, USB, user identity
-- **[Syscall Reference](docs/syscalls.md)** — Complete reference for all 232 system calls
+- **[Syscall Reference](docs/syscalls.md)** — Complete reference for all 238 system calls
 - **[Standard Library API](docs/stdlib-api.md)** — `anyos_std` crate reference for Rust user programs
+- **[confd](docs/confd.md)** — Registry-backed system configuration service, namespaces, manifests, and CLI usage
+- **[Kernel Configuration](docs/kernel-config.md)** — Init-owned `kernel` namespace, swap policy, and the kernel/user-space responsibility split
+- **[LXE](docs/lxe/README.md)** — Linux Experience Extension architecture, CLI, rootfs, syscall layer, and roadmap
+- **[WXE](docs/wxe/README.md)** — Windows Experience Extension architecture, CLI, DLL/runtime model, and roadmap
 - **[anyui Controls API](docs/anyui-api.md)** — anyui framework reference (44 controls, 191 exports)
 - **[C Library API](docs/libc-api.md)** — POSIX libc reference (35 headers) for C programs
 - **[C++20 / libc64 API](docs/libcxx-api.md)** — 64-bit C and C++20 standard library reference
