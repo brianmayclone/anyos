@@ -206,6 +206,8 @@ const LINUX_SYS_SYNC: u64 = 162;
 const LINUX_SYS_PRCTL: u64 = 157;
 const LINUX_SYS_ARCH_PRCTL: u64 = 158;
 const LINUX_SYS_SETRLIMIT: u64 = 160;
+const LINUX_SYS_SWAPON: u64 = 167;
+const LINUX_SYS_SWAPOFF: u64 = 168;
 const LINUX_SYS_GETTID: u64 = 186;
 const LINUX_SYS_SETXATTR: u64 = 188;
 const LINUX_SYS_LSETXATTR: u64 = 189;
@@ -438,6 +440,8 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_GETRLIMIT => linux_prlimit64(0, a1, 0, a2),
         LINUX_SYS_GETRUSAGE => linux_getrusage(a1, a2),
         LINUX_SYS_SYSINFO => linux_sysinfo(a1),
+        LINUX_SYS_SWAPON => linux_swapon(a1, a2),
+        LINUX_SYS_SWAPOFF => linux_swapoff(a1),
         LINUX_SYS_TIMES => linux_times(a1),
         LINUX_SYS_GETUID => current_linux_real_id(true) as u64,
         LINUX_SYS_GETGID => current_linux_real_id(false) as u64,
@@ -624,6 +628,8 @@ pub(crate) fn syscall_name(num: u32) -> &'static str {
         LINUX_SYS_FSYNC => "fsync",
         LINUX_SYS_FDATASYNC => "fdatasync",
         LINUX_SYS_SYNC => "sync",
+        LINUX_SYS_SWAPON => "swapon",
+        LINUX_SYS_SWAPOFF => "swapoff",
         LINUX_SYS_SYNC_FILE_RANGE => "sync_file_range",
         LINUX_SYS_SYNCFS => "syncfs",
         LINUX_SYS_FCNTL => "fcntl",

@@ -288,6 +288,11 @@ pub fn fstat(fd: u32, stat_buf: &mut [u32; 4]) -> u32 {
     sys_err(syscall2(SYS_FSTAT, fd as u64, stat_buf.as_mut_ptr() as u64))
 }
 
+/// Resize an open file to `length` bytes. Returns 0 on success.
+pub fn ftruncate(fd: u32, length: u32) -> u32 {
+    sys_err(syscall2(SYS_FTRUNCATE, fd as u64, length as u64))
+}
+
 /// Get current working directory. Returns length or u32::MAX on error.
 pub fn getcwd(buf: &mut [u8]) -> u32 {
     sys_err(syscall2(

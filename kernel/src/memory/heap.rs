@@ -937,7 +937,9 @@ pub fn heap_stats() -> (usize, usize) {
             total_free += (*current).size;
             current = (*current).next;
         }
-        total_free = total_free.saturating_add(cached_free_bytes()).min(committed);
+        total_free = total_free
+            .saturating_add(cached_free_bytes())
+            .min(committed);
         HEAP_ALLOCATOR.release(flags);
         (committed.saturating_sub(total_free), committed)
     }

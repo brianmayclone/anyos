@@ -238,12 +238,25 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 |---|------|------|--------|-------------|
 | 30 | `time` | buf_ptr (8 bytes) | 0 | Get RTC time: [year_lo, year_hi, month, day, hour, min, sec, 0] |
 | 31 | `uptime` | — | ticks | System uptime in PIT ticks |
-| 32 | `sysinfo` | cmd, buf_ptr, buf_size | varies | cmd: 0=memory, 1=threads, 2=cpus, 3=cpu_load, 4=hardware, 5=cpu_power, 6=cpu_frequency |
+| 32 | `sysinfo` | cmd, buf_ptr, buf_size | varies | cmd: 0=memory, 1=threads, 2=cpus, 3=cpu_load, 4=hardware, 5=cpu_power, 6=cpu_frequency. Memory returns u32 words: total/free frames, heap used/total, swap total/free pages, swap areas |
 | 33 | `dmesg` | buf_ptr, buf_size | bytes_written | Read kernel log ring buffer |
 | 34 | `tick_hz` | — | hz | Get PIT tick frequency in Hz |
 | 35 | `uptime_ms` | — | ms | System uptime in milliseconds (TSC-based, sub-ms precision) |
 | 36 | `sleep_us` | microseconds | 0 | Sleep for N microseconds (high-resolution sleep) |
 | 37 | `set_time` | buf_ptr (8 bytes) | 0 or error | Set RTC date/time. Input: [year_lo, year_hi, month, day, hour, min, sec, 0]. Year must be 2000–2099. Writes directly to CMOS RTC registers |
+
+## Swap Control
+
+| # | Name | Args | Return | Description |
+|---|------|------|--------|-------------|
+| 633 | `swapon` | path_ptr, flags | 0 or error | Enable an existing regular file as swap backing store |
+| 634 | `swapoff` | path_ptr | 0 or error | Disable a swap file when no swap slots are in use |
+
+`swapon` and `swapoff` are mechanism-only syscalls. They do not read system
+configuration and do not create or resize swap files. Boot-time swap policy is
+owned by `/System/init`, which reads `system/kernel/swap/*` from `confd`,
+prepares the configured file, then calls `swapon`. See
+[Kernel Configuration](kernel-config.md).
 
 ## Device Management
 

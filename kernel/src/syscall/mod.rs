@@ -237,6 +237,8 @@ pub(crate) fn dispatch_inner(
         SYS_DMESG => handlers::sys_dmesg(arg1, arg2 as u32),
         SYS_TICK_HZ => handlers::sys_tick_hz(),
         SYS_UPTIME_MS => handlers::sys_uptime_ms(),
+        SYS_SWAPON => handlers::sys_swapon(arg1, arg2 as u32),
+        SYS_SWAPOFF => handlers::sys_swapoff(arg1),
 
         // Networking
         SYS_NET_CONFIG => handlers::sys_net_config(arg1 as u32, arg2),

@@ -290,17 +290,7 @@ fuseblk\n"
         LINUX_PROC_PID_COMM => linux_proc_pid_comm(pid).into_bytes(),
         LINUX_PROC_STAT => linux_proc_system_stat().into_bytes(),
         LINUX_PROC_UPTIME => linux_proc_uptime().into_bytes(),
-        LINUX_PROC_MEMINFO => b"MemTotal:        4174848 kB\n\
-MemFree:         2097152 kB\n\
-MemAvailable:   2097152 kB\n\
-Buffers:               0 kB\n\
-Cached:           524288 kB\n\
-SwapCached:            0 kB\n\
-Active:                0 kB\n\
-Inactive:              0 kB\n\
-SwapTotal:             0 kB\n\
-SwapFree:              0 kB\n"
-            .to_vec(),
+        LINUX_PROC_MEMINFO => linux_proc_meminfo().into_bytes(),
         LINUX_PROC_CPUINFO => linux_proc_cpuinfo().into_bytes(),
         LINUX_PROC_LOADAVG => linux_proc_loadavg().into_bytes(),
         LINUX_PROC_VERSION => b"Linux version 6.1.0-anyos (lxe)\n".to_vec(),
@@ -308,6 +298,31 @@ SwapFree:              0 kB\n"
         LINUX_PROC_FIPS_ENABLED => b"0\n".to_vec(),
         _ => Vec::new(),
     }
+}
+
+fn linux_proc_meminfo() -> String {
+    let total_kb =
+        (crate::memory::physical::total_frames() as u64 * crate::memory::FRAME_SIZE as u64) / 1024;
+    let free_kb = (crate::memory::physical::free_frame_count() as u64
+        * crate::memory::FRAME_SIZE as u64)
+        / 1024;
+    let swap = crate::memory::swap::stats();
+    let swap_total_kb = swap.total_pages * crate::memory::FRAME_SIZE as u64 / 1024;
+    let swap_free_kb = swap.free_pages * crate::memory::FRAME_SIZE as u64 / 1024;
+
+    format!(
+        "MemTotal:        {:>8} kB\n\
+MemFree:         {:>8} kB\n\
+MemAvailable:   {:>8} kB\n\
+Buffers:               0 kB\n\
+Cached:                0 kB\n\
+SwapCached:            0 kB\n\
+Active:                0 kB\n\
+Inactive:              0 kB\n\
+SwapTotal:      {:>8} kB\n\
+SwapFree:       {:>8} kB\n",
+        total_kb, free_kb, free_kb, swap_total_kb, swap_free_kb
+    )
 }
 
 pub(super) fn linux_write_proc_stat(stat_ptr: u64, file: u16, pid: u32) -> u64 {

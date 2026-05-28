@@ -1611,7 +1611,10 @@ fn prepare_detached_stat(path: &str, follow_last: bool) -> Option<DetachedStat> 
     })
 }
 
-fn prepare_detached_attrs(path: &str, op: DetachedAttrsOp) -> Result<Option<DetachedAttrs>, FsError> {
+fn prepare_detached_attrs(
+    path: &str,
+    op: DetachedAttrsOp,
+) -> Result<Option<DetachedAttrs>, FsError> {
     if is_dev_path(path) {
         return Ok(None);
     }

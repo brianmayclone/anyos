@@ -248,6 +248,9 @@ fn main() {
         free_frames: 0,
         heap_used: 0,
         heap_total: 0,
+        swap_total_pages: 0,
+        swap_free_pages: 0,
+        swap_areas: 0,
     });
     let hw = fetch_hwinfo();
 
@@ -498,11 +501,16 @@ fn push_histories(a: &mut AppState) {
     let used_kb = total_kb.saturating_sub(free_kb);
     let mem_pct = percent_u64(used_kb as u64, total_kb as u64);
     let heap_pct = percent_u64(a.mem.heap_used as u64, a.mem.heap_total as u64);
+    let swap_pct = percent_u64(
+        a.mem.swap_total_pages.saturating_sub(a.mem.swap_free_pages) as u64,
+        a.mem.swap_total_pages as u64,
+    );
 
     a.history.cpu.push(a.cpu.overall_pct.min(100));
     a.history.cpu_freq.push(a.cpu.avg_freq_mhz);
     a.history.memory.push(mem_pct);
     a.history.heap.push(heap_pct);
+    a.history.swap.push(swap_pct);
     a.history.disk_read.push_burst_smoothed(a.disk_read_bps);
     a.history.disk_write.push_burst_smoothed(a.disk_write_bps);
     a.history.net_rx.push_burst_smoothed(a.net_rx_bps);
@@ -795,6 +803,10 @@ fn render_memory(a: &mut AppState, w: u32, _h: u32) {
     let used_mb = total_mb.saturating_sub(free_mb);
     let mem_pct = percent_u64(used_mb as u64, total_mb as u64);
     let heap_pct = percent_u64(a.mem.heap_used as u64, a.mem.heap_total as u64);
+    let swap_total_mb = a.mem.swap_total_pages.saturating_mul(4) / 1024;
+    let swap_free_mb = a.mem.swap_free_pages.saturating_mul(4) / 1024;
+    let swap_used_mb = swap_total_mb.saturating_sub(swap_free_mb);
+    let swap_pct = percent_u64(swap_used_mb as u64, swap_total_mb as u64);
 
     let mut val = [0u8; 48];
     draw_history_chart(
@@ -802,7 +814,7 @@ fn render_memory(a: &mut AppState, w: u32, _h: u32) {
         pad,
         pad,
         w.saturating_sub((pad * 2) as u32),
-        240,
+        210,
         "RAM Usage",
         fmt_used_total_pct(&mut val, used_mb, total_mb, "MiB", mem_pct),
         &a.history.memory,
@@ -811,14 +823,15 @@ fn render_memory(a: &mut AppState, w: u32, _h: u32) {
         0x332D0F24,
     );
 
-    let chart_y = pad + 256;
+    let chart_y = pad + 226;
+    let half_w = (w.saturating_sub((pad * 2) as u32 + 14)) / 2;
     let mut heap_val = [0u8; 48];
     draw_history_chart(
         &a.detail_canvas,
         pad,
         chart_y,
-        w.saturating_sub((pad * 2) as u32),
-        170,
+        half_w,
+        150,
         "Kernel Heap",
         fmt_used_total_pct(
             &mut heap_val,
@@ -833,14 +846,29 @@ fn render_memory(a: &mut AppState, w: u32, _h: u32) {
         0x332D0F24,
     );
 
-    let card_y = chart_y + 186;
-    let card_w = (w.saturating_sub((pad * 2) as u32 + 24)) / 3;
+    let mut swap_val = [0u8; 48];
+    draw_history_chart(
+        &a.detail_canvas,
+        pad + half_w as i32 + 14,
+        chart_y,
+        half_w,
+        150,
+        "Swap",
+        fmt_used_total_pct(&mut swap_val, swap_used_mb, swap_total_mb, "MiB", swap_pct),
+        &a.history.swap,
+        100,
+        0xFF7E57C2,
+        0x33231E3D,
+    );
+
+    let card_y = chart_y + 166;
+    let card_w = (w.saturating_sub((pad * 2) as u32 + 36)) / 4;
     draw_metric_card(
         &a.detail_canvas,
         pad,
         card_y,
         card_w,
-        "Used",
+        "RAM Used",
         used_mb,
         "MiB",
     );
@@ -849,7 +877,7 @@ fn render_memory(a: &mut AppState, w: u32, _h: u32) {
         pad + card_w as i32 + 12,
         card_y,
         card_w,
-        "Free",
+        "RAM Free",
         free_mb,
         "MiB",
     );
@@ -858,8 +886,17 @@ fn render_memory(a: &mut AppState, w: u32, _h: u32) {
         pad + (card_w as i32 + 12) * 2,
         card_y,
         card_w,
-        "Total",
-        total_mb,
+        "Swap Used",
+        swap_used_mb,
+        "MiB",
+    );
+    draw_metric_card(
+        &a.detail_canvas,
+        pad + (card_w as i32 + 12) * 3,
+        card_y,
+        card_w,
+        "Swap Free",
+        swap_free_mb,
         "MiB",
     );
 }

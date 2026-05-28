@@ -262,6 +262,8 @@ pub fn required_cap(syscall_num: u32) -> CapSet {
         | syscall::SYS_KBD_SET_LAYOUT
         | syscall::SYS_SET_CRITICAL
         | syscall::SYS_SET_DLL_U32
+        | syscall::SYS_SWAPON
+        | syscall::SYS_SWAPOFF
         | syscall::SYS_ADDUSER
         | syscall::SYS_DELUSER
         | syscall::SYS_ADDGROUP

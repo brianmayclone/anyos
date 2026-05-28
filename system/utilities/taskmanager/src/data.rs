@@ -364,7 +364,7 @@ pub fn fetch_net_totals() -> Option<NetTotals> {
 }
 
 pub fn fetch_memory() -> Option<MemInfo> {
-    let mut buf = [0u8; 16];
+    let mut buf = [0u8; 28];
     if sys::sysinfo(0, &mut buf) != 0 {
         return None;
     }
@@ -373,6 +373,9 @@ pub fn fetch_memory() -> Option<MemInfo> {
         free_frames: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
         heap_used: u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
         heap_total: u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]),
+        swap_total_pages: u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]),
+        swap_free_pages: u32::from_le_bytes([buf[20], buf[21], buf[22], buf[23]]),
+        swap_areas: u32::from_le_bytes([buf[24], buf[25], buf[26], buf[27]]),
     })
 }
 

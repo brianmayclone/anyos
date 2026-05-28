@@ -37,6 +37,8 @@ pub(crate) const SYS_MMAP: u32 = 14;
 pub(crate) const SYS_MUNMAP: u32 = 15;
 pub(crate) const SYS_MMAP64: u32 = 631;
 pub(crate) const SYS_MUNMAP64: u32 = 632;
+pub(crate) const SYS_SWAPON: u32 = 633;
+pub(crate) const SYS_SWAPOFF: u32 = 634;
 pub(crate) const SYS_LXE_SPAWN: u32 = 710;
 pub(crate) const SYS_WXE_SPAWN: u32 = 711;
 pub(crate) const SYS_KILL: u32 = 13;
@@ -117,6 +119,7 @@ pub(crate) const SYS_GETCWD: u32 = 25;
 pub(crate) const SYS_CHDIR: u32 = 26;
 pub(crate) const SYS_LSEEK: u32 = 105;
 pub(crate) const SYS_FSTAT: u32 = 106;
+pub(crate) const SYS_FTRUNCATE: u32 = 107;
 pub(crate) const SYS_ISATTY: u32 = 108;
 
 // TCP networking

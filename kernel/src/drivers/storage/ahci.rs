@@ -1280,47 +1280,46 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
         let dst = unsafe { buf.as_mut_ptr().add(offset) };
         let mut prdt = [EMPTY_PRDT_SPEC; MAX_PRDT];
 
-        let ok =
-            if let Some(prdt_len) =
-                build_prdt_from_virt(dst as *const u8, byte_count, ahci.dma_64bit, &mut prdt)
-            {
-                unsafe {
-                    issue_command_prdt(
-                        ahci,
-                        command,
-                        cur_lba,
-                        batch as u16,
-                        &prdt[..prdt_len],
-                        false,
-                    )
-                }
-            } else {
-                let slot = acquire_primary_slot(ahci);
-                let bounce_phys = ahci.bounce_phys_slots[slot];
-                let bounce_virt = ahci.bounce_virt_slots[slot];
-                let specs = [PrdtSpec {
-                    phys: bounce_phys,
-                    len: byte_count as u32,
-                }];
-                let ok = unsafe {
-                    issue_command_prdt_on_acquired_slot(
-                        ahci,
-                        slot,
-                        command,
-                        cur_lba,
-                        batch as u16,
-                        &specs,
-                        false,
-                    )
-                };
-                if ok {
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(bounce_virt as *const u8, dst, byte_count);
-                    }
-                }
-                release_primary_slot(slot);
-                ok
+        let ok = if let Some(prdt_len) =
+            build_prdt_from_virt(dst as *const u8, byte_count, ahci.dma_64bit, &mut prdt)
+        {
+            unsafe {
+                issue_command_prdt(
+                    ahci,
+                    command,
+                    cur_lba,
+                    batch as u16,
+                    &prdt[..prdt_len],
+                    false,
+                )
+            }
+        } else {
+            let slot = acquire_primary_slot(ahci);
+            let bounce_phys = ahci.bounce_phys_slots[slot];
+            let bounce_virt = ahci.bounce_virt_slots[slot];
+            let specs = [PrdtSpec {
+                phys: bounce_phys,
+                len: byte_count as u32,
+            }];
+            let ok = unsafe {
+                issue_command_prdt_on_acquired_slot(
+                    ahci,
+                    slot,
+                    command,
+                    cur_lba,
+                    batch as u16,
+                    &specs,
+                    false,
+                )
             };
+            if ok {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(bounce_virt as *const u8, dst, byte_count);
+                }
+            }
+            release_primary_slot(slot);
+            ok
+        };
 
         if !ok {
             return false;

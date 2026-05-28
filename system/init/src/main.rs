@@ -5,9 +5,11 @@ use anyos_std::format;
 use anyos_std::fs;
 use anyos_std::println;
 use anyos_std::process;
-use anyos_std::Box;
+use anyos_std::{Box, String};
 use libami::{AmiClient, AmiValue};
-use libconf_schema::{default_int, manifest, RegistryScope, ServiceSchema};
+use libconf_schema::{
+    default_bool, default_int, default_string, manifest, RegistryScope, ServiceSchema,
+};
 
 use libanyui_client as ui;
 use libinstall;
@@ -32,6 +34,25 @@ const POWER_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
     &[],
 );
 const POWER_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("init", &POWER_MANIFEST);
+
+const DEFAULT_SWAP_PATH: &str = "/swap";
+const DEFAULT_SWAP_SIZE_MB: i64 = 256;
+const MIN_SWAP_SIZE_MB: i64 = 8;
+const MAX_SWAP_SIZE_MB: i64 = 2047;
+
+const KERNEL_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "kernel",
+    RegistryScope::System,
+    1,
+    &["swap"],
+    &[
+        default_bool("swap/enabled", true),
+        default_string("swap/path", DEFAULT_SWAP_PATH),
+        default_int("swap/size_mb", DEFAULT_SWAP_SIZE_MB),
+    ],
+    &[],
+);
+const KERNEL_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("init", &KERNEL_MANIFEST);
 
 const DIALOG_W: u32 = 340;
 const DIALOG_H: u32 = 280;
@@ -197,6 +218,72 @@ fn apply_power_config() {
     }
 }
 
+fn apply_kernel_config() {
+    apply_swap_config();
+}
+
+fn apply_swap_config() {
+    set_status("Configuring swap...");
+    PROGRESS.store(12, Ordering::Release);
+
+    let _ = KERNEL_SCHEMA.register();
+    let enabled = KERNEL_SCHEMA.read_bool("swap/enabled").unwrap_or(true);
+    let path = KERNEL_SCHEMA
+        .read_string("swap/path")
+        .unwrap_or_else(|| String::from(DEFAULT_SWAP_PATH));
+
+    if path.is_empty() || !path.starts_with('/') {
+        println!("init: invalid kernel/swap/path '{}'", path);
+        return;
+    }
+
+    if !enabled {
+        let _ = anyos_std::sys::swapoff(&path);
+        println!("init: swap disabled by kernel/swap/enabled");
+        return;
+    }
+
+    let size_mb = KERNEL_SCHEMA
+        .read_i64("swap/size_mb")
+        .unwrap_or(DEFAULT_SWAP_SIZE_MB)
+        .clamp(MIN_SWAP_SIZE_MB, MAX_SWAP_SIZE_MB) as u32;
+
+    if prepare_swap_file(&path, size_mb).is_err() {
+        println!(
+            "init: failed to prepare swap file '{}' ({} MiB)",
+            path, size_mb
+        );
+        return;
+    }
+
+    if anyos_std::sys::swapon(&path, 0) == u32::MAX {
+        println!("init: failed to enable swap file '{}'", path);
+        return;
+    }
+
+    println!("init: enabled swap file '{}' ({} MiB)", path, size_mb);
+}
+
+fn prepare_swap_file(path: &str, size_mb: u32) -> Result<(), ()> {
+    let bytes = (size_mb as u64).saturating_mul(1024).saturating_mul(1024);
+    if bytes > u32::MAX as u64 {
+        return Err(());
+    }
+
+    let fd = fs::open(path, fs::O_WRITE | fs::O_CREATE | fs::O_SYNC);
+    if fd == u32::MAX {
+        return Err(());
+    }
+
+    let resize_ok = fs::ftruncate(fd, bytes as u32) != u32::MAX;
+    let close_ok = fs::close(fd) != u32::MAX;
+    if resize_ok && close_ok {
+        Ok(())
+    } else {
+        Err(())
+    }
+}
+
 // ── Worker thread ───────────────────────────────────────────────────────────
 
 fn worker_entry() {
@@ -204,6 +291,7 @@ fn worker_entry() {
 
     if wait_for_confd_ready() {
         apply_power_config();
+        apply_kernel_config();
     }
     set_status("Starting services...");
     PROGRESS.store(15, Ordering::Release);

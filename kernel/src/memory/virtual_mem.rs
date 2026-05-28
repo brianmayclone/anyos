@@ -9,8 +9,8 @@
 
 use crate::boot_info::BootInfo;
 use crate::memory::address::{PhysAddr, VirtAddr};
-use crate::memory::{physical, physmap};
 use crate::memory::FRAME_SIZE;
+use crate::memory::{physical, physmap};
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
@@ -989,8 +989,8 @@ pub fn kernel_phys_offset() -> u64 {
 
 #[inline]
 fn read_table_entry_phys(table_phys: u64, index: usize) -> u64 {
-    let table = physmap::phys_to_virt_or_identity(PhysAddr::new(table_phys & ADDR_MASK))
-        as *const u64;
+    let table =
+        physmap::phys_to_virt_or_identity(PhysAddr::new(table_phys & ADDR_MASK)) as *const u64;
     unsafe { table.add(index).read_volatile() }
 }
 
@@ -1734,8 +1734,7 @@ pub fn destroy_user_page_directory(pml4_phys: PhysAddr) {
                     // kernel. No-low-identity processes may legitimately have
                     // private user mappings in this same virtual range, so
                     // compare the PT frame against the kernel's real PDE.
-                    let is_identity_map =
-                        is_kernel_low_identity_pde(pml4i, pdpti, pdi, pde);
+                    let is_identity_map = is_kernel_low_identity_pde(pml4i, pdpti, pdi, pde);
 
                     if is_identity_map {
                         continue; // Skip entirely — kernel owns these PTs

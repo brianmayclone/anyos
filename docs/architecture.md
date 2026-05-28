@@ -163,6 +163,13 @@ The kernel initializes subsystems in phases:
 
 The crate root `main.rs` now acts only as the ABI entry wrapper; the actual boot orchestration lives in `kernel/src/boot/` so platform bring-up, storage discovery, and userspace launch remain structurally separated.
 
+The kernel exposes swap only as a mechanism (`swapon`/`swapoff` and backing
+slot I/O). Boot-time swap policy lives in userspace: `/System/init` registers
+the `kernel` system configuration block with `confd`, reads `kernel/swap/*`,
+prepares the configured file, and enables it before the normal service wave
+starts. Defaults are `kernel/swap/enabled=true`, `kernel/swap/path=/swap`, and
+`kernel/swap/size_mb=256`. See [Kernel Configuration](kernel-config.md).
+
 ### nogui Boot Mode
 
 When the boot parameter `params=nogui` is set, the kernel skips the compositor and desktop entirely and directly launches `/System/bin/textmode_console`. This provides a full-screen text console on the framebuffer with login, an interactive shell, ANSI color support, scrollback, and cursor blinking — no GUI required.
@@ -173,11 +180,15 @@ See **[nogui Mode Documentation](nogui.md)** for the complete reference.
 
 After the kernel hands off to `/System/init`, the init program:
 
-1. Runs CPU and memory benchmarks, publishes results via `sys:startup_info` pipe
-2. Signals `boot_ready()` (compositor transitions from splash to desktop)
-3. Launches `/System/svc start-all`
+1. Recovers interrupted upgrades if needed.
+2. Waits for `confd` readiness.
+3. Registers early system schemas such as `profile/power` and `kernel`.
+4. Applies early kernel-adjacent policy such as CPU power profile and swap.
+5. Launches `/System/bin/svc start-all`.
 
-The **service manager** (`svc start-all`) reads `/System/etc/svc/` for service configurations and starts each service (e.g., `logd`, `sshd`, `networkd`, `dnsd`) with dependency resolution.
+The **service manager** (`svc start-all`) registers and reads service
+configuration in `confd` under `system/services/`, then starts each service
+(e.g., `logd`, `networkd`, `dnsd`) with dependency resolution.
 
 See [services.md](services.md) for the full service system documentation.
 
@@ -1077,7 +1088,7 @@ capabilities=filesystem,dll # Comma-separated capability list
 - **Editors**: nano, vi, nvi, sed, awk
 - **Archive**: tar, zip, unzip, gzip
 - **Network**: ping, ssh, sshd, scp, wget, ftp, ftpd, dhcp, dns, ifconfig, arp, netstat, httpd, vncd, curl, ntp, ntpd, wifi
-- **System**: ps, top, htop, mount, umount, sysinfo, dmesg, neofetch, stat, df, free, fdisk, devlist, reboot, sync, mode, uptime
+- **System**: ps, top, htop, mount, umount, swapon, swapoff, sysinfo, dmesg, neofetch, stat, df, free, fdisk, devlist, reboot, sync, mode, uptime
 - **User management**: adduser, deluser, listuser, addgroup, delgroup, listgroups, passwd, su, sudo, whoami
 - **Version control**: git
 - **Package manager**: ami, apkg

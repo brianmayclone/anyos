@@ -32,6 +32,8 @@ pub fn uptime_ms() -> u32 {
 
 /// Get system info. cmd: 0=memory, 1=threads, 2=cpus, 3=cpu_load,
 /// 4=hardware, 5=cpu_power, 6=cpu_frequency.
+/// cmd 0 writes u32 words: total_frames, free_frames, heap_used,
+/// heap_total, swap_total_pages, swap_free_pages, swap_areas.
 pub fn sysinfo(cmd: u32, buf: &mut [u8]) -> u32 {
     syscall3(
         SYS_SYSINFO,
@@ -39,6 +41,20 @@ pub fn sysinfo(cmd: u32, buf: &mut [u8]) -> u32 {
         buf.as_mut_ptr() as u64,
         buf.len() as u64,
     )
+}
+
+/// Enable a regular file as swap backing store.
+pub fn swapon(path: &str, flags: u32) -> u32 {
+    let mut path_buf = [0u8; 257];
+    crate::fs::prepare_path(path, &mut path_buf);
+    syscall2(SYS_SWAPON, path_buf.as_ptr() as u64, flags as u64)
+}
+
+/// Disable a swap backing file if no slots are currently in use.
+pub fn swapoff(path: &str) -> u32 {
+    let mut path_buf = [0u8; 257];
+    crate::fs::prepare_path(path, &mut path_buf);
+    syscall1(SYS_SWAPOFF, path_buf.as_ptr() as u64)
 }
 
 #[derive(Clone, Copy, Debug, Default)]

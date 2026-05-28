@@ -243,8 +243,7 @@ static DISK_SECTORS: [AtomicU64; MAX_DISKS] = {
     // deshalb der `[const { ... }; N]` Trick.
     [const { AtomicU64::new(0) }; MAX_DISKS]
 };
-static DISK_WRITE_GENERATION: [AtomicU64; MAX_DISKS] =
-    [const { AtomicU64::new(0) }; MAX_DISKS];
+static DISK_WRITE_GENERATION: [AtomicU64; MAX_DISKS] = [const { AtomicU64::new(0) }; MAX_DISKS];
 
 /// Hinterlegt die Sektor-Anzahl einer physischen Disk.
 ///

@@ -4,7 +4,7 @@
 //! environment variables, keyboard layout, random numbers,
 //! hostname, crash info, and power management (shutdown).
 
-use super::helpers::{is_valid_user_ptr, read_user_str};
+use super::helpers::{is_valid_user_ptr, read_user_str, read_user_str_safe, resolve_path};
 
 // =========================================================================
 // System Information (SYS_TIME, SYS_UPTIME, SYS_SYSINFO)
@@ -117,7 +117,8 @@ pub fn sys_dmesg(buf_ptr: u64, buf_size: u32) -> u32 {
 pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
     match cmd {
         0 => {
-            // Memory: [total_frames:u32, free_frames:u32, heap_used:u32, heap_total:u32] = 16 bytes
+            // Memory: u32 words [total_frames, free_frames, heap_used,
+            // heap_total, swap_total_pages, swap_free_pages, swap_areas].
             if buf_ptr != 0 && buf_size >= 8 {
                 unsafe {
                     let buf = buf_ptr as *mut u32;
@@ -127,6 +128,14 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
                         let (heap_used, heap_total) = crate::memory::heap::heap_stats();
                         *buf.add(2) = heap_used as u32;
                         *buf.add(3) = heap_total as u32;
+                    }
+                    if buf_size >= 24 {
+                        let swap = crate::memory::swap::stats();
+                        *buf.add(4) = swap.total_pages.min(u32::MAX as u64) as u32;
+                        *buf.add(5) = swap.free_pages.min(u32::MAX as u64) as u32;
+                        if buf_size >= 28 {
+                            *buf.add(6) = swap.areas;
+                        }
                     }
                 }
             }
@@ -583,6 +592,38 @@ pub fn sys_get_crash_info(tid: u32, buf_ptr: u64, buf_size: u32) -> u32 {
             needed as u32
         }
         None => 0,
+    }
+}
+
+// ── Swap control ─────────────────────────────────────
+
+/// SYS_SWAPON - Enable a regular file as swap backing store.
+///   arg1: path_ptr, arg2: flags
+/// Returns 0 on success, or u32::MAX on error.
+pub fn sys_swapon(path_ptr: u64, flags: u32) -> u32 {
+    let path = match read_user_str_safe(path_ptr) {
+        Some(path) if !path.is_empty() => path,
+        _ => return u32::MAX,
+    };
+    let resolved = resolve_path(path);
+    match crate::memory::swap::swapon_path(&resolved, flags) {
+        Ok(()) => 0,
+        Err(_) => u32::MAX,
+    }
+}
+
+/// SYS_SWAPOFF - Disable a swap backing file if no slots are in use.
+///   arg1: path_ptr
+/// Returns 0 on success, or u32::MAX on error.
+pub fn sys_swapoff(path_ptr: u64) -> u32 {
+    let path = match read_user_str_safe(path_ptr) {
+        Some(path) if !path.is_empty() => path,
+        _ => return u32::MAX,
+    };
+    let resolved = resolve_path(path);
+    match crate::memory::swap::swapoff_path(&resolved) {
+        Ok(()) => 0,
+        Err(_) => u32::MAX,
     }
 }
 

@@ -174,6 +174,8 @@ and migrations much messier again.
 
 The following components already use the embedded registration path:
 
+- `/System/init` for `profile/power` and early `kernel` policy
+- `svc`
 - `dnsd`
 - `networkd`
 - `searchd`
@@ -201,8 +203,30 @@ Examples:
 
 - `services/networkd`
 - `services/dnsd`
+- `kernel`
 - `apps/finder`
 - `profile/shell`
+
+## Kernel Policy Namespace
+
+Kernel-adjacent machine policy is represented in the system-scope `kernel`
+namespace, but it is still owned and applied by userspace. `/System/init`
+registers this manifest after `confd` is ready, then calls kernel syscalls to
+apply the effective values.
+
+Current keys:
+
+| Path | Type | Default | Applied by |
+|------|------|---------|------------|
+| `system/kernel/swap/enabled` | bool | `true` | `/System/init` |
+| `system/kernel/swap/path` | string | `/swap` | `/System/init` |
+| `system/kernel/swap/size_mb` | int | `256` | `/System/init` |
+
+The kernel does not read this namespace directly. It only receives explicit
+requests such as `SYS_SWAPON` and `SYS_SWAPOFF`.
+
+See [Kernel Configuration](kernel-config.md) for the boot behavior and
+responsibility split.
 
 ## Binary-Embedded Defaults
 

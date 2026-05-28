@@ -212,6 +212,8 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_AVM_IOCTL, "avm_ioctl"),
     (SYS_MMAP64, "mmap64"),
     (SYS_MUNMAP64, "munmap64"),
+    (SYS_SWAPON, "swapon"),
+    (SYS_SWAPOFF, "swapoff"),
 ];
 
 /// Look up the human-readable name for a syscall number.

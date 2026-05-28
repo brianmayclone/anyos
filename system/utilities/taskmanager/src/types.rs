@@ -49,7 +49,7 @@ impl ResourceView {
             Self::Overview => "Live resources",
             Self::Processes => "Threads and applications",
             Self::Cpu => "Utilization and clock",
-            Self::Memory => "RAM and kernel heap",
+            Self::Memory => "RAM, swap, and kernel heap",
             Self::Disk => "I/O activity",
             Self::Network => "Throughput and TCP",
             Self::System => "Hardware and display",
@@ -124,6 +124,9 @@ pub struct MemInfo {
     pub free_frames: u32,
     pub heap_used: u32,
     pub heap_total: u32,
+    pub swap_total_pages: u32,
+    pub swap_free_pages: u32,
+    pub swap_areas: u32,
 }
 
 pub struct HwInfo {
@@ -297,6 +300,7 @@ pub struct ActivityHistory {
     pub cpu_freq: MetricHistory,
     pub memory: MetricHistory,
     pub heap: MetricHistory,
+    pub swap: MetricHistory,
     pub disk_read: MetricHistory,
     pub disk_write: MetricHistory,
     pub net_rx: MetricHistory,
@@ -311,6 +315,7 @@ impl ActivityHistory {
             cpu_freq: MetricHistory::new(),
             memory: MetricHistory::new(),
             heap: MetricHistory::new(),
+            swap: MetricHistory::new(),
             disk_read: MetricHistory::new(),
             disk_write: MetricHistory::new(),
             net_rx: MetricHistory::new(),

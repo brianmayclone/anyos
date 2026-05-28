@@ -334,6 +334,8 @@ pub const SYS_VCPU_TRANSLATE: u32 = 621;
 pub const SYS_AVM_IOCTL: u32 = 630;
 pub const SYS_MMAP64: u32 = 631;
 pub const SYS_MUNMAP64: u32 = 632;
+pub const SYS_SWAPON: u32 = 633;
+pub const SYS_SWAPOFF: u32 = 634;
 
 // lxe - Linux Experience Extension
 pub const SYS_LXE_SPAWN: u32 = 710;

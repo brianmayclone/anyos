@@ -6,8 +6,7 @@ static WAIT4_DEBUG_SEQ: AtomicU32 = AtomicU32::new(0);
 
 const LINUX_FUTEX_WAIT_SLOTS: usize = 64;
 const LINUX_FUTEX_WAITERS_PER_SLOT: usize = 8;
-const LINUX_FUTEX_WAKE_BATCH: usize =
-    LINUX_FUTEX_WAIT_SLOTS * LINUX_FUTEX_WAITERS_PER_SLOT;
+const LINUX_FUTEX_WAKE_BATCH: usize = LINUX_FUTEX_WAIT_SLOTS * LINUX_FUTEX_WAITERS_PER_SLOT;
 
 const FUTEX_WAIT: u64 = 0;
 const FUTEX_WAKE: u64 = 1;
@@ -1235,20 +1234,28 @@ fn ns_to_ticks(ns: u128, hz: u128) -> u128 {
 }
 
 pub(super) fn linux_sysinfo(info_ptr: u64) -> u64 {
-    if info_ptr == 0 {
+    if info_ptr == 0 || !handlers::helpers::is_user_range_accessible(info_ptr, 112) {
         return linux_err(EFAULT);
     }
+    let swap = crate::memory::swap::stats();
     unsafe {
         core::ptr::write_bytes(info_ptr as *mut u8, 0, 112);
         write_u64(info_ptr, 0, crate::arch::hal::timer_current_ticks() as u64);
         write_u64(info_ptr, 8, 1);
         write_u64(info_ptr, 16, 1);
         write_u64(info_ptr, 24, 1);
-        write_u64(info_ptr, 32, 0);
-        write_u64(info_ptr, 40, 0);
+        write_u64(info_ptr, 32, crate::memory::physical::total_frames() as u64);
+        write_u64(
+            info_ptr,
+            40,
+            crate::memory::physical::free_frame_count() as u64,
+        );
         write_u64(info_ptr, 48, 0);
         write_u64(info_ptr, 56, 0);
-        write_u16(info_ptr, 104, 1);
+        write_u64(info_ptr, 64, swap.total_pages);
+        write_u64(info_ptr, 72, swap.free_pages);
+        write_u16(info_ptr, 80, 1);
+        write_u32(info_ptr, 104, crate::memory::FRAME_SIZE as u32);
     }
     0
 }

@@ -50,17 +50,23 @@ fn main() {
         ticks
     );
 
-    // Memory info (cmd=0): [total_frames:u32, free_frames:u32, heap_used:u32, heap_total:u32]
-    let mut mem_buf = [0u8; 16];
+    // Memory info (cmd=0): u32 words [total, free, heap_used, heap_total,
+    // swap_total, swap_free, swap_areas].
+    let mut mem_buf = [0u8; 28];
     if anyos_std::sys::sysinfo(0, &mut mem_buf) == 0 {
         let total = u32::from_le_bytes([mem_buf[0], mem_buf[1], mem_buf[2], mem_buf[3]]);
         let free = u32::from_le_bytes([mem_buf[4], mem_buf[5], mem_buf[6], mem_buf[7]]);
         let heap_used = u32::from_le_bytes([mem_buf[8], mem_buf[9], mem_buf[10], mem_buf[11]]);
         let heap_total = u32::from_le_bytes([mem_buf[12], mem_buf[13], mem_buf[14], mem_buf[15]]);
+        let swap_total = u32::from_le_bytes([mem_buf[16], mem_buf[17], mem_buf[18], mem_buf[19]]);
+        let swap_free = u32::from_le_bytes([mem_buf[20], mem_buf[21], mem_buf[22], mem_buf[23]]);
+        let swap_areas = u32::from_le_bytes([mem_buf[24], mem_buf[25], mem_buf[26], mem_buf[27]]);
 
         let total_kb = total * 4; // 4K per frame
         let free_kb = free * 4;
         let used_kb = total_kb - free_kb;
+        let swap_total_kb = swap_total * 4;
+        let swap_free_kb = swap_free * 4;
         anyos_std::println!("\n{}:", t("Memory"));
         anyos_std::println!(
             "  {:<9}: {} KiB {}, {} KiB {}, {} KiB {}",
@@ -79,6 +85,16 @@ fn main() {
             t("used"),
             heap_total / 1024,
             t("total")
+        );
+        anyos_std::println!(
+            "  {:<9}: {} KiB {}, {} KiB {}, {} {}",
+            "Swap",
+            swap_total_kb,
+            t("total"),
+            swap_free_kb,
+            t("free"),
+            swap_areas,
+            "areas"
         );
     }
 

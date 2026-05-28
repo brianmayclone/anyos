@@ -229,7 +229,9 @@ pub struct Child {
 | `time` | `fn time(buf: &mut [u8; 8]) -> u32` | Get current time. Writes `[year_lo, year_hi, month, day, hour, min, sec, 0]`. |
 | `uptime` | `fn uptime() -> u32` | System uptime in ticks. Divide by `tick_hz()` for seconds. |
 | `tick_hz` | `fn tick_hz() -> u32` | Timer tick frequency (typically 1000 Hz). |
-| `sysinfo` | `fn sysinfo(cmd: u32, buf: &mut [u8]) -> u32` | Query system info. cmd: 0=memory, 1=threads, 2=cpus. |
+| `sysinfo` | `fn sysinfo(cmd: u32, buf: &mut [u8]) -> u32` | Query system info. cmd: 0=memory, 1=threads, 2=cpus. Memory returns u32 words: total/free frames, heap used/total, swap total/free pages, swap areas. |
+| `swapon` | `fn swapon(path: &str, flags: u32) -> u32` | Enable a regular file as swap backing store. Returns 0 on success. |
+| `swapoff` | `fn swapoff(path: &str) -> u32` | Disable a swap backing file when no swap slots are in use. Returns 0 on success. |
 | `dmesg` | `fn dmesg(buf: &mut [u8]) -> u32` | Read kernel log buffer. Returns bytes written. |
 | `boot_ready` | `fn boot_ready()` | Signal that boot is complete (compositor startup). |
 | `capture_screen` | `fn capture_screen(buf: &mut [u32], info: &mut [u32; 3]) -> bool` | Capture framebuffer. info = [width, height, pitch_bytes]. |
@@ -359,6 +361,7 @@ Combine with `|`: `fs::open("file.txt", fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC
 | `stat` | `fn stat(path: &str, buf: &mut [u32; 7]) -> u32` | File status (follows symlinks). Writes `[type, size, flags, uid, gid, mode, mtime]`. Returns 0 on success. |
 | `lstat` | `fn lstat(path: &str, buf: &mut [u32; 7]) -> u32` | File status (no symlink follow). Same layout as `stat`. |
 | `fstat` | `fn fstat(fd: u32, buf: &mut [u32; 4]) -> u32` | FD status. Writes `[type, size, position, mtime]`. Returns 0 on success. |
+| `ftruncate` | `fn ftruncate(fd: u32, length: u32) -> u32` | Resize an open file to `length` bytes. 0 on success. |
 | `mkdir` | `fn mkdir(path: &str) -> u32` | Create directory. 0 on success. |
 | `unlink` | `fn unlink(path: &str) -> u32` | Delete file. 0 on success. |
 | `truncate` | `fn truncate(path: &str) -> u32` | Truncate file to zero. 0 on success. |

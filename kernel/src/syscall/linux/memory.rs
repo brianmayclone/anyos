@@ -459,6 +459,65 @@ pub(super) fn linux_msync(addr: u64, len: u64, flags: u64) -> u64 {
     0
 }
 
+pub(super) fn linux_swapon(path_ptr: u64, flags: u64) -> u64 {
+    if current_linux_id(true) != 0 {
+        return linux_err(EPERM);
+    }
+    let raw_path = match handlers::helpers::read_user_str_safe(path_ptr) {
+        Some(path) if !path.is_empty() => path,
+        Some(_) => return linux_err(ENOENT),
+        None => return linux_err(EFAULT),
+    };
+    let abs = linux_absolute_path(raw_path);
+    let translated = linux_translate_absolute_path(&abs);
+    let resolved = match linux_resolve_translated_path(&translated, true, false) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    match crate::memory::swap::swapon_path(&resolved, flags as u32) {
+        Ok(()) => 0,
+        Err(err) => linux_err(swap_errno(err)),
+    }
+}
+
+pub(super) fn linux_swapoff(path_ptr: u64) -> u64 {
+    if current_linux_id(true) != 0 {
+        return linux_err(EPERM);
+    }
+    let raw_path = match handlers::helpers::read_user_str_safe(path_ptr) {
+        Some(path) if !path.is_empty() => path,
+        Some(_) => return linux_err(ENOENT),
+        None => return linux_err(EFAULT),
+    };
+    let abs = linux_absolute_path(raw_path);
+    let translated = linux_translate_absolute_path(&abs);
+    let resolved = match linux_resolve_translated_path(&translated, true, false) {
+        Ok(path) => path,
+        Err(errno) => return linux_err(errno),
+    };
+    match crate::memory::swap::swapoff_path(&resolved) {
+        Ok(()) => 0,
+        Err(err) => linux_err(swap_errno(err)),
+    }
+}
+
+fn swap_errno(err: crate::memory::swap::SwapError) -> i32 {
+    match err {
+        crate::memory::swap::SwapError::Invalid => EINVAL,
+        crate::memory::swap::SwapError::NotFound => ENOENT,
+        crate::memory::swap::SwapError::AlreadyEnabled => EBUSY,
+        crate::memory::swap::SwapError::TooManyAreas => ENOMEM,
+        crate::memory::swap::SwapError::NotRegular => EINVAL,
+        crate::memory::swap::SwapError::TooSmall => EINVAL,
+        crate::memory::swap::SwapError::TooLarge => EFBIG,
+        crate::memory::swap::SwapError::OpenFailed => EACCES,
+        crate::memory::swap::SwapError::Io => EIO,
+        crate::memory::swap::SwapError::Busy => EBUSY,
+        crate::memory::swap::SwapError::NoSpace => ENOMEM,
+        crate::memory::swap::SwapError::BadSlot => EINVAL,
+    }
+}
+
 pub(super) fn linux_arch_prctl(code: u64, addr: u64) -> u64 {
     match code {
         LINUX_ARCH_SET_FS => {
