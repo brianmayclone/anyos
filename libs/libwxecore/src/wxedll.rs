@@ -27,11 +27,18 @@ const TEXT_RVA: u32 = 0x1000;
 const TEXT_RAW: u32 = HEADER_SIZE as u32;
 const EXPORT_DIR_INDEX: usize = 0;
 const DATA_DIR_COUNT: usize = 16;
+const WXE_PROCESS_BLOCK_BASE: u64 = 0x0000_7FFE_E000_0000;
 const WXE_PEB_BASE: u64 = 0x0000_7FFE_E000_1000;
 const WXE_CMDLINE_A_ADDR: u64 = 0x0000_7FFE_E000_3000;
 const WXE_CMDLINE_W_ADDR: u64 = 0x0000_7FFE_E000_3800;
 const WXE_ENV_A_ADDR: u64 = 0x0000_7FFE_E000_5000;
 const WXE_ENV_W_ADDR: u64 = 0x0000_7FFE_E000_6000;
+// CRT scratch area inside the process block (must match `task::loader::windows`).
+const WXE_CRT_SCRATCH_BASE: u64 = WXE_PROCESS_BLOCK_BASE + 0x7000;
+const WXE_ERRNO_ADDR: u64 = WXE_CRT_SCRATCH_BASE;
+const WXE_ARGC_ADDR: u64 = WXE_CRT_SCRATCH_BASE + 0x08;
+const WXE_ARGV_PTR_ADDR: u64 = WXE_CRT_SCRATCH_BASE + 0x10;
+const WXE_IOB_ADDR: u64 = WXE_CRT_SCRATCH_BASE + 0x80;
 
 #[derive(Clone)]
 struct ExportDef {
@@ -171,24 +178,65 @@ fn export_kind(dll_name: &str, name: &str, route: &str) -> ExportKind {
         "win32:memory:free" => virtual_free_stub(),
         "win32:memory:protect" => virtual_protect_stub(),
         "win32:heap:create" | "win32:heap:process" => return_u32(1),
-        "win32:heap:destroy" | "win32:heap:free" => return_u32(1),
-        "win32:heap:alloc" | "win32:heap:realloc" => heap_alloc_stub(),
+        "win32:heap:destroy" => return_u32(1),
+        // HeapAlloc(heap, flags, size): size is the 3rd Win64 arg (r8).
+        "win32:heap:alloc" => priv_syscall_from_r8(0x0200),
+        // HeapReAlloc(heap, flags, ptr, size): ptr=r8 -> a1, size=r9 -> a2.
+        "win32:heap:realloc" => heap_realloc_win_stub(),
+        // HeapFree(heap, flags, ptr): ptr=r8.
+        "win32:heap:free" => priv_syscall_from_r8(0x0201),
+        // HeapSize(heap, flags, ptr): ptr=r8.
+        "win32:heap:size" => priv_syscall_from_r8(0x0203),
+        // CRT heap: malloc(size)/free(ptr)/realloc(ptr,size)/calloc(n,size).
+        "ucrt:malloc" => priv_syscall_stub(0x0200),
+        "ucrt:free" => priv_syscall_stub(0x0201),
+        "ucrt:realloc" => priv_syscall_stub(0x0202),
+        "ucrt:calloc" => calloc_stub(),
+        "ucrt:memcpy" => priv_syscall_stub(0x0250),
+        "ucrt:memmove" => priv_syscall_stub(0x0251),
+        "ucrt:memset" => priv_syscall_stub(0x0252),
+        "ucrt:memcmp" => priv_syscall_stub(0x0253),
+        "ucrt:initterm" => initterm_stub(false),
+        "ucrt:initterm-e" => initterm_stub(true),
+        "ucrt:errno-ptr" => return_u64(WXE_ERRNO_ADDR),
+        "ucrt:argc-ptr" => return_u64(WXE_ARGC_ADDR),
+        "ucrt:argv-ptr" => return_u64(WXE_ARGV_PTR_ADDR),
+        "ucrt:narrow-env-get" => return_u64(WXE_ENV_A_ADDR),
+        "ucrt:iob" => return_u64(WXE_IOB_ADDR),
+        "ucrt:vswprintf" => priv_syscall_stub(0x0230),
+        "ucrt:exit" => exit_process_stub(),
+        "win32:env:get-w" => priv_syscall_stub(0x0221),
+        "win32:env:set-w" => priv_syscall_stub(0x0222),
+        "win32:env:expand-w" => priv_syscall_stub(0x0224),
+        "win32:module:filename-w" => priv_syscall_stub(0x0223),
+        "win32:console:write-con-w" => priv_syscall_stub(0x0210),
+        "win32:console:read-con-w" => priv_syscall_stub(0x0211),
+        "win32:console:write-con-a" => priv_syscall_stub(0x0212),
+        "win32:console:screen-info" => priv_syscall_stub(0x0213),
+        "win32:console:output-cp" => return_u32(65001),
+        "win32:console:ctrl-handler" => return_u32(1),
+        "win32:console:window" => return_u32(0),
+        "win32:startup-info-w" => priv_syscall_stub(0x0220),
+        "win32:dir:get-w" => priv_syscall_stub(0x0225),
+        "win32:dir:set-w" => priv_syscall_stub(0x0226),
+        "win32:osf-handle" => priv_syscall_stub(0x0240),
+        "win32:acp" => return_u32(65001),
+        "stub:one" => return_u32(1),
+        "stub:zero" => return_u32(0),
         "anyui:dialog:message-box-a" | "anyui:dialog:message-box-w" => return_u32(1),
         "wxe-ui:pseudo:desktop-window" => return_u32(1),
         _ if dll_name.eq_ignore_ascii_case("ntdll.dll") && name == "RtlGetCurrentPeb" => {
             return_u64(WXE_PEB_BASE)
         }
+        // RtlAllocateHeap(heap, flags, size): size is the 3rd arg (r8).
         _ if dll_name.eq_ignore_ascii_case("ntdll.dll") && name == "RtlAllocateHeap" => {
-            heap_alloc_stub()
+            priv_syscall_from_r8(0x0200)
         }
-        _ if dll_name.eq_ignore_ascii_case("ntdll.dll")
-            && (name == "RtlFreeHeap" || name == "RtlReAllocateHeap") =>
-        {
-            if name == "RtlReAllocateHeap" {
-                heap_alloc_stub()
-            } else {
-                return_u32(1)
-            }
+        _ if dll_name.eq_ignore_ascii_case("ntdll.dll") && name == "RtlReAllocateHeap" => {
+            heap_realloc_win_stub()
+        }
+        _ if dll_name.eq_ignore_ascii_case("ntdll.dll") && name == "RtlFreeHeap" => {
+            priv_syscall_from_r8(0x0201)
         }
         _ if dll_name.eq_ignore_ascii_case("ntdll.dll") && name.starts_with("Rtl") => return_u32(0),
         _ => return_u32(0),
@@ -222,6 +270,94 @@ fn raw_syscall_stub(id: u32) -> Vec<u8> {
     append_syscall(&mut out, id);
     out.push(0xC3);
     out
+}
+
+/// `mov r10, rcx; mov eax, id; syscall; ret` — maps the 1st Win64 arg (rcx) to
+/// service arg a1. The 2nd/3rd/4th Win64 args (rdx/r8/r9) already line up with
+/// a2/a3/a4, and stack args are read by the kernel via `stack_arg`.
+fn priv_syscall_stub(id: u32) -> Vec<u8> {
+    raw_syscall_stub(id)
+}
+
+/// `mov r10, r8; mov eax, id; syscall; ret` — for Win32 calls whose meaningful
+/// argument is the 3rd one (e.g. HeapAlloc/HeapFree/HeapSize: the pointer/size).
+fn priv_syscall_from_r8(id: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&[0x4D, 0x89, 0xC2]); // mov r10, r8
+    out.push(0xB8);
+    out.extend_from_slice(&id.to_le_bytes());
+    out.extend_from_slice(&[0x0F, 0x05, 0xC3]); // syscall; ret
+    out
+}
+
+/// HeapReAlloc(heap, flags, ptr=r8, size=r9): a1=ptr, a2=size.
+fn heap_realloc_win_stub() -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&[0x4D, 0x89, 0xC2]); // mov r10, r8  (ptr)
+    out.extend_from_slice(&[0x4C, 0x89, 0xCA]); // mov rdx, r9  (size)
+    out.push(0xB8);
+    out.extend_from_slice(&0x0202u32.to_le_bytes());
+    out.extend_from_slice(&[0x0F, 0x05, 0xC3]);
+    out
+}
+
+/// calloc(n=rcx, size=rdx): pass the product as a1 (mmap zeroes the block).
+fn calloc_stub() -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&[0x48, 0x89, 0xC8]); // mov rax, rcx
+    out.extend_from_slice(&[0x48, 0x0F, 0xAF, 0xC2]); // imul rax, rdx
+    out.extend_from_slice(&[0x49, 0x89, 0xC2]); // mov r10, rax
+    out.push(0xB8);
+    out.extend_from_slice(&0x0200u32.to_le_bytes());
+    out.extend_from_slice(&[0x0F, 0x05, 0xC3]);
+    out
+}
+
+/// _initterm(first=rcx, last=rdx) / _initterm_e: call each non-null function
+/// pointer in `[first, last)`. The `_e` form stops and returns the first
+/// non-zero result. Hand-assembled; preserves rbx/rsi and keeps 16-byte stack
+/// alignment across each `call`.
+fn initterm_stub(check_e: bool) -> Vec<u8> {
+    if check_e {
+        // See kernel-side notes; offsets verified by hand (48 bytes).
+        Vec::from([
+            0x53, 0x56, 0x57, // push rbx; push rsi; push rdi
+            0x48, 0x89, 0xCB, // mov rbx, rcx  (cursor = first)
+            0x48, 0x89, 0xD6, // mov rsi, rdx  (end = last)
+            0x48, 0x39, 0xF3, // .loop: cmp rbx, rsi
+            0x73, 0x1C, // jae .done0
+            0x48, 0x8B, 0x03, // mov rax, [rbx]
+            0x48, 0x85, 0xC0, // test rax, rax
+            0x74, 0x0E, // jz .skip
+            0x48, 0x83, 0xEC, 0x20, // sub rsp, 0x20
+            0xFF, 0xD0, // call rax
+            0x48, 0x83, 0xC4, 0x20, // add rsp, 0x20
+            0x85, 0xC0, // test eax, eax
+            0x75, 0x08, // jnz .ret
+            0x48, 0x83, 0xC3, 0x08, // .skip: add rbx, 8
+            0xEB, 0xDF, // jmp .loop
+            0x31, 0xC0, // .done0: xor eax, eax
+            0x5F, 0x5E, 0x5B, 0xC3, // .ret: pop rdi; pop rsi; pop rbx; ret
+        ])
+    } else {
+        // 42 bytes.
+        Vec::from([
+            0x53, 0x56, 0x57, // push rbx; push rsi; push rdi
+            0x48, 0x89, 0xCB, // mov rbx, rcx
+            0x48, 0x89, 0xD6, // mov rsi, rdx
+            0x48, 0x39, 0xF3, // .loop: cmp rbx, rsi
+            0x73, 0x18, // jae .done
+            0x48, 0x8B, 0x03, // mov rax, [rbx]
+            0x48, 0x85, 0xC0, // test rax, rax
+            0x74, 0x0A, // jz .skip
+            0x48, 0x83, 0xEC, 0x20, // sub rsp, 0x20
+            0xFF, 0xD0, // call rax
+            0x48, 0x83, 0xC4, 0x20, // add rsp, 0x20
+            0x48, 0x83, 0xC3, 0x08, // .skip: add rbx, 8
+            0xEB, 0xE3, // jmp .loop
+            0x5F, 0x5E, 0x5B, 0xC3, // .done: pop rdi; pop rsi; pop rbx; ret
+        ])
+    }
 }
 
 fn exit_process_stub() -> Vec<u8> {
@@ -383,31 +519,6 @@ fn virtual_protect_stub() -> Vec<u8> {
     out.extend_from_slice(&[0x4C, 0x8D, 0x44, 0x24, 0x48]);
     append_syscall(&mut out, 11);
     append_status_bool_return(&mut out, 0x58);
-    out
-}
-
-fn heap_alloc_stub() -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(&[0x48, 0x83, 0xEC, 0x58]);
-    out.extend_from_slice(&[0x31, 0xC0]); // base = null
-    out.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, 0x40]);
-    out.extend_from_slice(&[0x4C, 0x89, 0x44, 0x24, 0x48]); // size from r8
-    out.extend_from_slice(&[0x48, 0xC7, 0x44, 0x24, 0x28, 0x00, 0x30, 0x00, 0x00]); // MEM_*
-    out.extend_from_slice(&[0x48, 0xC7, 0x44, 0x24, 0x30, 0x04, 0x00, 0x00, 0x00]); // RW
-    out.extend_from_slice(&[0x48, 0xC7, 0xC1, 0xFF, 0xFF, 0xFF, 0xFF]);
-    out.extend_from_slice(&[0x48, 0x8D, 0x54, 0x24, 0x40]);
-    out.extend_from_slice(&[0x45, 0x31, 0xC0]);
-    out.extend_from_slice(&[0x4C, 0x8D, 0x4C, 0x24, 0x48]);
-    append_syscall(&mut out, 9);
-    out.extend_from_slice(&[0x85, 0xC0]);
-    let fail_jne = out.len();
-    out.extend_from_slice(&[0x75, 0]);
-    out.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, 0x40]);
-    out.extend_from_slice(&[0x48, 0x83, 0xC4, 0x58, 0xC3]);
-    let fail_pos = out.len();
-    out.extend_from_slice(&[0x31, 0xC0]);
-    out.extend_from_slice(&[0x48, 0x83, 0xC4, 0x58, 0xC3]);
-    patch_rel8(&mut out, fail_jne, fail_pos);
     out
 }
 

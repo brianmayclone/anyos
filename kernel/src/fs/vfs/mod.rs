@@ -189,6 +189,39 @@ fn mark_detached_exfat_commit_clean(
     }
 }
 
+/// Commit a dirty exFAT directory entry, re-resolving the parent directory
+/// from the file's current path if the cached `parent_cluster` is stale (for
+/// example when the fd was renamed across directories after it was opened).
+/// Mirrors the fallback in `finish_detached_exfat_commit` so the synchronous
+/// (O_SYNC) commit path is equally robust and never silently drops a
+/// size/cluster update (which would leave the file truncated on disk).
+fn update_exfat_entry_resolving(
+    exfat: &mut crate::fs::exfat::ExFatFs,
+    file_path: &str,
+    parent_cluster: u32,
+    filename: &str,
+    size: u32,
+    inode: u32,
+) -> Result<(), FsError> {
+    match exfat.update_entry(parent_cluster, filename, size, inode) {
+        Ok(()) => Ok(()),
+        Err(FsError::NotFound) => {
+            let (parent_path, fname) = split_parent_name(file_path)?;
+            let parent = match resolve_exfat_path(exfat, parent_path, true) {
+                Ok(parent) => parent,
+                Err(FsError::NotFound) => return Ok(()),
+                Err(err) => return Err(err),
+            };
+            let (resolved_parent, _) = crate::fs::exfat::decode_inode(parent.inode);
+            match exfat.update_entry(resolved_parent, fname, size, inode) {
+                Ok(()) | Err(FsError::NotFound) => Ok(()),
+                Err(err) => Err(err),
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
 fn commit_open_exfat_entry(
     state: &mut VfsState,
     slot_id: usize,
@@ -224,7 +257,14 @@ fn commit_open_exfat_entry(
         let driver = state.exfat_fs.as_ref().ok_or(FsError::IoError)?;
         let mut exfat = driver.lock_inner();
         if entry_dirty {
-            exfat.update_entry(parent_cluster, filename, size, inode)?;
+            update_exfat_entry_resolving(
+                &mut exfat,
+                &file_path,
+                parent_cluster,
+                filename,
+                size,
+                inode,
+            )?;
         }
         if durable && exfat.metadata_dirty {
             exfat.flush_metadata()?;
@@ -239,7 +279,14 @@ fn commit_open_exfat_entry(
             .ok_or(FsError::IoError)?;
         let mut exfat = exfat.lock_inner();
         if entry_dirty {
-            exfat.update_entry(parent_cluster, filename, size, inode)?;
+            update_exfat_entry_resolving(
+                &mut exfat,
+                &file_path,
+                parent_cluster,
+                filename,
+                size,
+                inode,
+            )?;
         }
         if durable && exfat.metadata_dirty {
             exfat.flush_metadata()?;

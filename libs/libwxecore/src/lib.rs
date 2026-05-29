@@ -9,6 +9,8 @@ pub mod bootstrap;
 #[cfg(not(feature = "host"))]
 pub mod cli;
 #[cfg(not(feature = "host"))]
+pub mod cmdroutes;
+#[cfg(not(feature = "host"))]
 pub mod pe;
 #[cfg(not(feature = "host"))]
 pub mod rootfs;

@@ -144,6 +144,31 @@ pub fn current_thread_linux_fs_base() -> u64 {
     0
 }
 
+/// Set a thread's Windows x86_64 user GS base (TEB) used by wxe processes.
+pub fn set_thread_windows_gs_base(tid: u32, gs_base: u64) {
+    let mut guard = SCHEDULER.lock();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
+    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+        thread.windows_gs_base = gs_base;
+    }
+}
+
+/// Read the current scheduler-selected thread's Windows GS base (TEB).
+/// Returns 0 for non-Windows threads.
+pub fn current_thread_windows_gs_base() -> u64 {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_ref() {
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            return sched.threads[idx].windows_gs_base;
+        }
+    }
+    0
+}
+
 /// Set the Linux clear_child_tid pointer for a thread.
 pub fn set_thread_linux_clear_child_tid(tid: u32, clear_child_tid: u64) {
     let mut guard = SCHEDULER.lock();

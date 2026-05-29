@@ -2487,6 +2487,12 @@ fn schedule_inner(from_timer: bool) {
         unsafe {
             let fs_base = crate::task::scheduler::current_thread_linux_fs_base();
             crate::arch::x86::power::wrmsr(0xC000_0100, fs_base);
+            // Restore the incoming thread's user GS base into KERNEL_GS_BASE so the
+            // ring-3 return `swapgs` loads the right TEB for wxe (Windows) threads.
+            // For non-Windows threads this is 0, matching the legacy behavior where
+            // every user thread runs in ring 3 with GS.base = 0.
+            let gs_base = crate::task::scheduler::current_thread_windows_gs_base();
+            crate::arch::x86::power::wrmsr(0xC000_0102, gs_base);
         }
 
         // Clear in-scheduler flag BEFORE context_switch. Interrupts are disabled

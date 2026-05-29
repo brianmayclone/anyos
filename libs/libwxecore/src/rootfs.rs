@@ -363,8 +363,12 @@ const NT_SERVICES: &str = "\
 0x010a,WxeSetFilePointerEx,private-win32-helper
 ";
 
-const EXPECTED_DLLS: &[&str] = &[
-    "ntdll.dll",
+/// Common Win32/CRT DLLs kept available for non-cmd binaries. The api-set and
+/// ntdll DLLs that cmd.exe actually imports are installed separately from
+/// `cmdroutes::cmd_dlls()` so their exports carry real implementation code
+/// instead of forwarders. These base DLLs are built from the static
+/// `DLL_ROUTES`/`UI_ROUTES` manifests.
+const BASE_DLLS: &[&str] = &[
     "kernelbase.dll",
     "kernel32.dll",
     "msvcrt.dll",
@@ -379,22 +383,6 @@ const EXPECTED_DLLS: &[&str] = &[
     "win32u.dll",
     "comctl32.dll",
     "comdlg32.dll",
-    "api-ms-win-core-file-l1-1-0.dll",
-    "api-ms-win-core-processthreads-l1-1-0.dll",
-    "api-ms-win-core-memory-l1-1-0.dll",
-    "api-ms-win-core-synch-l1-1-0.dll",
-    "api-ms-win-core-console-l1-1-0.dll",
-    "api-ms-win-core-errorhandling-l1-1-0.dll",
-    "api-ms-win-core-libraryloader-l1-2-0.dll",
-    "api-ms-win-core-heap-l1-1-0.dll",
-    "api-ms-win-core-timezone-l1-1-0.dll",
-    "api-ms-win-core-sysinfo-l1-2-1.dll",
-    "api-ms-win-core-profile-l1-1-0.dll",
-    "api-ms-win-core-string-l1-1-0.dll",
-    "api-ms-win-core-localization-l1-2-0.dll",
-    "api-ms-win-core-registry-l1-1-0.dll",
-    "api-ms-win-core-handle-l1-1-0.dll",
-    "api-ms-win-core-namedpipe-l1-1-0.dll",
 ];
 
 pub fn ensure_rootfs_layout(config: &WxeConfig) -> bool {
@@ -459,6 +447,10 @@ pub fn ensure_rootfs_layout(config: &WxeConfig) -> bool {
         ok = false;
     }
 
+    if !install_contrib_cmd(config) {
+        ok = false;
+    }
+
     ok
 }
 
@@ -471,18 +463,48 @@ pub fn installed_dll_path(config: &WxeConfig, name: &str) -> String {
 }
 
 pub fn expected_dlls() -> &'static [&'static str] {
-    EXPECTED_DLLS
+    BASE_DLLS
 }
 
 pub fn install_wxe_dlls(config: &WxeConfig) -> bool {
     let mut ok = true;
-    for (idx, dll) in EXPECTED_DLLS.iter().enumerate() {
-        let image = crate::wxedll::build_profile_dll(dll, &[DLL_ROUTES, UI_ROUTES], idx as u32 + 1);
+    let mut seed = 1u32;
+
+    // DLLs cmd.exe imports from: each export carries real implementation code
+    // (or a `stub:one`) per the cmd route table; unrouted imports fall back to
+    // the loader's logged 0-stub.
+    let cmd_routes = crate::cmdroutes::build_cmd_routes();
+    for dll in crate::cmdroutes::cmd_dlls() {
+        let image = crate::wxedll::build_profile_dll(dll, &[&cmd_routes], seed);
+        seed += 1;
+        if fs::write_bytes(&installed_dll_path(config, dll), &image).is_err() {
+            ok = false;
+        }
+    }
+
+    // Common Win32/CRT DLLs for non-cmd binaries.
+    for dll in BASE_DLLS {
+        let image = crate::wxedll::build_profile_dll(dll, &[DLL_ROUTES, UI_ROUTES], seed);
+        seed += 1;
         if fs::write_bytes(&installed_dll_path(config, dll), &image).is_err() {
             ok = false;
         }
     }
     ok
+}
+
+/// Copy `contrib/cmd.exe` into System32 so `wxe shell` (COMSPEC) can launch it.
+/// Absent contrib is not an error — the rootfs is still valid without cmd.exe.
+fn install_contrib_cmd(config: &WxeConfig) -> bool {
+    let src = join(&config.root, "contrib/cmd.exe");
+    if !path_exists(&src) {
+        return true;
+    }
+    let dst = join(&config.system32(), "cmd.exe");
+    match fs::read_to_vec(&src) {
+        Ok(data) => fs::write_bytes(&dst, &data).is_ok(),
+        Err(_) => false,
+    }
 }
 
 pub fn dll_routes_path(config: &WxeConfig) -> String {

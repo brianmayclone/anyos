@@ -105,23 +105,20 @@ pub(crate) fn is_user_range_accessible(ptr: u64, len: u64) -> bool {
 /// Returns `None` if the pointer is invalid, unmapped, or the requested length
 /// exceeds `max_len`. Every crossed page is validated before dereference.
 pub(crate) fn copy_user_bytes(ptr: u64, len: usize, max_len: usize) -> Option<Vec<u8>> {
-    if len == 0 || len > max_len || !is_valid_user_ptr(ptr, len as u64) {
+    if len == 0 || len > max_len {
         return None;
     }
-    if !is_user_page_accessible(ptr) {
+    // Validate the whole range (first page + every crossed page boundary) once,
+    // then bulk-copy. A byte-at-a-time loop defeats autovectorization and turns
+    // a 16 KiB read/write into thousands of bound-checked pushes.
+    if !is_user_range_accessible(ptr, len as u64) {
         return None;
     }
 
-    let p = ptr as usize as *const u8;
     let mut out = Vec::with_capacity(len);
     unsafe {
-        for i in 0..len {
-            let addr = ptr + i as u64;
-            if i > 0 && (addr & 0xFFF) == 0 && !is_user_page_accessible(addr) {
-                return None;
-            }
-            out.push(*p.add(i));
-        }
+        let src = core::slice::from_raw_parts(ptr as usize as *const u8, len);
+        out.extend_from_slice(src);
     }
     Some(out)
 }
@@ -132,22 +129,18 @@ pub(crate) fn copy_user_bytes(ptr: u64, len: usize, max_len: usize) -> Option<Ve
 /// length exceeds `max_len`. Every crossed page is validated before write.
 pub(crate) fn copy_to_user_bytes(ptr: u64, data: &[u8], max_len: usize) -> bool {
     let len = data.len();
-    if len == 0 || len > max_len || !is_valid_user_ptr(ptr, len as u64) {
+    if len == 0 || len > max_len {
         return false;
     }
-    if !is_user_page_accessible(ptr) {
+    // Validate the whole destination range once, then bulk-copy (see
+    // copy_user_bytes — byte-at-a-time stores are the slow path for I/O).
+    if !is_user_range_accessible(ptr, len as u64) {
         return false;
     }
 
-    let p = ptr as usize as *mut u8;
     unsafe {
-        for (i, &byte) in data.iter().enumerate() {
-            let addr = ptr + i as u64;
-            if i > 0 && (addr & 0xFFF) == 0 && !is_user_page_accessible(addr) {
-                return false;
-            }
-            *p.add(i) = byte;
-        }
+        let dst = core::slice::from_raw_parts_mut(ptr as usize as *mut u8, len);
+        dst.copy_from_slice(data);
     }
     true
 }

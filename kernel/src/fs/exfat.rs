@@ -2420,7 +2420,20 @@ impl ExFatFs {
             }
         };
 
-        // Walk clusters to find the entry and modify it in-place
+        self.update_perms_in_dir(parent_cluster, filename, new_uid, new_gid, new_mode)
+    }
+
+    /// Update uid/gid/mode of an entry identified by `(parent_cluster, name)`
+    /// in-place. `None` fields are left unchanged. Used by chmod/chown and to
+    /// preserve ownership across `rename`.
+    fn update_perms_in_dir(
+        &mut self,
+        parent_cluster: u32,
+        filename: &str,
+        new_uid: Option<u16>,
+        new_gid: Option<u16>,
+        new_mode: Option<u16>,
+    ) -> Result<(), FsError> {
         let cs = self.cluster_size() as usize;
         let mut cur = parent_cluster;
         loop {
@@ -3325,6 +3338,7 @@ impl ExFatFs {
         let size = found.data_length;
         let is_dir = (found.attributes & 0x10) != 0;
         let contiguous = found.contiguous;
+        let (src_uid, src_gid, src_mode) = (found.uid, found.gid, found.mode);
 
         if self.lookup_in_dir(new_parent, new_name).is_ok() {
             self.delete_file(new_parent, new_name)?;
@@ -3355,8 +3369,33 @@ impl ExFatFs {
                 None => return Err(FsError::NotFound),
             }
         }
+        // A NoFatChain (contiguous) source carries no FAT links. Propagating
+        // the contiguous flag is only safe if the clusters are still physically
+        // contiguous; rather than trust that, materialize a real FAT chain and
+        // store the renamed entry as a normal FAT-backed file. This prevents a
+        // reader from either following a non-existent chain (truncated reads,
+        // "file too short") or walking start..start+n that is no longer
+        // contiguous (garbage / "Invalid archive member header").
+        let store_contiguous = if contiguous && cluster >= 2 && size > 0 {
+            self.materialize_contiguous_chain(cluster, size)?;
+            false
+        } else {
+            contiguous
+        };
+
         // Create new entry pointing to the same cluster chain
-        self.create_entry(new_parent, new_name, is_dir, cluster, size, contiguous)?;
+        self.create_entry(new_parent, new_name, is_dir, cluster, size, store_contiguous)?;
+        // Preserve the source's ownership/permissions. create_entry would
+        // otherwise reset them to the calling thread's uid/gid and mode 0xFFF,
+        // which breaks permission-sensitive payloads (e.g. dpkg maintainer
+        // scripts: "update-ca-certificates: Permission denied").
+        self.update_perms_in_dir(
+            new_parent,
+            new_name,
+            Some(src_uid),
+            Some(src_gid),
+            Some(src_mode),
+        )?;
         Ok(())
     }
 

@@ -1613,6 +1613,10 @@ pub extern "C" fn thread_create_trampoline() {
 unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
     crate::arch::x86::syscall_msr::ensure_gs_is_kernel_for_ring3();
     crate::arch::x86::syscall_msr::debug_assert_gs_is_kernel();
+    // wxe (Windows) threads run in ring 3 with GS.base = TEB so that `gs:[...]`
+    // accesses (TEB/PEB/stack-cookie) resolve. Non-Windows threads report 0 here,
+    // which keeps the legacy "GS.base = 0 in ring 3" behavior unchanged.
+    let user_gs_base = crate::task::scheduler::current_thread_windows_gs_base();
     // Use explicit R14/R15 to avoid `mov ax, 0x23` clobbering an in(reg) operand
     // (MEMORY.md: hardcoded AX in asm! corrupts any in(reg) that the compiler
     //  allocates to RAX — and `pop rax` would clobber it too)
@@ -1638,6 +1642,14 @@ unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
         crate::prepare_gs_for_ring3_asm!(),
         "mov ax, 0x23",
         "mov gs, ax",
+        // Override the ring-3 GS.base with the thread's user GS base (TEB for
+        // Windows, 0 otherwise). KERNEL_GS_BASE still holds PERCPU from the macro
+        // above, so the next user→kernel `swapgs` still recovers PERCPU correctly.
+        "mov rax, r13",
+        "mov rdx, r13",
+        "shr rdx, 32",
+        "mov ecx, 0xC0000101", // IA32_GS_BASE
+        "wrmsr",
         // Clear all GPRs to prevent kernel address leaks to user mode
         // (critical for exec: INT 0x80 frame leaves kernel values in regs)
         "xor eax, eax",
@@ -1658,6 +1670,7 @@ unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
         "iretq",           // Enter Ring 3!
         in("r14") user_stack,
         in("r15") entry,
+        in("r13") user_gs_base,
         options(noreturn)
     );
 }

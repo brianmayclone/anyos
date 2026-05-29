@@ -53,3 +53,5 @@ x
 # Optional ASL bundling source (see ANYOS_BUNDLE_DEBIAN_RAW in CMake)
 *.raw
 *.iso   
+
+sysroot/System/var/wxe/contrib/**

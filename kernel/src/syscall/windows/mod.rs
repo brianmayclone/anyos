@@ -11,6 +11,8 @@ use alloc::{
     vec::Vec,
 };
 
+mod crt;
+
 const STATUS_SUCCESS: u32 = 0x0000_0000;
 const STATUS_ACCESS_VIOLATION: u32 = 0xC000_0005;
 const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
@@ -48,6 +50,32 @@ const WXE_PRIV_GET_FILE_ATTRIBUTES_A: u32 = 0x0107;
 const WXE_PRIV_GET_FILE_ATTRIBUTES_W: u32 = 0x0108;
 const WXE_PRIV_GET_FILE_SIZE_EX: u32 = 0x0109;
 const WXE_PRIV_SET_FILE_POINTER_EX: u32 = 0x010A;
+
+// CRT / Win32 helper services (return values directly in RAX, not NTSTATUS).
+const WXE_PRIV_HEAP_ALLOC: u32 = 0x0200;
+const WXE_PRIV_HEAP_FREE: u32 = 0x0201;
+const WXE_PRIV_HEAP_REALLOC: u32 = 0x0202;
+const WXE_PRIV_HEAP_SIZE: u32 = 0x0203;
+const WXE_PRIV_CONSOLE_WRITE_W: u32 = 0x0210;
+const WXE_PRIV_CONSOLE_READ_W: u32 = 0x0211;
+const WXE_PRIV_CONSOLE_WRITE_A: u32 = 0x0212;
+const WXE_PRIV_GET_CONSOLE_SCREEN_INFO: u32 = 0x0213;
+const WXE_PRIV_GET_STARTUP_INFO_W: u32 = 0x0220;
+const WXE_PRIV_GET_ENV_VAR_W: u32 = 0x0221;
+const WXE_PRIV_SET_ENV_VAR_W: u32 = 0x0222;
+const WXE_PRIV_GET_MODULE_FILENAME_W: u32 = 0x0223;
+const WXE_PRIV_EXPAND_ENV_W: u32 = 0x0224;
+const WXE_PRIV_GET_CURRENT_DIR_W: u32 = 0x0225;
+const WXE_PRIV_SET_CURRENT_DIR_W: u32 = 0x0226;
+const WXE_PRIV_VSWPRINTF: u32 = 0x0230;
+const WXE_PRIV_OSF_HANDLE: u32 = 0x0240;
+const WXE_PRIV_MEMCPY: u32 = 0x0250;
+const WXE_PRIV_MEMMOVE: u32 = 0x0251;
+const WXE_PRIV_MEMSET: u32 = 0x0252;
+const WXE_PRIV_MEMCMP: u32 = 0x0253;
+/// Called by the shared unresolved-import stub: logs the caller RIP (a1) so the
+/// pre-crash sequence of still-missing imports is visible in anyos.log.
+const WXE_PRIV_UNRESOLVED_STUB: u32 = 0x02FF;
 
 const NT_CURRENT_PROCESS: u64 = 0xFFFF_FFFF_FFFF_FFFF;
 const NT_CURRENT_THREAD: u64 = 0xFFFF_FFFF_FFFF_FFFE;
@@ -97,6 +125,8 @@ pub struct WxeProcessInit {
     pub command_line_w: u64,
     pub environment_a: u64,
     pub environment_w: u64,
+    /// DOS path of the main image (e.g. `C:\Windows\System32\cmd.exe`).
+    pub image_path: String,
     pub modules: Vec<WxeProcessModuleInit>,
 }
 
@@ -115,6 +145,7 @@ struct WxeProcessState {
     command_line_w: u64,
     environment_a: u64,
     environment_w: u64,
+    image_path: String,
     modules: Vec<WxeProcessModule>,
 }
 
@@ -140,6 +171,7 @@ pub fn register_process(init: WxeProcessInit) {
         command_line_w: init.command_line_w,
         environment_a: init.environment_a,
         environment_w: init.environment_w,
+        image_path: init.image_path,
         modules,
     });
 }
@@ -156,6 +188,26 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
     let a3 = regs.r8;
     let a4 = regs.r9;
 
+    // Verbose bring-up trace: log every WXE service call with the caller RIP so
+    // the pre-crash sequence is visible in anyos.log. The highest-frequency
+    // services (heap + mem*) are skipped to keep the trace readable.
+    if !matches!(
+        nr,
+        WXE_PRIV_HEAP_ALLOC..=WXE_PRIV_HEAP_SIZE
+            | WXE_PRIV_MEMCPY..=WXE_PRIV_MEMCMP
+            | WXE_PRIV_UNRESOLVED_STUB
+    ) {
+        crate::serial_verbose_println!(
+            "wxe svc {:#06x} rip={:#x} a1={:#x} a2={:#x} a3={:#x} a4={:#x}",
+            nr,
+            regs.rip,
+            a1,
+            a2,
+            a3,
+            a4
+        );
+    }
+
     match nr {
         WXE_PRIV_GET_MODULE_HANDLE_A => return wxe_get_module_handle(a1, false),
         WXE_PRIV_GET_MODULE_HANDLE_W => return wxe_get_module_handle(a1, true),
@@ -168,6 +220,31 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         WXE_PRIV_GET_FILE_ATTRIBUTES_W => return wxe_get_file_attributes(a1, true),
         WXE_PRIV_GET_FILE_SIZE_EX => return wxe_get_file_size_ex(a1, a2),
         WXE_PRIV_SET_FILE_POINTER_EX => return wxe_set_file_pointer_ex(a1, a2, a3, a4),
+        WXE_PRIV_HEAP_ALLOC => return crt::wxe_heap_alloc(a1),
+        WXE_PRIV_HEAP_FREE => return crt::wxe_heap_free(a1),
+        WXE_PRIV_HEAP_REALLOC => return crt::wxe_heap_realloc(a1, a2),
+        WXE_PRIV_HEAP_SIZE => return crt::wxe_heap_size(a1),
+        WXE_PRIV_CONSOLE_WRITE_W => return crt::wxe_console_write_w(a1, a2, a3, a4),
+        WXE_PRIV_CONSOLE_READ_W => return crt::wxe_console_read_w(a1, a2, a3, a4),
+        WXE_PRIV_CONSOLE_WRITE_A => return crt::wxe_console_write_a(a1, a2, a3, a4),
+        WXE_PRIV_GET_CONSOLE_SCREEN_INFO => return crt::wxe_get_console_screen_info(a1, a2),
+        WXE_PRIV_GET_STARTUP_INFO_W => return crt::wxe_get_startup_info_w(a1),
+        WXE_PRIV_GET_ENV_VAR_W => return crt::wxe_get_env_var_w(a1, a2, a3),
+        WXE_PRIV_SET_ENV_VAR_W => return crt::wxe_set_env_var_w(a1, a2),
+        WXE_PRIV_GET_MODULE_FILENAME_W => return crt::wxe_get_module_filename_w(a1, a2, a3),
+        WXE_PRIV_EXPAND_ENV_W => return crt::wxe_expand_env_w(a1, a2, a3),
+        WXE_PRIV_GET_CURRENT_DIR_W => return crt::wxe_get_current_dir_w(a1, a2),
+        WXE_PRIV_SET_CURRENT_DIR_W => return crt::wxe_set_current_dir_w(a1),
+        WXE_PRIV_VSWPRINTF => return crt::wxe_vswprintf(regs, a1, a2, a3, a4),
+        WXE_PRIV_OSF_HANDLE => return crt::wxe_osf_handle(a1),
+        WXE_PRIV_MEMCPY => return crt::wxe_memcpy(a1, a2, a3, false),
+        WXE_PRIV_MEMMOVE => return crt::wxe_memcpy(a1, a2, a3, true),
+        WXE_PRIV_MEMSET => return crt::wxe_memset(a1, a2, a3),
+        WXE_PRIV_MEMCMP => return crt::wxe_memcmp(a1, a2, a3),
+        WXE_PRIV_UNRESOLVED_STUB => {
+            crate::serial_verbose_println!("wxe unresolved-stub CALLED, caller_rip={:#x}", a1);
+            return 0;
+        }
         _ => {}
     }
 

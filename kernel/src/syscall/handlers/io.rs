@@ -267,6 +267,106 @@ fn read_pty_to_user(pty_id: u32, buf_ptr: u64, len: usize, blocking: bool) -> u3
     n
 }
 
+/// Write a kernel-owned byte slice to an fd, mirroring `sys_write`'s FD-kind
+/// dispatch. wxe console services synthesize bytes (e.g. UTF-16 → UTF-8) and so
+/// cannot hand a user pointer to `sys_write`; this is their write path.
+pub fn write_fd_kernel(fd: u32, data: &[u8]) -> u32 {
+    use crate::fs::fd_table::FdKind;
+    if data.is_empty() {
+        return 0;
+    }
+    fn serial_echo(bytes: &[u8]) {
+        if crate::drivers::serial::is_verbose() {
+            let lock_state = crate::drivers::serial::output_lock_acquire();
+            for &b in bytes {
+                crate::drivers::serial::write_byte(b);
+            }
+            crate::drivers::serial::output_lock_release(lock_state);
+        }
+    }
+    match crate::task::scheduler::current_fd_get(fd) {
+        Some(entry) => match entry.kind {
+            FdKind::File { global_id } => match crate::fs::vfs::write(global_id, data) {
+                Ok(n) => {
+                    crate::task::scheduler::record_io_write(n as u64);
+                    n as u32
+                }
+                Err(e) => fs_err(e),
+            },
+            FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::write(pipe_id, data),
+            FdKind::Tty => {
+                let pipe_id = crate::task::scheduler::current_thread_stdout_pipe();
+                if pipe_id != 0 {
+                    crate::ipc::pipe::write(pipe_id, data);
+                }
+                serial_echo(data);
+                data.len() as u32
+            }
+            FdKind::PtySlave { pty_id } => {
+                serial_echo(data);
+                crate::ipc::pty::write_slave(pty_id, data)
+            }
+            _ => u32::MAX,
+        },
+        None => {
+            if fd == 1 || fd == 2 {
+                let pipe_id = crate::task::scheduler::current_thread_stdout_pipe();
+                if pipe_id != 0 {
+                    crate::ipc::pipe::write(pipe_id, data);
+                }
+                serial_echo(data);
+                data.len() as u32
+            } else {
+                u32::MAX
+            }
+        }
+    }
+}
+
+/// Read into a kernel-owned buffer from an fd, mirroring `sys_read`'s dispatch.
+/// Returns bytes read (0 = no data when non-blocking / EOF). Used by wxe
+/// ReadConsole services that convert UTF-8 input into UTF-16.
+pub fn read_fd_kernel(fd: u32, out: &mut [u8], blocking: bool) -> u32 {
+    use crate::fs::fd_table::FdKind;
+    if out.is_empty() {
+        return 0;
+    }
+    match crate::task::scheduler::current_fd_get(fd) {
+        Some(entry) => match entry.kind {
+            FdKind::File { global_id } => match crate::fs::vfs::read(global_id, out) {
+                Ok(n) => {
+                    crate::task::scheduler::record_io_read(n as u64);
+                    n as u32
+                }
+                Err(e) => fs_err(e),
+            },
+            FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::read(pipe_id, out),
+            FdKind::Tty => {
+                let pipe = crate::task::scheduler::current_thread_stdin_pipe();
+                if pipe != 0 {
+                    read_tty_pipe(pipe, out, blocking)
+                } else {
+                    0
+                }
+            }
+            FdKind::PtySlave { pty_id } => crate::ipc::pty::read_slave(pty_id, out, blocking),
+            _ => u32::MAX,
+        },
+        None => {
+            if fd == 0 {
+                let pipe = crate::task::scheduler::current_thread_stdin_pipe();
+                if pipe != 0 {
+                    read_tty_pipe(pipe, out, blocking)
+                } else {
+                    0
+                }
+            } else {
+                u32::MAX
+            }
+        }
+    }
+}
+
 fn read_tty_pipe_to_user(pipe: u32, buf_ptr: u64, len: usize, blocking: bool) -> u32 {
     let copy_len = len.min(PIPE_READ_COPY_CHUNK);
     let mut chunk = alloc::vec![0u8; copy_len];

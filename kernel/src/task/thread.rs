@@ -249,6 +249,9 @@ pub struct Thread {
     pub linux_rootfs: [u8; 512],
     /// Linux x86_64 FS base used for glibc TLS.
     pub linux_fs_base: u64,
+    /// Windows x86_64 user GS base (TEB) for wxe processes. 0 for non-Windows
+    /// threads, which keeps the existing `GS.base = 0` ring-3 behavior intact.
+    pub windows_gs_base: u64,
     /// Linux clear_child_tid userspace pointer for CLONE_CHILD_CLEARTID.
     pub linux_clear_child_tid: u64,
 
@@ -418,6 +421,7 @@ impl Thread {
             abi: AbiPersonality::AnyOs,
             linux_rootfs: [0u8; 512],
             linux_fs_base: 0,
+            windows_gs_base: 0,
             linux_clear_child_tid: 0,
             debug_attached_by: 0,
             debug_suspended: false,

@@ -342,9 +342,20 @@ impl BlockCache {
 
     /// Insert a sector into the cache (clean, read-cache entry).
     pub fn insert(&mut self, disk_id: u8, lba: u32, data: &[u8]) {
-        self.insert_with_dirty(disk_id, lba, data, false, "insert-scan");
+        // Clean insert: choose_insert_victim never displaces a dirty slot when
+        // dirty=false, so there is never anything to write through.
+        let _ = self.insert_with_dirty(disk_id, lba, data, false, "insert-scan");
     }
 
+    /// Insert a sector, optionally as dirty (write-back).
+    ///
+    /// Returns `Some((disk_id, lba, data))` when the chosen victim slot still
+    /// held *unflushed dirty* data that had to be displaced. The caller MUST
+    /// write that sector through to disk; dropping it silently is on-disk data
+    /// corruption (a lost FAT/directory/bitmap write → truncated files,
+    /// "file too short", "Invalid archive member header"). Update-in-place and
+    /// clean-victim insertions return `None`.
+    #[must_use]
     fn insert_with_dirty(
         &mut self,
         disk_id: u8,
@@ -352,9 +363,9 @@ impl BlockCache {
         data: &[u8],
         dirty: bool,
         scan_context: &str,
-    ) {
+    ) -> Option<(u8, u32, [u8; 512])> {
         if self.slots.is_empty() {
-            return; // Not initialized
+            return None; // Not initialized
         }
         let key = Self::make_key(disk_id, lba);
 
@@ -387,7 +398,7 @@ impl BlockCache {
                 if dirty {
                     self.slots[si].dirty = true;
                 }
-                return;
+                return None;
             }
         }
         // Only fall back to a full duplicate scan when the normal probe window
@@ -404,17 +415,29 @@ impl BlockCache {
                     if dirty {
                         self.slots[i].dirty = true;
                     }
-                    return;
+                    return None;
                 }
             }
         }
 
         let Some(victim) = self.choose_insert_victim(dirty, scan_context) else {
-            return;
+            return None;
         };
 
         // Remove old entry from hash table
         let old_key = self.slots[victim].key;
+        // If we are about to overwrite a slot whose dirty bytes are not yet on
+        // disk, hand them back to the caller for a synchronous write-through.
+        // Never reuse a dirty slot before its bytes reach the disk.
+        let evicted = if self.slots[victim].dirty && old_key != 0 && self.slot_key_valid(victim) {
+            Some((
+                (old_key >> 32) as u8,
+                (old_key & 0xFFFF_FFFF) as u32,
+                self.slots[victim].data,
+            ))
+        } else {
+            None
+        };
         if old_key != 0 {
             self.remove_from_hash(old_key, victim);
         }
@@ -439,6 +462,7 @@ impl BlockCache {
         } else {
             self.insert_hash(key, victim as u16);
         }
+        evicted
     }
 
     fn choose_insert_victim(&mut self, dirty: bool, scan_context: &str) -> Option<usize> {
@@ -510,8 +534,17 @@ impl BlockCache {
     }
 
     /// Insert a dirty sector (for write-back caching).
-    pub fn insert_dirty(&mut self, disk_id: u8, lba: u32, data: &[u8]) {
-        self.insert_with_dirty(disk_id, lba, data, true, "insert-dirty-scan");
+    /// Insert a dirty (write-back) sector. Returns an evicted-but-unflushed
+    /// dirty sector `(disk_id, lba, data)` that the caller MUST write through
+    /// to disk so it is never lost.
+    #[must_use]
+    pub fn insert_dirty(
+        &mut self,
+        disk_id: u8,
+        lba: u32,
+        data: &[u8],
+    ) -> Option<(u8, u32, [u8; 512])> {
+        self.insert_with_dirty(disk_id, lba, data, true, "insert-dirty-scan")
     }
 
     /// Invalidate a cached sector (e.g. after direct disk write).
@@ -844,14 +877,27 @@ pub fn write_back(disk_id: u8, lba: u32, count: u32, data: &[u8]) {
         );
         return;
     }
-    let mut cache = BLOCK_CACHE.lock();
+    // Dirty sectors displaced from the cache while inserting these write-back
+    // entries. They are written through to disk AFTER releasing the cache lock,
+    // so we never (a) lose unflushed dirty data, nor (b) hold the cache spinlock
+    // across disk I/O.
+    let mut evicted: alloc::vec::Vec<(u8, u32, [u8; 512])> = alloc::vec::Vec::new();
     let mut accepted = 0u32;
-    for i in 0..count {
-        let offset = i as usize * 512;
-        if offset + 512 <= data.len() {
-            cache.insert_dirty(disk_id, lba + i, &data[offset..offset + 512]);
-            accepted += 1;
+    {
+        let mut cache = BLOCK_CACHE.lock();
+        for i in 0..count {
+            let offset = i as usize * 512;
+            if offset + 512 <= data.len() {
+                if let Some(ev) = cache.insert_dirty(disk_id, lba + i, &data[offset..offset + 512])
+                {
+                    evicted.push(ev);
+                }
+                accepted += 1;
+            }
         }
+    }
+    for (ev_disk, ev_lba, ev_data) in &evicted {
+        crate::drivers::storage::write_sectors_direct_on_disk(*ev_disk, *ev_lba, 1, ev_data);
     }
     if (disk_id as usize) < MAX_DISKS && accepted > 0 {
         DIRTY_ESTIMATE[disk_id as usize].fetch_add(accepted, Ordering::Relaxed);

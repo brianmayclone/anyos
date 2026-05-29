@@ -43,6 +43,15 @@ const WXE_ENV_A_ADDR: u64 = WXE_STRINGS_BASE + 0x2000;
 const WXE_ENV_W_ADDR: u64 = WXE_STRINGS_BASE + 0x3000;
 const WXE_MAX_STRING_BYTES: usize = 0x0800;
 const WXE_MAX_ENV_BYTES: usize = 0x1000;
+/// CRT scratch area inside the process block (errno / argc / argv) used by the
+/// generated ucrtbase stubs. Must match `libwxecore::wxedll`.
+const WXE_CRT_SCRATCH_BASE: u64 = WXE_PROCESS_BLOCK_BASE + 0x7000;
+const WXE_ARGC_ADDR: u64 = WXE_CRT_SCRATCH_BASE + 0x08;
+const WXE_ARGV_PTR_ADDR: u64 = WXE_CRT_SCRATCH_BASE + 0x10;
+const WXE_ARGV_ARRAY_ADDR: u64 = WXE_CRT_SCRATCH_BASE + 0x20;
+/// Executable page holding the shared unresolved-import stub, placed right
+/// after the process block. One page, `xor eax,eax; ret`.
+const WXE_IMPORT_STUB_ADDR: u64 = WXE_PROCESS_BLOCK_BASE + WXE_PROCESS_BLOCK_SIZE as u64;
 
 #[derive(Clone, Copy)]
 struct PeImageInfo {
@@ -77,6 +86,10 @@ struct WxeLoadedModule {
 struct WxeLoadContext {
     modules: Vec<WxeLoadedModule>,
     user_pages: u32,
+    /// Address of a shared `xor eax,eax; ret` stub. Imports that cannot be
+    /// resolved (missing DLL, missing export) are pointed here so the image
+    /// still loads; each one is logged so the missing surface is visible.
+    unresolved_stub: u64,
 }
 
 struct WxeRuntimePointers {
@@ -172,6 +185,9 @@ fn load_and_run_with_args_x86_64(
     crate::memory::vma::init_process(pd_phys, mmap_start);
     crate::task::scheduler::set_thread_user_info(tid, pd_phys, result.brk);
     crate::task::scheduler::set_thread_abi(tid, crate::task::abi::AbiPersonality::WindowsX86_64);
+    // Windows x64 code reaches the TEB/PEB through GS (`gs:[0x30]`, `gs:[0x60]`),
+    // so the user GS base must point at the TEB for the whole process lifetime.
+    crate::task::scheduler::set_thread_windows_gs_base(tid, WXE_TEB_BASE);
     crate::task::scheduler::set_thread_cwd(tid, "/System/var/wxe/drive_c");
     if result.user_pages > 0 {
         crate::task::scheduler::adjust_thread_user_pages(tid, result.user_pages as i32);
@@ -264,15 +280,27 @@ fn load_pe_image_into_pd(
         copy_section_to_user(data, pd_phys, info.image_base, &section)?;
     }
 
+    let stub_pages = install_import_stub_page(pd_phys)?;
+
     let mut imports = WxeLoadContext {
         modules: Vec::new(),
-        user_pages: 0,
+        user_pages: stub_pages,
+        unresolved_stub: WXE_IMPORT_STUB_ADDR,
     };
     if info.import_rva != 0 && info.import_size != 0 {
         resolve_imports_for_image(pd_phys, data, info, info.image_base, &mut imports, "main")?;
     }
 
-    let runtime = install_wxe_process_block(pd_phys, info, &imports, path, name, args)?;
+    let runtime = install_wxe_process_block(
+        pd_phys,
+        info,
+        &imports,
+        path,
+        name,
+        args,
+        aslr_stack_top,
+        stack_bottom,
+    )?;
     crate::serial_verbose_println!(
         "wxe loader: process block peb={:#x} teb={:#x} cmdA={:#x} cmdW={:#x} envA={:#x} envW={:#x}",
         WXE_PEB_BASE,
@@ -322,6 +350,8 @@ fn install_wxe_process_block(
     path: &str,
     name: &str,
     args: &str,
+    stack_top: u64,
+    stack_bottom: u64,
 ) -> Result<WxeRuntimePointers, &'static str> {
     let pages = virtual_mem::map_pages_range_in_pd(
         pd_phys,
@@ -351,9 +381,16 @@ fn install_wxe_process_block(
     write_env_a(&mut block, WXE_ENV_A_ADDR, &env_entries, WXE_MAX_ENV_BYTES)?;
     write_env_w(&mut block, WXE_ENV_W_ADDR, &env_entries, WXE_MAX_ENV_BYTES)?;
 
-    write_teb(&mut block);
+    write_teb(&mut block, stack_top, stack_bottom);
     write_peb(&mut block, info.image_base);
     write_process_parameters(&mut block, command_line_w_len, &image_path)?;
+
+    // CRT scratch: errno=0 (zeroed), argc=1, argv=[cmdline_a, NULL]. The narrow
+    // CRT stubs (`__p___argc`/`__p___argv`/`_errno`) just return these addresses.
+    put_block_u32(&mut block, WXE_ARGC_ADDR, 1);
+    put_block_u64(&mut block, WXE_ARGV_PTR_ADDR, WXE_ARGV_ARRAY_ADDR);
+    put_block_u64(&mut block, WXE_ARGV_ARRAY_ADDR, WXE_CMDLINE_A_ADDR);
+    put_block_u64(&mut block, WXE_ARGV_ARRAY_ADDR + 8, 0);
 
     copy_to_user_pd(pd_phys, WXE_PROCESS_BLOCK_BASE, &block);
 
@@ -382,8 +419,18 @@ fn install_wxe_process_block(
         command_line_w: WXE_CMDLINE_W_ADDR,
         environment_a: WXE_ENV_A_ADDR,
         environment_w: WXE_ENV_W_ADDR,
+        image_path: image_path.clone(),
         modules,
     });
+
+    // Seed the per-process environment store with the Windows defaults so
+    // GetEnvironmentVariableW/SetEnvironmentVariableW have something to read.
+    let pd_u64 = pd_phys.as_u64();
+    for entry in &env_entries {
+        if let Some((key, value)) = entry.split_once('=') {
+            crate::task::env::set(pd_u64, key, value);
+        }
+    }
 
     Ok(WxeRuntimePointers {
         pages,
@@ -394,15 +441,14 @@ fn install_wxe_process_block(
     })
 }
 
-fn write_teb(block: &mut [u8]) {
-    put_block_u64(block, WXE_TEB_BASE + 0x08, USER_STACK_TOP);
-    put_block_u64(
-        block,
-        WXE_TEB_BASE + 0x10,
-        USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE,
-    );
-    put_block_u64(block, WXE_TEB_BASE + 0x30, WXE_TEB_BASE);
-    put_block_u64(block, WXE_TEB_BASE + 0x60, WXE_PEB_BASE);
+fn write_teb(block: &mut [u8], stack_top: u64, stack_bottom: u64) {
+    // NT_TIB.StackBase / StackLimit must describe the *actual* (ASLR-adjusted)
+    // user stack, otherwise stack-walking / SEH / __chkstk see a range that
+    // doesn't contain RSP.
+    put_block_u64(block, WXE_TEB_BASE + 0x08, stack_top); // StackBase
+    put_block_u64(block, WXE_TEB_BASE + 0x10, stack_bottom); // StackLimit
+    put_block_u64(block, WXE_TEB_BASE + 0x30, WXE_TEB_BASE); // NtTib.Self
+    put_block_u64(block, WXE_TEB_BASE + 0x60, WXE_PEB_BASE); // ProcessEnvironmentBlock
 }
 
 fn write_peb(block: &mut [u8], image_base: u64) {
@@ -657,6 +703,37 @@ fn put_block_u64(block: &mut [u8], addr: u64, value: u64) {
 }
 
 #[cfg(target_arch = "x86_64")]
+fn install_import_stub_page(pd_phys: PhysAddr) -> Result<u32, &'static str> {
+    let pages = virtual_mem::map_pages_range_in_pd(
+        pd_phys,
+        VirtAddr::new(WXE_IMPORT_STUB_ADDR),
+        1,
+        PAGE_WRITABLE | PAGE_USER,
+        true,
+    )?;
+    // Unresolved-import stub: log the caller RIP via a syscall, then return 0.
+    //   mov r10, [rsp]        ; caller return address -> a1
+    //   mov eax, 0x02FF       ; WXE_PRIV_UNRESOLVED_STUB
+    //   syscall               ; kernel logs and returns 0 in rax
+    //   ret
+    // Only clobbers volatile registers (r10/rax/rcx/r11), so it is a valid
+    // Win64 callee for any unresolved import regardless of signature.
+    copy_to_user_pd(
+        pd_phys,
+        WXE_IMPORT_STUB_ADDR,
+        &[
+            0x4C, 0x8B, 0x14, 0x24, // mov r10, [rsp]
+            0xB8, 0xFF, 0x02, 0x00, 0x00, // mov eax, 0x02FF
+            0x0F, 0x05, // syscall
+            0xC3, // ret
+        ],
+    );
+    // Drop write permission; keep it executable for ring 3.
+    protect_mapped_page_range(pd_phys, WXE_IMPORT_STUB_ADDR, 1, PAGE_USER)?;
+    Ok(pages)
+}
+
+#[cfg(target_arch = "x86_64")]
 fn map_pe_module_into_pd(
     data: &[u8],
     pd_phys: PhysAddr,
@@ -751,7 +828,20 @@ fn resolve_imports_for_image(
         }
 
         let dll_name = read_cstr_rva(data, info, name_rva, 260)?;
-        let module_idx = ensure_wxe_module_loaded(ctx, pd_phys, &dll_name)?;
+        // A missing or unloadable DLL is not fatal: point every import from it at
+        // the shared stub so the image still loads. The actual surface is logged.
+        let module_idx = match ensure_wxe_module_loaded(ctx, pd_phys, &dll_name) {
+            Ok(idx) => Some(idx),
+            Err(err) => {
+                crate::serial_verbose_println!(
+                    "wxe loader: '{}' import DLL '{}' unavailable ({}); stubbing its imports",
+                    image_name,
+                    dll_name,
+                    err
+                );
+                None
+            }
+        };
         let lookup_rva = if original_first_thunk != 0 {
             original_first_thunk
         } else {
@@ -769,16 +859,36 @@ fn resolve_imports_for_image(
                 break;
             }
 
-            let target = if thunk & IMAGE_ORDINAL_FLAG64 != 0 {
-                let ordinal = (thunk & 0xFFFF) as u16;
-                resolve_export_by_ordinal(ctx, pd_phys, module_idx, ordinal, 0)?
-            } else {
-                let import_name_rva = (thunk as u32)
-                    .checked_add(2)
-                    .ok_or("wxe: import name RVA overflow")?;
-                let import_name = read_cstr_rva(data, info, import_name_rva, 512)?;
-                resolve_export_by_name(ctx, pd_phys, module_idx, &import_name, 0)?
+            let resolved = match module_idx {
+                Some(idx) => {
+                    if thunk & IMAGE_ORDINAL_FLAG64 != 0 {
+                        let ordinal = (thunk & 0xFFFF) as u16;
+                        resolve_export_by_ordinal(ctx, pd_phys, idx, ordinal, 0).map_err(|e| {
+                            crate::serial_verbose_println!(
+                                "wxe loader: unresolved import {}!#{} ({}) -> stub",
+                                dll_name,
+                                ordinal,
+                                e
+                            );
+                        })
+                    } else {
+                        let import_name_rva = (thunk as u32)
+                            .checked_add(2)
+                            .ok_or("wxe: import name RVA overflow")?;
+                        let import_name = read_cstr_rva(data, info, import_name_rva, 512)?;
+                        resolve_export_by_name(ctx, pd_phys, idx, &import_name, 0).map_err(|e| {
+                            crate::serial_verbose_println!(
+                                "wxe loader: unresolved import {}!{} ({}) -> stub",
+                                dll_name,
+                                import_name,
+                                e
+                            );
+                        })
+                    }
+                }
+                None => Err(()),
             };
+            let target = resolved.unwrap_or(ctx.unresolved_stub);
 
             let iat_rva = first_thunk
                 .checked_add((thunk_idx * 8) as u32)

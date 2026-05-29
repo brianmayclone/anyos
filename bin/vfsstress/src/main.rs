@@ -923,6 +923,12 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
         directory_scaling_perf_case(cfg)
     });
     run_named(cfg, summary, "long names", || long_name_case(cfg));
+    run_named(cfg, summary, "long-name large io", || {
+        long_name_large_io_case(cfg)
+    });
+    run_named(cfg, summary, "deb install pattern", || {
+        deb_install_pattern_case(cfg)
+    });
     run_named_with_warning(cfg, summary, "permission metadata", || {
         permission_metadata_case(cfg)
     });
@@ -3962,6 +3968,259 @@ fn long_name_case(cfg: &Config) -> Result<String, &'static str> {
     Ok(format!(
         "{} lange Pfadnamen bis {} Byte, {} UTF-8-Namen, {}",
         tested, path_budget, utf8_tested, case_detail
+    ))
+}
+
+/// Realistic Debian package file names: long (>15 UTF-16 units, so they span
+/// multiple exFAT FileName entries) and full of the special characters apt/dpkg
+/// produce — `~`, `+`, `.`, `_`, `-`, and `%3a` (URL-encoded `:` from version
+/// epochs). These are the exact names that fail during `apt install`.
+const DEB_NAMES: &[&str] = &[
+    "15-nodejs-doc_18.20.4+dfsg-1~deb12u2_all.deb",
+    "libnode108_18.20.4+dfsg-1~deb12u2_amd64.deb",
+    "node-undici_5.15.0+dfsg1~cs20.10.9.3-1+deb12u4_all.deb",
+    "node-tap_16.3.2+ds1~cs50.8.16-1+deb12u1_all.deb",
+    "libcrypt1_1%3a4.4.33-2_amd64.deb",
+    "ca-certificates_20230311+deb12u1_all.deb",
+    "perl-modules-5.36_5.36.0-7+deb12u3_all.deb",
+];
+
+/// File size used by the .deb-pattern cases. Large enough to span many clusters
+/// and exercise the FAT chain + write-back cache under sustained churn.
+fn deb_case_size(cfg: &Config) -> u32 {
+    match cfg.profile {
+        Profile::Quick => 512 * 1024,
+        Profile::Normal => 2 * 1024 * 1024,
+        Profile::Heavy | Profile::Soak => 6 * 1024 * 1024,
+    }
+}
+
+/// Read a pattern file using ar/tar-style seeks — forward (skip a member
+/// payload to the next header), backward (re-read an earlier header), relative
+/// (SEEK_CUR) and from the end (SEEK_END) — verifying the data at every landing
+/// offset. This mirrors how apt-extracttemplates / dpkg-deb walk a `.deb`'s ar
+/// members; a seek / readahead / seek-cache bug surfaces here as the same
+/// "Invalid archive member header" corruption seen during `apt install`.
+fn verify_seek_pattern(path: &str, total_bytes: u32, seed: u32) -> Result<(), &'static str> {
+    let chunk = 512usize;
+    if total_bytes < (chunk as u32) * 4 {
+        return Ok(());
+    }
+    let fd = fs::open(path, 0);
+    if fd == u32::MAX {
+        return Err("seek-open");
+    }
+    let last = total_bytes - chunk as u32;
+    // Absolute landing offsets that jump forward and backward across the file.
+    let offsets = [0u32, 68, last / 2, 8, last, last / 4, last / 2 + chunk as u32, 0];
+    let mut buf = [0u8; 512];
+    let mut rc: Result<(), &'static str> = Ok(());
+    for &off in offsets.iter() {
+        // Absolute seek (forward or backward relative to the current position).
+        if fs::lseek(fd, off as i32, fs::SEEK_SET) != off {
+            rc = Err("seek-set");
+            break;
+        }
+        if fs::read(fd, &mut buf) != chunk as u32 || verify_pattern(&buf, off, seed).is_some() {
+            rc = Err("seek-set-verify");
+            break;
+        }
+        // Relative backward seek (SEEK_CUR) back to the same chunk, re-read it.
+        if fs::lseek(fd, -(chunk as i32), fs::SEEK_CUR) != off {
+            rc = Err("seek-cur-back");
+            break;
+        }
+        if fs::read(fd, &mut buf) != chunk as u32 || verify_pattern(&buf, off, seed).is_some() {
+            rc = Err("seek-cur-verify");
+            break;
+        }
+    }
+    // Negative seek relative to EOF, then read the final chunk.
+    if rc.is_ok()
+        && (fs::lseek(fd, -(chunk as i32), fs::SEEK_END) != last
+            || fs::read(fd, &mut buf) != chunk as u32
+            || verify_pattern(&buf, last, seed).is_some())
+    {
+        rc = Err("seek-end-verify");
+    }
+    fs::close(fd);
+    rc
+}
+
+/// Copy a file the way dpkg does: open source for reading and destination for
+/// writing simultaneously, stream through a buffer, verifying the source data
+/// matches the expected pattern as it is copied.
+fn copy_file_verified(src: &str, dst: &str, total_bytes: u32, seed: u32) -> Result<(), &'static str> {
+    let rfd = fs::open(src, 0);
+    if rfd == u32::MAX {
+        return Err("copy-open-src");
+    }
+    let wfd = fs::open(dst, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if wfd == u32::MAX {
+        fs::close(rfd);
+        return Err("copy-open-dst");
+    }
+    let mut buf = Vec::new();
+    buf.resize(64 * 1024, 0);
+    let mut offset = 0u32;
+    let mut rc: Result<(), &'static str> = Ok(());
+    while offset < total_bytes {
+        let want = (total_bytes - offset).min(buf.len() as u32) as usize;
+        if fs::read(rfd, &mut buf[..want]) != want as u32 {
+            rc = Err("copy-read-short");
+            break;
+        }
+        if verify_pattern(&buf[..want], offset, seed).is_some() {
+            rc = Err("copy-src-corrupt");
+            break;
+        }
+        if fs::write(wfd, &buf[..want]) != want as u32 {
+            rc = Err("copy-write-short");
+            break;
+        }
+        offset += want as u32;
+    }
+    if rc.is_ok() && !fs::fsync(wfd as i32) {
+        rc = Err("copy-fsync");
+    }
+    fs::close(wfd);
+    fs::close(rfd);
+    rc
+}
+
+/// Reproduces the `apt install` flow that currently corrupts files, without
+/// needing a Debian bootstrap. For each long, special-char `.deb` name:
+///   1. write a multi-MB file into `archives/partial/` (apt download)
+///   2. rename it into `archives/` (apt finalizes the download)
+///   3. immediately read it back — sequential AND ar/tar-style seeks
+///      (apt-extracttemplates is the first reader right after the rename)
+///   4. copy it into a temp install dir (dpkg copies before unpack)
+///   5. read the copy back — sequential AND seeks (dpkg-deb decompress)
+/// Any mismatch is the "Invalid archive member header" / "<decompress> error" /
+/// "file too short" corruption observed during real installs.
+fn deb_install_pattern_case(cfg: &Config) -> Result<String, &'static str> {
+    let base = format!("{}/full-deb-install", cfg.dir);
+    let archives = format!("{}/archives", base);
+    let partial = format!("{}/partial", archives);
+    let tmp = format!("{}/apt-dpkg-install-43Q33V", base);
+    let _ = fs::mkdir(&base);
+    let _ = fs::mkdir(&archives);
+    let _ = fs::mkdir(&partial);
+    let _ = fs::mkdir(&tmp);
+
+    let size = deb_case_size(cfg);
+    let mut verified = 0u32;
+    let mut rc: Result<(), &'static str> = Ok(());
+
+    for (idx, name) in DEB_NAMES.iter().enumerate() {
+        let part_path = format!("{}/{}", partial, name);
+        let arch_path = format!("{}/{}", archives, name);
+        let tmp_path = format!("{}/{:02}-{}", tmp, idx, name);
+        if tmp_path.len() > 255 || part_path.len() > 255 {
+            continue; // beyond the path budget on this scratch dir
+        }
+        let seed = 0x6b10_0000u32 ^ (idx as u32).wrapping_mul(0x9e3779b1);
+        let _ = fs::unlink(&part_path);
+        let _ = fs::unlink(&arch_path);
+        let _ = fs::unlink(&tmp_path);
+
+        // 1) apt downloads into archives/partial/NAME.deb
+        if let Err(e) = write_pattern_file(&part_path, size, 64 * 1024, seed) {
+            rc = Err(e);
+            break;
+        }
+        // 2) apt finalizes the download: rename partial -> archives.
+        if rename_retry(&part_path, &arch_path, 4) != 0 {
+            rc = Err("deb-rename");
+            break;
+        }
+        // 3) apt-extracttemplates: first reader, right after the rename.
+        if verify_file_pattern_large(&arch_path, size, seed, 64 * 1024).is_err() {
+            rc = Err("deb-read-after-rename");
+            break;
+        }
+        if let Err(e) = verify_seek_pattern(&arch_path, size, seed) {
+            rc = Err(e);
+            break;
+        }
+        // Reported size must be exact — a stale dir entry yields "file too short".
+        let mut stat = [0u32; 7];
+        if fs::stat(&arch_path, &mut stat) != 0 || stat[1] != size {
+            rc = Err("deb-size-mismatch");
+            break;
+        }
+        // 4) dpkg copies the .deb into a temp install dir (read src -> write dst).
+        if let Err(e) = copy_file_verified(&arch_path, &tmp_path, size, seed) {
+            rc = Err(e);
+            break;
+        }
+        // 5) dpkg-deb decompresses: reads the copy back, sequential + seeks.
+        if verify_file_pattern_large(&tmp_path, size, seed, 32 * 1024).is_err() {
+            rc = Err("deb-tmp-verify");
+            break;
+        }
+        if let Err(e) = verify_seek_pattern(&tmp_path, size, seed) {
+            rc = Err(e);
+            break;
+        }
+        verified += 1;
+        if !cfg.keep {
+            let _ = fs::unlink(&arch_path);
+            let _ = fs::unlink(&tmp_path);
+        }
+    }
+
+    if !cfg.keep {
+        let _ = fs::unlink(&tmp);
+        let _ = fs::unlink(&partial);
+        let _ = fs::unlink(&archives);
+        let _ = fs::unlink(&base);
+    }
+    rc?;
+    if verified == 0 {
+        return Err("deb-budget");
+    }
+    Ok(format!(
+        "{} .deb-Pakete: download->rename->read+seeks->copy->decompress, je {} KiB",
+        verified,
+        size / 1024
+    ))
+}
+
+/// Long, special-char names combined with multi-MB data integrity and seeks,
+/// WITHOUT rename/copy — isolates whether long exFAT FileName entries alone
+/// corrupt a file's data or its directory-entry size/cluster fields.
+fn long_name_large_io_case(cfg: &Config) -> Result<String, &'static str> {
+    let dir = format!("{}/full-long-name-io", cfg.dir);
+    let _ = fs::mkdir(&dir);
+    let size = deb_case_size(cfg).min(3 * 1024 * 1024);
+    let mut tested = 0u32;
+    for (idx, name) in DEB_NAMES.iter().enumerate() {
+        let path = format!("{}/{}", dir, name);
+        if path.len() > 255 {
+            continue;
+        }
+        let seed = 0x10c0_0000u32 ^ (idx as u32).wrapping_mul(0x85eb_ca6b);
+        let _ = fs::unlink(&path);
+        write_pattern_file(&path, size, 64 * 1024, seed)?;
+        verify_file_pattern_large(&path, size, seed, 64 * 1024).map_err(|_| "long-io-seq")?;
+        verify_seek_pattern(&path, size, seed)?;
+        let mut stat = [0u32; 7];
+        if fs::stat(&path, &mut stat) != 0 || stat[1] != size {
+            return Err("long-io-size");
+        }
+        tested += 1;
+        if !cfg.keep {
+            let _ = fs::unlink(&path);
+        }
+    }
+    if tested == 0 {
+        return Err("long-io-budget");
+    }
+    Ok(format!(
+        "{} lange Sonderzeichen-Namen, je {} KiB, seq+seek verifiziert",
+        tested,
+        size / 1024
     ))
 }
 
