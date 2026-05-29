@@ -171,6 +171,11 @@ pub(super) fn map_open_flags(flags: u64) -> u32 {
     if (flags & 0x80000) != 0 {
         out |= 0x10;
     }
+    // O_SYNC (0o4010000) / O_DSYNC (0o10000) -> anyOS sync flag (0x20), so
+    // Linux programs that ask for synchronous writes actually get them.
+    if (flags & 0o4010000) != 0 || (flags & 0o10000) != 0 {
+        out |= 0x20;
+    }
     out
 }
 

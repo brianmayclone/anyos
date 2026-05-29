@@ -4190,7 +4190,25 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
 
 /// Read bytes from an open file at a fixed offset without changing its seek position.
 pub fn read_at(slot_id: FileDescriptor, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
-    flush_exfat_append_buffer(slot_id)?;
+    // read_at is the Linux-only positional/mmap read path (pread64, mmap fill).
+    // A fresh reader (often a different process from the writer, e.g.
+    // apt-extracttemplates after the http method wrote the .deb) must observe
+    // all committed writes. Flush EVERY open writer's append buffer / dirty
+    // exFAT entry for this path — the same coherence guarantee stat() and
+    // read_file_to_vec already provide. The previous own-slot-only flush did
+    // nothing for a reader fd (its append buffer is empty), so pread/mmap could
+    // read stale bytes that the native read() path never hit.
+    let path = {
+        let vfs = vfs_lock();
+        vfs.as_ref()
+            .and_then(|s| s.open_files.get(slot_id as usize))
+            .and_then(|e| e.as_ref())
+            .map(|f| f.path.clone())
+    };
+    match path {
+        Some(path) => sync_open_exfat_path(&path, false)?,
+        None => flush_exfat_append_buffer(slot_id)?,
+    }
     match prepare_detached_read_at(slot_id, offset, buf.len())? {
         DetachedReadPrep::Eof => Ok(0),
         DetachedReadPrep::Ready(plan) => execute_detached_read(&plan, buf),

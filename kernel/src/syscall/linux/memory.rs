@@ -664,9 +664,11 @@ pub(super) fn linux_read_fd_at(
             return if total > 0 { Ok(total) } else { Err(EFAULT) };
         }
         total += n;
-        if n < chunk_len {
-            break;
-        }
+        // Do NOT break on a short read: pread/mmap must fill up to `len` or
+        // EOF. A short chunk from read_at (e.g. at a FAT-run boundary) is not
+        // EOF; breaking here would leave a zero hole in the mapped/pread'd
+        // region and corrupt data deep in the file (e.g. an ar member header).
+        // The `n == 0` check above is the only legitimate stop (true EOF).
     }
     Ok(total)
 }

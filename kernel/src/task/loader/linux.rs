@@ -294,10 +294,15 @@ fn write_linux_initial_stack_vectors(
     if argv.is_empty() {
         return Err("lxe: empty argv");
     }
-    if argv.len() > 64 {
+    // Linux-realistic limits. The old 64/128/64KiB caps broke any execve with
+    // many arguments (e.g. `dpkg --unpack <hundreds of .deb>`, `ls *.deb`,
+    // `apt-extracttemplates <pkglist>`). The actual safety bound is the mapped
+    // 8 MiB stack, which is enforced below (sp < stack_bottom / payload range
+    // checks), so oversized lists fail cleanly rather than corrupting the stack.
+    if argv.len() > 256 * 1024 {
         return Err("lxe: too many argv entries");
     }
-    if envp.len() > 128 {
+    if envp.len() > 256 * 1024 {
         return Err("lxe: too many envp entries");
     }
 
@@ -307,7 +312,7 @@ fn write_linux_initial_stack_vectors(
             .checked_add(s.len() + 1)
             .ok_or("lxe: initial stack string size overflow")?;
     }
-    if string_bytes > 64 * 1024 {
+    if string_bytes > 2 * 1024 * 1024 {
         return Err("lxe: initial stack strings too large");
     }
 

@@ -391,11 +391,11 @@ pub(super) fn linux_execve(filename_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> u
         Err(errno) => return linux_err(errno),
     };
 
-    let argv = match read_exec_string_array(argv_ptr, 64) {
+    let argv = match read_exec_string_array(argv_ptr, MAX_EXEC_ARG_ENTRIES) {
         Ok(argv) => argv,
         Err(errno) => return linux_err(errno),
     };
-    let envp = match read_exec_string_array(envp_ptr, 128) {
+    let envp = match read_exec_string_array(envp_ptr, MAX_EXEC_ARG_ENTRIES) {
         Ok(envp) => envp,
         Err(errno) => return linux_err(errno),
     };
@@ -522,6 +522,19 @@ fn parse_shebang(data: &[u8]) -> Option<(String, Option<String>)> {
     Some((String::from(interpreter), interpreter_arg))
 }
 
+/// Maximum argv/envp entries accepted by execve. Linux's MAX_ARG_STRINGS is
+/// effectively unbounded (0x7FFFFFFF); the real constraint is ARG_MAX bytes.
+/// 64 (the old value) broke any `ls *.deb` / `dpkg --unpack <many>` /
+/// `apt-extracttemplates <pkglist>` with more than 64 entries. This is a loop
+/// bound; the byte limit below is the binding constraint.
+pub(super) const MAX_EXEC_ARG_ENTRIES: usize = 256 * 1024;
+
+/// Maximum combined argv+envp string bytes. Linux ARG_MAX is min(RLIMIT_STACK/4,
+/// ...) ≈ 2 MiB for an 8 MiB stack; we use 2 MiB. The initial-stack builder
+/// additionally bounds-checks against the actually mapped 8 MiB stack, so this
+/// can never overflow the stack — it only rejects oversized arg lists cleanly.
+pub(super) const MAX_EXEC_ARG_BYTES: usize = 2 * 1024 * 1024;
+
 fn read_exec_string_array(ptr: u64, max_entries: usize) -> Result<Vec<String>, i32> {
     if ptr == 0 {
         return Ok(Vec::new());
@@ -539,7 +552,7 @@ fn read_exec_string_array(ptr: u64, max_entries: usize) -> Result<Vec<String>, i
         }
         let s = handlers::helpers::read_user_str_safe(string_ptr).ok_or(EFAULT)?;
         total = total.checked_add(s.len() + 1).ok_or(E2BIG)?;
-        if total > 128 * 1024 {
+        if total > MAX_EXEC_ARG_BYTES {
             return Err(E2BIG);
         }
         out.push(String::from(s));
@@ -771,6 +784,10 @@ pub(super) fn linux_sigaltstack(_ss: u64, old_ss: u64) -> u64 {
 }
 
 pub(super) fn linux_sched_yield() -> u64 {
+    // Actually relinquish the CPU. glibc/pthreads and many apt/dpkg spin-then-
+    // yield loops (lock fallbacks, futex spins) call sched_yield() expecting to
+    // give up the timeslice; a no-op makes them busy-spin and waste CPU.
+    crate::task::scheduler::schedule();
     0
 }
 
