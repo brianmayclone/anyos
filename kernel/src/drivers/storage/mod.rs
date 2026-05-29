@@ -771,6 +771,12 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
     // Prefer a pool buffer to avoid a heap allocation per read (see
     // READAHEAD_POOL comment). Fall back to Vec when all slots are in use or
     // the adaptive fetch is larger than one fixed pool slot.
+    let read_generation = if cache_active {
+        disk_write_generation(disk_id)
+    } else {
+        0
+    };
+
     let result = if readahead > 0 {
         if fetch_bytes <= READAHEAD_BUF_BYTES {
             if let Some(lease) = acquire_readahead_slot() {
@@ -787,7 +793,9 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
                     let needed = miss_count as usize * 512;
                     let copy_end = needed.min(buf.len() - miss_offset);
                     buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);
-                    if populate_after_read {
+                    if populate_after_read
+                        && disk_write_generation(disk_id) == read_generation
+                    {
                         populate_cached_responsive(
                             disk_id,
                             miss_lba,
@@ -813,7 +821,9 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
                     let needed = miss_count as usize * 512;
                     let copy_end = needed.min(buf.len() - miss_offset);
                     buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);
-                    if populate_after_read {
+                    if populate_after_read
+                        && disk_write_generation(disk_id) == read_generation
+                    {
                         populate_cached_responsive(disk_id, miss_lba, total_fetch, &big_buf);
                     }
                     true
@@ -835,7 +845,7 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
                 let needed = miss_count as usize * 512;
                 let copy_end = needed.min(buf.len() - miss_offset);
                 buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);
-                if populate_after_read {
+                if populate_after_read && disk_write_generation(disk_id) == read_generation {
                     populate_cached_responsive(disk_id, miss_lba, total_fetch, &big_buf);
                 }
                 true
@@ -864,7 +874,10 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
             }
             // Populate cache with small/random reads only. Large streaming reads
             // otherwise evict useful metadata and pay one cache insert per sector.
-            if populate_after_read && buf.len() >= miss_offset + fetched_bytes {
+            if populate_after_read
+                && disk_write_generation(disk_id) == read_generation
+                && buf.len() >= miss_offset + fetched_bytes
+            {
                 populate_cached_responsive(
                     disk_id,
                     miss_lba,

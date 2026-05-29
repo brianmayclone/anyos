@@ -66,7 +66,10 @@ const BOUNCE_BUF_FRAMES: usize = BOUNCE_BUF_SIZE / 4096; // 128
 const AHCI_FAST_SPIN_ITERS: usize = 512;
 const AHCI_POLL_YIELD_EVERY: usize = 256;
 const AHCI_MAX_COMMAND_SLOTS: usize = 8;
-const AHCI_ENABLE_NCQ: bool = true;
+// QEMU advertises NCQ, but the current multi-slot FPDMA path is not yet proven
+// coherent under heavy exFAT package-manager writes. Keep AHCI serialized until
+// that path has an explicit stress test.
+const AHCI_ENABLE_NCQ: bool = false;
 
 const MAX_PRDT: usize = 128;
 const PRDT_MAX_BYTES: u32 = 4 * 1024 * 1024;

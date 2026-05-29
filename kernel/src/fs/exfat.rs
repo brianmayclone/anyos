@@ -3125,6 +3125,7 @@ impl ExFatFs {
         is_dir: bool,
         first_cluster: u32,
         data_length: u64,
+        contiguous: bool,
     ) -> Result<(), FsError> {
         let attr = if is_dir { ATTR_DIRECTORY } else { ATTR_ARCHIVE };
         // New entries inherit current thread's uid/gid with full-access mode
@@ -3135,7 +3136,7 @@ impl ExFatFs {
             attr,
             first_cluster,
             data_length,
-            false,
+            contiguous,
             uid,
             gid,
             0xFFF,
@@ -3175,7 +3176,7 @@ impl ExFatFs {
                             first_cluster,
                             data_length,
                             attributes: attr,
-                            contiguous: false,
+                            contiguous,
                             file_entry_offset: off,
                             secondary_count: (num - 1) as u8,
                             uid,
@@ -3204,7 +3205,7 @@ impl ExFatFs {
                                 first_cluster,
                                 data_length,
                                 attributes: attr,
-                                contiguous: false,
+                                contiguous,
                                 file_entry_offset: 0,
                                 secondary_count: (num - 1) as u8,
                                 uid,
@@ -3245,7 +3246,7 @@ impl ExFatFs {
                         first_cluster,
                         data_length,
                         attributes: attr,
-                        contiguous: false,
+                        contiguous,
                         file_entry_offset: off,
                         secondary_count: (num - 1) as u8,
                         uid,
@@ -3273,7 +3274,7 @@ impl ExFatFs {
                 first_cluster,
                 data_length,
                 attributes: attr,
-                contiguous: false,
+                contiguous,
                 file_entry_offset: 0,
                 secondary_count: (num - 1) as u8,
                 uid,
@@ -3287,7 +3288,7 @@ impl ExFatFs {
 
     /// Create a new empty file.
     pub fn create_file(&mut self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
-        self.create_entry(parent_cluster, name, false, 0, 0)
+        self.create_entry(parent_cluster, name, false, 0, 0, false)
     }
 
     /// Create a new subdirectory. Returns the new cluster.
@@ -3296,7 +3297,7 @@ impl ExFatFs {
         let cs = self.cluster_size() as usize;
         let zeros = vec![0u8; cs];
         self.write_cluster(cluster, &zeros)?;
-        if let Err(err) = self.create_entry(parent_cluster, name, true, cluster, 0) {
+        if let Err(err) = self.create_entry(parent_cluster, name, true, cluster, 0, false) {
             let _ = self.free_chain(cluster, true, 0);
             return Err(err);
         }
@@ -3323,6 +3324,7 @@ impl ExFatFs {
         let cluster = found.first_cluster;
         let size = found.data_length;
         let is_dir = (found.attributes & 0x10) != 0;
+        let contiguous = found.contiguous;
 
         if self.lookup_in_dir(new_parent, new_name).is_ok() {
             self.delete_file(new_parent, new_name)?;
@@ -3354,7 +3356,7 @@ impl ExFatFs {
             }
         }
         // Create new entry pointing to the same cluster chain
-        self.create_entry(new_parent, new_name, is_dir, cluster, size)?;
+        self.create_entry(new_parent, new_name, is_dir, cluster, size, contiguous)?;
         Ok(())
     }
 

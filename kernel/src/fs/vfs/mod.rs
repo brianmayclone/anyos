@@ -307,6 +307,41 @@ fn sync_open_exfat_path(path: &str, durable: bool) -> Result<(), FsError> {
     Ok(())
 }
 
+fn retarget_open_exfat_paths_after_rename(old_path: &str, new_path: &str) {
+    let mut vfs = vfs_lock();
+    let Some(state) = vfs.as_mut() else {
+        return;
+    };
+
+    for entry in &mut state.open_files {
+        let Some(file) = entry.as_mut() else {
+            continue;
+        };
+        if file.fs_id != 3 && file.fs_id != 6 {
+            continue;
+        }
+        if file.path == old_path {
+            file.path = String::from(new_path);
+            file.readahead.reset(file.position);
+            continue;
+        }
+        if file.path.len() > old_path.len()
+            && file.path.starts_with(old_path)
+            && file.path.as_bytes()[old_path.len()] == b'/'
+        {
+            let suffix = String::from(&file.path[old_path.len()..]);
+            let mut updated = String::from(new_path);
+            updated.push_str(&suffix);
+            file.path = updated;
+            file.readahead.reset(file.position);
+        }
+    }
+}
+
+fn open_path_matches_after_exfat_rename(file: &OpenFile, path: &str, inode: u32) -> bool {
+    file.path == path || ((file.fs_id == 3 || file.fs_id == 6) && file.inode == inode)
+}
+
 /// Set the root partition LBA (called from main.rs after partition scanning).
 pub fn set_root_partition_lba(lba: u32) {
     ROOT_PARTITION_LBA.store(lba, core::sync::atomic::Ordering::Relaxed);
@@ -3345,7 +3380,10 @@ fn update_detached_read_hint(slot_id: FileDescriptor, plan: &DetachedRead, hint:
     let Some(Some(file)) = state.open_files.get_mut(slot_id as usize) else {
         return;
     };
-    if file.inode != plan.inode || file.path != plan.path || file.size != plan.size {
+    if file.inode != plan.inode
+        || !open_path_matches_after_exfat_rename(file, &plan.path, plan.inode)
+        || file.size != plan.size
+    {
         return;
     }
     file.seek_cache_offset = hint.offset;
@@ -3396,7 +3434,9 @@ fn rollback_detached_read(slot_id: FileDescriptor, plan: &DetachedRead, amount: 
     let Some(Some(file)) = state.open_files.get_mut(slot_id as usize) else {
         return;
     };
-    if file.inode != plan.inode || file.path != plan.path {
+    if file.inode != plan.inode
+        || !open_path_matches_after_exfat_rename(file, &plan.path, plan.inode)
+    {
         return;
     }
     file.position = file.position.saturating_sub(amount as u32);
@@ -3411,7 +3451,9 @@ fn detached_read_file_changed(slot_id: FileDescriptor, plan: &DetachedRead) -> b
     let Some(Some(file)) = state.open_files.get(slot_id as usize) else {
         return true;
     };
-    file.inode != plan.inode || file.path != plan.path || file.size != plan.size
+    file.inode != plan.inode
+        || !open_path_matches_after_exfat_rename(file, &plan.path, plan.inode)
+        || file.size != plan.size
 }
 
 fn prepare_detached_write(
@@ -3629,7 +3671,9 @@ fn finish_detached_exfat_write(
             .get_mut(slot_id as usize)
             .and_then(|e| e.as_mut())
             .ok_or(FsError::BadFd)?;
-        if file.fs_id != plan.fs_id || file.path != plan.path {
+        if file.fs_id != plan.fs_id
+            || !open_path_matches_after_exfat_rename(file, &plan.path, plan.old_inode)
+        {
             return Err(FsError::BadFd);
         }
         file.inode = result.new_cluster;
@@ -3745,7 +3789,7 @@ fn finish_exfat_append_flush(
         .and_then(|e| e.as_mut())
         .ok_or(FsError::BadFd)?;
     if file.fs_id != pending.fs_id
-        || file.path != pending.path
+        || !open_path_matches_after_exfat_rename(file, &pending.path, pending.old_inode)
         || file.append_buffer_offset != pending.offset
         || file.append_buffer.len() != pending.data.len()
     {
@@ -3846,7 +3890,9 @@ fn rollback_detached_write(slot_id: FileDescriptor, plan: &DetachedWrite, amount
     let Some(Some(file)) = state.open_files.get_mut(slot_id as usize) else {
         return;
     };
-    if file.fs_id != plan.fs_id || file.path != plan.path {
+    if file.fs_id != plan.fs_id
+        || !open_path_matches_after_exfat_rename(file, &plan.path, plan.old_inode)
+    {
         return;
     }
     file.position = file.position.saturating_sub(amount as u32);
@@ -4941,7 +4987,9 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
     sync_open_exfat_path(old_path, false)?;
     sync_open_exfat_path(new_path, false)?;
     if let Some(plan) = prepare_detached_rename(old_path, new_path)? {
-        return execute_detached_rename(plan);
+        execute_detached_rename(plan)?;
+        retarget_open_exfat_paths_after_rename(old_path, new_path);
+        return Ok(());
     }
     let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
@@ -4981,7 +5029,10 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
             let (np, nn) = split_rel(&rel_new)?;
             let (old_parent_ino, _, _) = Filesystem::lookup(driver, &op)?;
             let (new_parent_ino, _, _) = Filesystem::lookup(driver, &np)?;
-            return driver.rename_entry(old_parent_ino, &on, new_parent_ino, &nn);
+            driver.rename_entry(old_parent_ino, &on, new_parent_ino, &nn)?;
+            drop(vfs);
+            retarget_open_exfat_paths_after_rename(old_path, new_path);
+            return Ok(());
         }
         (Some(_), Some(_)) => return Err(FsError::PermissionDenied), // cross-mount
         (Some(_), None) | (None, Some(_)) => return Err(FsError::PermissionDenied),
@@ -5019,6 +5070,8 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
                 new_name: nn_owned,
             };
             let _ = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
+            drop(vfs);
+            retarget_open_exfat_paths_after_rename(old_path, new_path);
             return Ok(());
         }
         (Some(_), Some(_)) => return Err(FsError::PermissionDenied), // cross-mount
@@ -5030,14 +5083,20 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
     if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
         let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
         let overlay = state.overlay_fs.as_mut().ok_or(FsError::IoError)?;
-        return overlay.rename(iso, old_path, new_path);
+        overlay.rename(iso, old_path, new_path)?;
+        drop(vfs);
+        retarget_open_exfat_paths_after_rename(old_path, new_path);
+        return Ok(());
     }
 
     // --- Generic root-FS dispatch via Filesystem trait (Phase 6 Step 6). ---
     state
         .root_fs()
         .ok_or(FsError::IoError)?
-        .rename(old_path, new_path)
+        .rename(old_path, new_path)?;
+    drop(vfs);
+    retarget_open_exfat_paths_after_rename(old_path, new_path);
+    Ok(())
 }
 
 /// Create a directory at the given path.
