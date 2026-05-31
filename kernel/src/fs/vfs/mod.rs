@@ -27,11 +27,14 @@ use core::sync::atomic::{AtomicU32, Ordering};
 const MAX_OPEN_FILES: usize = 1024;
 const EXFAT_APPEND_BUFFER_MAX: usize = 64 * 1024;
 const EXFAT_APPEND_BUFFER_WRITE_BYTES: usize = 4 * 1024;
-const EXFAT_READAHEAD_MIN_BYTES: u32 = 128 * 1024;
-const EXFAT_READAHEAD_LOW_MAX_BYTES: u32 = 256 * 1024;
-const EXFAT_READAHEAD_MED_MAX_BYTES: u32 = 1024 * 1024;
-const EXFAT_READAHEAD_HIGH_MAX_BYTES: u32 = 2 * 1024 * 1024;
-const EXFAT_READAHEAD_LARGE_MAX_BYTES: u32 = 4 * 1024 * 1024;
+// Read-ahead window/cap tuning. `pub(crate)` so the kunit `vfs_readahead`
+// suite asserts the *policy* (min window, doubling, per-tier caps) against these
+// named constants rather than hard-coded magic numbers that rot on each retune.
+pub(crate) const EXFAT_READAHEAD_MIN_BYTES: u32 = 128 * 1024;
+pub(crate) const EXFAT_READAHEAD_LOW_MAX_BYTES: u32 = 256 * 1024;
+pub(crate) const EXFAT_READAHEAD_MED_MAX_BYTES: u32 = 1024 * 1024;
+pub(crate) const EXFAT_READAHEAD_HIGH_MAX_BYTES: u32 = 2 * 1024 * 1024;
+pub(crate) const EXFAT_READAHEAD_LARGE_MAX_BYTES: u32 = 4 * 1024 * 1024;
 const EXFAT_READAHEAD_MIN_FREE_BYTES: usize = 16 * 1024 * 1024;
 const EXFAT_READAHEAD_MIN_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 

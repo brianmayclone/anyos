@@ -12,5 +12,6 @@ pub mod net_types_tests;
 pub mod physmap_tests;
 pub mod sync_tests;
 pub mod syscall_safety_tests;
+pub mod user_access_tests;
 pub mod vfs_readahead_tests;
 pub mod vma_tests;

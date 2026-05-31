@@ -212,3 +212,43 @@ pub struct TestSuite {
     pub name: &'static str,
     pub cases: &'static [TestCase],
 }
+
+// ── Headless completion signal ────────────────────────────────────────────────
+
+/// Unit-phase assertion-failure count, recorded by `runner::run_unit_tests` so
+/// the later integration phase can compute an overall pass/fail for the QEMU
+/// completion signal. (The two phases run at different boot points.)
+pub static KUNIT_UNIT_FAILED: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+/// Print the machine-readable completion line and ask QEMU to exit with a status
+/// that encodes overall pass/fail, so a headless runner keys off the exit code
+/// instead of scraping the serial log. Called once, at the end of the
+/// integration phase (the last kunit step). `integration_failed` is that phase's
+/// assertion-failure count; the unit phase's count is read from
+/// [`KUNIT_UNIT_FAILED`].
+///
+/// QEMU's `isa-debug-exit` device (`-device isa-debug-exit,iobase=0xf4,iosize=4`)
+/// exits with `(value << 1) | 1`, so:
+///   - all pass → write `0x10` → QEMU exit code 33
+///   - any fail → write `0x11` → QEMU exit code 35
+///
+/// If the device is absent (e.g. a normal full-image run without it), the port
+/// write is a harmless no-op and the kernel simply continues to boot.
+pub fn report_and_exit(integration_failed: u32) {
+    use core::sync::atomic::Ordering;
+    let unit_failed = KUNIT_UNIT_FAILED.load(Ordering::Acquire);
+    let total_failed = unit_failed.saturating_add(integration_failed);
+    let rc = if total_failed == 0 { 0u32 } else { 1u32 };
+    crate::serial_println!(
+        "KUNIT-DONE rc={} (unit_fail={}, integ_fail={})",
+        rc,
+        unit_failed,
+        integration_failed
+    );
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let value: u32 = if total_failed == 0 { 0x10 } else { 0x11 };
+        crate::arch::x86::port::outl(0xF4, value);
+    }
+}

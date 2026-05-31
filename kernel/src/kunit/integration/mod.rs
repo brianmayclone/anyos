@@ -163,6 +163,11 @@ pub fn run_all() {
     }
     crate::serial_println!("============================================================");
     crate::serial_println!("");
+
+    // Integration is the last kunit phase — emit the overall completion signal
+    // and (if the isa-debug-exit device is present) exit QEMU with a pass/fail
+    // status code. A no-op when the device is absent.
+    super::report_and_exit(total_fail);
 }
 
 // ── Context slot (per-test context injection) ─────────────────────────────────

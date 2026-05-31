@@ -180,8 +180,14 @@ fn test_stats_monotone(ctx: &mut TestContext) {
     // heap_stats() returns (used, committed). Committed bytes should never
     // shrink (the heap does not release pages back to the physical allocator).
     // Used bytes must always be <= committed.
+    //
+    // Hold a live anchor allocation so `used` is non-zero at this early boot
+    // point: `used` excludes the per-CPU bucket cache, so right after heap init
+    // (before this suite has live allocations) it can legitimately read ~0.
+    let anchor = alloc::vec![0u8; 96 * 1024];
+    core::hint::black_box(anchor.as_ptr());
     let (used0, committed0) = heap_stats();
-    ctx.expect_true(used0 > 0, "used bytes > 0");
+    ctx.expect_true(used0 > 0, "used bytes > 0 (live anchor)");
     ctx.expect_true(committed0 > 0, "committed bytes > 0");
     ctx.expect_ge(committed0, used0, "committed >= used");
 

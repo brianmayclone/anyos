@@ -4,7 +4,10 @@
 //! environment variables, keyboard layout, random numbers,
 //! hostname, crash info, and power management (shutdown).
 
-use super::helpers::{is_valid_user_ptr, read_user_str, read_user_str_safe, resolve_path};
+use super::helpers::{
+    copy_to_user_bytes, copy_user_bytes, is_valid_user_ptr, read_user_str, read_user_str_safe,
+    resolve_path,
+};
 
 // =========================================================================
 // System Information (SYS_TIME, SYS_UPTIME, SYS_SYSINFO)
@@ -17,18 +20,24 @@ pub fn sys_time(buf_ptr: u64) -> u32 {
     let (year, month, day, hour, min, sec) = crate::drivers::rtc::read_datetime();
     #[cfg(target_arch = "aarch64")]
     let (year, month, day, hour, min, sec): (u16, u8, u8, u8, u8, u8) = (1970, 1, 1, 0, 0, 0);
+    // NULL buffer keeps the historical no-op-and-succeed behavior; a non-NULL
+    // buffer is written through a mapping-validated copy so a kernel-space or
+    // unmapped pointer returns an error instead of faulting / corrupting the
+    // kernel.
     if buf_ptr != 0 {
-        unsafe {
-            let buf = buf_ptr as *mut u8;
-            let year_bytes = (year as u16).to_le_bytes();
-            *buf = year_bytes[0];
-            *buf.add(1) = year_bytes[1];
-            *buf.add(2) = month as u8;
-            *buf.add(3) = day as u8;
-            *buf.add(4) = hour as u8;
-            *buf.add(5) = min as u8;
-            *buf.add(6) = sec as u8;
-            *buf.add(7) = 0;
+        let yb = (year as u16).to_le_bytes();
+        let bytes = [
+            yb[0],
+            yb[1],
+            month as u8,
+            day as u8,
+            hour as u8,
+            min as u8,
+            sec as u8,
+            0,
+        ];
+        if !copy_to_user_bytes(buf_ptr, &bytes, bytes.len()) {
+            return u32::MAX;
         }
     }
     0
@@ -38,19 +47,19 @@ pub fn sys_time(buf_ptr: u64) -> u32 {
 /// arg1=buf_ptr: input [year_lo:u8, year_hi:u8, month:u8, day:u8, hour:u8, min:u8, sec:u8, pad:u8]
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_set_time(buf_ptr: u64) -> u32 {
-    if buf_ptr == 0 {
-        return u32::MAX;
-    }
-    let (year, month, day, hour, min, sec) = unsafe {
-        let buf = buf_ptr as *const u8;
-        let year = *buf as u16 | ((*buf.add(1) as u16) << 8);
-        let month = *buf.add(2);
-        let day = *buf.add(3);
-        let hour = *buf.add(4);
-        let min = *buf.add(5);
-        let sec = *buf.add(6);
-        (year, month, day, hour, min, sec)
+    // Read the 8-byte time record through a mapping-validated copy so a NULL,
+    // kernel-space, or unmapped pointer returns an error instead of faulting or
+    // reading kernel memory.
+    let buf = match copy_user_bytes(buf_ptr, 8, 8) {
+        Some(b) => b,
+        None => return u32::MAX,
     };
+    let year = buf[0] as u16 | ((buf[1] as u16) << 8);
+    let month = buf[2];
+    let day = buf[3];
+    let hour = buf[4];
+    let min = buf[5];
+    let sec = buf[6];
     // Basic validation.
     if month == 0
         || month > 12

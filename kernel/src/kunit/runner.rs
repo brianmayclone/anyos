@@ -26,6 +26,7 @@ static UNIT_SUITES: &[&TestSuite] = &[
     &super::tests::datetime_tests::SUITE,
     &super::tests::capabilities_tests::SUITE,
     &super::tests::syscall_safety_tests::SUITE,
+    &super::tests::user_access_tests::SUITE,
     &super::tests::ipc_tests::SUITE,
     &super::tests::vfs_readahead_tests::SUITE,
 ];
@@ -39,6 +40,10 @@ pub fn run_unit_tests() {
 
     let (p, f, sp, sf) = run_suites(UNIT_SUITES);
     print_summary("unit", p, f, sp, sf);
+
+    // Record the unit-phase failure count for the overall completion signal
+    // emitted at the end of the integration phase (see `kunit::report_and_exit`).
+    super::KUNIT_UNIT_FAILED.store(f, core::sync::atomic::Ordering::Release);
 }
 
 /// Run all integration tests.  Call after hardware init + scheduler init.
