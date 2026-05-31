@@ -168,16 +168,16 @@ impl<'a> InstallProgress<'a> {
     }
 
     pub(crate) fn set_overall(&mut self, done: u32, total: u32) {
+        // Progress is reported to the GUI observer only; the CLI output is kept
+        // apt-style (no per-step "lxe: overall ..." spam).
         self.overall_done = done;
         self.overall_total = total;
-        println!(
-            "lxe: overall {}/{} {}",
-            self.overall_done, self.overall_total, self.overall_unit
-        );
         self.emit(0, 0);
     }
 
     pub(crate) fn phase(&mut self, name: &str, detail: &str) {
+        // Internal phase tracking for the GUI observer; no CLI line (apt does
+        // not print an "lxe: <phase>" line for every internal step).
         self.package_name.clear();
         self.package_name.push_str(name);
         self.package_version.clear();
@@ -185,15 +185,12 @@ impl<'a> InstallProgress<'a> {
         self.package_done = 0;
         self.package_total = 0;
         self.files_written = 0;
-        if detail.is_empty() {
-            println!("lxe: {}", name);
-        } else {
-            println!("lxe: {}: {}", name, detail);
-        }
         self.emit(0, 0);
     }
 
     fn package_start(&mut self, name: &str, version: &str, total: u32) {
+        // CLI prints the apt-style "Unpacking ..." line from install_resolved_plan;
+        // here we only track state for the GUI observer.
         self.package_name.clear();
         self.package_name.push_str(name);
         self.package_version.clear();
@@ -201,11 +198,6 @@ impl<'a> InstallProgress<'a> {
         self.package_done = 0;
         self.package_total = total;
         self.files_written = 0;
-        if version.is_empty() {
-            println!("lxe: unpacking {} ({} entries)", name, total);
-        } else {
-            println!("lxe: unpacking {} {} ({} entries)", name, version, total);
-        }
         self.emit(0, 0);
     }
 
@@ -224,10 +216,6 @@ impl<'a> InstallProgress<'a> {
     fn package_done(&mut self, files_written: u32) {
         self.package_done = self.package_total;
         self.files_written = files_written;
-        println!(
-            "lxe: unpacked {} {} ({} files)",
-            self.package_name, self.package_version, self.files_written
-        );
         self.emit(0, 0);
     }
 
@@ -347,9 +335,8 @@ pub(crate) fn resolve_install_plan(
             return None;
         }
     }
-    println!("lxe apt: Building dependency tree... Done");
-    println!("lxe apt: {} packages in dependency plan", plan.len());
-    println!("lxe apt: Checking package cache before download...");
+    println!("Building dependency tree... Done");
+    println!("Reading state information... Done");
     Some(plan)
 }
 
@@ -362,11 +349,9 @@ pub(crate) fn prefetch_install_plan(
         return true;
     }
 
-    println!("lxe apt: Scanning package cache...");
     let missing = missing_cached_packages(config, plan, progress);
     if missing.is_empty() {
         progress.phase("apt fetch", "0 B of archives needed");
-        println!("lxe apt: Need to get 0 B of archives.");
         return true;
     }
 
@@ -375,7 +360,6 @@ pub(crate) fn prefetch_install_plan(
         "apt fetch",
         &alloc::format!("{} of archives needed", format_bytes(needed)),
     );
-    println!("lxe apt: Need to get {} of archives.", format_bytes(needed));
 
     if !path_exists(&config.wget) || config.download_jobs <= 1 || missing.len() == 1 {
         progress.phase(
@@ -421,21 +405,19 @@ pub(crate) fn install_resolved_plan(
         }
 
         println!(
-            "lxe apt: Selecting previously unselected package {}.",
+            "Selecting previously unselected package {}.",
             info.package
         );
         println!(
-            "lxe apt: Preparing to unpack {} ...",
+            "Preparing to unpack .../{} ...",
             deb_basename(&info.filename)
         );
+        println!("Unpacking {} ({}) ...", info.package, info.version);
         progress.phase("apt unpack", &info.package);
         if !install_deb(config, &deb_path, rootfs, Some(info), progress) {
             return false;
         }
-        println!(
-            "lxe apt: Setting up {} ({}) ...",
-            info.package, info.version
-        );
+        println!("Setting up {} ({}) ...", info.package, info.version);
     }
     true
 }
@@ -577,11 +559,7 @@ impl PackageLookup {
             }
         };
         let lookup = package_lookup_from_bytes(config, &index);
-        println!(
-            "lxe apt: Reading package lists... Done ({} packages, {} virtual names)",
-            lookup.packages.len(),
-            lookup.providers.len()
-        );
+        println!("Reading package lists... Done");
         Some(lookup)
     }
 
@@ -777,7 +755,6 @@ fn missing_cached_packages(
         "apt cache",
         &alloc::format!("checking {} package archives", plan.len()),
     );
-    println!("lxe apt: Checking package cache...");
     let mut missing = Vec::new();
     let mut checked = 0usize;
     let mut last_status_ms = sys::uptime_ms();
@@ -825,7 +802,7 @@ fn total_package_size(packages: &[PackageInfo]) -> usize {
         .fold(0usize, |total, info| total.saturating_add(info.size))
 }
 
-fn format_bytes(bytes: usize) -> String {
+pub(crate) fn format_bytes(bytes: usize) -> String {
     if bytes >= 1024 * 1024 {
         let mib10 = bytes.saturating_mul(10) / (1024 * 1024);
         return alloc::format!("{}.{} MiB", mib10 / 10, mib10 % 10);
@@ -969,7 +946,7 @@ fn print_active_prefetch_jobs(active: &[PrefetchJob]) {
         if printed >= 4 {
             break;
         }
-        println!("lxe apt:   Get: {} {}", job.info.package, job.info.version);
+        println!("Get: {} {}", job.info.package, job.info.version);
         printed += 1;
     }
 }

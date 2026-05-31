@@ -698,7 +698,12 @@ pub fn try_exit_current(code: u32) -> bool {
             sched.threads[idle_idx].fpu_state.data.as_ptr() as u64,
             Ordering::Relaxed,
         );
-        update_per_cpu_name(cpu_id, &sched.threads[idle_idx].name);
+        update_per_cpu_name(
+            cpu_id,
+            &sched.threads[idle_idx].name,
+            sched.threads[idle_idx].abi,
+            &sched.threads[idle_idx].linux_rootfs,
+        );
         idle_ctx = Some(&sched.threads[idle_idx].context as *const CpuContext);
         try_exit_diag_mark(b'M');
     } // Lock released

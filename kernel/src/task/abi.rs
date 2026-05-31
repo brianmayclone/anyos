@@ -23,4 +23,15 @@ impl AbiPersonality {
             AbiPersonality::WindowsX86_64 => 2,
         }
     }
+
+    /// Inverse of [`event_tag`]; any unknown tag decodes to `AnyOs` (the safe
+    /// default — native dispatch). Used to read back the lock-free per-CPU ABI
+    /// cache maintained by the scheduler.
+    pub const fn from_event_tag(tag: u32) -> Self {
+        match tag {
+            1 => AbiPersonality::LinuxX86_64,
+            2 => AbiPersonality::WindowsX86_64,
+            _ => AbiPersonality::AnyOs,
+        }
+    }
 }

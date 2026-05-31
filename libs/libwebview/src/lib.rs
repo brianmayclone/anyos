@@ -213,6 +213,60 @@ struct IncrementalRelayoutPlan {
 ///
 /// Entries are `(family_lowercase, css_weight, italic, font_id)`.
 static mut WEB_FONT_MAP: *const Vec<(String, u32, bool, u32)> = core::ptr::null();
+
+/// Monotonic counter bumped whenever the web-font registry changes (a font is
+/// registered/replaced, or the registry is cleared on navigation).  The
+/// persistent text-measurement cache stores the generation it was built under
+/// and discards itself when this changes — a given `custom_font_id` can map to
+/// different font data across navigations (libfont handles are reused), so
+/// measured advance widths must not survive a registry change.
+static mut FONT_GENERATION: u64 = 1;
+
+/// Current web-font registry generation (see `FONT_GENERATION`).
+pub fn font_generation() -> u64 {
+    unsafe { FONT_GENERATION }
+}
+
+fn bump_font_generation() {
+    unsafe {
+        FONT_GENERATION = FONT_GENERATION.wrapping_add(1);
+    }
+}
+
+/// HTML attributes that style resolution reads directly (UA overrides,
+/// presentational hints, and the backing state of structural/form pseudo-class
+/// matching), independent of any author selector.  A change to one of these
+/// must re-resolve computed styles.  Derived from the attribute reads in
+/// `style/engine/resolve.rs` and `style/engine/selectors.rs`; `class`, `id`,
+/// and `style` are handled separately in `attribute_change_requires_style_recalc`.
+/// Kept over-inclusive on purpose — a redundant restyle is far cheaper than a
+/// missed one.
+const STYLE_AFFECTING_ATTRS: &[&str] = &[
+    "align",
+    "checked",
+    "contenteditable",
+    "controls",
+    "dir",
+    "disabled",
+    "hidden",
+    "indeterminate",
+    "lang",
+    "multiple",
+    "name",
+    "open",
+    "readonly",
+    "required",
+    "selected",
+    "type",
+    "value",
+    "data-collapse-target",
+    "is-open",
+];
+
+fn attr_is_style_affecting(name_lower: &str) -> bool {
+    STYLE_AFFECTING_ATTRS.contains(&name_lower)
+}
+
 const SYNTHETIC_AHEM_FONT_ID: u32 = u32::MAX - 1;
 const SYNTHETIC_CONDENSED_FONT_ID: u32 = u32::MAX - 2;
 const SYNTHETIC_NARROW_FONT_ID: u32 = u32::MAX - 3;
@@ -644,9 +698,13 @@ impl WebView {
             .iter_mut()
             .find(|(f, w, i, _)| f == &lower && *w == weight && *i == italic)
         {
-            existing.3 = font_id;
+            if existing.3 != font_id {
+                existing.3 = font_id;
+                bump_font_generation();
+            }
         } else {
             self.web_fonts.push((lower, weight, italic, font_id));
+            bump_font_generation();
         }
     }
 
@@ -732,8 +790,11 @@ impl WebView {
         self.resolved_styles_viewport_height = 0;
         self.resolved_pseudo_styles = style::PseudoStyles::empty(0);
         self.resolved_selector_state = style::SelectorState::default();
-        // Clear web fonts from the previous page.
+        // Clear web fonts from the previous page.  Bump the generation so the
+        // persistent text-measure cache cannot reuse widths keyed on font ids
+        // that the next page may reassign to different font data.
         self.web_fonts.clear();
+        bump_font_generation();
         // Reset JS runtime (fresh engine, no timers/listeners/websockets).
         self.js_runtime.reset();
         self.js_quiet_timer_ticks = 0;
@@ -1503,6 +1564,59 @@ impl WebView {
         let viewport_h = self.viewport_height.max(1) as i32;
         let upgrade_threshold = (viewport_h * 2).max(1024);
         scroll_y + upgrade_threshold >= self.total_height_val
+    }
+
+    /// After a budgeted (progressive) layout pass, decide whether a budget is
+    /// still clipping the document.  The deferred state must stay pending only
+    /// while content is actually being truncated: once the laid-out height fits
+    /// inside the layout budget *and* every node was styled, the whole document
+    /// has been laid out and the progressive state can be cleared.  `raw_height`
+    /// is the un-normalized laid-out height, which equals the layout budget when
+    /// (and only when) the budget cut the layout short.
+    fn budgeted_layout_still_truncated(
+        raw_height: i32,
+        layout_budget: Option<i32>,
+        style_budget: Option<usize>,
+        node_count: usize,
+    ) -> bool {
+        let layout_truncated = layout_budget.map_or(false, |b| raw_height >= b);
+        let style_truncated = style_budget.map_or(false, |nb| nb < node_count);
+        layout_truncated || style_truncated
+    }
+
+    /// Extend the progressive layout budget after the user scrolled near the
+    /// bottom of the laid-out region, then re-lay-out the document.  The budget
+    /// grows geometrically so a long page converges in a few scroll steps
+    /// instead of stalling on a single full layout; `do_layout_and_render`
+    /// clears the deferred state automatically once the whole document fits
+    /// (see `budgeted_layout_still_truncated`).
+    ///
+    /// This deliberately runs a full style + layout pass rather than the
+    /// cached-styles fast path: under a style-node budget the cached styles only
+    /// cover the previously laid-out prefix of the document, so reusing them
+    /// would leave the newly revealed region unstyled.
+    pub fn upgrade_deferred_layout(&mut self) {
+        if !self.deferred_full_layout_pending {
+            return;
+        }
+        let viewport_h = self.viewport_height.max(1) as i32;
+        let node_count = self.dom_val.as_ref().map_or(0, |d| d.nodes.len());
+
+        self.deferred_layout_budget_px = self
+            .deferred_layout_budget_px
+            .saturating_mul(2)
+            .max(self.deferred_layout_budget_px.saturating_add(viewport_h * 4));
+        self.deferred_style_node_budget = self
+            .deferred_style_node_budget
+            .saturating_mul(2)
+            .max(self.deferred_style_node_budget.saturating_add(4096))
+            .min(node_count.max(1));
+        self.deferred_budget_last_expand_ms = anyos_std::sys::uptime_ms() as u64;
+
+        if let Some(d) = self.dom_val.take() {
+            self.do_layout_and_render(&d, None);
+            self.dom_val = Some(d);
+        }
     }
 
     /// Repaint the current document from the cached layout tree without
@@ -3450,7 +3564,7 @@ impl WebView {
                         }
                         continue;
                     }
-                    impact = if Self::attribute_change_requires_style_recalc(name) {
+                    impact = if self.attribute_change_requires_style_recalc(name) {
                         MutationImpact::LayoutRestyle
                     } else {
                         MutationImpact::LayoutReuseStyles
@@ -3491,14 +3605,30 @@ impl WebView {
         }
     }
 
-    fn attribute_change_requires_style_recalc(name: &str) -> bool {
-        let _ = name;
-        // Attribute selectors are central to modern pages:
-        //   [data-state=open], [aria-expanded=true], :root[data-theme=dark], ...
-        // A changed attribute may therefore affect any selector, even when the
-        // attribute is not class/id/style. Be conservative here; a stale style
-        // cache is much worse than one extra restyle after a DOM mutation.
-        true
+    fn attribute_change_requires_style_recalc(&self, name: &str) -> bool {
+        let n = name.trim().to_ascii_lowercase();
+        // The inline `style` attribute always rewrites computed style.
+        if n == "style" {
+            return true;
+        }
+        // Attributes consulted directly by style resolution — UA overrides
+        // (`[hidden]`, `<input type=hidden>`, `<dialog open>`), presentational
+        // hints (`align`), and the backing state read while matching structural
+        // / form pseudo-classes (`:disabled`, `:required`, …).  These affect the
+        // computed style regardless of whether an author selector names them, so
+        // they always force a restyle.  Kept deliberately over-inclusive: an
+        // unnecessary restyle is cheap, a missed one is a correctness bug.
+        if attr_is_style_affecting(&n) {
+            return true;
+        }
+        // Otherwise only attributes that some *active* selector keys on can
+        // change styling.  This is the common framework case — toggling
+        // `data-*` / `aria-*` that no rule references skips the restyle.  Until
+        // the stylesheets are prepared we cannot know, so stay conservative.
+        match self.prepared_stylesheets.as_ref() {
+            Some(prepared) => prepared.attribute_can_affect_style(&n),
+            None => true,
+        }
     }
 
     fn mutations_dirty_inline_style_cache(mutations: &[js::DomMutation]) -> bool {
@@ -3530,7 +3660,7 @@ impl WebView {
             }
             js::DomMutation::SetAttribute { name, .. }
             | js::DomMutation::RemoveAttribute { name, .. } => {
-                !Self::attribute_change_requires_style_recalc(name)
+                !self.attribute_change_requires_style_recalc(name)
             }
             _ => false,
         })
@@ -4734,10 +4864,11 @@ impl WebView {
         if !self.scroll_offsets.is_empty() {
             Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, &mut root);
         }
-        self.total_height_val =
-            normalize_document_height(calc_total_height(&root), self.viewport_height);
+        let raw_height = calc_total_height(&root);
+        self.total_height_val = normalize_document_height(raw_height, self.viewport_height);
         self.layout_root = Some(root);
-        self.deferred_full_layout_pending = layout_budget.is_some();
+        self.deferred_full_layout_pending =
+            Self::budgeted_layout_still_truncated(raw_height, layout_budget, None, d.nodes.len());
         if !self.deferred_full_layout_pending {
             self.clear_deferred_layout_state();
         }
@@ -5147,9 +5278,14 @@ impl WebView {
         if !self.scroll_offsets.is_empty() {
             Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, &mut root);
         }
-        self.total_height_val =
-            normalize_document_height(calc_total_height(&root), self.viewport_height);
-        self.deferred_full_layout_pending = layout_budget.is_some() || style_budget.is_some();
+        let raw_height = calc_total_height(&root);
+        self.total_height_val = normalize_document_height(raw_height, self.viewport_height);
+        self.deferred_full_layout_pending = Self::budgeted_layout_still_truncated(
+            raw_height,
+            layout_budget,
+            style_budget,
+            d.nodes.len(),
+        );
         if !self.deferred_full_layout_pending {
             self.clear_deferred_layout_state();
         }

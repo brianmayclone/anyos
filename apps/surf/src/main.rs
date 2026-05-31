@@ -645,13 +645,17 @@ pub(crate) fn refresh_active_viewport_tiles() {
         return;
     }
     let scroll_y = st.tabs[tab_index].webview.scroll_view().get_state() as i32;
-    let needs_deferred_upgrade = st.tabs[tab_index]
+    // Grow the progressive layout budget *before* rendering so the freshly
+    // revealed region is laid out and painted in the same pass.  This is the
+    // mechanism that lets long pages (e.g. bild.de) finish loading past the
+    // initial above-the-fold budget instead of stalling at partial height.
+    if st.tabs[tab_index]
         .webview
-        .deferred_layout_upgrade_needed(scroll_y);
-    let pending = st.tabs[tab_index].webview.render_viewport_at(scroll_y);
-    if needs_deferred_upgrade {
-        request_layout_refresh(tab_index);
+        .deferred_layout_upgrade_needed(scroll_y)
+    {
+        st.tabs[tab_index].webview.upgrade_deferred_layout();
     }
+    let pending = st.tabs[tab_index].webview.render_viewport_at(scroll_y);
     if pending {
         state().scroll_render_pending = true;
         ensure_anim_timer();

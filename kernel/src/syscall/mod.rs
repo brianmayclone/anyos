@@ -694,18 +694,18 @@ pub(crate) fn dispatch_inner(
 pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
     let syscall_num = regs.rax as u32;
 
+    // Read the ABI personality once (lock-free per-CPU read) and reuse it for
+    // both checks — this is the hottest branch in the syscall path.
     #[cfg(target_arch = "x86_64")]
-    if crate::task::scheduler::current_thread_abi() == crate::task::abi::AbiPersonality::LinuxX86_64
     {
-        let result = linux::dispatch(regs);
-        return handlers::deliver_pending_signal_linux64(regs, result);
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    if crate::task::scheduler::current_thread_abi()
-        == crate::task::abi::AbiPersonality::WindowsX86_64
-    {
-        return windows::dispatch(regs);
+        let abi = crate::task::scheduler::current_thread_abi();
+        if abi == crate::task::abi::AbiPersonality::LinuxX86_64 {
+            let result = linux::dispatch(regs);
+            return handlers::deliver_pending_signal_linux64(regs, result);
+        }
+        if abi == crate::task::abi::AbiPersonality::WindowsX86_64 {
+            return windows::dispatch(regs);
+        }
     }
 
     // fork() needs the full register frame — intercept before dispatch_inner.

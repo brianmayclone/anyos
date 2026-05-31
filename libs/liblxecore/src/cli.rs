@@ -1,12 +1,13 @@
 use alloc::string::String;
 use alloc::vec::Vec;
-use anyos_std::{fs, println, process};
+use anyos_std::{fs, print, println, process};
 
 use crate::config::LxeConfig;
 use crate::daemon;
+use crate::model::PackageInfo;
 use crate::package::{
-    install_deb, install_package, install_resolved_plan, package_installed, prefetch_install_plan,
-    resolve_install_plan, sync_dpkg_status, InstallProgress,
+    format_bytes, install_deb, install_package, install_resolved_plan, package_installed,
+    prefetch_install_plan, resolve_install_plan, sync_dpkg_status, InstallProgress,
 };
 use crate::readiness::{shell_availability, LxeShellAvailability};
 use crate::rootfs::{
@@ -62,6 +63,7 @@ pub fn run_cli(raw: &str) {
         Some("shell") => shell(&mut config, &argv[1..]),
         Some("pkg") => pkg(&mut config, &argv[1..], verbose),
         Some("apt") => apt(&mut config, &argv[1..], verbose),
+        Some("ldconfig") => ldconfig(&mut config),
         Some(cmd) => {
             log_error!("lxe: unknown command '{}'", cmd);
             usage();
@@ -80,6 +82,7 @@ fn usage() {
     println!("  lxe [--verbose] shell [bash-args...]");
     println!("  lxe [--verbose] pkg install <file.deb>");
     println!("  lxe [--verbose] apt install <package> [package...]");
+    println!("  lxe [--verbose] ldconfig    (regenerate /etc/ld.so.cache)");
 }
 
 fn status(config: &LxeConfig) {
@@ -199,6 +202,12 @@ fn init(config: &mut LxeConfig, configure_password: bool, verbose: bool) {
     log_ok!("bootstrapping minimal Debian userland with apt");
     let bootstrapped = bootstrap_rootfs(config, &config.rootfs, verbose);
     fs::sync();
+    if bootstrapped {
+        // Generate /etc/ld.so.cache so every later Linux process starts fast
+        // (one cache lookup per library instead of ~10 failed path probes).
+        run_ldconfig(config);
+        fs::sync();
+    }
     if bootstrapped && configure_password {
         configure_root_password(config, &config.rootfs);
     } else if configure_password {
@@ -266,38 +275,128 @@ fn pkg(config: &mut LxeConfig, args: &[&str], verbose: bool) {
 }
 
 fn apt(config: &mut LxeConfig, args: &[&str], verbose: bool) {
-    match args.first().copied() {
-        Some("install") => {
-            let packages = &args[1..];
-            if packages.is_empty() {
-                log_error!("lxe apt install: missing package name");
-                return;
-            }
-            let lease = match daemon::acquire_write(config, "apt") {
-                Ok(lease) => lease,
-                Err(err) => {
-                    log_fatal!("lxe apt: lxed unavailable: {}", err);
-                    return;
-                }
-            };
-            ensure_rootfs_layout(config);
-            let mut progress = InstallProgress::new(verbose, packages.len() as u32, "packages");
-            progress.set_overall(0, packages.len() as u32);
-            let mut done = 0u32;
-            for pkg in packages {
-                if install_package(config, pkg, &config.rootfs, 0, &mut progress) {
-                    done += 1;
-                } else {
-                    progress.finish();
-                }
-                progress.set_overall(done, packages.len() as u32);
-            }
-            progress.finish();
-            sync_dpkg_status(config, &config.rootfs);
-            lease.release();
+    // Parse subcommand, flags (-y/--yes/--assume-yes) and package names,
+    // mirroring `apt-get install [-y] <pkg>...`.
+    let mut assume_yes = false;
+    let mut subcommand: Option<&str> = None;
+    let mut packages: Vec<String> = Vec::new();
+    for &arg in args {
+        match arg {
+            "-y" | "--yes" | "--assume-yes" => assume_yes = true,
+            _ if arg.starts_with('-') => {} // tolerate other flags (-q, --no-install-recommends, ...)
+            _ if subcommand.is_none() => subcommand = Some(arg),
+            _ => packages.push(String::from(arg)),
         }
-        _ => log_error!("lxe apt: expected install <package>"),
     }
+
+    if subcommand != Some("install") {
+        log_error!("lxe apt: expected 'install <package>...'");
+        return;
+    }
+    if packages.is_empty() {
+        log_error!("lxe apt install: missing package name");
+        return;
+    }
+
+    let lease = match daemon::acquire_write(config, "apt") {
+        Ok(lease) => lease,
+        Err(err) => {
+            log_fatal!("lxe apt: lxed unavailable: {}", err);
+            return;
+        }
+    };
+    ensure_rootfs_layout(config);
+    apt_install(config, &packages, assume_yes, verbose);
+    lease.release();
+}
+
+/// `apt-get install`-style flow: resolve ONE combined dependency plan for all
+/// requested packages + their dependencies up front, print an apt-style
+/// summary, confirm (unless `--yes`), then download archives in parallel and
+/// unpack/configure.
+fn apt_install(config: &mut LxeConfig, packages: &[String], assume_yes: bool, verbose: bool) {
+    let mut progress = InstallProgress::new(verbose, packages.len() as u32, "packages");
+
+    let Some(plan) = resolve_install_plan(config, packages, &config.rootfs, &mut progress) else {
+        println!("E: Unable to resolve the dependency plan.");
+        return;
+    };
+
+    let new_packages: Vec<&PackageInfo> = plan
+        .iter()
+        .filter(|info| !package_installed(config, &info.package, &config.rootfs))
+        .collect();
+
+    if new_packages.is_empty() {
+        for pkg in packages {
+            println!("{} is already the newest version.", pkg);
+        }
+        println!("0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.");
+        return;
+    }
+
+    print_install_list(&new_packages);
+    let download: usize = new_packages.iter().map(|info| info.size).sum();
+    println!(
+        "0 upgraded, {} newly installed, 0 to remove and 0 not upgraded.",
+        new_packages.len()
+    );
+    println!("Need to get {} of archives.", format_bytes(download));
+    println!(
+        "After this operation, {} of additional disk space will be used.",
+        format_bytes(download)
+    );
+
+    if !assume_yes && !confirm_continue() {
+        println!("Abort.");
+        return;
+    }
+
+    if !prefetch_install_plan(config, &plan, &mut progress) {
+        log_warn!("apt: parallel prefetch incomplete; falling back to on-demand downloads");
+    }
+    if !install_resolved_plan(config, &plan, &config.rootfs, &mut progress) {
+        println!("E: Sub-process returned an error code.");
+        return;
+    }
+
+    sync_dpkg_status(config, &config.rootfs);
+    // Newly installed packages may add shared libraries; refresh
+    // /etc/ld.so.cache so subsequent process starts stay fast.
+    run_ldconfig(config);
+}
+
+/// Print the apt-style "The following NEW packages will be installed:" block,
+/// wrapping package names at ~76 columns with a two-space indent.
+fn print_install_list(packages: &[&PackageInfo]) {
+    println!("The following NEW packages will be installed:");
+    let mut line = String::new();
+    for info in packages {
+        if !line.is_empty() && line.len() + 1 + info.package.len() > 76 {
+            println!("  {}", line);
+            line = String::new();
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(&info.package);
+    }
+    if !line.is_empty() {
+        println!("  {}", line);
+    }
+}
+
+/// Prompt "Do you want to continue? [Y/n]" and read one line from stdin.
+/// Returns true for yes/empty (apt's default), false for an explicit no.
+fn confirm_continue() -> bool {
+    print!("Do you want to continue? [Y/n] ");
+    let mut buf = [0u8; 8];
+    let n = fs::read(0, &mut buf);
+    println!();
+    if n == 0 || n == u32::MAX {
+        return true; // non-interactive / no input → apt default is Yes
+    }
+    matches!(buf[0], b'\n' | b'\r' | b'y' | b'Y')
 }
 
 fn bootstrap_rootfs(config: &LxeConfig, rootfs: &str, verbose: bool) -> bool {
@@ -483,6 +582,37 @@ fn find_passwd_binary(rootfs: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Run `ldconfig` inside the lxe rootfs to (re)generate `/etc/ld.so.cache`.
+///
+/// Without the cache, the dynamic linker (`ld-linux`) probes ~10 search-path
+/// candidates per shared library on every process start (each a failed
+/// `open()` through the path-translation + VFS layer). With it, every library
+/// resolves in a single cache lookup. This is the largest per-process-start
+/// win for apt/dpkg, which fork+exec thousands of short-lived glibc processes.
+fn run_ldconfig(config: &LxeConfig) {
+    for candidate in ["/usr/sbin/ldconfig", "/sbin/ldconfig"] {
+        let path = linux_path_in_rootfs(&config.rootfs, candidate);
+        if path_exists(&path) {
+            println!("lxe: regenerating /etc/ld.so.cache (ldconfig)...");
+            run_linux_process(config, "lxe ldconfig", &path, "");
+            return;
+        }
+    }
+    log_warn!("lxe ldconfig: ldconfig not found in rootfs; ld.so.cache not generated (library lookups stay slow)");
+}
+
+fn ldconfig(config: &mut LxeConfig) {
+    let lease = match daemon::acquire_run(config, "ldconfig") {
+        Ok(lease) => lease,
+        Err(err) => {
+            log_fatal!("lxe ldconfig: lxed unavailable: {}", err);
+            return;
+        }
+    };
+    run_ldconfig(config);
+    lease.release();
 }
 
 fn run_linux_process(config: &LxeConfig, label: &str, path: &str, args: &str) -> Option<u32> {

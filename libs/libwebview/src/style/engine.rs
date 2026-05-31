@@ -5,7 +5,7 @@
 //! specificity) -> inline styles.  Inheritable properties that are not
 //! explicitly set by any declaration are inherited from the parent node.
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;

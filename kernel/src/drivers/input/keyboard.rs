@@ -226,43 +226,56 @@ pub fn handle_scancode(scancode: u8) {
         modifiers,
     };
 
-    {
-        let mut buf = KEY_BUFFER.lock();
-        if buf.len() < 256 {
-            buf.push_back(event);
-        }
-    }
+    let is_modifier = matches!(
+        key,
+        Key::LeftShift
+            | Key::RightShift
+            | Key::LeftCtrl
+            | Key::RightCtrl
+            | Key::LeftAlt
+            | Key::RightAlt
+            | Key::LeftSuper
+            | Key::RightSuper
+            | Key::CapsLock
+    );
 
-    // Update key-repeat state
+    // Update key-repeat state and DROP hardware/firmware auto-repeat makes.
+    //
+    // Both PS/2 typematic and virtio `EV_KEY value=2` re-send make-codes while
+    // a key is held (virtio's value=2 reaches us as a make-code via
+    // deliver_keyboard). If we forwarded every one of those, a single held key
+    // would flood input far faster than REPEAT_INTERVAL_TICKS. Instead we treat
+    // a make for an already-held physical key (same scancode) as auto-repeat,
+    // ignore it, and let tick() be the single repeat source at a consistent
+    // rate. This must run BEFORE the buffer push so dropped repeats never reach
+    // the compositor.
     {
         let mut rep = REPEAT.lock();
         if pressed {
-            // Only repeat non-modifier keys
-            let is_modifier = matches!(
-                key,
-                Key::LeftShift
-                    | Key::RightShift
-                    | Key::LeftCtrl
-                    | Key::RightCtrl
-                    | Key::LeftAlt
-                    | Key::RightAlt
-                    | Key::LeftSuper
-                    | Key::RightSuper
-                    | Key::CapsLock
-            );
             if !is_modifier {
+                let already_held = rep.event.as_ref().map_or(false, |h| h.scancode == code);
+                if already_held {
+                    return;
+                }
                 let now = crate::arch::hal::timer_current_ticks();
                 rep.event = Some(event);
                 rep.pressed_at = now;
                 rep.next_repeat = now.wrapping_add(REPEAT_DELAY_TICKS);
             }
-        } else {
-            // Key released — cancel repeat for this key
-            if let Some(ref held) = rep.event {
-                if held.scancode == code && held.key == key {
-                    rep.event = None;
-                }
+        } else if let Some(ref held) = rep.event {
+            // Match on the physical scancode only: the resolved key may differ
+            // from press time if modifiers changed while the key was held, but
+            // the release still belongs to the same physical key.
+            if held.scancode == code {
+                rep.event = None;
             }
+        }
+    }
+
+    {
+        let mut buf = KEY_BUFFER.lock();
+        if buf.len() < 256 {
+            buf.push_back(event);
         }
     }
 

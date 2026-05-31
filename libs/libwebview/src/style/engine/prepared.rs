@@ -24,11 +24,85 @@ struct RuleIndex {
     rule_count: usize,
 }
 
+/// Which attributes can affect the computed style of *some* element through a
+/// selector, derived once from the active stylesheets.  Lets a DOM attribute
+/// mutation skip the full restyle when no selector keys on that attribute
+/// (the common case for framework-driven `data-*` / `aria-*` toggles that are
+/// not referenced by any CSS rule).
+#[derive(Clone, Default)]
+pub struct AttrRecalcFeatures {
+    /// Lowercased attribute names referenced by `[attr...]` selectors anywhere
+    /// (author + UA sheets), including inside `:is()/:where()/:not()/:has()`.
+    attr_names: BTreeSet<String>,
+    /// Any `.class` selector (or `[class...]`) exists.
+    uses_class: bool,
+    /// Any `#id` selector (or `[id...]`) exists.
+    uses_id: bool,
+}
+
+impl AttrRecalcFeatures {
+    fn collect_selector(&mut self, sel: &Selector) {
+        match sel {
+            Selector::Simple(s) => self.collect_simple(s),
+            Selector::Descendant(rest, leaf)
+            | Selector::Child(rest, leaf)
+            | Selector::AdjacentSibling(rest, leaf)
+            | Selector::GeneralSibling(rest, leaf) => {
+                self.collect_selector(rest);
+                self.collect_simple(leaf);
+            }
+            Selector::Universal => {}
+        }
+    }
+
+    fn collect_simple(&mut self, s: &SimpleSelector) {
+        if !s.classes.is_empty() {
+            self.uses_class = true;
+        }
+        if s.id.is_some() {
+            self.uses_id = true;
+        }
+        for a in &s.attrs {
+            let name = a.name.to_ascii_lowercase();
+            match name.as_str() {
+                "class" => self.uses_class = true,
+                "id" => self.uses_id = true,
+                _ => {}
+            }
+            self.attr_names.insert(name);
+        }
+        // Functional pseudo-classes embed further selectors that may key on
+        // attributes / classes / ids of the subject element.
+        for pc in &s.pseudo_classes {
+            match pc {
+                PseudoClass::Not(list) | PseudoClass::Is(list) | PseudoClass::Where(list) => {
+                    for inner in list {
+                        self.collect_simple(inner);
+                    }
+                }
+                PseudoClass::Has(inner) => self.collect_simple(inner),
+                _ => {}
+            }
+        }
+    }
+
+    /// Whether changing the given (lowercased) attribute can change which
+    /// selectors match — and therefore the computed style — of any element.
+    fn selector_keys_on(&self, name_lower: &str) -> bool {
+        match name_lower {
+            "class" => self.uses_class,
+            "id" => self.uses_id,
+            other => self.attr_names.contains(other),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct PreparedStylesheets {
     rules: Vec<(Rule, usize)>,
     rule_index: RuleIndex,
     layer_count: usize,
+    attr_features: AttrRecalcFeatures,
 }
 
 impl PreparedStylesheets {
@@ -76,11 +150,29 @@ impl PreparedStylesheets {
         }
         let refs: Vec<(&Rule, usize)> = rules.iter().map(|(rule, order)| (rule, *order)).collect();
         let rule_index = RuleIndex::build(&refs);
+
+        // Derive the attribute-invalidation feature set from every rule that is
+        // active for this viewport (media-excluded rules cannot affect style, so
+        // excluding them keeps the set tight without losing correctness).
+        let mut attr_features = AttrRecalcFeatures::default();
+        for (rule, _order) in &rules {
+            for sel in &rule.selectors {
+                attr_features.collect_selector(sel);
+            }
+        }
+
         Self {
             rules,
             rule_index,
             layer_count: global_layer_order.len(),
+            attr_features,
         }
+    }
+
+    /// Whether a change to the given (lowercased) attribute can affect the
+    /// computed style of any element via a selector in the active sheets.
+    pub fn attribute_can_affect_style(&self, name_lower: &str) -> bool {
+        self.attr_features.selector_keys_on(name_lower)
     }
 
     fn as_rule_refs(&self) -> Vec<(&Rule, usize)> {

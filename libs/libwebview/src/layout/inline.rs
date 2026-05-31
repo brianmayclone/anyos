@@ -24,7 +24,12 @@ struct InlineFragment {
     breaks_after: bool,
 }
 
-const TEXT_MEASURE_CACHE_BUCKETS: usize = 2048;
+// Page-wide measurement cache.  Shared across every inline formatting context
+// in a layout pass *and* across layout passes (relayout, progressive layout,
+// scroll-driven layout upgrades) so that the same word is never re-shaped twice
+// while the font registry is unchanged.  Sized for a whole document rather than
+// a single paragraph.  Must stay a power of two (used as a mask).
+const TEXT_MEASURE_CACHE_BUCKETS: usize = 8192;
 const INLINE_WRAP_EPSILON_PX: i32 = 16;
 
 struct TextMeasureCacheEntry {
@@ -37,15 +42,54 @@ struct TextMeasureCacheEntry {
     size: (i32, i32),
 }
 
+/// Persistent backing store for `TextMeasureCache`.  A layout pass *checks out*
+/// the bucket vector (moving it out of the global), uses it, and checks it back
+/// in on drop.  Because the buckets are *moved* — never borrowed in place — a
+/// reentrant inline layout (an inline-block flowing through `build_block`)
+/// simply gets a fresh temporary cache instead of aliasing the outer one, which
+/// keeps this sound without a long-lived `&mut` to a `static mut`.
+struct PersistentMeasure {
+    buckets: Vec<Option<TextMeasureCacheEntry>>,
+    generation: u64,
+}
+
+static mut PERSISTENT_MEASURE: Option<PersistentMeasure> = None;
+
 struct TextMeasureCache {
     buckets: Vec<Option<TextMeasureCacheEntry>>,
+    generation: u64,
 }
 
 impl TextMeasureCache {
-    fn new() -> Self {
+    fn fresh_buckets() -> Vec<Option<TextMeasureCacheEntry>> {
         let mut buckets = Vec::new();
         buckets.resize_with(TEXT_MEASURE_CACHE_BUCKETS, || None);
-        TextMeasureCache { buckets }
+        buckets
+    }
+
+    /// Check out the persistent cache, reusing it only if it was built under the
+    /// current font generation; otherwise start fresh (font ids may now map to
+    /// different font data, invalidating previously measured widths).
+    fn acquire() -> Self {
+        let generation = crate::font_generation();
+        // `ptr::replace` reads the old slot out (we own it here) and stores None,
+        // without forming a `&mut` to the static.  The old value is either
+        // reused or dropped via the match below.
+        let taken =
+            unsafe { core::ptr::replace(core::ptr::addr_of_mut!(PERSISTENT_MEASURE), None) };
+        let buckets = match taken {
+            Some(p)
+                if p.generation == generation
+                    && p.buckets.len() == TEXT_MEASURE_CACHE_BUCKETS =>
+            {
+                p.buckets
+            }
+            _ => Self::fresh_buckets(),
+        };
+        TextMeasureCache {
+            buckets,
+            generation,
+        }
     }
 
     fn measure(
@@ -81,6 +125,22 @@ impl TextMeasureCache {
             size,
         });
         size
+    }
+}
+
+impl Drop for TextMeasureCache {
+    fn drop(&mut self) {
+        // Check the buckets back into the persistent slot for the next inline
+        // formatting context / layout pass.  Move them out so no reference into
+        // the dropped cache escapes.
+        let buckets = core::mem::take(&mut self.buckets);
+        let generation = self.generation;
+        unsafe {
+            PERSISTENT_MEASURE = Some(PersistentMeasure {
+                buckets,
+                generation,
+            });
+        }
     }
 }
 
@@ -367,7 +427,7 @@ pub fn layout_inline_content_with_pseudo(
 
     // 1. Flatten all inline children into fragments.
     let mut fragments: Vec<InlineFragment> = Vec::new();
-    let mut text_measure_cache = TextMeasureCache::new();
+    let mut text_measure_cache = TextMeasureCache::acquire();
 
     // Inject parent's ::before pseudo-element as first fragment (inline display only).
     if let Some(bps) = before_ps {

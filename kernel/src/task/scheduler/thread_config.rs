@@ -45,6 +45,7 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u64) {
 
 /// Set the ABI personality for a thread.
 pub fn set_thread_abi(tid: u32, abi: AbiPersonality) {
+    let cpu_id = get_cpu_id();
     let mut guard = SCHEDULER.lock();
     let sched = match guard.as_mut() {
         Some(s) => s,
@@ -64,9 +65,27 @@ pub fn set_thread_abi(tid: u32, abi: AbiPersonality) {
             thread.priority = crate::task::abi::LINUX_MAX_USER_PRIORITY;
         }
     }
+    // If we just retagged the thread currently running on THIS CPU, refresh the
+    // lock-free per-CPU cache so the next syscall dispatches under the new ABI
+    // immediately, without waiting for a context switch to repopulate it.
+    let is_current = match sched.current_idx(cpu_id) {
+        Some(idx) => sched.threads[idx].tid == tid,
+        None => false,
+    };
+    if is_current {
+        super::store_per_cpu_abi(cpu_id, abi);
+    }
 }
 
 /// Get the current thread's ABI personality.
+///
+/// NOTE: reverted to the lock-based read. The lock-free per-CPU ABI cache is
+/// still maintained (write side), but reading it here proved unsafe: not every
+/// thread-on-CPU transition calls `update_per_cpu_name` (e.g. the idle-on-exit
+/// path in lifecycle.rs), so the cache could go stale and a native thread that
+/// ran after a Linux thread would see ABI=Linux and mis-dispatch every syscall,
+/// freezing the system. A robust lock-free version must validate the cache
+/// against the lock-free running TID before trusting it.
 pub fn current_thread_abi() -> AbiPersonality {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
@@ -80,6 +99,7 @@ pub fn current_thread_abi() -> AbiPersonality {
 
 /// Set the lxe rootfs used by Linux ABI path translation.
 pub fn set_thread_linux_rootfs(tid: u32, rootfs: &str) {
+    let cpu_id = get_cpu_id();
     let mut guard = SCHEDULER.lock();
     let sched = match guard.as_mut() {
         Some(s) => s,
@@ -91,9 +111,21 @@ pub fn set_thread_linux_rootfs(tid: u32, rootfs: &str) {
         thread.linux_rootfs = [0u8; 512];
         thread.linux_rootfs[..len].copy_from_slice(&bytes[..len]);
     }
+    // If we just changed the rootfs of the thread running on THIS CPU, refresh
+    // the lock-free per-CPU cache so the next path syscall sees the new prefix
+    // without waiting for a context switch.
+    if let Some(idx) = sched.current_idx(cpu_id) {
+        if sched.threads[idx].tid == tid {
+            let t = &sched.threads[idx];
+            super::store_per_cpu_linux_rootfs(cpu_id, t.abi, &t.linux_rootfs);
+        }
+    }
 }
 
 /// Copy the current thread's lxe rootfs into `buf`.
+///
+/// NOTE: reverted to the lock-based read (see `current_thread_abi` above for
+/// why the lock-free per-CPU cache read was unsafe without TID validation).
 pub fn current_thread_linux_rootfs(buf: &mut [u8]) -> usize {
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();

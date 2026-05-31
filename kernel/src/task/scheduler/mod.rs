@@ -192,6 +192,41 @@ static PER_CPU_LAST_SYSCALL_ABI: [AtomicU32; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
+/// ABI personality of the thread currently running on each CPU, stored as an
+/// `AbiPersonality::event_tag()` (0=AnyOs, 1=LinuxX86_64, 2=WindowsX86_64).
+///
+/// Lock-free mirror of the running thread's `abi`, updated by
+/// `update_per_cpu_name` at every context switch — the abi is a *required*
+/// argument there, so the compiler guarantees every switch site keeps it in
+/// sync (no stale-cache hazard). This lets `syscall_dispatch_64` read the ABI
+/// to route Linux/Windows syscalls WITHOUT taking the global SCHEDULER lock on
+/// the hottest path. A thread's abi is fixed for its lifetime except across
+/// execve, which `set_thread_abi` mirrors here for the current CPU.
+static PER_CPU_CURRENT_ABI: [AtomicU32; MAX_CPUS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; MAX_CPUS]
+};
+
+/// Per-CPU cache of the running thread's Linux rootfs prefix (the directory the
+/// LXE personality chroots path translation into). Mirror of the running
+/// thread's `linux_rootfs`, refreshed at every context switch alongside the ABI
+/// cache (same compiler-enforced argument guarantee via `update_per_cpu_name`).
+///
+/// Linux path syscalls (open/stat/access/readlink/...) translate every path
+/// against this prefix; ld.so alone probes ~10 paths per shared library per
+/// process. Reading it lock-free keeps that hot path off the global SCHEDULER
+/// lock. Only populated for Linux threads — for other ABIs the length is set to
+/// 0 (no byte copy), and readers fall back to the default rootfs as before.
+///
+/// Each CPU only ever writes/reads its own slot (same-CPU, program order), so
+/// the non-atomic byte buffer needs no cross-CPU synchronization; the companion
+/// length is atomic purely so the read side has a single ordered handshake.
+static mut PER_CPU_LINUX_ROOTFS: [[u8; 512]; MAX_CPUS] = [[0u8; 512]; MAX_CPUS];
+static PER_CPU_LINUX_ROOTFS_LEN: [AtomicU32; MAX_CPUS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; MAX_CPUS]
+};
+
 #[cfg(target_arch = "aarch64")]
 static ARM64_FIRST_USER_SWITCH_LOGGED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "aarch64")]
@@ -454,11 +489,98 @@ static PER_CPU_IN_SCHEDULER: [AtomicBool; MAX_CPUS] = {
 // =============================================================================
 
 #[inline]
-fn update_per_cpu_name(cpu_id: usize, name: &[u8; 32]) {
+fn update_per_cpu_name(
+    cpu_id: usize,
+    name: &[u8; 32],
+    abi: crate::task::abi::AbiPersonality,
+    linux_rootfs: &[u8; 512],
+) {
     unsafe {
         let dst = core::ptr::addr_of_mut!(PER_CPU_THREAD_NAME[cpu_id]);
         core::ptr::write_volatile(dst, *name);
     }
+    store_per_cpu_abi(cpu_id, abi);
+    store_per_cpu_linux_rootfs(cpu_id, abi, linux_rootfs);
+}
+
+/// Lock-free write of the per-CPU ABI cache. Called from `update_per_cpu_name`
+/// at every context switch, and from `set_thread_abi` when a running thread
+/// changes its own ABI before the next switch.
+#[inline]
+pub(super) fn store_per_cpu_abi(cpu_id: usize, abi: crate::task::abi::AbiPersonality) {
+    if cpu_id < MAX_CPUS {
+        PER_CPU_CURRENT_ABI[cpu_id].store(abi.event_tag(), Ordering::Relaxed);
+    }
+}
+
+/// Lock-free read of the ABI personality of the thread running on `cpu_id`.
+///
+/// CURRENTLY UNUSED: the lock-free read in `current_thread_abi` was reverted
+/// because this cache is not refreshed on every thread-on-CPU transition (it can
+/// go stale and mis-dispatch). Kept as the basis for a future robust version
+/// that validates the cache against the lock-free running TID before trusting
+/// it. Do not wire this back into `current_thread_abi` without that validation.
+#[allow(dead_code)]
+#[inline]
+pub(super) fn load_per_cpu_abi(cpu_id: usize) -> crate::task::abi::AbiPersonality {
+    if cpu_id < MAX_CPUS {
+        crate::task::abi::AbiPersonality::from_event_tag(
+            PER_CPU_CURRENT_ABI[cpu_id].load(Ordering::Relaxed),
+        )
+    } else {
+        crate::task::abi::AbiPersonality::AnyOs
+    }
+}
+
+/// Lock-free write of the per-CPU Linux rootfs cache. Copies the rootfs bytes
+/// only for Linux threads (the only ABI that consults it); other ABIs just zero
+/// the cached length, avoiding a 512-byte copy on every native context switch.
+/// Called from `update_per_cpu_name` at every switch and from
+/// `set_thread_linux_rootfs` when the running thread retargets its own rootfs.
+#[inline]
+pub(super) fn store_per_cpu_linux_rootfs(
+    cpu_id: usize,
+    abi: crate::task::abi::AbiPersonality,
+    rootfs: &[u8; 512],
+) {
+    if cpu_id >= MAX_CPUS {
+        return;
+    }
+    let len = if matches!(abi, crate::task::abi::AbiPersonality::LinuxX86_64) {
+        let n = rootfs.iter().position(|&b| b == 0).unwrap_or(512);
+        unsafe {
+            let dst = core::ptr::addr_of_mut!(PER_CPU_LINUX_ROOTFS[cpu_id]);
+            core::ptr::write_volatile(dst, *rootfs);
+        }
+        n as u32
+    } else {
+        0
+    };
+    PER_CPU_LINUX_ROOTFS_LEN[cpu_id].store(len, Ordering::Relaxed);
+}
+
+/// Lock-free read of the running thread's Linux rootfs into `buf`. Returns the
+/// number of bytes written (0 if the current thread has no Linux rootfs).
+///
+/// CURRENTLY UNUSED: reverted from `current_thread_linux_rootfs` for the same
+/// staleness reason as `load_per_cpu_abi` above. Kept for the future robust
+/// (TID-validated) version.
+#[allow(dead_code)]
+#[inline]
+pub(super) fn load_per_cpu_linux_rootfs(cpu_id: usize, buf: &mut [u8]) -> usize {
+    if cpu_id >= MAX_CPUS {
+        return 0;
+    }
+    let len = PER_CPU_LINUX_ROOTFS_LEN[cpu_id].load(Ordering::Relaxed) as usize;
+    let copy_len = len.min(buf.len()).min(512);
+    if copy_len == 0 {
+        return 0;
+    }
+    unsafe {
+        let src = core::ptr::addr_of!(PER_CPU_LINUX_ROOTFS[cpu_id]) as *const u8;
+        core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), copy_len);
+    }
+    copy_len
 }
 
 #[inline]
@@ -1720,7 +1842,12 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                     PER_CPU_HAS_THREAD[cpu_id].store(true, Ordering::Relaxed);
                     PER_CPU_CURRENT_TID[cpu_id].store(next_tid, Ordering::Relaxed);
                     PER_CPU_IS_USER[cpu_id].store(sched.threads[idx].is_user, Ordering::Relaxed);
-                    update_per_cpu_name(cpu_id, &sched.threads[idx].name);
+                    update_per_cpu_name(
+                        cpu_id,
+                        &sched.threads[idx].name,
+                        sched.threads[idx].abi,
+                        &sched.threads[idx].linux_rootfs,
+                    );
                     let kstack_top = sched.threads[idx].kernel_stack_top();
                     crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
                     PER_CPU_STACK_BOTTOM[cpu_id]
@@ -1742,7 +1869,12 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                     .store(!sched.threads[next_idx].is_idle, Ordering::Relaxed);
                 PER_CPU_CURRENT_TID[cpu_id].store(next_tid, Ordering::Relaxed);
                 PER_CPU_IS_USER[cpu_id].store(sched.threads[next_idx].is_user, Ordering::Relaxed);
-                update_per_cpu_name(cpu_id, &sched.threads[next_idx].name);
+                update_per_cpu_name(
+                        cpu_id,
+                        &sched.threads[next_idx].name,
+                        sched.threads[next_idx].abi,
+                        &sched.threads[next_idx].linux_rootfs,
+                    );
                 crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
                 PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
                 PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
@@ -1776,7 +1908,12 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
             PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
             PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
             PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
-            update_per_cpu_name(cpu_id, &sched.threads[idle_idx].name);
+            update_per_cpu_name(
+                        cpu_id,
+                        &sched.threads[idle_idx].name,
+                        sched.threads[idle_idx].abi,
+                        &sched.threads[idle_idx].linux_rootfs,
+                    );
             crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
             PER_CPU_STACK_BOTTOM[cpu_id].store(
                 sched.threads[idle_idx].kernel_stack_bottom(),
@@ -2154,7 +2291,12 @@ fn schedule_inner(from_timer: bool) {
                     PER_CPU_CURRENT_TID[cpu_id].store(next_tid, Ordering::Relaxed);
                     PER_CPU_IS_USER[cpu_id]
                         .store(sched.threads[next_idx].is_user, Ordering::Relaxed);
-                    update_per_cpu_name(cpu_id, &sched.threads[next_idx].name);
+                    update_per_cpu_name(
+                        cpu_id,
+                        &sched.threads[next_idx].name,
+                        sched.threads[next_idx].abi,
+                        &sched.threads[next_idx].linux_rootfs,
+                    );
 
                     // Update TSS.RSP0 and SYSCALL kernel RSP
                     crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
@@ -2264,7 +2406,12 @@ fn schedule_inner(from_timer: bool) {
                         PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
                         PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
                         PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
-                        update_per_cpu_name(cpu_id, &sched.threads[idle_idx].name);
+                        update_per_cpu_name(
+                        cpu_id,
+                        &sched.threads[idle_idx].name,
+                        sched.threads[idle_idx].abi,
+                        &sched.threads[idle_idx].linux_rootfs,
+                    );
                         let idle_kstack_top = sched.threads[idle_idx].kernel_stack_top();
                         crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
                         PER_CPU_STACK_BOTTOM[cpu_id].store(
@@ -2299,7 +2446,12 @@ fn schedule_inner(from_timer: bool) {
                     PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
                     PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
                     PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
-                    update_per_cpu_name(cpu_id, &sched.threads[idle_idx].name);
+                    update_per_cpu_name(
+                        cpu_id,
+                        &sched.threads[idle_idx].name,
+                        sched.threads[idle_idx].abi,
+                        &sched.threads[idle_idx].linux_rootfs,
+                    );
                     let idle_kstack_top = sched.threads[idle_idx].kernel_stack_top();
                     crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
                     PER_CPU_STACK_BOTTOM[cpu_id].store(
@@ -2407,7 +2559,12 @@ fn schedule_inner(from_timer: bool) {
                     PER_CPU_HAS_THREAD[cpu_id].store(!sched.threads[ri].is_idle, Ordering::Relaxed);
                     PER_CPU_CURRENT_TID[cpu_id].store(restore_tid, Ordering::Relaxed);
                     PER_CPU_IS_USER[cpu_id].store(sched.threads[ri].is_user, Ordering::Relaxed);
-                    update_per_cpu_name(cpu_id, &sched.threads[ri].name);
+                    update_per_cpu_name(
+                        cpu_id,
+                        &sched.threads[ri].name,
+                        sched.threads[ri].abi,
+                        &sched.threads[ri].linux_rootfs,
+                    );
                     let kstack_top = sched.threads[ri].kernel_stack_top();
                     crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
                     PER_CPU_STACK_BOTTOM[cpu_id]
@@ -2550,7 +2707,12 @@ pub fn run() -> ! {
                 PER_CPU_STACK_BOTTOM[0].store(kstack_bottom, Ordering::Relaxed);
                 PER_CPU_STACK_TOP[0].store(kstack_top, Ordering::Relaxed);
                 PER_CPU_IDLE_STACK_TOP[0].store(kstack_top, Ordering::Relaxed);
-                update_per_cpu_name(0, &sched.threads[idx].name);
+                update_per_cpu_name(
+                    0,
+                    &sched.threads[idx].name,
+                    sched.threads[idx].abi,
+                    &sched.threads[idx].linux_rootfs,
+                );
             }
         }
     }
@@ -2604,7 +2766,12 @@ pub fn register_ap_idle(cpu_id: usize) {
         PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
         PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
         PER_CPU_IDLE_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
-        update_per_cpu_name(cpu_id, &sched.threads[idx].name);
+        update_per_cpu_name(
+                        cpu_id,
+                        &sched.threads[idx].name,
+                        sched.threads[idx].abi,
+                        &sched.threads[idx].linux_rootfs,
+                    );
     } else {
         crate::debug_println!(
             "  [Sched] register_ap_idle: cpu={} ERROR: scheduler not initialized!",
