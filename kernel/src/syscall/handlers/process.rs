@@ -6,8 +6,8 @@
 
 #[allow(unused_imports)]
 use super::helpers::{
-    copy_user_bytes, is_user_range_accessible, is_valid_user_ptr, read_user_str,
-    read_user_str_safe, resolve_path,
+    copy_to_user_bytes, copy_user_bytes, is_user_range_accessible, is_valid_user_ptr,
+    read_user_str, read_user_str_safe, resolve_path,
 };
 #[allow(unused_imports)]
 use alloc::string::String;
@@ -858,13 +858,12 @@ pub fn sys_waitpid(tid: u32, child_tid_ptr: u64, options: u32) -> u32 {
         } else {
             crate::task::scheduler::waitpid_any()
         };
-        // Write actual child TID to user pointer (if provided)
+        // Write actual child TID to user pointer (if provided).
+        // copy_to_user_bytes performs its own mapping-validated range check;
+        // a bad/unmapped pointer is silently skipped (same as before) while
+        // waitpid still returns the exit code.
         if child_tid_ptr != 0 && child_tid != u32::MAX && child_tid != u32::MAX - 1 {
-            if is_valid_user_ptr(child_tid_ptr as u64, 4) {
-                unsafe {
-                    *(child_tid_ptr as *mut u32) = child_tid;
-                }
-            }
+            let _ = copy_to_user_bytes(child_tid_ptr, &child_tid.to_le_bytes(), 4);
         }
         code
     } else if wnohang {
@@ -1122,11 +1121,23 @@ pub fn sys_wxe_spawn(path_ptr: u64, args_ptr: u64) -> u32 {
 /// sys_getargs - Get command-line arguments for the current process.
 /// arg1=buf_ptr, arg2=buf_size. Returns bytes written.
 pub fn sys_getargs(buf_ptr: u64, buf_size: u32) -> u32 {
-    if buf_ptr == 0 || buf_size == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
+    if buf_ptr == 0 || buf_size == 0 {
         return 0;
     }
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
-    crate::task::scheduler::current_thread_args(buf) as u32
+    // current_thread_args copies at most 256 bytes (the args field size).
+    // Build into a fixed kernel buffer, then copy out via the mapping-validated
+    // helper instead of forming a raw slice over user memory.
+    let mut kbuf = [0u8; 256];
+    let cap = (buf_size as usize).min(kbuf.len());
+    let n = crate::task::scheduler::current_thread_args(&mut kbuf[..cap]);
+    if n == 0 {
+        return 0;
+    }
+    if copy_to_user_bytes(buf_ptr, &kbuf[..n], n) {
+        n as u32
+    } else {
+        0
+    }
 }
 
 /// sys_fork - Create a child process that is a copy of the parent.

@@ -12,6 +12,8 @@
 //! | 325 | SYS_I2C_WRITE     | Write byte to I²C device register            |
 //! | 326 | SYS_I2C_DETECT    | Detect I²C device presence at address        |
 
+#[cfg(target_arch = "x86_64")]
+use super::helpers::copy_to_user_bytes;
 use super::helpers::is_valid_user_ptr;
 #[cfg(target_arch = "x86_64")]
 use crate::drivers::i2c::I2cDevice;
@@ -42,9 +44,14 @@ pub fn sys_thermal_read(buf_ptr: u64, max_count: u32) -> u32 {
 
         let readings = crate::drivers::thermal::read_all();
         let count = readings.len().min(max_count as usize);
+        let total = count * entry_size;
+        if total == 0 {
+            return 0;
+        }
 
-        let buf =
-            unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count * entry_size) };
+        // Build the entries in a kernel-owned buffer, then copy out once via the
+        // mapping-validated helper (zero-initialized -> padding bytes are 0).
+        let mut out = alloc::vec![0u8; total];
 
         for (i, r) in readings[..count].iter().enumerate() {
             let off = i * entry_size;
@@ -55,12 +62,15 @@ pub fn sys_thermal_read(buf_ptr: u64, max_count: u32) -> u32 {
                 ThermalSource::Lm75(addr) => (2u8, addr),
                 ThermalSource::Smbus(addr) => (3u8, addr),
             };
-            buf[off] = src_type;
-            buf[off + 1] = src_id;
-            buf[off + 2] = 0;
-            buf[off + 3] = 0;
+            out[off] = src_type;
+            out[off + 1] = src_id;
+            // out[off + 2] and out[off + 3] remain 0 (padding).
             let temp_bytes = r.temp_c_x10.to_le_bytes();
-            buf[off + 4..off + 8].copy_from_slice(&temp_bytes);
+            out[off + 4..off + 8].copy_from_slice(&temp_bytes);
+        }
+
+        if !copy_to_user_bytes(buf_ptr, &out, total) {
+            return 0;
         }
 
         count as u32

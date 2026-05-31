@@ -3,7 +3,7 @@
 //! Covers path-based operations: readdir, stat, lstat, symlink, readlink,
 //! getcwd, chdir, mkdir, unlink, truncate, rename, mount, umount.
 
-use super::helpers::{fs_err, is_valid_user_ptr, read_user_str, resolve_path};
+use super::helpers::{copy_to_user_bytes, fs_err, read_user_str, resolve_path};
 use alloc::string::String;
 
 pub fn sys_readdir(path_ptr: u64, buf_ptr: u64, buf_size: u32) -> u32 {
@@ -31,29 +31,33 @@ pub fn sys_readdir(path_ptr: u64, buf_ptr: u64, buf_size: u32) -> u32 {
                     buf_size
                 );
             }
-            let entry_size = 64u32;
-            if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
-                let max_entries = (buf_size / entry_size) as usize;
+            let entry_size = 64usize;
+            if buf_ptr != 0 && buf_size > 0 {
+                let max_entries = (buf_size as usize) / entry_size;
                 let written = entries.len().min(max_entries);
-                let buf = unsafe {
-                    core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize)
-                };
+                if written == 0 {
+                    return entries.len() as u32;
+                }
+                let mut out = alloc::vec![0u8; written * entry_size];
                 for (i, entry) in entries.iter().enumerate().take(written) {
-                    let off = i * entry_size as usize;
-                    buf[off] = match entry.file_type {
+                    let off = i * entry_size;
+                    out[off] = match entry.file_type {
                         crate::fs::file::FileType::Regular => 0,
                         crate::fs::file::FileType::Directory => 1,
                         crate::fs::file::FileType::Device => 2,
                     };
                     let name_bytes = entry.name.as_bytes();
                     let name_len = name_bytes.len().min(55);
-                    buf[off + 1] = name_len as u8;
-                    buf[off + 2] = if entry.is_symlink { 1 } else { 0 }; // flags: bit 0 = symlink
-                    buf[off + 3] = 0;
+                    out[off + 1] = name_len as u8;
+                    out[off + 2] = if entry.is_symlink { 1 } else { 0 }; // flags: bit 0 = symlink
+                    out[off + 3] = 0;
                     let size = entry.size as u32;
-                    buf[off + 4..off + 8].copy_from_slice(&size.to_le_bytes());
-                    buf[off + 8..off + 8 + name_len].copy_from_slice(&name_bytes[..name_len]);
-                    buf[off + 8 + name_len] = 0;
+                    out[off + 4..off + 8].copy_from_slice(&size.to_le_bytes());
+                    out[off + 8..off + 8 + name_len].copy_from_slice(&name_bytes[..name_len]);
+                    out[off + 8 + name_len] = 0;
+                }
+                if !copy_to_user_bytes(buf_ptr, &out, buf_size as usize) {
+                    return fs_err(crate::fs::vfs::FsError::InvalidPath);
                 }
                 // Return only the count actually written to the buffer
                 written as u32
@@ -85,30 +89,34 @@ pub fn sys_readdir_long(path_ptr: u64, buf_ptr: u64, buf_size: u32) -> u32 {
 
     match crate::fs::vfs::read_dir(&path) {
         Ok(entries) => {
-            let entry_size = 264u32;
-            if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr, buf_size as u64) {
-                let max_entries = (buf_size / entry_size) as usize;
+            let entry_size = 264usize;
+            if buf_ptr != 0 && buf_size > 0 {
+                let max_entries = (buf_size as usize) / entry_size;
                 let written = entries.len().min(max_entries);
-                let buf = unsafe {
-                    core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize)
-                };
+                if written == 0 {
+                    return entries.len() as u32;
+                }
+                let mut out = alloc::vec![0u8; written * entry_size];
                 for (i, entry) in entries.iter().enumerate().take(written) {
-                    let off = i * entry_size as usize;
-                    buf[off] = match entry.file_type {
+                    let off = i * entry_size;
+                    out[off] = match entry.file_type {
                         crate::fs::file::FileType::Regular => 0,
                         crate::fs::file::FileType::Directory => 1,
                         crate::fs::file::FileType::Device => 2,
                     };
-                    buf[off + 1] = if entry.is_symlink { 1 } else { 0 };
+                    out[off + 1] = if entry.is_symlink { 1 } else { 0 };
                     let name_bytes = entry.name.as_bytes();
                     let name_len = name_bytes.len().min(256);
-                    buf[off + 2..off + 4].copy_from_slice(&(name_len as u16).to_le_bytes());
+                    out[off + 2..off + 4].copy_from_slice(&(name_len as u16).to_le_bytes());
                     let size = entry.size as u32;
-                    buf[off + 4..off + 8].copy_from_slice(&size.to_le_bytes());
-                    buf[off + 8..off + 8 + name_len].copy_from_slice(&name_bytes[..name_len]);
+                    out[off + 4..off + 8].copy_from_slice(&size.to_le_bytes());
+                    out[off + 8..off + 8 + name_len].copy_from_slice(&name_bytes[..name_len]);
                     if name_len < 256 {
-                        buf[off + 8 + name_len] = 0;
+                        out[off + 8 + name_len] = 0;
                     }
+                }
+                if !copy_to_user_bytes(buf_ptr, &out, buf_size as usize) {
+                    return fs_err(crate::fs::vfs::FsError::InvalidPath);
                 }
                 written as u32
             } else {
@@ -141,15 +149,16 @@ pub fn sys_stat(path_ptr: u64, buf_ptr: u64) -> u32 {
                 } else {
                     st.uid as u32
                 };
-                unsafe {
-                    let buf = buf_ptr as *mut u32;
-                    *buf = type_val;
-                    *buf.add(1) = st.size;
-                    *buf.add(2) = flags;
-                    *buf.add(3) = file_uid;
-                    *buf.add(4) = st.gid as u32;
-                    *buf.add(5) = st.mode as u32;
-                    *buf.add(6) = st.mtime;
+                let mut out = [0u8; 28];
+                out[0..4].copy_from_slice(&type_val.to_le_bytes());
+                out[4..8].copy_from_slice(&st.size.to_le_bytes());
+                out[8..12].copy_from_slice(&flags.to_le_bytes());
+                out[12..16].copy_from_slice(&file_uid.to_le_bytes());
+                out[16..20].copy_from_slice(&(st.gid as u32).to_le_bytes());
+                out[20..24].copy_from_slice(&(st.mode as u32).to_le_bytes());
+                out[24..28].copy_from_slice(&st.mtime.to_le_bytes());
+                if !copy_to_user_bytes(buf_ptr, &out, 28) {
+                    return fs_err(crate::fs::vfs::FsError::InvalidPath);
                 }
             }
             0
@@ -177,15 +186,16 @@ pub fn sys_lstat(path_ptr: u64, buf_ptr: u64) -> u32 {
                 } else {
                     st.uid as u32
                 };
-                unsafe {
-                    let buf = buf_ptr as *mut u32;
-                    *buf = type_val;
-                    *buf.add(1) = st.size;
-                    *buf.add(2) = flags;
-                    *buf.add(3) = file_uid;
-                    *buf.add(4) = st.gid as u32;
-                    *buf.add(5) = st.mode as u32;
-                    *buf.add(6) = st.mtime;
+                let mut out = [0u8; 28];
+                out[0..4].copy_from_slice(&type_val.to_le_bytes());
+                out[4..8].copy_from_slice(&st.size.to_le_bytes());
+                out[8..12].copy_from_slice(&flags.to_le_bytes());
+                out[12..16].copy_from_slice(&file_uid.to_le_bytes());
+                out[16..20].copy_from_slice(&(st.gid as u32).to_le_bytes());
+                out[20..24].copy_from_slice(&(st.mode as u32).to_le_bytes());
+                out[24..28].copy_from_slice(&st.mtime.to_le_bytes());
+                if !copy_to_user_bytes(buf_ptr, &out, 28) {
+                    return fs_err(crate::fs::vfs::FsError::InvalidPath);
                 }
             }
             0
@@ -213,14 +223,22 @@ pub fn sys_readlink(path_ptr: u64, buf_ptr: u64, buf_size: u32) -> u32 {
         Ok(target) => {
             let target_bytes = target.as_bytes();
             let to_copy = target_bytes.len().min(buf_size as usize);
-            if buf_ptr != 0 && to_copy > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
-                let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, to_copy) };
-                buf[..to_copy].copy_from_slice(&target_bytes[..to_copy]);
-                // Null-terminate if space
-                if to_copy < buf_size as usize {
-                    unsafe {
-                        *((buf_ptr as *mut u8).add(to_copy)) = 0;
-                    }
+            if buf_ptr != 0 && to_copy > 0 {
+                // Include the NUL terminator in the single validated copy if there
+                // is room left in the user buffer (matches the original behavior:
+                // terminator written only when to_copy < buf_size).
+                let total = if to_copy < buf_size as usize {
+                    to_copy + 1
+                } else {
+                    to_copy
+                };
+                let mut out = alloc::vec![0u8; total];
+                out[..to_copy].copy_from_slice(&target_bytes[..to_copy]);
+                if total > to_copy {
+                    out[to_copy] = 0;
+                }
+                if !copy_to_user_bytes(buf_ptr, &out, buf_size as usize) {
+                    return fs_err(crate::fs::vfs::FsError::InvalidPath);
                 }
             }
             to_copy as u32
@@ -230,21 +248,31 @@ pub fn sys_readlink(path_ptr: u64, buf_ptr: u64, buf_size: u32) -> u32 {
 }
 
 pub fn sys_getcwd(buf_ptr: u64, buf_size: u32) -> u32 {
-    if buf_ptr == 0 || buf_size == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
+    if buf_ptr == 0 || buf_size == 0 {
         return u32::MAX;
     }
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
-    let len = crate::task::scheduler::current_thread_cwd(buf);
+    // Fill a kernel-local buffer first, then copy out via a mapping-validated
+    // copy. Bound the temp allocation so a huge user-supplied buf_size cannot
+    // trigger an unbounded kernel allocation.
+    let cap = (buf_size as usize).min(4096);
+    let mut tmp = alloc::vec![0u8; cap];
+    let len = crate::task::scheduler::current_thread_cwd(&mut tmp);
     if len == 0 {
         // Fallback
-        if buf_size >= 2 {
-            buf[0] = b'/';
-            buf[1] = 0;
+        if buf_size >= 2 && cap >= 2 {
+            tmp[0] = b'/';
+            tmp[1] = 0;
+            if !copy_to_user_bytes(buf_ptr, &tmp[..2], buf_size as usize) {
+                return u32::MAX;
+            }
         }
         return 1;
     }
-    let nul = len.min(buf_size.saturating_sub(1) as usize);
-    buf[nul] = 0;
+    let nul = len.min(cap.saturating_sub(1));
+    tmp[nul] = 0;
+    if !copy_to_user_bytes(buf_ptr, &tmp[..=nul], buf_size as usize) {
+        return u32::MAX;
+    }
     nul as u32
 }
 
@@ -444,9 +472,6 @@ pub fn sys_list_mounts(buf_ptr: u64, buf_len: u32) -> u32 {
     if buf_ptr == 0 || buf_len == 0 {
         return u32::MAX;
     }
-    if !is_valid_user_ptr(buf_ptr as u64, buf_len as u64) {
-        return u32::MAX;
-    }
 
     let mounts = crate::fs::vfs::list_mounts();
     let mut output = String::new();
@@ -461,10 +486,11 @@ pub fn sys_list_mounts(buf_ptr: u64, buf_len: u32) -> u32 {
 
     let bytes = output.as_bytes();
     let to_copy = bytes.len().min(buf_len as usize - 1);
-    unsafe {
-        let dst = buf_ptr as *mut u8;
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, to_copy);
-        *dst.add(to_copy) = 0; // null-terminate
+    let mut out = alloc::vec::Vec::with_capacity(to_copy + 1);
+    out.extend_from_slice(&bytes[..to_copy]);
+    out.push(0); // null-terminate
+    if !copy_to_user_bytes(buf_ptr, &out, buf_len as usize) {
+        return u32::MAX;
     }
     to_copy as u32
 }
@@ -478,9 +504,6 @@ pub fn sys_statfs(path_ptr: u64, _path_len: u32, buf_ptr: u64) -> u32 {
     if path_ptr == 0 || buf_ptr == 0 {
         return u32::MAX;
     }
-    if !is_valid_user_ptr(buf_ptr as u64, 24) {
-        return u32::MAX;
-    }
 
     let path = unsafe { read_user_str(path_ptr) };
     if path.is_empty() {
@@ -490,10 +513,13 @@ pub fn sys_statfs(path_ptr: u64, _path_len: u32, buf_ptr: u64) -> u32 {
 
     match crate::fs::vfs::statfs(&path) {
         Some(st) => {
-            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, 24) };
-            buf[0..8].copy_from_slice(&st.total_bytes.to_le_bytes());
-            buf[8..16].copy_from_slice(&st.used_bytes.to_le_bytes());
-            buf[16..24].copy_from_slice(&st.free_bytes.to_le_bytes());
+            let mut out = [0u8; 24];
+            out[0..8].copy_from_slice(&st.total_bytes.to_le_bytes());
+            out[8..16].copy_from_slice(&st.used_bytes.to_le_bytes());
+            out[16..24].copy_from_slice(&st.free_bytes.to_le_bytes());
+            if !copy_to_user_bytes(buf_ptr, &out, 24) {
+                return u32::MAX;
+            }
             0
         }
         None => u32::MAX,

@@ -3,7 +3,7 @@
 //! Covers device listing, open/close/read/write/ioctl, IRQ waiting,
 //! and dynamic library loading.
 
-use super::helpers::{copy_user_bytes, is_valid_user_ptr, read_user_str};
+use super::helpers::{copy_to_user_bytes, copy_user_bytes, is_valid_user_ptr, read_user_str};
 
 /// sys_devlist - List devices. Each entry is 64 bytes:
 ///   [0..32]  path (null-terminated)
@@ -14,37 +14,41 @@ pub fn sys_devlist(buf_ptr: u64, buf_size: u32) -> u32 {
     let devices = crate::drivers::hal::list_devices();
     let count = devices.len();
     if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
-        let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
         let entry_size = 64usize;
         let max_entries = buf_size as usize / entry_size;
-        for (i, (path, name, dtype)) in devices.iter().enumerate().take(max_entries.min(count)) {
-            let offset = i * entry_size;
-            // Zero the entry first
-            for b in &mut buf[offset..offset + entry_size] {
-                *b = 0;
+        let write = max_entries.min(count);
+        let total = write * entry_size;
+        if total > 0 {
+            // Assemble all entries in a kernel-owned buffer (zero-initialized),
+            // then copy out once via the mapping-validated helper.
+            let mut out = alloc::vec![0u8; total];
+            for (i, (path, name, dtype)) in devices.iter().enumerate().take(write) {
+                let offset = i * entry_size;
+                // Path [0..32]
+                let path_bytes = path.as_bytes();
+                let plen = path_bytes.len().min(31);
+                out[offset..offset + plen].copy_from_slice(&path_bytes[..plen]);
+                // Driver name [32..56]
+                let name_bytes = name.as_bytes();
+                let nlen = name_bytes.len().min(23);
+                out[offset + 32..offset + 32 + nlen].copy_from_slice(&name_bytes[..nlen]);
+                // Driver type [56]
+                out[offset + 56] = match dtype {
+                    crate::drivers::hal::DriverType::Block => 0,
+                    crate::drivers::hal::DriverType::Char => 1,
+                    crate::drivers::hal::DriverType::Network => 2,
+                    crate::drivers::hal::DriverType::Display => 3,
+                    crate::drivers::hal::DriverType::Input => 4,
+                    crate::drivers::hal::DriverType::Audio => 5,
+                    crate::drivers::hal::DriverType::Output => 6,
+                    crate::drivers::hal::DriverType::Sensor => 7,
+                    crate::drivers::hal::DriverType::Monitor => 8,
+                    crate::drivers::hal::DriverType::Bus => 9,
+                    crate::drivers::hal::DriverType::Unknown => 10,
+                };
             }
-            // Path [0..32]
-            let path_bytes = path.as_bytes();
-            let plen = path_bytes.len().min(31);
-            buf[offset..offset + plen].copy_from_slice(&path_bytes[..plen]);
-            // Driver name [32..56]
-            let name_bytes = name.as_bytes();
-            let nlen = name_bytes.len().min(23);
-            buf[offset + 32..offset + 32 + nlen].copy_from_slice(&name_bytes[..nlen]);
-            // Driver type [56]
-            buf[offset + 56] = match dtype {
-                crate::drivers::hal::DriverType::Block => 0,
-                crate::drivers::hal::DriverType::Char => 1,
-                crate::drivers::hal::DriverType::Network => 2,
-                crate::drivers::hal::DriverType::Display => 3,
-                crate::drivers::hal::DriverType::Input => 4,
-                crate::drivers::hal::DriverType::Audio => 5,
-                crate::drivers::hal::DriverType::Output => 6,
-                crate::drivers::hal::DriverType::Sensor => 7,
-                crate::drivers::hal::DriverType::Monitor => 8,
-                crate::drivers::hal::DriverType::Bus => 9,
-                crate::drivers::hal::DriverType::Unknown => 10,
-            };
+            // Best-effort write; still return the device count regardless.
+            let _ = copy_to_user_bytes(buf_ptr, &out, total);
         }
     }
     count as u32

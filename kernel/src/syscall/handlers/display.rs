@@ -5,7 +5,9 @@
 //! mapping, input polling, screen capture, and boot readiness.
 
 #[allow(unused_imports)]
-use super::helpers::is_valid_user_ptr;
+use super::helpers::{
+    copy_to_user_bytes, copy_user_bytes, is_user_range_accessible, is_valid_user_ptr,
+};
 #[allow(unused_imports)]
 use super::{is_compositor, is_display_owner, COMPOSITOR_PD, COMPOSITOR_TID, DISPLAY_OWNER_PD};
 
@@ -22,10 +24,11 @@ pub fn sys_screen_size(buf_ptr: u64) -> u32 {
     }
     match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
         Some((w, h, _pitch, _addr)) => {
-            unsafe {
-                let buf = buf_ptr as *mut u32;
-                *buf = w;
-                *buf.add(1) = h;
+            let mut out = [0u8; 8];
+            out[0..4].copy_from_slice(&w.to_le_bytes());
+            out[4..8].copy_from_slice(&h.to_le_bytes());
+            if !copy_to_user_bytes(buf_ptr, &out, 8) {
+                return u32::MAX;
             }
             0
         }
@@ -33,10 +36,11 @@ pub fn sys_screen_size(buf_ptr: u64) -> u32 {
             // Fallback to boot framebuffer info
             match crate::drivers::framebuffer::info() {
                 Some(fb) => {
-                    unsafe {
-                        let buf = buf_ptr as *mut u32;
-                        *buf = fb.width;
-                        *buf.add(1) = fb.height;
+                    let mut out = [0u8; 8];
+                    out[0..4].copy_from_slice(&fb.width.to_le_bytes());
+                    out[4..8].copy_from_slice(&fb.height.to_le_bytes());
+                    if !copy_to_user_bytes(buf_ptr, &out, 8) {
+                        return u32::MAX;
                     }
                     0
                 }
@@ -53,10 +57,11 @@ pub fn sys_screen_size(buf_ptr: u64) -> u32 {
     }
     match crate::drivers::framebuffer::info() {
         Some(fb) => {
-            unsafe {
-                let buf = buf_ptr as *mut u32;
-                *buf = fb.width;
-                *buf.add(1) = fb.height;
+            let mut out = [0u8; 8];
+            out[0..4].copy_from_slice(&fb.width.to_le_bytes());
+            out[4..8].copy_from_slice(&fb.height.to_le_bytes());
+            if !copy_to_user_bytes(buf_ptr, &out, 8) {
+                return u32::MAX;
             }
             0
         }
@@ -147,12 +152,15 @@ pub fn sys_list_resolutions(buf_ptr: u64, buf_len: u32) -> u32 {
         Some((mode_list, count)) => {
             if buf_ptr != 0 && buf_len > 0 {
                 let max_entries = (buf_len as usize / 8).min(count); // 8 bytes per (u32, u32)
-                unsafe {
-                    let buf = buf_ptr as *mut u32;
-                    for i in 0..max_entries {
-                        *buf.add(i * 2) = mode_list[i].0;
-                        *buf.add(i * 2 + 1) = mode_list[i].1;
-                    }
+                let mut out = [0u8; 128]; // up to 16 entries * 8 bytes
+                let mut n = 0usize;
+                for i in 0..max_entries {
+                    out[n..n + 4].copy_from_slice(&mode_list[i].0.to_le_bytes());
+                    out[n + 4..n + 8].copy_from_slice(&mode_list[i].1.to_le_bytes());
+                    n += 8;
+                }
+                if n > 0 {
+                    let _ = copy_to_user_bytes(buf_ptr, &out[..n], 128);
                 }
             }
             count as u32
@@ -167,11 +175,10 @@ pub fn sys_list_resolutions(buf_ptr: u64, buf_len: u32) -> u32 {
         return 0;
     };
     if buf_ptr != 0 && buf_len >= 8 {
-        unsafe {
-            let buf = buf_ptr as *mut u32;
-            *buf = fb.width;
-            *buf.add(1) = fb.height;
-        }
+        let mut out = [0u8; 8];
+        out[0..4].copy_from_slice(&fb.width.to_le_bytes());
+        out[4..8].copy_from_slice(&fb.height.to_le_bytes());
+        let _ = copy_to_user_bytes(buf_ptr, &out, 8);
     }
     1
 }
@@ -190,11 +197,10 @@ pub fn sys_gpu_info(buf_ptr: u64, buf_len: u32) -> u32 {
             if buf_ptr != 0 && buf_len > 0 {
                 let bytes = n.as_bytes();
                 let copy_len = bytes.len().min(buf_len as usize - 1);
-                unsafe {
-                    let buf = core::slice::from_raw_parts_mut(buf_ptr as *mut u8, copy_len + 1);
-                    buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
-                    buf[copy_len] = 0; // null-terminate
-                }
+                let mut out = alloc::vec::Vec::with_capacity(copy_len + 1);
+                out.extend_from_slice(&bytes[..copy_len]);
+                out.push(0); // null-terminate
+                let _ = copy_to_user_bytes(buf_ptr, &out, copy_len + 1);
             }
             n.len() as u32
         }
@@ -215,11 +221,10 @@ pub fn sys_gpu_info(buf_ptr: u64, buf_len: u32) -> u32 {
     if buf_ptr != 0 && buf_len > 0 {
         let bytes = name.as_bytes();
         let copy_len = bytes.len().min(buf_len as usize - 1);
-        unsafe {
-            let buf = core::slice::from_raw_parts_mut(buf_ptr as *mut u8, copy_len + 1);
-            buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
-            buf[copy_len] = 0;
-        }
+        let mut out = alloc::vec::Vec::with_capacity(copy_len + 1);
+        out.extend_from_slice(&bytes[..copy_len]);
+        out.push(0);
+        let _ = copy_to_user_bytes(buf_ptr, &out, copy_len + 1);
     }
     name.len() as u32
 }
@@ -260,7 +265,14 @@ pub fn sys_audio_write(buf_ptr: u64, buf_len: u32) -> u32 {
     if buf_ptr == 0 || buf_len == 0 {
         return 0;
     }
-    let data = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, buf_len as usize) };
+    // Validate the whole PCM range is mapped, then pass it straight to the audio
+    // driver (which copies it into its ring buffer). Preserves the original
+    // full-length write while preventing an unmapped page from faulting.
+    if !is_user_range_accessible(buf_ptr, buf_len as u64) {
+        return 0;
+    }
+    let data =
+        unsafe { core::slice::from_raw_parts(buf_ptr as usize as *const u8, buf_len as usize) };
     crate::drivers::audio::write_pcm(data) as u32
 }
 
@@ -451,14 +463,14 @@ pub fn sys_map_framebuffer(out_info_ptr: u64) -> u32 {
 
     // Write FbMapInfo struct to user memory
     if out_info_ptr != 0 {
-        if !super::helpers::is_valid_user_ptr(out_info_ptr, 16) {
+        let mut out = [0u8; 16];
+        out[0..4].copy_from_slice(&(fb_user_base as u32).to_le_bytes());
+        out[4..8].copy_from_slice(&width.to_le_bytes());
+        out[8..12].copy_from_slice(&height.to_le_bytes());
+        out[12..16].copy_from_slice(&pitch.to_le_bytes());
+        if !copy_to_user_bytes(out_info_ptr, &out, 16) {
             return u32::MAX;
         }
-        let info = unsafe { &mut *(out_info_ptr as *mut [u32; 4]) };
-        info[0] = fb_user_base as u32;
-        info[1] = width;
-        info[2] = height;
-        info[3] = pitch;
     }
 
     crate::serial_verbose_println!(
@@ -499,14 +511,14 @@ pub fn sys_map_framebuffer(out_info_ptr: u64) -> u32 {
     }
 
     if out_info_ptr != 0 {
-        if !super::helpers::is_valid_user_ptr(out_info_ptr, 16) {
+        let mut out = [0u8; 16];
+        out[0..4].copy_from_slice(&(fb_user_base as u32).to_le_bytes());
+        out[4..8].copy_from_slice(&width.to_le_bytes());
+        out[8..12].copy_from_slice(&height.to_le_bytes());
+        out[12..16].copy_from_slice(&pitch.to_le_bytes());
+        if !copy_to_user_bytes(out_info_ptr, &out, 16) {
             return u32::MAX;
         }
-        let info = unsafe { &mut *(out_info_ptr as *mut [u32; 4]) };
-        info[0] = fb_user_base as u32;
-        info[1] = width;
-        info[2] = height;
-        info[3] = pitch;
     }
 
     0
@@ -530,10 +542,26 @@ pub fn sys_gpu_command(cmd_buf_ptr: u64, cmd_count: u32) -> u32 {
 
     let count = cmd_count.min(256) as usize; // Cap at 256 commands per call
     let byte_size = count * 36; // 9 u32s * 4 bytes each
-    if !is_valid_user_ptr(cmd_buf_ptr as u64, byte_size as u64) {
-        return 0;
+    // Copy commands into kernel memory so every crossed page is validated and
+    // the command stream cannot be mutated under us (TOCTOU).
+    let raw = match copy_user_bytes(cmd_buf_ptr, byte_size, 256 * 36) {
+        Some(v) => v,
+        None => return 0,
+    };
+    let mut cmds: alloc::vec::Vec<[u32; 9]> = alloc::vec::Vec::with_capacity(count);
+    for rec in raw.chunks_exact(36) {
+        let mut words = [0u32; 9];
+        for (i, w) in words.iter_mut().enumerate() {
+            *w = u32::from_le_bytes([
+                rec[i * 4],
+                rec[i * 4 + 1],
+                rec[i * 4 + 2],
+                rec[i * 4 + 3],
+            ]);
+        }
+        cmds.push(words);
     }
-    let cmds = unsafe { core::slice::from_raw_parts(cmd_buf_ptr as *const [u32; 9], count) };
+    let cmds = &cmds[..];
     let mut last_cmd_type = 0u32;
 
     // Process all commands in a single GPU lock acquisition.
@@ -595,18 +623,22 @@ pub fn sys_gpu_command(cmd_buf_ptr: u64, cmd_count: u32) -> u32 {
                         false
                     } else if count != (w * h) as usize {
                         false
-                    } else if !is_valid_user_ptr(ptr, (count * 4) as u64) {
+                    } else if count > 256 * 256 {
+                        false
+                    } else if let Some(bytes) = copy_user_bytes(ptr, count * 4, 256 * 256 * 4) {
+                        let pixels: alloc::vec::Vec<u32> = bytes
+                            .chunks_exact(4)
+                            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect();
+                        g.define_cursor(w, h, hotx, hoty, &pixels);
+                        true
+                    } else {
                         crate::serial_verbose_println!(
                             "GPU DEFINE_CURSOR: invalid pixel ptr {:#x} count={}",
                             ptr,
                             count
                         );
                         false
-                    } else {
-                        let pixels =
-                            unsafe { core::slice::from_raw_parts(ptr as *const u32, count) };
-                        g.define_cursor(w, h, hotx, hoty, pixels);
-                        true
                     }
                 }
                 7 => {
@@ -679,11 +711,25 @@ pub fn sys_gpu_command(cmd_buf_ptr: u64, cmd_count: u32) -> u32 {
 
     let count = cmd_count.min(256) as usize;
     let byte_size = count * 36;
-    if !is_valid_user_ptr(cmd_buf_ptr as u64, byte_size as u64) {
-        return 0;
+    // Copy commands into kernel memory so every crossed page is validated.
+    let raw = match copy_user_bytes(cmd_buf_ptr, byte_size, 256 * 36) {
+        Some(v) => v,
+        None => return 0,
+    };
+    let mut cmds: alloc::vec::Vec<[u32; 9]> = alloc::vec::Vec::with_capacity(count);
+    for rec in raw.chunks_exact(36) {
+        let mut words = [0u32; 9];
+        for (i, w) in words.iter_mut().enumerate() {
+            *w = u32::from_le_bytes([
+                rec[i * 4],
+                rec[i * 4 + 1],
+                rec[i * 4 + 2],
+                rec[i * 4 + 3],
+            ]);
+        }
+        cmds.push(words);
     }
-
-    let cmds = unsafe { core::slice::from_raw_parts(cmd_buf_ptr as *const [u32; 9], count) };
+    let cmds = &cmds[..];
     let mut flush_x0 = u32::MAX;
     let mut flush_y0 = u32::MAX;
     let mut flush_x1 = 0u32;
@@ -723,15 +769,15 @@ pub fn sys_gpu_command(cmd_buf_ptr: u64, cmd_count: u32) -> u32 {
                 let hoty = cmd[4];
                 let ptr = (cmd[5] as u64) | ((cmd[6] as u64) << 32);
                 let count = cmd[7] as usize;
-                if w > 0
-                    && h > 0
-                    && ptr != 0
-                    && count == (w * h) as usize
-                    && is_valid_user_ptr(ptr, (count * 4) as u64)
-                {
-                    let pixels = unsafe { core::slice::from_raw_parts(ptr as *const u32, count) };
-                    crate::drivers::arm::gpu::define_cursor(w, h, hotx, hoty, pixels);
-                    executed += 1;
+                if w > 0 && h > 0 && ptr != 0 && count == (w * h) as usize && count <= 256 * 256 {
+                    if let Some(bytes) = copy_user_bytes(ptr, count * 4, 256 * 256 * 4) {
+                        let pixels: alloc::vec::Vec<u32> = bytes
+                            .chunks_exact(4)
+                            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect();
+                        crate::drivers::arm::gpu::define_cursor(w, h, hotx, hoty, &pixels);
+                        executed += 1;
+                    }
                 }
             }
             7 | 8 => {
@@ -778,11 +824,9 @@ pub fn sys_input_poll(buf_ptr: u64, max_events: u32) -> u32 {
     }
 
     let max = max_events.min(256) as usize;
-    let byte_size = max * 20; // 5 u32s * 4 bytes each
-    if !is_valid_user_ptr(buf_ptr as u64, byte_size as u64) {
-        return 0;
-    }
-    let events = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut [u32; 5], max) };
+    // Fill events into a kernel-side buffer, then flush once via the
+    // mapping-validated copy helper.
+    let mut events = [[0u32; 5]; 256];
     let mut count = 0usize;
 
     // Drain keyboard events
@@ -888,6 +932,20 @@ pub fn sys_input_poll(buf_ptr: u64, max_events: u32) -> u32 {
         }
     }
 
+    if count > 0 {
+        let mut out = [0u8; 256 * 20];
+        let mut n = 0usize;
+        for ev in &events[..count] {
+            for w in ev.iter() {
+                out[n..n + 4].copy_from_slice(&w.to_le_bytes());
+                n += 4;
+            }
+        }
+        if !copy_to_user_bytes(buf_ptr, &out[..n], 256 * 20) {
+            return 0;
+        }
+    }
+
     count as u32
 }
 
@@ -901,12 +959,9 @@ pub fn sys_input_poll(buf_ptr: u64, max_events: u32) -> u32 {
     }
 
     let max = max_events.min(256) as usize;
-    let byte_size = max * 20;
-    if !is_valid_user_ptr(buf_ptr as u64, byte_size as u64) {
-        return 0;
-    }
-
-    let events = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut [u32; 5], max) };
+    // Fill events into a kernel-side buffer, then flush once via the
+    // mapping-validated copy helper.
+    let mut events = [[0u32; 5]; 256];
     let mut count = 0usize;
 
     while count < max {
@@ -974,6 +1029,20 @@ pub fn sys_input_poll(buf_ptr: u64, max_events: u32) -> u32 {
         }
     }
 
+    if count > 0 {
+        let mut out = [0u8; 256 * 20];
+        let mut n = 0usize;
+        for ev in &events[..count] {
+            for w in ev.iter() {
+                out[n..n + 4].copy_from_slice(&w.to_le_bytes());
+                n += 4;
+            }
+        }
+        if !copy_to_user_bytes(buf_ptr, &out[..n], 256 * 20) {
+            return 0;
+        }
+    }
+
     count as u32
 }
 
@@ -1008,11 +1077,12 @@ pub fn sys_capture_screen(buf_ptr: u64, buf_size: u32, info_ptr: u64) -> u32 {
     // so callers can probe the resolution without a full-size buffer.
     // info layout: [width: u32, height: u32, pitch: u32]
     if info_ptr != 0 {
-        unsafe {
-            let info = info_ptr as *mut u32;
-            *info = width;
-            *info.add(1) = height;
-            *info.add(2) = pitch;
+        let mut out = [0u8; 12];
+        out[0..4].copy_from_slice(&width.to_le_bytes());
+        out[4..8].copy_from_slice(&height.to_le_bytes());
+        out[8..12].copy_from_slice(&pitch.to_le_bytes());
+        if !copy_to_user_bytes(info_ptr, &out, 12) {
+            return 1;
         }
     }
 
@@ -1035,6 +1105,11 @@ pub fn sys_capture_screen(buf_ptr: u64, buf_size: u32, info_ptr: u64) -> u32 {
         let phys = crate::memory::address::PhysAddr::new(pages_vec[i]);
         let virt = crate::memory::address::VirtAddr::new(fb_map_base + (i * 0x1000) as u64);
         crate::memory::virtual_mem::map_page(virt, phys, 0x05);
+    }
+
+    // Validate the user destination is fully mapped before writing into it.
+    if !is_user_range_accessible(buf_ptr, needed as u64) {
+        return 2;
     }
 
     // Copy pixels row by row (pitch may differ from width*4)
@@ -1063,14 +1138,18 @@ pub fn sys_capture_screen(buf_ptr: u64, buf_size: u32, info_ptr: u64) -> u32 {
     }
 
     if info_ptr != 0 {
-        unsafe {
-            let info = info_ptr as *mut u32;
-            *info = fb.width;
-            *info.add(1) = fb.height;
+        let mut out = [0u8; 8];
+        out[0..4].copy_from_slice(&fb.width.to_le_bytes());
+        out[4..8].copy_from_slice(&fb.height.to_le_bytes());
+        if !copy_to_user_bytes(info_ptr, &out, 8) {
+            return 1;
         }
     }
 
     if buf_ptr != 0 {
+        if !is_user_range_accessible(buf_ptr, bytes as u64) {
+            return 2;
+        }
         unsafe {
             core::ptr::copy_nonoverlapping(fb.addr as *const u8, buf_ptr as *mut u8, bytes);
         }
@@ -1340,12 +1419,13 @@ pub fn sys_grant_framebuffer(target_tid: u32, out_info_ptr: u64) -> u32 {
 
     // Write info struct to compositor's user memory
     if out_info_ptr != 0 {
-        unsafe {
-            let info = out_info_ptr as *mut u32;
-            *info = fb_user_base as u32;
-            *info.add(1) = width;
-            *info.add(2) = height;
-            *info.add(3) = pitch;
+        let mut out = [0u8; 16];
+        out[0..4].copy_from_slice(&(fb_user_base as u32).to_le_bytes());
+        out[4..8].copy_from_slice(&width.to_le_bytes());
+        out[8..12].copy_from_slice(&height.to_le_bytes());
+        out[12..16].copy_from_slice(&pitch.to_le_bytes());
+        if !copy_to_user_bytes(out_info_ptr, &out, 16) {
+            return u32::MAX;
         }
     }
 
@@ -1389,12 +1469,13 @@ pub fn sys_grant_framebuffer(target_tid: u32, out_info_ptr: u64) -> u32 {
     }
 
     if out_info_ptr != 0 {
-        unsafe {
-            let info = out_info_ptr as *mut u32;
-            *info = fb_user_base as u32;
-            *info.add(1) = width;
-            *info.add(2) = height;
-            *info.add(3) = pitch;
+        let mut out = [0u8; 16];
+        out[0..4].copy_from_slice(&(fb_user_base as u32).to_le_bytes());
+        out[4..8].copy_from_slice(&width.to_le_bytes());
+        out[8..12].copy_from_slice(&height.to_le_bytes());
+        out[12..16].copy_from_slice(&pitch.to_le_bytes());
+        if !copy_to_user_bytes(out_info_ptr, &out, 16) {
+            return u32::MAX;
         }
     }
 
@@ -1507,14 +1588,19 @@ pub fn sys_gpu_3d_submit(buf_ptr: u64, word_count: u32) -> u32 {
 
     // Cap at 16384 words (64 KiB) per submission
     let count = word_count.min(16384) as usize;
-    let byte_size = (count * 4) as u64;
+    let byte_size = count * 4;
 
-    // Validate pointer is in user space and properly mapped
-    if !is_valid_user_ptr(buf_ptr as u64, byte_size) {
-        return u32::MAX;
-    }
-
-    let words = unsafe { core::slice::from_raw_parts(buf_ptr as *const u32, count) };
+    // Copy the command words into kernel memory: validates every crossed page
+    // and prevents a TOCTOU where the user mutates the buffer after validation.
+    let bytes = match copy_user_bytes(buf_ptr, byte_size, 16384 * 4) {
+        Some(v) => v,
+        None => return u32::MAX,
+    };
+    let words: alloc::vec::Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    let words = &words[..];
 
     // Driver-specific validation: SVGA3D needs command ID checks,
     // virgl passes raw Gallium commands without structure validation.
@@ -1601,12 +1687,12 @@ pub fn sys_gpu_3d_surface_dma(
     }
     // Cap at 1 MiB per upload (matches DMA staging buffer size)
     let len = buf_len.min(1024 * 1024) as usize;
-    if !is_valid_user_ptr(buf_ptr as u64, len as u64) {
-        return u32::MAX;
-    }
-    let data = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len) };
+    let data = match copy_user_bytes(buf_ptr, len, 1024 * 1024) {
+        Some(v) => v,
+        None => return u32::MAX,
+    };
     crate::drivers::gpu::with_gpu(|g| {
-        if g.dma_surface_upload(sid, data, width, height) {
+        if g.dma_surface_upload(sid, &data, width, height) {
             0u32
         } else {
             u32::MAX
@@ -1638,18 +1724,15 @@ pub fn sys_gpu_3d_surface_dma_read(
         return u32::MAX;
     }
     let len = buf_len.min(65536 * 16) as usize; // Up to 1 MiB for readback
-    if !is_valid_user_ptr(buf_ptr as u64, len as u64) {
+    let mut tmp = alloc::vec![0u8; len];
+    let ok = crate::drivers::gpu::with_gpu(|g| g.dma_surface_download(sid, &mut tmp, width, height));
+    if ok != Some(true) {
         return u32::MAX;
     }
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
-    crate::drivers::gpu::with_gpu(|g| {
-        if g.dma_surface_download(sid, buf, width, height) {
-            0u32
-        } else {
-            u32::MAX
-        }
-    })
-    .unwrap_or(u32::MAX)
+    if !copy_to_user_bytes(buf_ptr, &tmp, 65536 * 16) {
+        return u32::MAX;
+    }
+    0
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1682,11 +1765,10 @@ pub fn sys_gpu_query_type(buf_ptr: u64, buf_len: u32) -> u32 {
     if buf_ptr != 0 && buf_len > 0 {
         let bytes = name.as_bytes();
         let copy_len = bytes.len().min(buf_len as usize - 1);
-        unsafe {
-            let buf = core::slice::from_raw_parts_mut(buf_ptr as *mut u8, copy_len + 1);
-            buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
-            buf[copy_len] = 0;
-        }
+        let mut out = alloc::vec::Vec::with_capacity(copy_len + 1);
+        out.extend_from_slice(&bytes[..copy_len]);
+        out.push(0);
+        let _ = copy_to_user_bytes(buf_ptr, &out, copy_len + 1);
     }
     name.len() as u32
 }
@@ -1698,11 +1780,10 @@ pub fn sys_gpu_query_type(buf_ptr: u64, buf_len: u32) -> u32 {
     if buf_ptr != 0 && buf_len > 0 {
         let bytes = name.as_bytes();
         let copy_len = bytes.len().min(buf_len as usize - 1);
-        unsafe {
-            let buf = core::slice::from_raw_parts_mut(buf_ptr as *mut u8, copy_len + 1);
-            buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
-            buf[copy_len] = 0;
-        }
+        let mut out = alloc::vec::Vec::with_capacity(copy_len + 1);
+        out.extend_from_slice(&bytes[..copy_len]);
+        out.push(0);
+        let _ = copy_to_user_bytes(buf_ptr, &out, copy_len + 1);
     }
     name.len() as u32
 }
@@ -1820,15 +1901,13 @@ pub fn sys_display_list(buf_ptr: u64, buf_count: u32) -> u32 {
     if buf_ptr == 0 || buf_count == 0 {
         return u32::MAX;
     }
-    let bytes = (buf_count as u64) * (core::mem::size_of::<DisplayInfoFfi>() as u64);
-    if !super::helpers::is_valid_user_ptr(buf_ptr, bytes) {
-        return u32::MAX;
-    }
-    let written = crate::drivers::gpu::with_gpu(|g| {
+    let entry_size = core::mem::size_of::<DisplayInfoFfi>();
+    // Build entries in a kernel-side Vec, then copy out via the
+    // mapping-validated helper.
+    let result = crate::drivers::gpu::with_gpu(|g| {
         let total = g.display_count().min(buf_count) as u32;
-        let dst = unsafe {
-            core::slice::from_raw_parts_mut(buf_ptr as *mut DisplayInfoFfi, total as usize)
-        };
+        let mut entries: alloc::vec::Vec<DisplayInfoFfi> =
+            alloc::vec![DisplayInfoFfi::default(); total as usize];
         for i in 0..total {
             let info = match g.output_info(i) {
                 Some(v) => v,
@@ -1859,11 +1938,24 @@ pub fn sys_display_list(buf_ptr: u64, buf_count: u32) -> u32 {
             } else {
                 e.mirror_of = u32::MAX;
             }
-            dst[i as usize] = e;
+            entries[i as usize] = e;
         }
-        total
+        entries
     });
-    written.unwrap_or(u32::MAX)
+    let entries = match result {
+        Some(v) => v,
+        None => return u32::MAX,
+    };
+    let total = entries.len() as u32;
+    if total > 0 {
+        let byte_len = entries.len() * entry_size;
+        let bytes =
+            unsafe { core::slice::from_raw_parts(entries.as_ptr() as *const u8, byte_len) };
+        if !copy_to_user_bytes(buf_ptr, bytes, buf_count as usize * entry_size) {
+            return u32::MAX;
+        }
+    }
+    total
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1888,13 +1980,34 @@ pub fn sys_display_set_layout(entries_ptr: u64, entry_count: u32) -> u32 {
     if entries_ptr == 0 || entry_count == 0 || entry_count > 32 {
         return u32::MAX;
     }
-    let bytes = (entry_count as u64) * (core::mem::size_of::<LayoutEntryFfi>() as u64);
-    if !super::helpers::is_valid_user_ptr(entries_ptr, bytes) {
-        return u32::MAX;
-    }
-    let raw = unsafe {
-        core::slice::from_raw_parts(entries_ptr as *const LayoutEntryFfi, entry_count as usize)
+    let entry_size = core::mem::size_of::<LayoutEntryFfi>();
+    let span = entry_count as usize * entry_size;
+    // Copy the layout entries into kernel memory: validates every crossed page
+    // and prevents a TOCTOU on the entries that are validated then applied.
+    let buf = match copy_user_bytes(entries_ptr, span, 32 * entry_size) {
+        Some(v) => v,
+        None => return u32::MAX,
     };
+    let rd_u32 = |o: usize| -> u32 {
+        u32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]])
+    };
+    let mut raw: alloc::vec::Vec<LayoutEntryFfi> =
+        alloc::vec::Vec::with_capacity(entry_count as usize);
+    for i in 0..entry_count as usize {
+        let b = i * entry_size;
+        raw.push(LayoutEntryFfi {
+            id: rd_u32(b),
+            virtual_x: rd_u32(b + 4) as i32,
+            virtual_y: rd_u32(b + 8) as i32,
+            mode_w: rd_u32(b + 12),
+            mode_h: rd_u32(b + 16),
+            mode_refresh_mhz: rd_u32(b + 20),
+            scale: rd_u32(b + 24),
+            flags: rd_u32(b + 28),
+            mirror_of: rd_u32(b + 32),
+        });
+    }
+    let raw = &raw[..];
     use crate::drivers::gpu::output::{OutputLayout, OutputLayoutEntry, OutputMode};
     let mut layout = OutputLayout::empty();
     for e in raw {
@@ -2029,14 +2142,14 @@ pub fn sys_display_map_fb(output_id: u32, out_info_ptr: u64) -> u32 {
         crate::memory::virtual_mem::map_page(virt_addr, phys_addr, flags);
     }
     if out_info_ptr != 0 {
-        if !super::helpers::is_valid_user_ptr(out_info_ptr, 16) {
+        let mut out = [0u8; 16];
+        out[0..4].copy_from_slice(&(fb_user_base as u32).to_le_bytes());
+        out[4..8].copy_from_slice(&width.to_le_bytes());
+        out[8..12].copy_from_slice(&height.to_le_bytes());
+        out[12..16].copy_from_slice(&pitch.to_le_bytes());
+        if !copy_to_user_bytes(out_info_ptr, &out, 16) {
             return u32::MAX;
         }
-        let info = unsafe { &mut *(out_info_ptr as *mut [u32; 4]) };
-        info[0] = fb_user_base as u32;
-        info[1] = width;
-        info[2] = height;
-        info[3] = pitch;
     }
     crate::serial_verbose_println!(
         "[OK] Output {} fb mapped at {:#010x} ({}x{}, pitch={}, phys={:#x})",

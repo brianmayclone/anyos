@@ -5,6 +5,14 @@
 
 #[allow(unused_imports)]
 use super::helpers::is_valid_user_ptr;
+use super::helpers::{copy_to_user_bytes, copy_user_bytes};
+
+/// Upper bound on the kernel-side staging buffer for a single raw disk
+/// read/write syscall. `count` (sector count) is fully user-controlled, so
+/// without a cap a malicious caller could request close to 4 GiB and force a
+/// huge kernel allocation. 16 MiB (32768 sectors) is far larger than any real
+/// caller yet keeps the allocation bounded.
+const MAX_DISK_IO_BYTES: u64 = 16 * 1024 * 1024;
 
 /// SYS_DISK_LIST - List block devices.
 /// Each entry is 64 bytes:
@@ -25,7 +33,6 @@ pub fn sys_disk_list(buf_ptr: u64, buf_size: u32) -> u32 {
     let devices = blockdev::list_devices();
     let count = devices.len();
     if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
-        let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
         // Use 64-byte entries if buffer is large enough, else fall back to 32
         let entry_size = if buf_size as usize / count.max(1) >= 64 {
             64usize
@@ -33,20 +40,22 @@ pub fn sys_disk_list(buf_ptr: u64, buf_size: u32) -> u32 {
             32usize
         };
         let max_entries = buf_size as usize / entry_size;
-        for (i, dev) in devices.iter().enumerate().take(max_entries.min(count)) {
+        let n = max_entries.min(count);
+        let mut out = alloc::vec![0u8; n * entry_size];
+        for (i, dev) in devices.iter().enumerate().take(n) {
             let off = i * entry_size;
-            for b in &mut buf[off..off + entry_size] {
-                *b = 0;
-            }
-            buf[off] = dev.id;
-            buf[off + 1] = dev.disk_id;
-            buf[off + 2] = dev.partition.unwrap_or(0xFF);
-            buf[off + 8..off + 16].copy_from_slice(&dev.start_lba.to_le_bytes());
-            buf[off + 16..off + 24].copy_from_slice(&dev.size_sectors.to_le_bytes());
+            out[off] = dev.id;
+            out[off + 1] = dev.disk_id;
+            out[off + 2] = dev.partition.unwrap_or(0xFF);
+            out[off + 8..off + 16].copy_from_slice(&dev.start_lba.to_le_bytes());
+            out[off + 16..off + 24].copy_from_slice(&dev.size_sectors.to_le_bytes());
             if entry_size >= 64 {
                 let label_len = dev.label.len().min(40);
-                buf[off + 24..off + 24 + label_len].copy_from_slice(&dev.label[..label_len]);
+                out[off + 24..off + 24 + label_len].copy_from_slice(&dev.label[..label_len]);
             }
+        }
+        if !out.is_empty() {
+            copy_to_user_bytes(buf_ptr, &out, out.len());
         }
     }
     count as u32
@@ -58,27 +67,28 @@ pub fn sys_disk_list(buf_ptr: u64, buf_size: u32) -> u32 {
     let devices = blockdev::list_devices();
     let count = devices.len();
     if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
-        let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
         let entry_size = if buf_size as usize / count.max(1) >= 64 {
             64usize
         } else {
             32usize
         };
         let max_entries = buf_size as usize / entry_size;
-        for (i, dev) in devices.iter().enumerate().take(max_entries.min(count)) {
+        let n = max_entries.min(count);
+        let mut out = alloc::vec![0u8; n * entry_size];
+        for (i, dev) in devices.iter().enumerate().take(n) {
             let off = i * entry_size;
-            for b in &mut buf[off..off + entry_size] {
-                *b = 0;
-            }
-            buf[off] = dev.id;
-            buf[off + 1] = dev.disk_id;
-            buf[off + 2] = dev.partition.unwrap_or(0xFF);
-            buf[off + 8..off + 16].copy_from_slice(&dev.start_lba.to_le_bytes());
-            buf[off + 16..off + 24].copy_from_slice(&dev.size_sectors.to_le_bytes());
+            out[off] = dev.id;
+            out[off + 1] = dev.disk_id;
+            out[off + 2] = dev.partition.unwrap_or(0xFF);
+            out[off + 8..off + 16].copy_from_slice(&dev.start_lba.to_le_bytes());
+            out[off + 16..off + 24].copy_from_slice(&dev.size_sectors.to_le_bytes());
             if entry_size >= 64 {
                 let label_len = dev.label.len().min(40);
-                buf[off + 24..off + 24 + label_len].copy_from_slice(&dev.label[..label_len]);
+                out[off + 24..off + 24 + label_len].copy_from_slice(&dev.label[..label_len]);
             }
+        }
+        if !out.is_empty() {
+            copy_to_user_bytes(buf_ptr, &out, out.len());
         }
     }
     count as u32
@@ -116,29 +126,25 @@ fn disk_partitions_impl(disk_id: u32, buf_ptr: u64, buf_size: u32) -> u32 {
 
     let count = table.partitions.len();
     if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
-        let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
         let entry_size = 32usize;
         let max_entries = buf_size as usize / entry_size;
-        for (i, part) in table
-            .partitions
-            .iter()
-            .enumerate()
-            .take(max_entries.min(count))
-        {
+        let n = max_entries.min(count);
+        let mut out = alloc::vec![0u8; n * entry_size];
+        for (i, part) in table.partitions.iter().enumerate().take(n) {
             let off = i * entry_size;
-            for b in &mut buf[off..off + entry_size] {
-                *b = 0;
-            }
-            buf[off] = part.index;
-            buf[off + 1] = partition_type_to_id(&part.part_type);
-            buf[off + 2] = if part.bootable { 1 } else { 0 };
-            buf[off + 3] = match part.scheme {
+            out[off] = part.index;
+            out[off + 1] = partition_type_to_id(&part.part_type);
+            out[off + 2] = if part.bootable { 1 } else { 0 };
+            out[off + 3] = match part.scheme {
                 partition::PartitionScheme::Mbr => 0,
                 partition::PartitionScheme::Gpt => 1,
                 partition::PartitionScheme::None => 2,
             };
-            buf[off + 8..off + 16].copy_from_slice(&part.start_lba.to_le_bytes());
-            buf[off + 16..off + 24].copy_from_slice(&part.size_sectors.to_le_bytes());
+            out[off + 8..off + 16].copy_from_slice(&part.start_lba.to_le_bytes());
+            out[off + 16..off + 24].copy_from_slice(&part.size_sectors.to_le_bytes());
+        }
+        if !out.is_empty() {
+            copy_to_user_bytes(buf_ptr, &out, out.len());
         }
     }
     count as u32
@@ -169,8 +175,17 @@ pub fn sys_disk_read(device_id: u32, lba: u32, count: u32, buf_ptr: u64, buf_siz
     if needed > buf_size as u64 || buf_ptr == 0 {
         return u32::MAX;
     }
+    // Bound the kernel-side staging buffer to a sane maximum (16 MiB) so a
+    // user-controlled `count` cannot drive a huge kernel allocation.
+    if needed > MAX_DISK_IO_BYTES {
+        return u32::MAX;
+    }
     if !is_valid_user_ptr(buf_ptr as u64, needed) {
         return u32::MAX;
+    }
+
+    if count == 0 {
+        return 0;
     }
 
     let dev = match blockdev::get_device(device_id as u8) {
@@ -178,12 +193,14 @@ pub fn sys_disk_read(device_id: u32, lba: u32, count: u32, buf_ptr: u64, buf_siz
         None => return u32::MAX,
     };
 
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, needed as usize) };
-    if dev.read_sectors(lba, count, buf) {
-        count
-    } else {
-        u32::MAX
+    let mut kbuf = alloc::vec![0u8; needed as usize];
+    if !dev.read_sectors(lba, count, &mut kbuf) {
+        return u32::MAX;
     }
+    if !copy_to_user_bytes(buf_ptr, &kbuf, needed as usize) {
+        return u32::MAX;
+    }
+    count
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -194,8 +211,17 @@ pub fn sys_disk_read(device_id: u32, lba: u32, count: u32, buf_ptr: u64, buf_siz
     if needed > buf_size as u64 || buf_ptr == 0 {
         return u32::MAX;
     }
+    // Bound the kernel-side staging buffer to a sane maximum (16 MiB) so a
+    // user-controlled `count` cannot drive a huge kernel allocation.
+    if needed > MAX_DISK_IO_BYTES {
+        return u32::MAX;
+    }
     if !is_valid_user_ptr(buf_ptr as u64, needed) {
         return u32::MAX;
+    }
+
+    if count == 0 {
+        return 0;
     }
 
     let dev = match blockdev::get_device(device_id as u8) {
@@ -203,12 +229,14 @@ pub fn sys_disk_read(device_id: u32, lba: u32, count: u32, buf_ptr: u64, buf_siz
         None => return u32::MAX,
     };
 
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, needed as usize) };
-    if dev.read_sectors(lba, count, buf) {
-        count
-    } else {
-        u32::MAX
+    let mut kbuf = alloc::vec![0u8; needed as usize];
+    if !dev.read_sectors(lba, count, &mut kbuf) {
+        return u32::MAX;
     }
+    if !copy_to_user_bytes(buf_ptr, &kbuf, needed as usize) {
+        return u32::MAX;
+    }
+    count
 }
 
 /// SYS_DISK_WRITE - Write raw sectors to a block device.
@@ -226,8 +254,17 @@ pub fn sys_disk_write(device_id: u32, lba: u32, count: u32, buf_ptr: u64, buf_si
     if needed > buf_size as u64 || buf_ptr == 0 {
         return u32::MAX;
     }
+    // Bound the kernel-side staging buffer to a sane maximum (16 MiB) so a
+    // user-controlled `count` cannot drive a huge kernel allocation.
+    if needed > MAX_DISK_IO_BYTES {
+        return u32::MAX;
+    }
     if !is_valid_user_ptr(buf_ptr as u64, needed) {
         return u32::MAX;
+    }
+
+    if count == 0 {
+        return 0;
     }
 
     let dev = match blockdev::get_device(device_id as u8) {
@@ -235,7 +272,11 @@ pub fn sys_disk_write(device_id: u32, lba: u32, count: u32, buf_ptr: u64, buf_si
         None => return u32::MAX,
     };
 
-    let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, needed as usize) };
+    let kbuf = match copy_user_bytes(buf_ptr, needed as usize, needed as usize) {
+        Some(b) => b,
+        None => return u32::MAX,
+    };
+    let buf: &[u8] = &kbuf;
     // Use direct write (bypass write-back cache) for raw disk I/O syscalls.
     // The write-back cache is keyed by disk_id=0 and flushes through the
     // default storage backend, which may not be the correct disk (e.g. during
@@ -271,8 +312,17 @@ pub fn sys_disk_write(device_id: u32, lba: u32, count: u32, buf_ptr: u64, buf_si
     if needed > buf_size as u64 || buf_ptr == 0 {
         return u32::MAX;
     }
+    // Bound the kernel-side staging buffer to a sane maximum (16 MiB) so a
+    // user-controlled `count` cannot drive a huge kernel allocation.
+    if needed > MAX_DISK_IO_BYTES {
+        return u32::MAX;
+    }
     if !is_valid_user_ptr(buf_ptr as u64, needed) {
         return u32::MAX;
+    }
+
+    if count == 0 {
+        return 0;
     }
 
     let dev = match blockdev::get_device(device_id as u8) {
@@ -280,8 +330,11 @@ pub fn sys_disk_write(device_id: u32, lba: u32, count: u32, buf_ptr: u64, buf_si
         None => return u32::MAX,
     };
 
-    let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, needed as usize) };
-    if dev.write_sectors(lba, count, buf) {
+    let kbuf = match copy_user_bytes(buf_ptr, needed as usize, needed as usize) {
+        Some(b) => b,
+        None => return u32::MAX,
+    };
+    if dev.write_sectors(lba, count, &kbuf) {
         count
     } else {
         u32::MAX
@@ -316,7 +369,10 @@ fn partition_create_impl(disk_id: u32, entry_ptr: u64, entry_size: u32) -> u32 {
         None => return u32::MAX,
     };
 
-    let entry = unsafe { core::slice::from_raw_parts(entry_ptr as *const u8, 16) };
+    let entry = match copy_user_bytes(entry_ptr, 16, 16) {
+        Some(b) => b,
+        None => return u32::MAX,
+    };
     let index = entry[0];
     let ptype = entry[1];
     let bootable = entry[2] != 0;

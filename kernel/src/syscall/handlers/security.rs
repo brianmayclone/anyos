@@ -3,7 +3,9 @@
 //! Covers user/group CRUD, authentication, file ownership (chmod/chown),
 //! capability queries, and application permission management.
 
-use super::helpers::{fs_err, is_valid_user_ptr, read_user_str_safe, resolve_path};
+use super::helpers::{
+    copy_to_user_bytes, copy_user_bytes, fs_err, read_user_str_safe, resolve_path,
+};
 
 /// SYS_GET_CAPABILITIES: Return the calling thread's capability bitmask.
 pub fn sys_get_capabilities() -> u32 {
@@ -110,12 +112,17 @@ pub fn sys_adduser(data_ptr: u64) -> u32 {
     if crate::task::scheduler::current_thread_uid() != 0 {
         return u32::MAX;
     }
-    if !is_valid_user_ptr(data_ptr as u64, 32) {
-        return u32::MAX;
-    }
-
     // Stdlib packs 4 pointers as [u64; 4] (x86_64 pointer size)
-    let ptrs = unsafe { core::slice::from_raw_parts(data_ptr as *const u64, 4) };
+    let raw = match copy_user_bytes(data_ptr, 32, 32) {
+        Some(v) => v,
+        None => return u32::MAX,
+    };
+    let ptrs = [
+        u64::from_le_bytes(raw[0..8].try_into().unwrap()),
+        u64::from_le_bytes(raw[8..16].try_into().unwrap()),
+        u64::from_le_bytes(raw[16..24].try_into().unwrap()),
+        u64::from_le_bytes(raw[24..32].try_into().unwrap()),
+    ];
     let username = match read_user_str_safe(ptrs[0] as u64) {
         Some(s) => s,
         None => return u32::MAX,
@@ -178,11 +185,15 @@ pub fn sys_deluser(uid: u32) -> u32 {
 /// Non-root must provide correct old_password and can only change own password.
 /// Returns 0 on success, u32::MAX on failure.
 pub fn sys_chpasswd(data_ptr: u64) -> u32 {
-    if !is_valid_user_ptr(data_ptr as u64, 24) {
-        return u32::MAX;
-    }
-
-    let ptrs = unsafe { core::slice::from_raw_parts(data_ptr as *const u64, 3) };
+    let raw = match copy_user_bytes(data_ptr, 24, 24) {
+        Some(v) => v,
+        None => return u32::MAX,
+    };
+    let ptrs = [
+        u64::from_le_bytes(raw[0..8].try_into().unwrap()),
+        u64::from_le_bytes(raw[8..16].try_into().unwrap()),
+        u64::from_le_bytes(raw[16..24].try_into().unwrap()),
+    ];
     let username = match read_user_str_safe(ptrs[0] as u64) {
         Some(s) => s,
         None => return u32::MAX,
@@ -225,11 +236,20 @@ pub fn sys_chpasswd(data_ptr: u64) -> u32 {
 /// SYS_LISTUSERS: List all users into a buffer.
 /// arg1 = buf_ptr, arg2 = buf_len. Returns bytes written.
 pub fn sys_listusers(buf_ptr: u64, buf_len: u32) -> u32 {
-    if buf_ptr == 0 || buf_len == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_len as u64) {
+    if buf_ptr == 0 || buf_len == 0 {
         return 0;
     }
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
-    crate::task::users::list_users(buf) as u32
+    let cap = (buf_len as usize).min(64 * 1024);
+    let mut kbuf = alloc::vec![0u8; cap];
+    let n = crate::task::users::list_users(&mut kbuf);
+    if n == 0 {
+        return 0;
+    }
+    if copy_to_user_bytes(buf_ptr, &kbuf[..n], cap) {
+        n as u32
+    } else {
+        0
+    }
 }
 
 /// SYS_ADDGROUP: Add a group. Root only.
@@ -238,16 +258,17 @@ pub fn sys_addgroup(data_ptr: u64) -> u32 {
     if crate::task::scheduler::current_thread_uid() != 0 {
         return u32::MAX;
     }
-    if !is_valid_user_ptr(data_ptr as u64, 16) {
-        return u32::MAX;
-    }
     // Stdlib packs [name_ptr: u64, gid: u64]
-    let ptrs = unsafe { core::slice::from_raw_parts(data_ptr as *const u64, 2) };
-    let name = match read_user_str_safe(ptrs[0] as u64) {
+    let raw = match copy_user_bytes(data_ptr, 16, 16) {
+        Some(v) => v,
+        None => return u32::MAX,
+    };
+    let name_ptr = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+    let gid = u64::from_le_bytes(raw[8..16].try_into().unwrap()) as u16;
+    let name = match read_user_str_safe(name_ptr) {
         Some(s) => s,
         None => return u32::MAX,
     };
-    let gid = ptrs[1] as u16;
     if crate::task::users::add_group(name, gid) {
         0
     } else {
@@ -269,21 +290,39 @@ pub fn sys_delgroup(gid: u32) -> u32 {
 
 /// SYS_LISTGROUPS: List all groups into a buffer.
 pub fn sys_listgroups(buf_ptr: u64, buf_len: u32) -> u32 {
-    if buf_ptr == 0 || buf_len == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_len as u64) {
+    if buf_ptr == 0 || buf_len == 0 {
         return 0;
     }
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
-    crate::task::users::list_groups(buf) as u32
+    let cap = (buf_len as usize).min(64 * 1024);
+    let mut kbuf = alloc::vec![0u8; cap];
+    let n = crate::task::users::list_groups(&mut kbuf);
+    if n == 0 {
+        return 0;
+    }
+    if copy_to_user_bytes(buf_ptr, &kbuf[..n], cap) {
+        n as u32
+    } else {
+        0
+    }
 }
 
 /// SYS_GETUSERNAME: Get username for a UID.
 /// arg1 = uid, arg2 = buf_ptr, arg3 = buf_len. Returns bytes written.
 pub fn sys_getusername(uid: u32, buf_ptr: u64, buf_len: u32) -> u32 {
-    if buf_ptr == 0 || buf_len == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_len as u64) {
+    if buf_ptr == 0 || buf_len == 0 {
         return 0;
     }
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
-    crate::task::users::get_username(uid as u16, buf) as u32
+    let cap = (buf_len as usize).min(256);
+    let mut kbuf = [0u8; 256];
+    let n = crate::task::users::get_username(uid as u16, &mut kbuf[..cap]);
+    if n == 0 {
+        return 0;
+    }
+    if copy_to_user_bytes(buf_ptr, &kbuf[..n], cap) {
+        n as u32
+    } else {
+        0
+    }
 }
 
 /// SYS_SET_IDENTITY: Root-only. Set uid/gid on calling process.
@@ -366,24 +405,27 @@ pub fn sys_perm_list(buf_ptr: u64, buf_size: u32) -> u32 {
     let uid = crate::task::scheduler::current_thread_uid();
     let apps = crate::task::permissions::list_apps_with_perms(uid);
 
-    if buf_ptr == 0 || buf_size == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
+    if buf_ptr == 0 || buf_size == 0 {
         return apps.len() as u32;
     }
 
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
-    let mut offset = 0usize;
+    let cap = (buf_size as usize).min(64 * 1024);
+    let mut out = alloc::vec::Vec::with_capacity(cap);
     let mut count = 0u32;
 
     for (app_id, granted) in &apps {
         // Format: "app_id\x1Fgranted_hex\n"
         let entry = alloc::format!("{}\x1F{:x}\n", app_id, granted);
         let bytes = entry.as_bytes();
-        if offset + bytes.len() > buf.len() {
+        if out.len() + bytes.len() > cap {
             break;
         }
-        buf[offset..offset + bytes.len()].copy_from_slice(bytes);
-        offset += bytes.len();
+        out.extend_from_slice(bytes);
         count += 1;
+    }
+
+    if !out.is_empty() && !copy_to_user_bytes(buf_ptr, &out, cap) {
+        return 0;
     }
 
     count
@@ -413,7 +455,7 @@ pub fn sys_perm_delete(app_id_ptr: u64) -> u32 {
 /// Format: "app_id\x1Fapp_name\x1Fcaps_hex\x1Fbundle_path".
 /// Returns bytes written (0 if no pending info).
 pub fn sys_perm_pending_info(buf_ptr: u64, buf_size: u32) -> u32 {
-    if buf_ptr == 0 || buf_size == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
+    if buf_ptr == 0 || buf_size == 0 {
         return 0;
     }
 
@@ -424,9 +466,14 @@ pub fn sys_perm_pending_info(buf_ptr: u64, buf_size: u32) -> u32 {
     }
 
     let copy = len.min(buf_size as usize);
-    let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, copy) };
-    dst.copy_from_slice(&kernel_buf[..copy]);
-    copy as u32
+    if copy == 0 {
+        return 0;
+    }
+    if copy_to_user_bytes(buf_ptr, &kernel_buf[..copy], 512) {
+        copy as u32
+    } else {
+        0
+    }
 }
 
 // =========================================================================

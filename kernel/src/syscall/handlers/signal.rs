@@ -66,10 +66,19 @@ pub fn sys_sigprocmask(how: u32, set: u32) -> u32 {
 pub fn sys_sigreturn(regs: &mut super::super::SyscallRegs) -> u32 {
     let user_esp = regs.rsp as u32;
 
-    // Read saved context from user stack
-    let saved_eax = unsafe { *((user_esp + 4) as *const u32) };
-    let saved_eip = unsafe { *((user_esp + 8) as *const u32) };
-    let saved_eflags = unsafe { *((user_esp + 12) as *const u32) };
+    // Read saved context from user stack through one mapping-validated copy so
+    // a crafted/unmapped user RSP returns an error instead of faulting the
+    // kernel. Frame body is 12 bytes at user_esp+4 (saved_eax/eip/eflags).
+    let buf = match super::helpers::copy_user_bytes((user_esp as u64) + 4, 12, 12) {
+        Some(b) => b,
+        None => {
+            super::sys_exit(128 + crate::ipc::signal::SIGSEGV);
+            return 0;
+        }
+    };
+    let saved_eax = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    let saved_eip = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+    let saved_eflags = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
 
     // Restore the return frame
     regs.rip = saved_eip as u64;
