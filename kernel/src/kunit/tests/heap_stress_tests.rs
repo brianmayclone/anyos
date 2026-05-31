@@ -50,6 +50,10 @@ pub static SUITE: TestSuite = TestSuite {
             name: "alloc_after_heavy_use",
             run: test_alloc_after_heavy,
         },
+        TestCase {
+            name: "bucket_double_free_guard",
+            run: test_bucket_double_free_guard,
+        },
     ],
 };
 
@@ -206,6 +210,45 @@ fn test_stats_monotone(ctx: &mut TestContext) {
         "committed stays >= original after free",
     );
     ctx.expect_ge(committed2, used2, "committed >= used after free");
+}
+
+// ── Bucket double-free guard ──────────────────────────────────────────────────
+
+fn test_bucket_double_free_guard(ctx: &mut TestContext) {
+    use alloc::alloc::{alloc, dealloc, Layout};
+    // 64 bytes maps to per-CPU bucket size class 1, so dealloc routes through
+    // bucket_dealloc where the double-free guard lives. This runs in the unit
+    // phase (pre-scheduler, single CPU) so there is no preemption between calls.
+    let layout = match Layout::from_size_align(64, 16) {
+        Ok(l) => l,
+        Err(_) => {
+            ctx.expect_true(false, "Layout(64,16) is valid");
+            return;
+        }
+    };
+    unsafe {
+        let p = alloc(layout);
+        ctx.expect_false(p.is_null(), "alloc(64) succeeded");
+        if p.is_null() {
+            return;
+        }
+        // Free once into the bucket, then free the SAME pointer again. Without
+        // the guard the second free self-cycles the bucket free stack and the
+        // next two allocations would alias to the same address.
+        dealloc(p, layout);
+        dealloc(p, layout); // double free — guard must drop it as a no-op
+        let a = alloc(layout);
+        let b = alloc(layout);
+        ctx.expect_ne(a, b, "allocs after a double-free return distinct pointers");
+        // Clean up (a == p from the bucket; b is a fresh block).
+        if !a.is_null() {
+            dealloc(a, layout);
+        }
+        if !b.is_null() && b != a {
+            dealloc(b, layout);
+        }
+    }
+    validate_heap();
 }
 
 // ── validate_heap after each phase ───────────────────────────────────────────

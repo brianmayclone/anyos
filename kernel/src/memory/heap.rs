@@ -226,6 +226,19 @@ unsafe fn bucket_dealloc(cpu: usize, ptr: *mut u8, sci: usize) -> bool {
         return false;
     }
     let bucket = &mut PERCPU_BUCKETS[cpu].buckets[sci];
+    // Double-free guard: freeing the block already at the bucket head is an
+    // immediate double-free; pushing it again would self-cycle the free stack
+    // and then hand the same address out twice (aliasing / use-after-free). The
+    // block is already free, so drop the duplicate as a no-op.
+    if bucket.head == ptr as *mut BucketNode {
+        crate::serial_verbose_println!(
+            "heap: double-free ignored (cpu={} sci={} ptr={:p})",
+            cpu,
+            sci,
+            ptr
+        );
+        return true;
+    }
     if bucket.count >= BUCKET_CAPS[sci] {
         return false; // bucket full, use regular dealloc path
     }
@@ -749,13 +762,19 @@ unsafe fn grow_heap_exact(growth: usize) -> bool {
     }
 
     let old_committed = HEAP_COMMITTED.load(Ordering::Acquire);
-    let new_committed = old_committed + growth;
+    let base = HEAP_START as usize + old_committed;
 
-    // Advance the committed watermark (makes these addresses valid for demand paging)
-    HEAP_COMMITTED.store(new_committed, Ordering::Release);
+    // Establish the physical backing for the new region BEFORE advancing the
+    // committed watermark or publishing a free block. Advancing the watermark
+    // first (the previous behavior) meant that if a frame allocation then failed
+    // partway, HEAP_COMMITTED kept claiming memory that was never mapped --
+    // corrupting heap_stats and leaving a permanent unmapped hole inside the
+    // committed range. Instead we map/reserve up front and commit only what is
+    // actually backed.
+    let effective_growth: usize;
 
-    // ARM64: the 1 GiB block already maps the new region, but we must reserve
-    // the backing physical frames so the frame allocator doesn't hand them out.
+    // ARM64: the early 1 GiB block already maps this VA range; reserve the
+    // backing physical frames so the frame allocator doesn't hand them out.
     #[cfg(target_arch = "aarch64")]
     {
         let phys_to_virt = virtual_mem::PHYS_TO_VIRT_OFFSET;
@@ -764,33 +783,44 @@ unsafe fn grow_heap_exact(growth: usize) -> bool {
             let pa = va - phys_to_virt;
             physical::reserve_frame(PhysAddr::new(pa));
         }
+        effective_growth = growth;
     }
 
-    let base = HEAP_START as usize + old_committed;
-
-    // Pre-map pages for the new heap region to avoid demand page faults.
-    // Previously we relied on ISR 14 demand paging, but if the page fault handler
-    // fails (OOM), the write below would cause a double/triple fault.
+    // x86_64: pre-map every new page. On OOM mid-way, stop and commit only the
+    // prefix we successfully mapped -- the watermark and the published free block
+    // both then reflect exactly what is backed (no rollback/unmap needed, and no
+    // permanent unmapped hole inside the committed range).
     #[cfg(target_arch = "x86_64")]
     {
-        for offset in (0..growth).step_by(FRAME_SIZE) {
-            let va = (base + offset) as u64;
+        let mut mapped = 0usize;
+        while mapped < growth {
+            let va = (base + mapped) as u64;
             let page_va = crate::memory::address::VirtAddr::new(va & !0xFFF);
             if !virtual_mem::is_page_mapped(page_va) {
                 let frame = match physical::alloc_frame_with(physical::FrameAllocPolicy::Any) {
                     Some(f) => f,
-                    None => return false,
+                    None => break,
                 };
                 virtual_mem::map_page(page_va, frame, 0x03);
-                // Zero the page immediately
+                // Zero the page immediately.
                 core::ptr::write_bytes(va as *mut u8, 0, FRAME_SIZE);
             }
+            mapped += FRAME_SIZE;
         }
+        effective_growth = mapped;
     }
+
+    if effective_growth == 0 {
+        return false;
+    }
+
+    // Backing is now in place -- safe to advance the watermark (makes these
+    // addresses valid for demand paging / bounds checks) and publish the block.
+    HEAP_COMMITTED.store(old_committed + effective_growth, Ordering::Release);
 
     // Insert the new region as a free block, inserted into the sorted free list.
     let new_block = base as *mut FreeBlock;
-    (*new_block).size = growth;
+    (*new_block).size = effective_growth;
 
     // Insert at correct position in sorted free list (by address)
     let mut prev: *mut FreeBlock = core::ptr::null_mut();
