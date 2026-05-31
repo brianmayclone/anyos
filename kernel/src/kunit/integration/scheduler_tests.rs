@@ -43,6 +43,10 @@ pub static SUITE: TestSuite = TestSuite {
             run: test_deferred_wake_noop,
         },
         TestCase {
+            name: "deferred_wake_overflow_no_clobber",
+            run: test_deferred_wake_overflow,
+        },
+        TestCase {
             name: "pinned_continuation_wakes_on_last_cpu",
             run: test_pinned_wake_cpu,
         },
@@ -159,6 +163,16 @@ fn test_deferred_wake_noop(ctx: &mut TestContext) {
     // TID 0 is the "no thread" sentinel — safe to poke.
     scheduler::deferred_wake(0);
     ctx.expect_true(true, "deferred_wake(0) did not panic");
+}
+
+fn test_deferred_wake_overflow(ctx: &mut TestContext) {
+    // Filling all deferred-wake slots and then enqueuing one more must NOT
+    // clobber a queued wake (the original lost-wakeup bug): it sets the overflow
+    // flag so the drain's recovery path can still wake the dropped thread.
+    ctx.expect_true(
+        scheduler::kunit_deferred_wake_no_clobber_on_overflow(),
+        "deferred_wake overflow sets the flag without clobbering a queued wake",
+    );
 }
 
 fn test_pinned_wake_cpu(ctx: &mut TestContext) {

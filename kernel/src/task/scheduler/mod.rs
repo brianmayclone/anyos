@@ -323,9 +323,10 @@ static DEFERRED_WAKE_TIDS: [AtomicU32; DEFERRED_WAKE_SLOTS] = {
     [INIT; DEFERRED_WAKE_SLOTS]
 };
 
-/// Circular write index for deferred wakes — distributes overwrites evenly
-/// instead of always clobbering slot 0.
-static DEFERRED_WAKE_NEXT: AtomicU32 = AtomicU32::new(0);
+/// Set when an IRQ-deferred wake arrived while all slots were full. Rather than
+/// clobber (and silently drop) a queued wake, the producer flags the overflow
+/// here and the next drain recovers by waking all event-blocked threads.
+static DEFERRED_WAKE_OVERFLOW: AtomicBool = AtomicBool::new(false);
 
 /// Number of pending deferred wakes. The timer drain loop skips the
 /// 256-slot scan entirely when this is zero, reducing SCHEDULER lock
@@ -364,9 +365,12 @@ pub fn deferred_wake(tid: u32) {
             return;
         }
     }
-    // All slots full — circular overwrite for fair eviction (count stays the same).
-    let idx = DEFERRED_WAKE_NEXT.fetch_add(1, Ordering::Relaxed) as usize % DEFERRED_WAKE_SLOTS;
-    DEFERRED_WAKE_TIDS[idx].store(tid, Ordering::Release);
+    // All slots full. Do NOT clobber a queued wake — overwriting a slot would
+    // silently drop some other thread's wake and leave it Blocked forever (the
+    // original lost-wakeup bug). Flag the overflow instead; the next drain
+    // recovers by waking every event-blocked thread, each of which re-checks its
+    // wait condition on resume.
+    DEFERRED_WAKE_OVERFLOW.store(true, Ordering::Release);
 }
 
 #[derive(Clone, Copy)]
@@ -1442,6 +1446,102 @@ impl Scheduler {
         }
         None
     }
+
+    /// Drain IRQ-deferred wakes. Fast path skips the slot scan when nothing is
+    /// pending. On overflow (an IRQ wake arrived while all slots were full) the
+    /// overflowing TID was deliberately NOT stored; instead the overflow flag
+    /// was set, and we recover here by waking every event-blocked thread. Each
+    /// re-checks its wait condition on resume (the condition-recheck contract,
+    /// e.g. `ipc::anon_pipe`), so over-waking is safe and no wake is ever lost.
+    fn drain_deferred_wakes(&mut self) {
+        if DEFERRED_WAKE_PENDING.load(Ordering::Relaxed) > 0 {
+            for slot in &DEFERRED_WAKE_TIDS {
+                let tid = slot.swap(0, Ordering::Acquire);
+                if tid != 0 {
+                    DEFERRED_WAKE_PENDING.fetch_sub(1, Ordering::Relaxed);
+                    self.wake_thread_inner(tid);
+                }
+            }
+        }
+        if DEFERRED_WAKE_OVERFLOW.swap(false, Ordering::Acquire) {
+            self.wake_all_event_blocked();
+        }
+    }
+
+    /// Wake every event-blocked thread (Blocked with no timer deadline). Used
+    /// only as the rare deferred-wake overflow recovery. Timed sleepers
+    /// (`wake_at_tick` set) are left alone — their own timer wakes them.
+    fn wake_all_event_blocked(&mut self) {
+        let n = self.threads.len();
+        for idx in 0..n {
+            if self.threads[idx].state == ThreadState::Blocked
+                && self.threads[idx].wake_at_tick.is_none()
+            {
+                let tid = self.threads[idx].tid;
+                self.wake_thread_inner(tid);
+            }
+        }
+    }
+}
+
+/// kunit: an IRQ-deferred wake that overflows the slot array must NOT clobber a
+/// queued wake (the original lost-wakeup bug) — it must set the overflow flag
+/// instead so the drain's recovery path still wakes the dropped thread. Runs
+/// with interrupts disabled and saves/restores the live queue so it cannot
+/// perturb real pending wakes.
+#[cfg(feature = "kunit")]
+pub fn kunit_deferred_wake_no_clobber_on_overflow() -> bool {
+    let flags = crate::arch::hal::save_and_disable_interrupts();
+    let mut saved = [0u32; DEFERRED_WAKE_SLOTS];
+    for (i, slot) in DEFERRED_WAKE_TIDS.iter().enumerate() {
+        saved[i] = slot.load(Ordering::Relaxed);
+    }
+    let saved_pending = DEFERRED_WAKE_PENDING.load(Ordering::Relaxed);
+    let saved_overflow = DEFERRED_WAKE_OVERFLOW.load(Ordering::Relaxed);
+
+    // Start from an empty queue.
+    for slot in &DEFERRED_WAKE_TIDS {
+        slot.store(0, Ordering::Relaxed);
+    }
+    DEFERRED_WAKE_PENDING.store(0, Ordering::Relaxed);
+    DEFERRED_WAKE_OVERFLOW.store(false, Ordering::Relaxed);
+
+    // Fill every slot with a distinct fake TID.
+    for i in 0..DEFERRED_WAKE_SLOTS {
+        deferred_wake((i as u32) + 1);
+    }
+    let mut snap = [0u32; DEFERRED_WAKE_SLOTS];
+    for (i, slot) in DEFERRED_WAKE_TIDS.iter().enumerate() {
+        snap[i] = slot.load(Ordering::Relaxed);
+    }
+    // One more wake must overflow (all slots are full).
+    deferred_wake(0xFFFF_FFFE);
+
+    // Invariants: no queued slot was clobbered, the overflow flag is set, and
+    // all 256 distinct fake TIDs are still present (none lost).
+    let mut unchanged = true;
+    for (i, slot) in DEFERRED_WAKE_TIDS.iter().enumerate() {
+        if slot.load(Ordering::Relaxed) != snap[i] {
+            unchanged = false;
+        }
+    }
+    let overflow_set = DEFERRED_WAKE_OVERFLOW.load(Ordering::Relaxed);
+    let mut all_present = true;
+    for t in 1..=(DEFERRED_WAKE_SLOTS as u32) {
+        if !snap.iter().any(|&v| v == t) {
+            all_present = false;
+        }
+    }
+
+    // Restore the live state exactly.
+    for (i, slot) in DEFERRED_WAKE_TIDS.iter().enumerate() {
+        slot.store(saved[i], Ordering::Relaxed);
+    }
+    DEFERRED_WAKE_PENDING.store(saved_pending, Ordering::Relaxed);
+    DEFERRED_WAKE_OVERFLOW.store(saved_overflow, Ordering::Relaxed);
+    crate::arch::hal::restore_interrupt_state(flags);
+
+    unchanged && overflow_set && all_present
 }
 
 #[cfg(feature = "kunit")]
@@ -1789,15 +1889,7 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
             }
         };
 
-        if DEFERRED_WAKE_PENDING.load(Ordering::Relaxed) > 0 {
-            for slot in &DEFERRED_WAKE_TIDS {
-                let tid = slot.swap(0, Ordering::Acquire);
-                if tid != 0 {
-                    DEFERRED_WAKE_PENDING.fetch_sub(1, Ordering::Relaxed);
-                    sched.wake_thread_inner(tid);
-                }
-            }
-        }
+        sched.drain_deferred_wakes();
 
         let current_tick = crate::arch::hal::timer_current_ticks();
         if sleeper_deadline_due(current_tick) {
@@ -2192,15 +2284,7 @@ fn schedule_inner(from_timer: bool) {
 
         // Drain deferred wakes (IRQ handlers store TIDs here lock-free).
         // Fast path: skip the 256-slot scan when no wakes are pending.
-        if DEFERRED_WAKE_PENDING.load(Ordering::Relaxed) > 0 {
-            for slot in &DEFERRED_WAKE_TIDS {
-                let tid = slot.swap(0, Ordering::Acquire);
-                if tid != 0 {
-                    DEFERRED_WAKE_PENDING.fetch_sub(1, Ordering::Relaxed);
-                    sched.wake_thread_inner(tid);
-                }
-            }
-        }
+        sched.drain_deferred_wakes();
 
         let current_tick = crate::arch::hal::timer_current_ticks();
         if sleeper_deadline_due(current_tick) {
