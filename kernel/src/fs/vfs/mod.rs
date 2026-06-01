@@ -5608,6 +5608,13 @@ pub fn truncate_to(path: &str, new_size: u32) -> Result<(), FsError> {
     if is_dev_path(path) {
         return Err(FsError::PermissionDenied);
     }
+    // Flush every open writer's append buffer for this path BEFORE mutating the
+    // directory entry / FAT chain — exactly as rename/stat/read_at already do.
+    // Without this, a writer that still holds an unflushed append buffer (with a
+    // pre-truncate inode/size) flushes AFTER the truncate into now-freed /
+    // reallocated clusters, leaving the file unreadable. Must run before
+    // vfs_lock: sync_open_exfat_path acquires the VFS lock internally.
+    sync_open_exfat_path(path, false)?;
     let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
@@ -5703,7 +5710,20 @@ pub fn truncate_to(path: &str, new_size: u32) -> Result<(), FsError> {
 
 /// Resize an open file description.
 pub fn ftruncate_to(slot_id: FileDescriptor, new_size: u32) -> Result<(), FsError> {
-    flush_exfat_append_buffer(slot_id)?;
+    // Flush EVERY open writer for this path (not just this fd) before touching
+    // the chain, so no stale append buffer later writes into freed clusters.
+    // sync_open_exfat_path locks the VFS internally, so fetch the path first.
+    let sync_path = {
+        let vfs = vfs_lock();
+        let state = vfs.as_ref().ok_or(FsError::IoError)?;
+        state
+            .open_files
+            .get(slot_id as usize)
+            .and_then(|e| e.as_ref())
+            .map(|f| f.path.clone())
+            .ok_or(FsError::BadFd)?
+    };
+    sync_open_exfat_path(&sync_path, false)?;
     let exfat_plan = {
         let vfs = vfs_lock();
         let state = vfs.as_ref().ok_or(FsError::IoError)?;
@@ -5756,10 +5776,11 @@ pub fn ftruncate_to(slot_id: FileDescriptor, new_size: u32) -> Result<(), FsErro
             file.size = new_size;
             file.entry_dirty = false;
             file.readahead.reset(file.position);
-            if new_size == 0 {
-                file.seek_cache_offset = 0;
-                file.seek_cache_cluster = 0;
-            }
+            // Reset the seek cache on EVERY truncate, not only truncate-to-0: a
+            // shrink can flip the inode contiguous->fragmented and invalidate the
+            // cached seek cluster, which would otherwise misdirect later reads.
+            file.seek_cache_offset = 0;
+            file.seek_cache_cluster = 0;
         }
         return Ok(());
     }
