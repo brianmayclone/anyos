@@ -35,6 +35,8 @@ pub struct TestContext {
     pub passed: u32,
     /// Number of assertions that failed in this test.
     pub failed: u32,
+    /// Set if the test skipped itself because a precondition was not met.
+    pub skipped: bool,
 }
 
 impl TestContext {
@@ -44,7 +46,20 @@ impl TestContext {
             test_name,
             passed: 0,
             failed: 0,
+            skipped: false,
         }
+    }
+
+    /// Mark this test as skipped (a precondition was not met). Counted separately
+    /// from pass/fail so a silently-not-run test is visible in the report.
+    pub fn skip(&mut self, reason: &str) {
+        self.skipped = true;
+        crate::serial_println!(
+            "    [SKIP] {}::{} — {}",
+            self.suite_name,
+            self.test_name,
+            reason
+        );
     }
 
     /// Assert that `cond` is `true`.
@@ -251,4 +266,79 @@ pub fn report_and_exit(integration_failed: u32) {
         let value: u32 = if total_failed == 0 { 0x10 } else { 0x11 };
         crate::arch::x86::port::outl(0xF4, value);
     }
+}
+
+/// Run a slice of test suites, calling `before_case` before each case (the
+/// integration runner uses this to publish its shared context). Prints the
+/// per-case `[PASS]`/`[FAIL]`/`[SKIP]` and per-suite `[suite]`/`[OK]`/`[FAIL]`
+/// lines the headless harness greps for, and returns
+/// `(assertions_passed, assertions_failed, suites_passed, suites_failed, cases_skipped)`.
+///
+/// One shared loop for both the unit and integration runners so the two cannot
+/// drift.
+pub(crate) fn run_suite_array(
+    suites: &[&TestSuite],
+    mut before_case: impl FnMut(),
+) -> (u32, u32, u32, u32, u32) {
+    let mut total_pass = 0u32;
+    let mut total_fail = 0u32;
+    let mut suites_pass = 0u32;
+    let mut suites_fail = 0u32;
+    let mut total_skipped = 0u32;
+
+    for suite in suites {
+        crate::serial_println!("");
+        crate::serial_println!("  [suite] {}", suite.name);
+
+        let mut cases_pass = 0u32;
+        let mut cases_fail = 0u32;
+        let mut cases_skip = 0u32;
+
+        for case in suite.cases {
+            before_case();
+            let mut ctx = TestContext::new(suite.name, case.name);
+            (case.run)(&mut ctx);
+
+            total_pass += ctx.passed;
+            total_fail += ctx.failed;
+
+            if ctx.skipped {
+                // `skip()` already printed the [SKIP] line with its reason.
+                cases_skip += 1;
+                total_skipped += 1;
+            } else if ctx.is_ok() {
+                crate::serial_println!("    [PASS] {}", case.name);
+                cases_pass += 1;
+            } else {
+                crate::serial_println!(
+                    "    [FAIL] {} — {} assertion(s) failed",
+                    case.name,
+                    ctx.failed
+                );
+                cases_fail += 1;
+            }
+        }
+
+        let total_cases = cases_pass + cases_fail + cases_skip;
+        if cases_fail == 0 {
+            crate::serial_println!(
+                "  [OK]   {} — {}/{} tests passed{}",
+                suite.name,
+                cases_pass,
+                total_cases,
+                if cases_skip > 0 { " (some skipped)" } else { "" }
+            );
+            suites_pass += 1;
+        } else {
+            crate::serial_println!(
+                "  [FAIL] {} — {}/{} tests failed",
+                suite.name,
+                cases_fail,
+                total_cases
+            );
+            suites_fail += 1;
+        }
+    }
+
+    (total_pass, total_fail, suites_pass, suites_fail, total_skipped)
 }
