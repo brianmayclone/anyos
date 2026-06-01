@@ -207,6 +207,17 @@ static PER_CPU_CURRENT_ABI: [AtomicU32; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
+/// The TID the per-CPU ABI/rootfs cache is valid for. A lock-free reader trusts
+/// the cached ABI only when this equals the lock-free running TID
+/// (`PER_CPU_CURRENT_TID`). A transition that changed the running thread without
+/// refreshing the cache is therefore *detected* (tag mismatch) and falls back to
+/// the locked path instead of mis-dispatching under a stale ABI — the exact bug
+/// that forced the earlier lock-free read to be reverted.
+static PER_CPU_ABI_CACHE_TID: [AtomicU32; MAX_CPUS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; MAX_CPUS]
+};
+
 /// Per-CPU cache of the running thread's Linux rootfs prefix (the directory the
 /// LXE personality chroots path translation into). Mirror of the running
 /// thread's `linux_rootfs`, refreshed at every context switch alongside the ABI
@@ -514,7 +525,81 @@ fn update_per_cpu_name(
 pub(super) fn store_per_cpu_abi(cpu_id: usize, abi: crate::task::abi::AbiPersonality) {
     if cpu_id < MAX_CPUS {
         PER_CPU_CURRENT_ABI[cpu_id].store(abi.event_tag(), Ordering::Relaxed);
+        // Tag the cache with the thread it now describes. Callers
+        // (update_per_cpu_name at a switch, set_thread_abi for the running
+        // thread) have already published the new PER_CPU_CURRENT_TID, so this is
+        // the correct owner. Release pairs with the validated reader's Acquire so
+        // the ABI store above is visible once the tag is.
+        let tid = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed);
+        PER_CPU_ABI_CACHE_TID[cpu_id].store(tid, Ordering::Release);
     }
+}
+
+/// Lock-free, TID-validated read of the running thread's ABI on `cpu_id`.
+///
+/// Returns `Some(abi)` only when the cache is provably valid for the thread
+/// currently running on the CPU: the cache tag must equal the running TID, and
+/// the running TID must be stable across the read (seqlock-style re-check, so a
+/// context switch mid-read is detected). Otherwise returns `None` and the caller
+/// must consult the locked scheduler. This is the safe replacement for the
+/// reverted unconditional `load_per_cpu_abi`.
+#[inline]
+pub(super) fn load_per_cpu_abi_validated(
+    cpu_id: usize,
+) -> Option<crate::task::abi::AbiPersonality> {
+    if cpu_id >= MAX_CPUS {
+        return None;
+    }
+    let tid1 = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Acquire);
+    if tid1 == 0 {
+        return None; // idle / no thread — let the slow path decide
+    }
+    if PER_CPU_ABI_CACHE_TID[cpu_id].load(Ordering::Acquire) != tid1 {
+        return None; // cache is for a different (older) thread
+    }
+    let abi = crate::task::abi::AbiPersonality::from_event_tag(
+        PER_CPU_CURRENT_ABI[cpu_id].load(Ordering::Relaxed),
+    );
+    // Re-read the running TID: a switch during the read invalidates the value.
+    if PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Acquire) != tid1 {
+        return None;
+    }
+    Some(abi)
+}
+
+/// kunit: the TID-validated ABI cache must return the cached ABI only when the
+/// cache tag matches the running TID, and reject (None) a stale tag — the safety
+/// property the reverted unconditional read lacked. Uses an unused high CPU slot
+/// so it never perturbs a live CPU's scheduler state.
+#[cfg(feature = "kunit")]
+pub fn kunit_abi_cache_tid_validation() -> bool {
+    use crate::task::abi::AbiPersonality;
+    let cpu = MAX_CPUS - 1; // unused on the few-CPU test VM
+    let saved_abi = PER_CPU_CURRENT_ABI[cpu].load(Ordering::Relaxed);
+    let saved_tag = PER_CPU_ABI_CACHE_TID[cpu].load(Ordering::Relaxed);
+    let saved_tid = PER_CPU_CURRENT_TID[cpu].load(Ordering::Relaxed);
+
+    // Valid cache: tag == running tid -> hit, returns the cached ABI.
+    PER_CPU_CURRENT_ABI[cpu].store(AbiPersonality::LinuxX86_64.event_tag(), Ordering::Relaxed);
+    PER_CPU_CURRENT_TID[cpu].store(4242, Ordering::Relaxed);
+    PER_CPU_ABI_CACHE_TID[cpu].store(4242, Ordering::Release);
+    let hit = load_per_cpu_abi_validated(cpu);
+
+    // Stale cache: running tid changed but the tag did not -> miss (None).
+    PER_CPU_CURRENT_TID[cpu].store(4243, Ordering::Relaxed);
+    let stale = load_per_cpu_abi_validated(cpu);
+
+    // Idle (tid 0) never hits.
+    PER_CPU_CURRENT_TID[cpu].store(0, Ordering::Relaxed);
+    PER_CPU_ABI_CACHE_TID[cpu].store(0, Ordering::Release);
+    let idle = load_per_cpu_abi_validated(cpu);
+
+    // Restore the slot.
+    PER_CPU_CURRENT_ABI[cpu].store(saved_abi, Ordering::Relaxed);
+    PER_CPU_ABI_CACHE_TID[cpu].store(saved_tag, Ordering::Release);
+    PER_CPU_CURRENT_TID[cpu].store(saved_tid, Ordering::Relaxed);
+
+    hit == Some(AbiPersonality::LinuxX86_64) && stale.is_none() && idle.is_none()
 }
 
 /// Lock-free read of the ABI personality of the thread running on `cpu_id`.

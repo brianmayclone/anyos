@@ -79,19 +79,39 @@ pub fn set_thread_abi(tid: u32, abi: AbiPersonality) {
 
 /// Get the current thread's ABI personality.
 ///
-/// NOTE: reverted to the lock-based read. The lock-free per-CPU ABI cache is
-/// still maintained (write side), but reading it here proved unsafe: not every
-/// thread-on-CPU transition calls `update_per_cpu_name` (e.g. the idle-on-exit
-/// path in lifecycle.rs), so the cache could go stale and a native thread that
-/// ran after a Linux thread would see ABI=Linux and mis-dispatch every syscall,
-/// freezing the system. A robust lock-free version must validate the cache
-/// against the lock-free running TID before trusting it.
+/// Hot path: every syscall dispatch reads this to route anyOS/Linux/Windows
+/// syscalls. It now uses the lock-free, TID-validated per-CPU ABI cache and only
+/// falls back to the global `SCHEDULER` lock on a cache miss.
+///
+/// Safety of the lock-free read (this is why the earlier version was reverted):
+/// `load_per_cpu_abi_validated` trusts the cached ABI only when the cache tag
+/// equals the lock-free running TID and that TID is stable across the read. A
+/// transition that changed the running thread without refreshing the cache
+/// (e.g. the idle-on-exit path in lifecycle.rs) therefore produces a *miss*, not
+/// a stale ABI — so the worst case is a one-time slow-path lookup, never a
+/// mis-dispatch. The slow path refreshes the cache so subsequent reads hit.
 pub fn current_thread_abi() -> AbiPersonality {
+    // Disable interrupts for the fast read so get_cpu_id() and the per-CPU cache
+    // stay coherent: with IF=0 this CPU cannot reschedule/migrate us mid-read,
+    // and no other CPU ever writes our PER_CPU_CURRENT_TID (each CPU schedules
+    // only itself). This is far cheaper than the SCHEDULER spinlock — no
+    // contention, no thread-list scan — while giving the same coherence the lock
+    // provided.
+    let flags = crate::arch::hal::save_and_disable_interrupts();
+    let fast = super::load_per_cpu_abi_validated(get_cpu_id());
+    crate::arch::hal::restore_interrupt_state(flags);
+    if let Some(abi) = fast {
+        return abi;
+    }
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {
         if let Some(idx) = sched.current_idx(cpu_id) {
-            return sched.threads[idx].abi;
+            let abi = sched.threads[idx].abi;
+            // Refresh the cache (tagged with the running TID) so the next read
+            // hits the lock-free fast path instead of taking the lock again.
+            super::store_per_cpu_abi(cpu_id, abi);
+            return abi;
         }
     }
     AbiPersonality::AnyOs

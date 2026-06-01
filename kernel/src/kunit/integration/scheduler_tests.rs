@@ -47,6 +47,10 @@ pub static SUITE: TestSuite = TestSuite {
             run: test_deferred_wake_overflow,
         },
         TestCase {
+            name: "abi_cache_tid_validation",
+            run: test_abi_cache_tid_validation,
+        },
+        TestCase {
             name: "pinned_continuation_wakes_on_last_cpu",
             run: test_pinned_wake_cpu,
         },
@@ -172,6 +176,16 @@ fn test_deferred_wake_overflow(ctx: &mut TestContext) {
     ctx.expect_true(
         scheduler::kunit_deferred_wake_no_clobber_on_overflow(),
         "deferred_wake overflow sets the flag without clobbering a queued wake",
+    );
+}
+
+fn test_abi_cache_tid_validation(ctx: &mut TestContext) {
+    // The lock-free syscall-dispatch ABI read must trust the per-CPU cache only
+    // when its tag matches the running TID, and reject a stale tag (the bug that
+    // reverted the earlier lock-free read).
+    ctx.expect_true(
+        scheduler::kunit_abi_cache_tid_validation(),
+        "TID-validated ABI cache hits on a matching tag and misses on a stale one",
     );
 }
 
