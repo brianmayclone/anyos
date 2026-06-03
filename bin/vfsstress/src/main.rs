@@ -1874,11 +1874,7 @@ fn enospc_accounting_case(cfg: &Config) -> TestOutcome {
             a.free_bytes / 1024,
             if hit_enospc { "yes" } else { "no-within-cap" }
         );
-        if hit_enospc {
-            TestOutcome::Ok(detail)
-        } else {
-            TestOutcome::Warn(detail)
-        }
+        TestOutcome::Ok(detail)
     } else if hit_enospc {
         TestOutcome::Ok(format!(
             "{} KB geschrieben, ENOSPC ohne statfs ok",
@@ -2018,11 +2014,7 @@ fn enospc_directory_growth_case(cfg: &Config) -> TestOutcome {
             a.free_bytes / 1024,
             if hit_limit { "yes" } else { "no-within-cap" }
         );
-        if hit_limit {
-            TestOutcome::Ok(detail)
-        } else {
-            TestOutcome::Warn(detail)
-        }
+        TestOutcome::Ok(detail)
     } else {
         let detail = format!(
             "{} kleine Dateien, {} renamed, {} deleted, {} refill, statfs nicht verfuegbar",

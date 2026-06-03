@@ -71,6 +71,7 @@ impl Default for NetworkdConfig {
 struct NetworkState {
     last_apply_ms: u32,
     last_link_up: bool,
+    last_status: Option<String>,
     method: u8,
     ip: [u8; 4],
     mask: [u8; 4],
@@ -86,6 +87,7 @@ impl NetworkState {
         Self {
             last_apply_ms: 0,
             last_link_up: false,
+            last_status: None,
             method: 0,
             ip: [0; 4],
             mask: [0; 4],
@@ -223,6 +225,7 @@ fn apply_interfaces(cfg: &NetworkdConfig, state: &mut NetworkState, force: bool)
             if net::dhcp(&mut result) != 0 {
                 state.dhcp_failures = state.dhcp_failures.wrapping_add(1);
                 state.last_apply_ms = sys::uptime_ms();
+                state.last_link_up = link_up;
                 write_status(state, false);
                 return false;
             }
@@ -276,7 +279,7 @@ fn sync_hosts_projection() {
         .unwrap_or_else(|| String::from(DNSD_HOSTS_DEFAULT));
     let _ = fs::mkdir("/System/etc");
     let _ = fs::mkdir("/System/etc/network");
-    let _ = fs::write_bytes(HOSTS_PATH, hosts.as_bytes());
+    let _ = write_bytes_if_changed(HOSTS_PATH, hosts.as_bytes());
 }
 
 fn periodic_check(
@@ -285,18 +288,22 @@ fn periodic_check(
     lifecycle: Option<&mut ServiceLifecycle>,
     ready_announced: &mut bool,
 ) {
+    let previous_link_up = state.last_link_up;
     let link_up = read_link_up();
     let ip_zero = state.ip == [0, 0, 0, 0];
-    if link_up && !state.last_link_up {
+    if link_up && !previous_link_up {
         // Link-Up-Flanke: Backoff zuruecksetzen und sofort versuchen.
         state.dhcp_failures = 0;
         state.last_apply_ms = 0;
         let _ = apply_and_publish(cfg, state, true, lifecycle, ready_announced);
     } else if state.method == 0 && ip_zero && link_up {
         let _ = apply_and_publish(cfg, state, false, lifecycle, ready_announced);
+    } else if link_up != previous_link_up {
+        state.last_link_up = link_up;
+        write_status(state, link_up);
+    } else {
+        state.last_link_up = link_up;
     }
-    state.last_link_up = link_up;
-    write_status(state, true);
 }
 
 fn handle_requests(
@@ -398,7 +405,7 @@ fn status_response(state: &NetworkState) -> String {
     )
 }
 
-fn write_status(state: &NetworkState, ok: bool) {
+fn write_status(state: &mut NetworkState, ok: bool) {
     let text = format!(
         "ok={}\niface={}\nmethod={}\nlink={}\nip={}.{}.{}.{}\nmask={}.{}.{}.{}\ngateway={}.{}.{}.{}\ndns={}.{}.{}.{}\ndhcp_failures={}\nlast_apply_ms={}\n",
         if ok { "yes" } else { "no" },
@@ -412,7 +419,21 @@ fn write_status(state: &NetworkState, ok: bool) {
         state.dhcp_failures,
         state.last_apply_ms
     );
-    let _ = fs::write_bytes(STATUS_PATH, text.as_bytes());
+    if state.last_status.as_deref() == Some(text.as_str()) {
+        return;
+    }
+    if write_bytes_if_changed(STATUS_PATH, text.as_bytes()) {
+        state.last_status = Some(text);
+    }
+}
+
+fn write_bytes_if_changed(path: &str, data: &[u8]) -> bool {
+    if let Ok(existing) = fs::read_to_vec(path) {
+        if existing.as_slice() == data {
+            return true;
+        }
+    }
+    fs::write_bytes(path, data).is_ok()
 }
 
 fn apply_and_publish(
