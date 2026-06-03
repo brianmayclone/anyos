@@ -89,16 +89,17 @@ static AHCI_FLUSH_FAILED_MASK: AtomicU32 = AtomicU32::new(0);
 const IO_LOCK_WAIT_WARN_MS: u32 = 50;
 const IO_LOCK_HOLD_WARN_MS: u32 = 250;
 const IO_LOCK_LOG_LIMIT: u32 = 64;
-// Keep legacy serialized I/O slices short.  Large locked transfers make every
-// waiter resume as a pinned kernel continuation on its previous CPU, which can
-// starve latency-sensitive threads such as the compositor under LXE I/O storms.
+// Keep legacy serialized I/O slices bounded, but let bulk writes amortize AHCI
+// command setup.  The old 32-128 KiB write slices made sequential writers pay a
+// scheduler/IRQ round trip per tiny batch and capped LXE writes around HDD-era
+// throughput even on virtual SATA.
 const MAX_LOCKED_IO_SECTORS: u32 = 64;
 const MAX_LOCKED_READAHEAD_SECTORS: u32 = 64;
-const MAX_LOCKED_WRITE_SECTORS: u32 = 64;
-const MAX_LOCKED_WRITEBACK_SECTORS: u32 = 64;
-const MAX_LOCKED_DMA_IO_SECTORS: u32 = 256;
+const MAX_LOCKED_WRITE_SECTORS: u32 = 256;
+const MAX_LOCKED_WRITEBACK_SECTORS: u32 = 256;
+const MAX_LOCKED_DMA_IO_SECTORS: u32 = 1024;
 const MAX_LOCKED_LSI_IO_SECTORS: u32 = 128;
-const MAX_UNLOCKED_AHCI_IO_SECTORS: u32 = 512;
+const MAX_UNLOCKED_AHCI_IO_SECTORS: u32 = 1024;
 const RESPONSIVE_CACHE_BATCH_SECTORS: u32 = 16;
 const IO_OP_UNKNOWN: u32 = 0;
 const IO_OP_READ: u32 = 1;

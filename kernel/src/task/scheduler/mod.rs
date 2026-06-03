@@ -543,6 +543,7 @@ pub(super) fn store_per_cpu_abi(cpu_id: usize, abi: crate::task::abi::AbiPersona
 /// context switch mid-read is detected). Otherwise returns `None` and the caller
 /// must consult the locked scheduler. This is the safe replacement for the
 /// reverted unconditional `load_per_cpu_abi`.
+#[allow(dead_code)]
 #[inline]
 pub(super) fn load_per_cpu_abi_validated(
     cpu_id: usize,
@@ -2047,11 +2048,11 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                 PER_CPU_CURRENT_TID[cpu_id].store(next_tid, Ordering::Relaxed);
                 PER_CPU_IS_USER[cpu_id].store(sched.threads[next_idx].is_user, Ordering::Relaxed);
                 update_per_cpu_name(
-                        cpu_id,
-                        &sched.threads[next_idx].name,
-                        sched.threads[next_idx].abi,
-                        &sched.threads[next_idx].linux_rootfs,
-                    );
+                    cpu_id,
+                    &sched.threads[next_idx].name,
+                    sched.threads[next_idx].abi,
+                    &sched.threads[next_idx].linux_rootfs,
+                );
                 crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
                 PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
                 PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
@@ -2086,11 +2087,11 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
             PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
             PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
             update_per_cpu_name(
-                        cpu_id,
-                        &sched.threads[idle_idx].name,
-                        sched.threads[idle_idx].abi,
-                        &sched.threads[idle_idx].linux_rootfs,
-                    );
+                cpu_id,
+                &sched.threads[idle_idx].name,
+                sched.threads[idle_idx].abi,
+                &sched.threads[idle_idx].linux_rootfs,
+            );
             crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
             PER_CPU_STACK_BOTTOM[cpu_id].store(
                 sched.threads[idle_idx].kernel_stack_bottom(),
@@ -2576,11 +2577,11 @@ fn schedule_inner(from_timer: bool) {
                         PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
                         PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
                         update_per_cpu_name(
-                        cpu_id,
-                        &sched.threads[idle_idx].name,
-                        sched.threads[idle_idx].abi,
-                        &sched.threads[idle_idx].linux_rootfs,
-                    );
+                            cpu_id,
+                            &sched.threads[idle_idx].name,
+                            sched.threads[idle_idx].abi,
+                            &sched.threads[idle_idx].linux_rootfs,
+                        );
                         let idle_kstack_top = sched.threads[idle_idx].kernel_stack_top();
                         crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
                         PER_CPU_STACK_BOTTOM[cpu_id].store(
@@ -2936,11 +2937,11 @@ pub fn register_ap_idle(cpu_id: usize) {
         PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
         PER_CPU_IDLE_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
         update_per_cpu_name(
-                        cpu_id,
-                        &sched.threads[idx].name,
-                        sched.threads[idx].abi,
-                        &sched.threads[idx].linux_rootfs,
-                    );
+            cpu_id,
+            &sched.threads[idx].name,
+            sched.threads[idx].abi,
+            &sched.threads[idx].linux_rootfs,
+        );
     } else {
         crate::debug_println!(
             "  [Sched] register_ap_idle: cpu={} ERROR: scheduler not initialized!",

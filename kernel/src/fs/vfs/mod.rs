@@ -25,8 +25,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Maximum number of simultaneously open file descriptors (system-wide).
 const MAX_OPEN_FILES: usize = 1024;
-const EXFAT_APPEND_BUFFER_MAX: usize = 64 * 1024;
-const EXFAT_APPEND_BUFFER_WRITE_BYTES: usize = 4 * 1024;
+const EXFAT_APPEND_BUFFER_MAX: usize = 256 * 1024;
 // Read-ahead window/cap tuning. `pub(crate)` so the kunit `vfs_readahead`
 // suite asserts the *policy* (min window, doubling, per-tier caps) against these
 // named constants rather than hard-coded magic numbers that rot on each retune.
@@ -3892,11 +3891,12 @@ fn prepare_exfat_append_buffer_write(
             && !file.flags.sync
             && file.file_type != FileType::Directory
             && file.position == file.size;
+        let append_buffer_would_fit =
+            file.append_buffer.len().saturating_add(buf.len()) <= EXFAT_APPEND_BUFFER_MAX;
         let can_append_existing = !file.append_buffer.is_empty()
             && is_exfat_append
-            && buf.len() == EXFAT_APPEND_BUFFER_WRITE_BYTES
             && file.append_buffer_offset + file.append_buffer.len() as u32 == file.position
-            && file.append_buffer.len().saturating_add(buf.len()) <= EXFAT_APPEND_BUFFER_MAX;
+            && append_buffer_would_fit;
         if !file.append_buffer.is_empty() && !can_append_existing {
             return Ok(ExFatAppendBufferWrite::NeedsFlush);
         }
@@ -3905,10 +3905,10 @@ fn prepare_exfat_append_buffer_write(
             || file.flags.sync
             || file.file_type == FileType::Directory
             || file.position != file.size
-            || buf.len() != EXFAT_APPEND_BUFFER_WRITE_BYTES
+            || buf.len() > EXFAT_APPEND_BUFFER_MAX
             || (!file.append_buffer.is_empty()
                 && file.append_buffer_offset + file.append_buffer.len() as u32 != file.position)
-            || file.append_buffer.len().saturating_add(buf.len()) > EXFAT_APPEND_BUFFER_MAX
+            || !append_buffer_would_fit
         {
             return Ok(ExFatAppendBufferWrite::NotApplicable);
         }
@@ -4224,7 +4224,14 @@ pub fn read_at(slot_id: FileDescriptor, offset: u32, buf: &mut [u8]) -> Result<u
 pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
     match prepare_exfat_append_buffer_write(slot_id, buf)? {
         ExFatAppendBufferWrite::Buffered(buffered) => return Ok(buffered),
-        ExFatAppendBufferWrite::NeedsFlush => flush_exfat_append_buffer(slot_id)?,
+        ExFatAppendBufferWrite::NeedsFlush => {
+            flush_exfat_append_buffer(slot_id)?;
+            if let ExFatAppendBufferWrite::Buffered(buffered) =
+                prepare_exfat_append_buffer_write(slot_id, buf)?
+            {
+                return Ok(buffered);
+            }
+        }
         ExFatAppendBufferWrite::NotApplicable => {}
     }
     match prepare_detached_write(slot_id, buf.len())? {

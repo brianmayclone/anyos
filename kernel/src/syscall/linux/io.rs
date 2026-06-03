@@ -1,6 +1,8 @@
 use super::*;
+use alloc::vec::Vec;
 
 const LINUX_COPY_CHUNK: usize = 16 * 1024;
+const LINUX_WRITEV_COALESCE_MAX: usize = 128 * 1024;
 static TIOCL_VESA_BLANK_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 static TIOCL_KMSG_REDIRECT: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 static TIOCL_BLANKED_CONSOLE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
@@ -624,6 +626,13 @@ pub(super) fn linux_iov_io(fd: u32, iov_ptr: u64, iovcnt: u64, write: bool) -> u
     if !handlers::helpers::is_user_range_accessible(iov_ptr, iov_bytes) {
         return linux_err(EFAULT);
     }
+    if write {
+        if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
+            if let crate::fs::fd_table::FdKind::File { global_id } = entry.kind {
+                return linux_writev_file(global_id, iov_ptr, iovcnt);
+            }
+        }
+    }
     let mut total = 0u64;
     for i in 0..iovcnt {
         let base = unsafe { read_u64(iov_ptr, i * 16) };
@@ -662,6 +671,100 @@ pub(super) fn linux_iov_io(fd: u32, iov_ptr: u64, iovcnt: u64, write: bool) -> u
         }
     }
     total
+}
+
+fn linux_writev_file(global_id: u32, iov_ptr: u64, iovcnt: u64) -> u64 {
+    let coalesce_cap = crate::fs::vfs::preferred_write_chunk(global_id)
+        .min(LINUX_WRITEV_COALESCE_MAX)
+        .max(LINUX_COPY_CHUNK);
+    let mut pending = Vec::with_capacity(coalesce_cap);
+    let mut total = 0u64;
+
+    for i in 0..iovcnt {
+        let base = unsafe { read_u64(iov_ptr, i * 16) };
+        let len = unsafe { read_u64(iov_ptr, i * 16 + 8) };
+        if len == 0 {
+            continue;
+        }
+        if len > u32::MAX as u64 {
+            return linux_err(EINVAL);
+        }
+
+        let mut copied = 0usize;
+        let len_usize = len as usize;
+        while copied < len_usize {
+            if pending.len() == coalesce_cap {
+                match linux_writev_flush_pending(global_id, &mut pending, &mut total) {
+                    Ok(true) => {}
+                    Ok(false) => return total,
+                    Err(errno) => return if total == 0 { linux_err(errno) } else { total },
+                }
+            }
+
+            let room = coalesce_cap - pending.len();
+            let take = (len_usize - copied).min(room);
+            let Some(ptr) = base.checked_add(copied as u64) else {
+                match linux_writev_flush_pending(global_id, &mut pending, &mut total) {
+                    Ok(true) | Ok(false) => {}
+                    Err(errno) => return if total == 0 { linux_err(errno) } else { total },
+                }
+                return if total == 0 { linux_err(EFAULT) } else { total };
+            };
+
+            if !linux_append_user_bytes(&mut pending, ptr, take) {
+                match linux_writev_flush_pending(global_id, &mut pending, &mut total) {
+                    Ok(true) | Ok(false) => {}
+                    Err(errno) => return if total == 0 { linux_err(errno) } else { total },
+                }
+                return if total == 0 { linux_err(EFAULT) } else { total };
+            }
+            copied += take;
+        }
+    }
+
+    match linux_writev_flush_pending(global_id, &mut pending, &mut total) {
+        Ok(_) => total,
+        Err(errno) => {
+            if total == 0 {
+                linux_err(errno)
+            } else {
+                total
+            }
+        }
+    }
+}
+
+fn linux_append_user_bytes(out: &mut Vec<u8>, ptr: u64, len: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+    if !handlers::helpers::is_user_range_accessible(ptr, len as u64) {
+        return false;
+    }
+    unsafe {
+        let src = core::slice::from_raw_parts(ptr as usize as *const u8, len);
+        out.extend_from_slice(src);
+    }
+    true
+}
+
+fn linux_writev_flush_pending(
+    global_id: u32,
+    pending: &mut Vec<u8>,
+    total: &mut u64,
+) -> Result<bool, i32> {
+    if pending.is_empty() {
+        return Ok(true);
+    }
+    let requested = pending.len();
+    match crate::fs::vfs::write(global_id, pending.as_slice()).map_err(fs_errno) {
+        Ok(n) => {
+            *total += n as u64;
+            pending.clear();
+            Ok(n == requested)
+        }
+        Err(errno) => Err(errno),
+    }
 }
 
 pub(super) fn linux_select(
