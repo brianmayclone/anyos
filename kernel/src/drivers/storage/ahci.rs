@@ -66,10 +66,9 @@ const BOUNCE_BUF_FRAMES: usize = BOUNCE_BUF_SIZE / 4096; // 128
 const AHCI_FAST_SPIN_ITERS: usize = 512;
 const AHCI_POLL_YIELD_EVERY: usize = 256;
 const AHCI_MAX_COMMAND_SLOTS: usize = 8;
-// QEMU advertises NCQ, but the current multi-slot FPDMA path is not yet proven
-// coherent under heavy exFAT package-manager writes. Keep AHCI serialized until
-// that path has an explicit stress test.
-const AHCI_ENABLE_NCQ: bool = false;
+// Keep non-queueable commands behind the AHCI serialized gate; data I/O can use
+// NCQ slots when the controller and drive advertise them.
+const AHCI_ENABLE_NCQ: bool = true;
 
 const MAX_PRDT: usize = 128;
 const PRDT_MAX_BYTES: u32 = 4 * 1024 * 1024;
@@ -357,11 +356,36 @@ fn active_slot_mask(ahci: &AhciController) -> u32 {
     (1u32 << count) - 1
 }
 
-fn acquire_primary_slot(ahci: &AhciController) -> usize {
+struct PrimarySerialGate;
+
+impl Drop for PrimarySerialGate {
+    fn drop(&mut self) {
+        AHCI_RECOVERY.store(false, Ordering::Release);
+    }
+}
+
+fn acquire_primary_serial_gate() -> PrimarySerialGate {
+    let mut attempts = 0u32;
+    loop {
+        if AHCI_RECOVERY
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            return PrimarySerialGate;
+        }
+        if crate::task::scheduler::current_tid() > 0 {
+            crate::task::scheduler::contention_backoff(&mut attempts);
+        } else {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+fn acquire_primary_slot(ahci: &AhciController, owns_serial_gate: bool) -> usize {
     let usable = active_slot_mask(ahci);
     let mut attempts = 0u32;
     loop {
-        while AHCI_RECOVERY.load(Ordering::Acquire) {
+        while !owns_serial_gate && AHCI_RECOVERY.load(Ordering::Acquire) {
             if crate::task::scheduler::current_tid() > 0 {
                 crate::task::scheduler::contention_backoff(&mut attempts);
             } else {
@@ -389,6 +413,36 @@ fn acquire_primary_slot(ahci: &AhciController) -> usize {
             core::hint::spin_loop();
         }
     }
+}
+
+unsafe fn issue_command_prdt_with_slot(
+    ahci: &AhciController,
+    command: u8,
+    lba: u64,
+    count: u16,
+    prdt: &[PrdtSpec],
+    write: bool,
+) -> bool {
+    let serialized = !is_ncq_command(command);
+    let serial_gate = if serialized {
+        Some(acquire_primary_serial_gate())
+    } else {
+        None
+    };
+    if serialized && !wait_until_primary_slots_idle() {
+        drop(serial_gate);
+        return false;
+    }
+    let slot = acquire_primary_slot(ahci, serialized);
+    if serialized && !wait_until_recovery_owns_port(slot) {
+        release_primary_slot(slot);
+        drop(serial_gate);
+        return false;
+    }
+    let ok = issue_command_prdt_on_acquired_slot(ahci, slot, command, lba, count, prdt, write);
+    release_primary_slot(slot);
+    drop(serial_gate);
+    ok
 }
 
 fn release_primary_slot(slot: usize) {
@@ -421,6 +475,36 @@ fn wait_until_recovery_owns_port(slot: usize) -> bool {
         if hz > 0 && crate::arch::hal::timer_current_ticks().wrapping_sub(start) >= timeout_ticks {
             crate::serial_println!(
                 "AHCI: recovery timed out waiting for other slots, in_use={:#x}",
+                in_use
+            );
+            return false;
+        }
+        if crate::task::scheduler::current_tid() > 0 {
+            crate::task::scheduler::contention_backoff(&mut attempts);
+        } else {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+fn wait_until_primary_slots_idle() -> bool {
+    let hz = crate::arch::hal::timer_frequency_hz() as u32;
+    let start = crate::arch::hal::timer_current_ticks();
+    let mut attempts = 0u32;
+    let timeout_ticks = if hz > 0 {
+        (AHCI_TIMEOUT_MS as u32 * hz / 1000).max(1)
+    } else {
+        0
+    };
+
+    loop {
+        let in_use = AHCI_SLOT_IN_USE.load(Ordering::Acquire);
+        if in_use == 0 {
+            return true;
+        }
+        if hz > 0 && crate::arch::hal::timer_current_ticks().wrapping_sub(start) >= timeout_ticks {
+            crate::serial_println!(
+                "AHCI: serialized command timed out waiting for active slots, in_use={:#x}",
                 in_use
             );
             return false;
@@ -967,22 +1051,7 @@ unsafe fn issue_command_prdt(
     prdt: &[PrdtSpec],
     write: bool,
 ) -> bool {
-    let slot = acquire_primary_slot(ahci);
-    let serialized = !is_ncq_command(command);
-    if serialized {
-        AHCI_RECOVERY.store(true, Ordering::Release);
-        if !wait_until_recovery_owns_port(slot) {
-            AHCI_RECOVERY.store(false, Ordering::Release);
-            release_primary_slot(slot);
-            return false;
-        }
-    }
-    let ok = issue_command_prdt_on_acquired_slot(ahci, slot, command, lba, count, prdt, write);
-    if serialized {
-        AHCI_RECOVERY.store(false, Ordering::Release);
-    }
-    release_primary_slot(slot);
-    ok
+    issue_command_prdt_with_slot(ahci, command, lba, count, prdt, write)
 }
 
 unsafe fn issue_command_prdt_on_acquired_slot(
@@ -1297,7 +1366,22 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
                 )
             }
         } else {
-            let slot = acquire_primary_slot(ahci);
+            let serialized = !is_ncq_command(command);
+            let serial_gate = if serialized {
+                Some(acquire_primary_serial_gate())
+            } else {
+                None
+            };
+            if serialized && !wait_until_primary_slots_idle() {
+                drop(serial_gate);
+                return false;
+            }
+            let slot = acquire_primary_slot(ahci, serialized);
+            if serialized && !wait_until_recovery_owns_port(slot) {
+                release_primary_slot(slot);
+                drop(serial_gate);
+                return false;
+            }
             let bounce_phys = ahci.bounce_phys_slots[slot];
             let bounce_virt = ahci.bounce_virt_slots[slot];
             let specs = [PrdtSpec {
@@ -1321,6 +1405,7 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
                 }
             }
             release_primary_slot(slot);
+            drop(serial_gate);
             ok
         };
 
@@ -1372,7 +1457,22 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
                 )
             }
         } else {
-            let slot = acquire_primary_slot(ahci);
+            let serialized = !is_ncq_command(command);
+            let serial_gate = if serialized {
+                Some(acquire_primary_serial_gate())
+            } else {
+                None
+            };
+            if serialized && !wait_until_primary_slots_idle() {
+                drop(serial_gate);
+                return false;
+            }
+            let slot = acquire_primary_slot(ahci, serialized);
+            if serialized && !wait_until_recovery_owns_port(slot) {
+                release_primary_slot(slot);
+                drop(serial_gate);
+                return false;
+            }
             let bounce_phys = ahci.bounce_phys_slots[slot];
             let bounce_virt = ahci.bounce_virt_slots[slot];
             unsafe {
@@ -1394,6 +1494,7 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
                 )
             };
             release_primary_slot(slot);
+            drop(serial_gate);
             ok
         };
 

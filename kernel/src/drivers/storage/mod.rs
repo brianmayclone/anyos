@@ -245,6 +245,7 @@ static DISK_SECTORS: [AtomicU64; MAX_DISKS] = {
     [const { AtomicU64::new(0) }; MAX_DISKS]
 };
 static DISK_WRITE_GENERATION: [AtomicU64; MAX_DISKS] = [const { AtomicU64::new(0) }; MAX_DISKS];
+static DISK_HARDWARE_DIRTY: [AtomicBool; MAX_DISKS] = [const { AtomicBool::new(false) }; MAX_DISKS];
 
 /// Hinterlegt die Sektor-Anzahl einer physischen Disk.
 ///
@@ -277,6 +278,25 @@ fn disk_write_generation(disk_id: u8) -> u64 {
         return 0;
     }
     DISK_WRITE_GENERATION[disk_id as usize].load(Ordering::Acquire)
+}
+
+fn mark_disk_hardware_dirty(disk_id: u8) {
+    if (disk_id as usize) < MAX_DISKS {
+        DISK_HARDWARE_DIRTY[disk_id as usize].store(true, Ordering::Release);
+    }
+}
+
+fn disk_hardware_dirty(disk_id: u8) -> bool {
+    if (disk_id as usize) >= MAX_DISKS {
+        return true;
+    }
+    DISK_HARDWARE_DIRTY[disk_id as usize].load(Ordering::Acquire)
+}
+
+fn clear_disk_hardware_dirty(disk_id: u8) {
+    if (disk_id as usize) < MAX_DISKS {
+        DISK_HARDWARE_DIRTY[disk_id as usize].store(false, Ordering::Release);
+    }
 }
 
 fn has_io_override(disk_id: u8) -> bool {
@@ -1002,6 +1022,7 @@ pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> b
     let result = async_io::write_sectors_wait(disk_id, lba, count, buf, IO_OP_WRITE);
     if result && cache_active {
         bump_disk_write_generation(disk_id);
+        mark_disk_hardware_dirty(disk_id);
         // Direct/bulk writes already reached the backend. Keeping a clean copy
         // of every streamed sector in the read cache turns large writes into
         // thousands of cache insertions and LRU scans. Drop any stale entries
@@ -1011,6 +1032,7 @@ pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> b
     }
     if result && !cache_active {
         bump_disk_write_generation(disk_id);
+        mark_disk_hardware_dirty(disk_id);
     }
     result
 }
@@ -1082,6 +1104,7 @@ pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8
     let result = async_io::write_sectors_wait(disk_id, lba, count, buf, IO_OP_WRITEBACK);
     if result {
         bump_disk_write_generation(disk_id);
+        mark_disk_hardware_dirty(disk_id);
     }
     result
 }
@@ -1101,9 +1124,21 @@ pub fn flush_disk(disk_id: u8) {
     if bit != 0 && (AHCI_FLUSH_FAILED_MASK.load(Ordering::Relaxed) & bit) != 0 {
         return;
     }
-    io_lock_acquire(IoLockOp::new(IO_OP_FLUSH, disk_id, 0, 0));
+    if !disk_hardware_dirty(disk_id) {
+        return;
+    }
+
+    let use_legacy_lock = disk_id != 0;
+    if use_legacy_lock {
+        io_lock_acquire(IoLockOp::new(IO_OP_FLUSH, disk_id, 0, 0));
+    }
     let ok = ahci::flush_disk(disk_id);
-    io_lock_release();
+    if use_legacy_lock {
+        io_lock_release();
+    }
+    if ok {
+        clear_disk_hardware_dirty(disk_id);
+    }
     if !ok && bit != 0 {
         AHCI_FLUSH_FAILED_MASK.fetch_or(bit, Ordering::Relaxed);
         crate::serial_println!(
