@@ -3,8 +3,8 @@ use crate::model::PackageInfo;
 use crate::rootfs::{
     copy_file, ensure_dir, ensure_dir_recursive, ensure_parent_dirs, file_size, is_elf_file,
     linux_path_in_rootfs, normalize_abs_path, path_exists, path_exists_no_follow, path_is_symlink,
-    path_under_rootfs, print_path_probe, resolve_rootfs_symlink_path, symlink_points_to,
-    write_bytes_atomic,
+    path_under_rootfs, print_path_probe, replace_with_temp_file, resolve_rootfs_symlink_path,
+    symlink_points_to, write_bytes_atomic,
 };
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -22,15 +22,23 @@ const FILE_SCAN_CHUNK: usize = 128 * 1024;
 static mut DOWNLOAD_LAST_PRINT: u32 = 0;
 static mut APT_INDEX_READY: bool = false;
 
-fn extract_tar_entry_atomic(reader: &libzip_client::TarReader, index: u32, dest: &str) -> bool {
+fn extract_tar_entry_staged(reader: &libzip_client::TarReader, index: u32, dest: &str) -> bool {
     ensure_parent_dirs(dest);
-    let Some(data) = reader.extract(index) else {
-        return false;
-    };
-    if data.len() != reader.entry_size(index) as usize {
+    let expected_size = reader.entry_size(index);
+    let temp = alloc::format!("{}.lxe-tmp", dest);
+    let _ = fs::unlink(&temp);
+
+    // The enclosing lxed writer lease performs the rootfs sync; forcing a
+    // flush for every payload file makes Debian bootstrap pathological.
+    if !reader.extract_to_file(index, &temp) {
+        let _ = fs::unlink(&temp);
         return false;
     }
-    write_bytes_atomic(dest, &data)
+    if file_size(&temp) != expected_size {
+        let _ = fs::unlink(&temp);
+        return false;
+    }
+    replace_with_temp_file(&temp, dest)
 }
 
 struct PackageLink {
@@ -1599,7 +1607,7 @@ pub(crate) fn install_deb(
             if progress.verbose() {
                 println!("lxe pkg: extracting {}", rel);
             }
-            if extract_tar_entry_atomic(&reader, i, &dest) {
+            if extract_tar_entry_staged(&reader, i, &dest) {
                 apply_tar_metadata(&reader, i, &dest);
                 files += 1;
                 append_manifest_path(&mut manifest, &rel);
@@ -1772,7 +1780,7 @@ fn materialize_hardlink_from_archive(
     }
 
     ensure_parent_dirs(dest);
-    if extract_tar_entry_atomic(reader, index, dest) {
+    if extract_tar_entry_staged(reader, index, dest) {
         apply_tar_metadata(reader, index, dest);
         return true;
     }
