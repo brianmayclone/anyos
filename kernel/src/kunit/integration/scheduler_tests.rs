@@ -59,6 +59,14 @@ pub static SUITE: TestSuite = TestSuite {
             run: test_pinned_not_stolen,
         },
         TestCase {
+            name: "least_loaded_counts_running_thread",
+            run: test_least_loaded_counts_running,
+        },
+        TestCase {
+            name: "preempt_requeue_uses_lighter_cpu",
+            run: test_preempt_requeue_uses_lighter_cpu,
+        },
+        TestCase {
             name: "runqueue_state_invariants",
             run: test_runqueue_state_invariants,
         },
@@ -200,6 +208,20 @@ fn test_pinned_not_stolen(ctx: &mut TestContext) {
     ctx.expect_true(
         scheduler::kunit_pinned_continuation_not_stolen(),
         "work stealing leaves pinned kernel continuation on last_cpu",
+    );
+}
+
+fn test_least_loaded_counts_running(ctx: &mut TestContext) {
+    ctx.expect_true(
+        scheduler::kunit_least_loaded_counts_running_thread(),
+        "CPU placement counts a currently running non-idle thread as load",
+    );
+}
+
+fn test_preempt_requeue_uses_lighter_cpu(ctx: &mut TestContext) {
+    ctx.expect_true(
+        scheduler::kunit_preempt_requeue_uses_lighter_cpu(),
+        "preempted movable thread leaves a locally backlogged CPU for a lighter one",
     );
 }
 

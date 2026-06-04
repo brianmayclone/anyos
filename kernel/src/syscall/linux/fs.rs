@@ -162,10 +162,20 @@ pub(super) fn linux_open_linux_path(path: &str, linux_flags: u64) -> u64 {
 
 pub(super) fn linux_open_translated(path: &str, linux_flags: u64, linux_path: &str) -> u64 {
     const LINUX_O_DIRECTORY: u64 = 0o200000;
+    const LINUX_O_EXCL: u64 = 0o200;
+    const LINUX_O_NOFOLLOW: u64 = 0o400000;
+    const LINUX_O_NONBLOCK: u64 = 0o4000;
+    const LINUX_O_TMPFILE: u64 = 0o20000000 | LINUX_O_DIRECTORY;
 
+    if (linux_flags & LINUX_O_TMPFILE) == LINUX_O_TMPFILE {
+        return linux_err(EOPNOTSUPP);
+    }
     let flags = map_open_flags(linux_flags);
     let accmode = linux_flags & 0x3;
     let cloexec = (flags & 0x10) != 0;
+    let nonblock = (linux_flags & LINUX_O_NONBLOCK) != 0;
+    let nofollow = (linux_flags & LINUX_O_NOFOLLOW) != 0;
+    let excl = (linux_flags & LINUX_O_EXCL) != 0;
     let file_flags = crate::fs::file::FileFlags {
         read: accmode != 1,
         write: accmode == 1 || accmode == 2,
@@ -174,13 +184,28 @@ pub(super) fn linux_open_translated(path: &str, linux_flags: u64, linux_path: &s
         truncate: (flags & 8) != 0,
         sync: (flags & 0x20) != 0,
     };
-    let resolved_path = match linux_resolve_translated_path(path, true, file_flags.create) {
+    let resolved_path = match linux_resolve_translated_path(path, !nofollow, file_flags.create) {
         Ok(path) => path,
         Err(errno) => {
             linux_log_path_error("open-resolve", linux_path, path, path, errno);
             return linux_err(errno);
         }
     };
+    if nofollow
+        && matches!(
+            crate::fs::vfs::lstat(&resolved_path),
+            Ok(st) if st.is_symlink
+        )
+    {
+        return linux_err(ELOOP);
+    }
+    if excl
+        && file_flags.create
+        && (crate::fs::vfs::stat(&resolved_path).is_ok()
+            || crate::fs::vfs::lstat(&resolved_path).is_ok())
+    {
+        return linux_err(EEXIST);
+    }
 
     if (linux_flags & LINUX_O_DIRECTORY) != 0 || file_flags.write || file_flags.truncate {
         match crate::fs::vfs::stat(&resolved_path) {
@@ -221,6 +246,9 @@ pub(super) fn linux_open_translated(path: &str, linux_flags: u64, linux_path: &s
         };
     if cloexec {
         crate::task::scheduler::current_fd_set_cloexec(local_fd, true);
+    }
+    if nonblock {
+        crate::task::scheduler::current_fd_set_nonblock(local_fd, true);
     }
     trace::trace_open(linux_path, &resolved_path, local_fd, global_id, linux_flags);
     linux_log_library_open(linux_path, &resolved_path, local_fd, global_id);
@@ -756,6 +784,38 @@ pub(super) fn linux_rename(old_ptr: u64, new_ptr: u64) -> u64 {
 }
 
 pub(super) fn linux_renameat(old_dirfd: i32, old_ptr: u64, new_dirfd: i32, new_ptr: u64) -> u64 {
+    linux_renameat_impl(old_dirfd, old_ptr, new_dirfd, new_ptr, 0)
+}
+
+pub(super) fn linux_renameat2(
+    old_dirfd: i32,
+    old_ptr: u64,
+    new_dirfd: i32,
+    new_ptr: u64,
+    flags: u64,
+) -> u64 {
+    const RENAME_NOREPLACE: u64 = 1;
+    const RENAME_EXCHANGE: u64 = 2;
+    const RENAME_WHITEOUT: u64 = 4;
+
+    if (flags & (RENAME_EXCHANGE | RENAME_WHITEOUT)) != 0 {
+        return linux_err(EINVAL);
+    }
+    if (flags & !RENAME_NOREPLACE) != 0 {
+        return linux_err(EINVAL);
+    }
+    linux_renameat_impl(old_dirfd, old_ptr, new_dirfd, new_ptr, flags)
+}
+
+fn linux_renameat_impl(
+    old_dirfd: i32,
+    old_ptr: u64,
+    new_dirfd: i32,
+    new_ptr: u64,
+    flags: u64,
+) -> u64 {
+    const RENAME_NOREPLACE: u64 = 1;
+
     let old_path = match linux_translate_at_path(old_dirfd, old_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
@@ -764,6 +824,11 @@ pub(super) fn linux_renameat(old_dirfd: i32, old_ptr: u64, new_dirfd: i32, new_p
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
+    if (flags & RENAME_NOREPLACE) != 0
+        && (crate::fs::vfs::stat(&new_path).is_ok() || crate::fs::vfs::lstat(&new_path).is_ok())
+    {
+        return linux_err(EEXIST);
+    }
     let ret = match crate::fs::vfs::rename(&old_path, &new_path) {
         Ok(()) => {
             linux_resolve_cache_invalidate_path(&old_path);
@@ -1113,6 +1178,63 @@ pub(super) fn linux_ftruncate(fd: u32, len: u64) -> u64 {
         None => return linux_err(EBADF),
     };
     match crate::fs::vfs::ftruncate_to(global_id, len as u32) {
+        Ok(()) => 0,
+        Err(e) => linux_fs_err(e),
+    }
+}
+
+pub(super) fn linux_fallocate(fd: u32, mode: u64, offset: u64, len: u64) -> u64 {
+    use crate::fs::fd_table::FdKind;
+
+    const FALLOC_FL_KEEP_SIZE: u64 = 0x01;
+    const SUPPORTED_MODE: u64 = FALLOC_FL_KEEP_SIZE;
+
+    let signed_offset = offset as i64;
+    let signed_len = len as i64;
+    if signed_offset < 0 || signed_len <= 0 {
+        return linux_err(EINVAL);
+    }
+    if (mode & !SUPPORTED_MODE) != 0 {
+        return linux_err(EOPNOTSUPP);
+    }
+
+    let global_id = match crate::task::scheduler::current_fd_get(fd) {
+        Some(entry) => match entry.kind {
+            FdKind::File { global_id } => global_id,
+            FdKind::None => return linux_err(EBADF),
+            _ => return linux_err(EINVAL),
+        },
+        None => return linux_err(EBADF),
+    };
+
+    let flags = match crate::fs::vfs::get_fd_flags(global_id) {
+        Ok(flags) => flags,
+        Err(e) => return linux_fs_err(e),
+    };
+    if !flags.write {
+        return linux_err(EBADF);
+    }
+
+    if (mode & FALLOC_FL_KEEP_SIZE) != 0 {
+        return 0;
+    }
+
+    let Some(end) = offset.checked_add(len) else {
+        return linux_err(EFBIG);
+    };
+    if end > u32::MAX as u64 {
+        return linux_err(EFBIG);
+    }
+
+    let current_size = match crate::fs::vfs::fstat(global_id) {
+        Ok((_file_type, size, _position, _mtime)) => size,
+        Err(e) => return linux_fs_err(e),
+    };
+    if end as u32 <= current_size {
+        return 0;
+    }
+
+    match crate::fs::vfs::ftruncate_to(global_id, end as u32) {
         Ok(()) => 0,
         Err(e) => linux_fs_err(e),
     }

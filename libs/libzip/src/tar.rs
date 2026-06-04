@@ -116,15 +116,20 @@ impl TarReader {
 
     /// Extract file data for an entry. Returns None for directories.
     pub fn extract(&self, index: usize) -> Option<Vec<u8>> {
+        self.entry_data(index).map(|data| data.to_vec())
+    }
+
+    /// Borrow file data for an entry. Returns an empty slice for directories.
+    pub fn entry_data(&self, index: usize) -> Option<&[u8]> {
         let entry = self.entries.get(index)?;
         if entry.is_dir || entry.size == 0 {
-            return Some(Vec::new());
+            return Some(&[]);
         }
         let end = entry.data_offset + entry.size as usize;
         if end > self.data.len() {
             return None;
         }
-        Some(self.data[entry.data_offset..end].to_vec())
+        Some(&self.data[entry.data_offset..end])
     }
 }
 

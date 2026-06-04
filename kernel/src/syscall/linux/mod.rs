@@ -250,6 +250,7 @@ const LINUX_SYS_PSELECT6: u64 = 270;
 const LINUX_SYS_SET_ROBUST_LIST: u64 = 273;
 const LINUX_SYS_SYNC_FILE_RANGE: u64 = 277;
 const LINUX_SYS_UTIMENSAT: u64 = 280;
+const LINUX_SYS_FALLOCATE: u64 = 285;
 const LINUX_SYS_DUP3: u64 = 292;
 const LINUX_SYS_PIPE2: u64 = 293;
 const LINUX_SYS_PRLIMIT64: u64 = 302;
@@ -530,15 +531,12 @@ pub fn dispatch(regs: &mut SyscallRegs) -> u64 {
         LINUX_SYS_FACCESSAT2 => linux_faccessat2(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_SET_ROBUST_LIST => 0,
         LINUX_SYS_SYNC_FILE_RANGE => linux_sync_file_range(a1 as u32, a2, a3, a4),
+        LINUX_SYS_FALLOCATE => linux_fallocate(a1 as u32, a2, a3, a4),
         LINUX_SYS_UTIMENSAT => linux_utimensat(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_PRLIMIT64 => linux_prlimit64(linux_i32_arg(a1), a2, a3, a4),
         LINUX_SYS_SYNCFS => linux_syncfs(a1 as u32),
         LINUX_SYS_RENAMEAT2 => {
-            if a5 == 0 {
-                linux_renameat(linux_i32_arg(a1), a2, linux_i32_arg(a3), a4)
-            } else {
-                linux_err(EINVAL)
-            }
+            linux_renameat2(linux_i32_arg(a1), a2, linux_i32_arg(a3), a4, a5)
         }
         LINUX_SYS_GETRANDOM => linux_getrandom(a1, a2),
         LINUX_SYS_COPY_FILE_RANGE => linux_copy_file_range(a1 as u32, a2, a3 as u32, a4, a5, a6),
@@ -631,6 +629,7 @@ pub(crate) fn syscall_name(num: u32) -> &'static str {
         LINUX_SYS_SWAPON => "swapon",
         LINUX_SYS_SWAPOFF => "swapoff",
         LINUX_SYS_SYNC_FILE_RANGE => "sync_file_range",
+        LINUX_SYS_FALLOCATE => "fallocate",
         LINUX_SYS_SYNCFS => "syncfs",
         LINUX_SYS_FCNTL => "fcntl",
         LINUX_SYS_GETCWD => "getcwd",

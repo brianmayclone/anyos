@@ -79,20 +79,35 @@ pub fn set_thread_abi(tid: u32, abi: AbiPersonality) {
 
 /// Get the current thread's ABI personality.
 ///
-/// NOTE: keep syscall dispatch on the locked read for now. The lock-free
-/// per-CPU ABI cache is still maintained and unit-tested, but LXE/native mixed
-/// workloads are still unstable and a stale or falsely validated ABI
-/// mis-dispatches every syscall. Re-enable the fast path only after a
-/// full-system context-switch/LXE stress test covers this route.
+/// This is the hottest branch in syscall dispatch.  The fast path is lock-free
+/// but TID-validated: it trusts the per-CPU ABI cache only when the cached owner
+/// matches the thread currently running on this CPU and stays stable for the
+/// whole read.  On a miss we fall back to the scheduler lock and refresh the
+/// cache while interrupts are still disabled, so the next syscall is cheap.
 pub fn current_thread_abi() -> AbiPersonality {
-    let guard = SCHEDULER.lock();
+    let flags = crate::arch::hal::save_and_disable_interrupts();
     let cpu_id = get_cpu_id();
-    if let Some(sched) = guard.as_ref() {
-        if let Some(idx) = sched.current_idx(cpu_id) {
-            return sched.threads[idx].abi;
-        }
+
+    if let Some(abi) = super::load_per_cpu_abi_validated(cpu_id) {
+        crate::arch::hal::restore_interrupt_state(flags);
+        return abi;
     }
-    AbiPersonality::AnyOs
+
+    let abi = {
+        let guard = SCHEDULER.lock();
+        if let Some(sched) = guard.as_ref() {
+            if let Some(idx) = sched.current_idx(cpu_id) {
+                sched.threads[idx].abi
+            } else {
+                AbiPersonality::AnyOs
+            }
+        } else {
+            AbiPersonality::AnyOs
+        }
+    };
+    super::store_per_cpu_abi(cpu_id, abi);
+    crate::arch::hal::restore_interrupt_state(flags);
+    abi
 }
 
 /// Set the lxe rootfs used by Linux ABI path translation.

@@ -388,7 +388,7 @@ fn retarget_open_exfat_paths_after_rename(old_path: &str, new_path: &str) {
 }
 
 fn open_path_matches_after_exfat_rename(file: &OpenFile, path: &str, inode: u32) -> bool {
-    file.path == path || ((file.fs_id == 3 || file.fs_id == 6) && file.inode == inode)
+    file.path == path || ((file.fs_id == 3 || file.fs_id == 6) && inode != 0 && file.inode == inode)
 }
 
 /// Set the root partition LBA (called from main.rs after partition scanning).
@@ -4951,6 +4951,7 @@ pub fn delete(path: &str) -> Result<(), FsError> {
     if is_dev_path(path) {
         return Err(FsError::PermissionDenied);
     }
+    sync_open_exfat_path(path, false)?;
     if let Some(plan) = prepare_detached_delete(path)? {
         return execute_detached_delete(plan);
     }

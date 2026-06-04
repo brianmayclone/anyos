@@ -1150,7 +1150,6 @@ impl Scheduler {
     /// Wake timed sleepers that have reached their deadline and republish the
     /// earliest remaining sleep deadline for future timer ticks.
     fn wake_expired_sleepers(&mut self, current_tick: u32) {
-        let n_cpus = self.num_cpus();
         let mut next_sleep: Option<u32> = None;
 
         for idx in 0..self.threads.len() {
@@ -1166,15 +1165,10 @@ impl Scheduler {
             if timer_tick_reached(current_tick, wake_tick) {
                 let tid = self.threads[idx].tid;
                 let pri = self.threads[idx].priority;
-                let mut cpu = self.threads[idx].affinity_cpu;
-                if self.has_pinned_kernel_continuation(idx) {
-                    cpu = self.threads[idx].last_cpu;
-                } else if self.needs_inflight_continuation_pin(idx) {
-                    cpu = self.threads[idx].last_cpu;
-                }
-                let target_cpu = if cpu < n_cpus { cpu } else { 0 };
+                let target_cpu = self.ready_cpu_for_thread(idx);
                 self.threads[idx].state = ThreadState::Ready;
                 self.threads[idx].wake_at_tick = None;
+                self.adopt_affinity_if_movable(idx, target_cpu);
                 self.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
             } else if next_sleep
                 .map(|current_next| timer_tick_before(wake_tick, current_next))
@@ -1187,7 +1181,36 @@ impl Scheduler {
         publish_next_sleeper_deadline(next_sleep);
     }
 
-    /// Pick the CPU with the shortest ready queue for load balancing.
+    #[inline]
+    fn migration_pinned(&self, idx: usize) -> bool {
+        self.has_pinned_kernel_continuation(idx) || self.needs_inflight_continuation_pin(idx)
+    }
+
+    /// Ready queue depth plus the non-idle thread currently executing there.
+    ///
+    /// The old balancer looked only at queued work.  A CPU running a hot thread
+    /// with an empty ready queue therefore looked "idle", so fork/wake placement
+    /// could stack more CPU-bound work onto it while another core slept.
+    #[inline]
+    fn effective_cpu_load(&self, cpu: usize) -> usize {
+        if cpu >= self.num_cpus() {
+            return usize::MAX / 2;
+        }
+        let mut load = self.per_cpu[cpu].run_queue.total_count();
+        if let Some(tid) = self.per_cpu[cpu].current_tid {
+            if let Some(idx) = self.find_idx(tid) {
+                if !self.threads[idx].is_idle
+                    && !self.is_idle_tid(tid)
+                    && self.threads[idx].state == ThreadState::Running
+                {
+                    load = load.saturating_add(1);
+                }
+            }
+        }
+        load
+    }
+
+    /// Pick the CPU with the lowest effective load for load balancing.
     fn least_loaded_cpu(&self) -> usize {
         let n = self.num_cpus();
         let mut best_cpu = 0;
@@ -1195,7 +1218,7 @@ impl Scheduler {
         let mut tie_count = 0u32;
         let rr = ROUND_ROBIN_COUNTER.fetch_add(1, Ordering::Relaxed);
         for cpu in 0..n {
-            let len = self.per_cpu[cpu].run_queue.total_count();
+            let len = self.effective_cpu_load(cpu);
             if len < best_len {
                 best_len = len;
                 best_cpu = cpu;
@@ -1208,6 +1231,82 @@ impl Scheduler {
             }
         }
         best_cpu
+    }
+
+    /// Pick the CPU for a thread that is becoming Ready.
+    ///
+    /// Kernel continuations stay on their last CPU.  Normal user threads keep
+    /// their affinity when it is reasonably balanced, but can move to the
+    /// lightest CPU when the preferred CPU is already loaded.
+    fn ready_cpu_for_thread(&self, idx: usize) -> usize {
+        let n = self.num_cpus();
+        if self.migration_pinned(idx) {
+            let cpu = self.threads[idx].last_cpu;
+            return if cpu < n { cpu } else { 0 };
+        }
+
+        let preferred = if self.threads[idx].affinity_cpu < n {
+            self.threads[idx].affinity_cpu
+        } else {
+            0
+        };
+        let best = self.least_loaded_cpu();
+        if best == preferred {
+            return preferred;
+        }
+
+        let preferred_load = self.effective_cpu_load(preferred);
+        let best_load = self.effective_cpu_load(best);
+        if best_load + 1 < preferred_load {
+            best
+        } else {
+            preferred
+        }
+    }
+
+    /// Pick a queue for a preempted thread.  If this CPU already has other
+    /// ready work, moving the outgoing thread to a genuinely lighter CPU keeps
+    /// all cores busy instead of round-robining several hot threads locally.
+    fn preempt_requeue_cpu(&self, current_cpu: usize, idx: usize) -> usize {
+        let n = self.num_cpus();
+        if current_cpu >= n || self.migration_pinned(idx) {
+            return current_cpu.min(n.saturating_sub(1));
+        }
+
+        let local_backlog = self.per_cpu[current_cpu].run_queue.total_count();
+        if local_backlog == 0 {
+            return current_cpu;
+        }
+
+        let mut best_cpu = current_cpu;
+        let mut best_load = local_backlog.saturating_add(1);
+        for cpu in 0..n {
+            if cpu == current_cpu {
+                continue;
+            }
+            let load = self.effective_cpu_load(cpu);
+            if load < best_load {
+                best_load = load;
+                best_cpu = cpu;
+            }
+        }
+
+        if best_cpu != current_cpu && best_load < local_backlog {
+            best_cpu
+        } else {
+            current_cpu
+        }
+    }
+
+    #[inline]
+    fn adopt_affinity_if_movable(&mut self, idx: usize, cpu: usize) {
+        if cpu < self.num_cpus()
+            && !self.threads[idx].is_idle
+            && !self.is_idle_tid(self.threads[idx].tid)
+            && !self.migration_pinned(idx)
+        {
+            self.threads[idx].affinity_cpu = cpu;
+        }
     }
 
     /// Add a thread to the scheduler and enqueue on the least-loaded CPU.
@@ -1500,14 +1599,8 @@ impl Scheduler {
             if self.threads[idx].state == ThreadState::Blocked {
                 self.threads[idx].state = ThreadState::Ready;
                 self.threads[idx].wake_at_tick = None;
-                let mut cpu = self.threads[idx].affinity_cpu;
-                if self.has_pinned_kernel_continuation(idx) {
-                    cpu = self.threads[idx].last_cpu;
-                } else if self.needs_inflight_continuation_pin(idx) {
-                    cpu = self.threads[idx].last_cpu;
-                }
-                let n = self.num_cpus();
-                let target = if cpu < n { cpu } else { 0 };
+                let target = self.ready_cpu_for_thread(idx);
+                self.adopt_affinity_if_movable(idx, target);
                 let current_cpu = get_cpu_id();
                 let needs_kick = target != current_cpu || self.per_cpu[target].run_queue.is_empty();
                 self.per_cpu[target]
@@ -1654,6 +1747,31 @@ fn kunit_make_pinned_user_thread(
 }
 
 #[cfg(feature = "kunit")]
+fn kunit_make_movable_user_thread(
+    state: ThreadState,
+    last_cpu: usize,
+    affinity_cpu: usize,
+) -> ThreadBox {
+    extern "C" fn never_run() {}
+
+    let thread =
+        Thread::new(never_run, 42, "kunit/movable").expect("kunit thread allocation failed");
+    let mut thread = alloc_thread_box(thread).expect("kunit thread object allocation failed");
+    thread.is_user = true;
+    thread.state = state;
+    thread.last_cpu = last_cpu;
+    thread.affinity_cpu = affinity_cpu;
+    let stack_top = thread.kernel_stack_top();
+    thread
+        .context
+        .set_pc(crate::task::loader::user_thread_trampoline as *const () as u64);
+    thread.context.set_sp(stack_top - 64);
+    thread.context.save_complete = 1;
+    thread.context.checksum = thread.context.compute_checksum();
+    thread
+}
+
+#[cfg(feature = "kunit")]
 pub fn kunit_pinned_continuation_wake_targets_last_cpu() -> bool {
     let mut sched = Scheduler::new();
     if sched.num_cpus() < 2 {
@@ -1693,6 +1811,41 @@ pub fn kunit_pinned_continuation_not_stolen() -> bool {
     let wrong_pick = sched.pick_eligible(wrong_cpu);
 
     stolen.is_none() && repaired_pick == Some(tid) && wrong_pick.is_none()
+}
+
+#[cfg(feature = "kunit")]
+pub fn kunit_least_loaded_counts_running_thread() -> bool {
+    let mut sched = Scheduler::new();
+    if sched.num_cpus() < 2 {
+        return true;
+    }
+
+    let running = kunit_make_movable_user_thread(ThreadState::Running, 0, 0);
+    let tid = running.tid;
+    sched.threads.push(running);
+    sched.per_cpu[0].current_tid = Some(tid);
+    sched.per_cpu[0].current_idx = sched.find_idx(tid);
+
+    sched.least_loaded_cpu() != 0
+}
+
+#[cfg(feature = "kunit")]
+pub fn kunit_preempt_requeue_uses_lighter_cpu() -> bool {
+    let mut sched = Scheduler::new();
+    if sched.num_cpus() < 2 {
+        return true;
+    }
+
+    let running = kunit_make_movable_user_thread(ThreadState::Running, 0, 0);
+    let running_idx = sched.threads.len();
+    sched.threads.push(running);
+
+    let queued = kunit_make_movable_user_thread(ThreadState::Ready, 0, 0);
+    let queued_tid = queued.tid;
+    sched.threads.push(queued);
+    sched.per_cpu[0].run_queue.enqueue(queued_tid, 42);
+
+    sched.preempt_requeue_cpu(0, running_idx) != 0
 }
 
 #[cfg(feature = "kunit")]
@@ -2005,7 +2158,9 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                 sched.threads[idx].state = ThreadState::Ready;
                 sched.threads[idx].last_cpu = cpu_id;
                 let pri = sched.threads[idx].priority;
-                sched.per_cpu[cpu_id]
+                let target_cpu = sched.preempt_requeue_cpu(cpu_id, idx);
+                sched.adopt_affinity_if_movable(idx, target_cpu);
+                sched.per_cpu[target_cpu]
                     .run_queue
                     .enqueue(outgoing_tid.unwrap_or(0), pri);
             }
@@ -2043,6 +2198,7 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                 sched.per_cpu[cpu_id].current_idx = Some(next_idx);
                 sched.threads[next_idx].state = ThreadState::Running;
                 sched.threads[next_idx].last_cpu = cpu_id;
+                sched.adopt_affinity_if_movable(next_idx, cpu_id);
                 PER_CPU_HAS_THREAD[cpu_id]
                     .store(!sched.threads[next_idx].is_idle, Ordering::Relaxed);
                 PER_CPU_CURRENT_TID[cpu_id].store(next_tid, Ordering::Relaxed);
@@ -2417,7 +2573,9 @@ fn schedule_inner(from_timer: bool) {
                     sched.threads[idx].state = ThreadState::Ready;
                     sched.threads[idx].last_cpu = cpu_id;
                     let pri = sched.threads[idx].priority;
-                    sched.per_cpu[cpu_id]
+                    let target_cpu = sched.preempt_requeue_cpu(cpu_id, idx);
+                    sched.adopt_affinity_if_movable(idx, target_cpu);
+                    sched.per_cpu[target_cpu]
                         .run_queue
                         .enqueue(outgoing_tid.unwrap_or(0), pri);
                 }
@@ -2456,6 +2614,7 @@ fn schedule_inner(from_timer: bool) {
                     sched.per_cpu[cpu_id].current_idx = Some(next_idx);
                     sched.threads[next_idx].state = ThreadState::Running;
                     sched.threads[next_idx].last_cpu = cpu_id;
+                    sched.adopt_affinity_if_movable(next_idx, cpu_id);
 
                     PER_CPU_HAS_THREAD[cpu_id].store(true, Ordering::Relaxed);
                     PER_CPU_CURRENT_TID[cpu_id].store(next_tid, Ordering::Relaxed);

@@ -926,6 +926,9 @@ fn run_full_suite(cfg: &Config, summary: &mut Summary) {
     run_named(cfg, summary, "long-name large io", || {
         long_name_large_io_case(cfg)
     });
+    run_named(cfg, summary, "apt index update", || {
+        apt_index_update_pattern_case(cfg)
+    });
     run_named(cfg, summary, "deb install pattern", || {
         deb_install_pattern_case(cfg)
     });
@@ -3977,6 +3980,17 @@ const DEB_NAMES: &[&str] = &[
     "perl-modules-5.36_5.36.0-7+deb12u3_all.deb",
 ];
 
+const APT_INDEX_NAMES: &[(&str, u32)] = &[
+    (
+        "deb.debian.org_debian_dists_bookworm_main_binary-amd64_Packages",
+        8_790 * 1024,
+    ),
+    (
+        "deb.debian.org_debian-security_dists_bookworm-security_main_binary-amd64_by-hash_SHA256_20893882544a350064a666bc7fa78628a81d95530a63416f50d7358634ade1bb",
+        306_292,
+    ),
+];
+
 /// File size used by the .deb-pattern cases. Large enough to span many clusters
 /// and exercise the FAT chain + write-back cache under sustained churn.
 fn deb_case_size(cfg: &Config) -> u32 {
@@ -4214,6 +4228,120 @@ fn long_name_large_io_case(cfg: &Config) -> Result<String, &'static str> {
         tested,
         size / 1024
     ))
+}
+
+fn apt_index_update_pattern_case(cfg: &Config) -> Result<String, &'static str> {
+    let base = format!("{}/full-apt-index-update", cfg.dir);
+    let lists = format!("{}/lists", base);
+    let partial = format!("{}/partial", lists);
+    let _ = fs::mkdir(&base);
+    let _ = fs::mkdir(&lists);
+    let _ = fs::mkdir(&partial);
+
+    let mut tested = 0u32;
+    let mut kib = 0u32;
+    for (idx, (name, size)) in APT_INDEX_NAMES.iter().enumerate() {
+        let partial_path = format!("{}/{}", partial, name);
+        let final_path = format!("{}/{}", lists, name);
+        if partial_path.len() > 255 || final_path.len() > 255 {
+            continue;
+        }
+        let seed = 0xA971_0000u32 ^ (idx as u32).wrapping_mul(0x45d9_f3b);
+        let _ = fs::unlink(&partial_path);
+        let _ = fs::unlink(&final_path);
+
+        write_apt_index_file(&partial_path, *size, seed)?;
+        let mut stat = [0u32; 7];
+        if fs::stat(&partial_path, &mut stat) != 0 || stat[1] != *size {
+            return Err("apt-partial-size");
+        }
+        verify_file_pattern_large(&partial_path, *size, seed, 32 * 1024)
+            .map_err(|_| "apt-partial-verify")?;
+
+        if fs::rename(&partial_path, &final_path) != 0 {
+            return Err("apt-rename");
+        }
+        if stat_exists(&partial_path) {
+            return Err("apt-partial-still-visible");
+        }
+        if fs::stat(&final_path, &mut stat) != 0 || stat[1] != *size {
+            return Err("apt-final-size");
+        }
+        verify_seek_pattern(&final_path, *size, seed)?;
+        verify_file_pattern_large(&final_path, *size, seed, 64 * 1024)
+            .map_err(|_| "apt-final-verify")?;
+
+        tested += 1;
+        kib = kib.saturating_add(*size / 1024);
+        if !cfg.keep {
+            let _ = fs::unlink(&final_path);
+        }
+    }
+
+    if !cfg.keep {
+        let _ = fs::unlink(&partial);
+        let _ = fs::unlink(&lists);
+        let _ = fs::unlink(&base);
+    }
+    if tested == 0 {
+        return Err("apt-index-budget");
+    }
+    Ok(format!(
+        "{} APT-Index-Dateien, {} KiB, partial->rename+lseek/stat",
+        tested, kib
+    ))
+}
+
+fn write_apt_index_file(path: &str, total_bytes: u32, seed: u32) -> Result<(), &'static str> {
+    let fd = fs::open(path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if fd == u32::MAX {
+        return Err("apt-open-write");
+    }
+
+    let mut buf = Vec::new();
+    buf.resize(128 * 1024, 0);
+    let mut offset = 0u32;
+    let mut writes = 0u32;
+    while offset < total_bytes {
+        if fs::lseek(fd, 0, fs::SEEK_CUR) != offset {
+            fs::close(fd);
+            return Err("apt-lseek-before");
+        }
+        let chunk_hint = match writes & 3 {
+            0 => 8 * 1024,
+            1 => 64 * 1024,
+            2 => 128 * 1024,
+            _ => 16 * 1024,
+        };
+        let len = (total_bytes - offset).min(chunk_hint) as usize;
+        fill_pattern(&mut buf[..len], offset, seed);
+        if fs::write(fd, &buf[..len]) != len as u32 {
+            fs::close(fd);
+            return Err("apt-write");
+        }
+        offset += len as u32;
+        if fs::lseek(fd, 0, fs::SEEK_CUR) != offset {
+            fs::close(fd);
+            return Err("apt-lseek-after");
+        }
+        if (writes & 3) == 1 {
+            let mut stat = [0u32; 7];
+            if fs::stat(path, &mut stat) != 0 || stat[1] != offset {
+                fs::close(fd);
+                return Err("apt-open-stat-size");
+            }
+        }
+        writes += 1;
+    }
+
+    if !fs::fsync(fd as i32) {
+        fs::close(fd);
+        return Err("apt-fsync");
+    }
+    if fs::close(fd) == u32::MAX {
+        return Err("apt-close");
+    }
+    Ok(())
 }
 
 fn permission_metadata_case(cfg: &Config) -> TestOutcome {
