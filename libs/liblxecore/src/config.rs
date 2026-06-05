@@ -18,9 +18,9 @@ const DEFAULT_WGET: &str = "/System/bin/wget";
 const DEFAULT_DOWNLOAD_ATTEMPTS: i64 = 4;
 const DEFAULT_DOWNLOAD_JOBS: i64 = 4;
 const DEFAULT_INDEX_REQUIRED_PACKAGES: &str =
-    "apt,apt-utils,base-files,base-passwd,bash,coreutils,dash,debian-archive-keyring,diffutils,dialog,grep,gzip,libc-bin,libc6,libgcc-s1,libpam-runtime,libstdc++6,login,ncurses-base,passwd,sed,tar,xz-utils,zlib1g";
+    "apt,apt-utils,base-files,base-passwd,bash,coreutils,dash,debian-archive-keyring,diffutils,dialog,findutils,grep,gzip,libc-bin,libc6,libgcc-s1,libpam-runtime,libstdc++6,login,ncurses-base,passwd,sed,tar,xz-utils,zlib1g";
 const DEFAULT_BOOTSTRAP_SEED: &str =
-    "base-files,base-passwd,libc-bin,libc6,libgcc-s1,libstdc++6,zlib1g,apt,apt-utils,debian-archive-keyring,dash,bash,coreutils,diffutils,dialog,grep,gzip,sed,tar,xz-utils,ncurses-base,libpam-runtime,login,passwd,libcom-err2,mc,procps,htop,gcc,make";
+    "base-files,base-passwd,libc-bin,libc6,libgcc-s1,libstdc++6,zlib1g,apt,apt-utils,debian-archive-keyring,dash,bash,coreutils,diffutils,dialog,findutils,grep,gzip,sed,tar,xz-utils,ncurses-base,libpam-runtime,login,passwd,libcom-err2,mc,procps,htop,gcc,make";
 
 const LXE_DIRS: &[&str] = &["paths", "apt", "bootstrap", "tools"];
 const LXE_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
@@ -93,11 +93,17 @@ const LXE_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[
         DEFAULT_INDEX_REQUIRED_PACKAGES,
     ),
     migration_string(11, "bootstrap/packages_csv", DEFAULT_BOOTSTRAP_SEED),
+    migration_string(
+        12,
+        "apt/index_required_packages_csv",
+        DEFAULT_INDEX_REQUIRED_PACKAGES,
+    ),
+    migration_string(12, "bootstrap/packages_csv", DEFAULT_BOOTSTRAP_SEED),
 ];
 const LXE_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
     "services/lxe",
     RegistryScope::System,
-    11,
+    12,
     LXE_DIRS,
     LXE_DEFAULTS,
     LXE_MIGRATIONS,

@@ -4318,37 +4318,53 @@ mod tests {
         let dom = html::parse("<html><body></body></html>");
         let mut runtime = JsRuntime::new();
         let script = r#"
-            const smoke = {
-              event: new Event('x').type === 'x',
-              customEvent: new CustomEvent('y', { detail: 7 }).detail === 7,
-              mouseEvent: new MouseEvent('click').type === 'click',
-              keyboardEvent: new KeyboardEvent('keydown').type === 'keydown',
-              inputEvent: new InputEvent('input').type === 'input',
-              focusEvent: new FocusEvent('focus').type === 'focus',
-              wheelEvent: new WheelEvent('wheel').type === 'wheel',
-              pointerEvent: new PointerEvent('pointerdown').type === 'pointerdown',
-              mutationObserver: typeof new MutationObserver(function(){}).observe === 'function',
-              resizeObserver: typeof new ResizeObserver(function(){}).observe === 'function',
-              intersectionObserver: typeof new IntersectionObserver(function(){}).observe === 'function',
-              messageChannel: !!new MessageChannel().port1,
-              url: new URL('https://example.com/path').href === 'https://example.com/path',
-              urlSearchParams: new URL('https://example.com/path?q=test#x').searchParams.get('q') === 'test',
-              searchParams: new URLSearchParams('a=1').get('a') === '1',
-              searchParamsIterator: Array.from(new URLSearchParams('a=1&b=2'))[1][0] === 'b',
-              textEncoder: typeof new TextEncoder().encode === 'function',
-              textDecoder: typeof new TextDecoder().decode === 'function',
-              abortController: !!new AbortController().signal,
-              abortSignal: typeof AbortSignal.abort === 'function' && AbortSignal.abort().aborted === true,
-              domParser: typeof new DOMParser().parseFromString === 'function',
-              xhr: typeof new XMLHttpRequest().open === 'function',
-              headers: new Headers({ Foo: 'Bar' }).get('foo') === 'Bar',
-              image: typeof new Image().addEventListener === 'function',
-              formData: typeof new FormData().append === 'function',
-              nodeList: typeof NodeList === 'function' && !!NodeList.prototype,
-              htmlCollection: typeof HTMLCollection === 'function' && !!HTMLCollection.prototype,
-            };
-            globalThis.__ctor_smoke_ok = Object.values(smoke).every(Boolean);
-            globalThis.__ctor_smoke_count = Object.keys(smoke).length;
+            var smokeOk = true;
+            var smokeCount = 0;
+            var smokeFailures = '';
+            function checkSmoke(name, fn) {
+              smokeCount++;
+              var ok = false;
+              try {
+                ok = !!fn();
+              } catch (e) {
+                ok = false;
+              }
+              if (!ok) {
+                smokeOk = false;
+                if (smokeFailures.length) smokeFailures += ',';
+                smokeFailures += name;
+              }
+            }
+            checkSmoke('event', function(){ return new Event('x').type === 'x'; });
+            checkSmoke('customEvent', function(){ return new CustomEvent('y', { detail: 7 }).detail === 7; });
+            checkSmoke('mouseEvent', function(){ return new MouseEvent('click').type === 'click'; });
+            checkSmoke('keyboardEvent', function(){ return new KeyboardEvent('keydown').type === 'keydown'; });
+            checkSmoke('inputEvent', function(){ return new InputEvent('input').type === 'input'; });
+            checkSmoke('focusEvent', function(){ return new FocusEvent('focus').type === 'focus'; });
+            checkSmoke('wheelEvent', function(){ return new WheelEvent('wheel').type === 'wheel'; });
+            checkSmoke('pointerEvent', function(){ return new PointerEvent('pointerdown').type === 'pointerdown'; });
+            checkSmoke('mutationObserver', function(){ return typeof new MutationObserver(function(){}).observe === 'function'; });
+            checkSmoke('resizeObserver', function(){ return typeof new ResizeObserver(function(){}).observe === 'function'; });
+            checkSmoke('intersectionObserver', function(){ return typeof new IntersectionObserver(function(){}).observe === 'function'; });
+            checkSmoke('messageChannel', function(){ return !!new MessageChannel().port1; });
+            checkSmoke('url', function(){ return new URL('https://example.com/path').href === 'https://example.com/path'; });
+            checkSmoke('urlSearchParams', function(){ return new URL('https://example.com/path?q=test#x').searchParams.get('q') === 'test'; });
+            checkSmoke('searchParams', function(){ return new URLSearchParams('a=1').get('a') === '1'; });
+            checkSmoke('searchParamsIterator', function(){ return Array.from(new URLSearchParams('a=1&b=2'))[1][0] === 'b'; });
+            checkSmoke('textEncoder', function(){ return typeof new TextEncoder().encode === 'function'; });
+            checkSmoke('textDecoder', function(){ return typeof new TextDecoder().decode === 'function'; });
+            checkSmoke('abortController', function(){ return !!new AbortController().signal; });
+            checkSmoke('abortSignal', function(){ return typeof AbortSignal.abort === 'function' && AbortSignal.abort().aborted === true; });
+            checkSmoke('domParser', function(){ return typeof new DOMParser().parseFromString === 'function'; });
+            checkSmoke('xhr', function(){ return typeof new XMLHttpRequest().open === 'function'; });
+            checkSmoke('headers', function(){ return new Headers({ Foo: 'Bar' }).get('foo') === 'Bar'; });
+            checkSmoke('image', function(){ return typeof new Image().addEventListener === 'function'; });
+            checkSmoke('formData', function(){ return typeof new FormData().append === 'function'; });
+            checkSmoke('nodeList', function(){ return typeof NodeList === 'function' && !!NodeList.prototype; });
+            checkSmoke('htmlCollection', function(){ return typeof HTMLCollection === 'function' && !!HTMLCollection.prototype; });
+            globalThis.__ctor_smoke_ok = smokeOk;
+            globalThis.__ctor_smoke_count = smokeCount;
+            globalThis.__ctor_smoke_failures = smokeFailures;
             globalThis.__ws_ctor_ok = new WebSocket('wss://example.com/socket').url === 'wss://example.com/socket';
         "#;
 
@@ -4364,7 +4380,12 @@ mod tests {
                 runtime.engine.vm().get_global("__ctor_smoke_ok"),
                 JsValue::Bool(true)
             ),
-            "constructor smoke test failed"
+            "constructor smoke test failed: {}",
+            runtime
+                .engine
+                .vm()
+                .get_global("__ctor_smoke_failures")
+                .to_js_string()
         );
         assert!(
             matches!(

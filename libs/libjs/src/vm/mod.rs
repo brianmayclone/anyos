@@ -773,7 +773,11 @@ impl Vm {
     }
 
     pub fn get_global(&mut self, name: &str) -> JsValue {
-        self.globals.borrow().get(name)
+        if self.globals.borrow().has(name) {
+            return self.globals.borrow().get(name);
+        }
+        self.browser_window_global_get(name)
+            .unwrap_or(JsValue::Undefined)
     }
 
     /// Fast path for repeated global reads at one bytecode site.

@@ -86,47 +86,7 @@ pub fn install_or_repair(
     );
     ensure_rootfs_layout(config);
 
-    {
-        let mut observer = BootstrapObserver::new(sink, config.bootstrap_seed.len() as u32);
-        let mut progress = InstallProgress::with_observer(
-            false,
-            config.bootstrap_seed.len() as u32,
-            "packages",
-            &mut observer,
-        );
-        progress.set_overall(0, config.bootstrap_seed.len() as u32);
-
-        let mut done = 0u32;
-        let mut plan_installed = false;
-        let plan_packages = config.bootstrap_seed.clone();
-        if let Some(plan) =
-            resolve_install_plan(config, &plan_packages, &config.rootfs, &mut progress)
-        {
-            let _ = prefetch_install_plan(config, &plan, &mut progress);
-            plan_installed = install_resolved_plan(config, &plan, &config.rootfs, &mut progress);
-        }
-
-        if plan_installed {
-            done = count_installed_bootstrap_packages(config);
-            progress.set_overall(done, config.bootstrap_seed.len() as u32);
-        }
-
-        if !plan_installed {
-            for package in &config.bootstrap_seed {
-                if package_installed(config, package, &config.rootfs) {
-                    done += 1;
-                    progress.set_overall(done, config.bootstrap_seed.len() as u32);
-                    continue;
-                }
-                if !install_package(config, package, &config.rootfs, 0, &mut progress) {
-                    return Err(format!("package '{}' could not be installed", package));
-                }
-                done += 1;
-                progress.set_overall(done, config.bootstrap_seed.len() as u32);
-            }
-        }
-        progress.finish();
-    }
+    install_missing_bootstrap_packages(config, sink)?;
 
     publish(
         sink,
@@ -176,7 +136,7 @@ pub fn repair_only(
         sink,
         15,
         1,
-        3,
+        5,
         "Checking rootfs layout",
         &config.rootfs,
         0,
@@ -186,9 +146,21 @@ pub fn repair_only(
     ensure_rootfs_layout(config);
     publish(
         sink,
-        55,
+        35,
         2,
+        5,
+        "Checking bootstrap packages",
+        "Installing missing LXE seed packages",
+        0,
+        0,
+        0,
+    );
+    install_missing_bootstrap_packages(config, sink)?;
+    publish(
+        sink,
+        70,
         3,
+        5,
         "Repairing runtime links",
         "ld.so, libc and common library aliases",
         0,
@@ -198,9 +170,9 @@ pub fn repair_only(
     crate::rootfs::repair_rootfs_runtime(&config.rootfs);
     publish(
         sink,
-        90,
-        3,
-        3,
+        92,
+        4,
+        5,
         "Synchronizing rootfs",
         "Flushing repaired files to disk",
         0,
@@ -212,14 +184,61 @@ pub fn repair_only(
     publish(
         sink,
         100,
-        3,
-        3,
+        5,
+        5,
         "Repair complete",
         "The existing LXE rootfs has been repaired.",
         0,
         0,
         0,
     );
+    Ok(())
+}
+
+fn install_missing_bootstrap_packages(
+    config: &LxeConfig,
+    sink: &mut dyn ManagerProgressSink,
+) -> Result<(), String> {
+    let mut observer = BootstrapObserver::new(sink, config.bootstrap_seed.len() as u32);
+    let mut progress = InstallProgress::with_observer(
+        false,
+        config.bootstrap_seed.len() as u32,
+        "packages",
+        &mut observer,
+    );
+    progress.set_overall(0, config.bootstrap_seed.len() as u32);
+
+    let mut done = 0u32;
+    let mut plan_installed = false;
+    let plan_packages = config.bootstrap_seed.clone();
+    if let Some(plan) =
+        resolve_install_plan(config, &plan_packages, &config.rootfs, &mut progress)
+    {
+        let _ = prefetch_install_plan(config, &plan, &mut progress);
+        plan_installed = install_resolved_plan(config, &plan, &config.rootfs, &mut progress);
+    }
+
+    if plan_installed {
+        done = count_installed_bootstrap_packages(config);
+        progress.set_overall(done, config.bootstrap_seed.len() as u32);
+    }
+
+    if !plan_installed {
+        for package in &config.bootstrap_seed {
+            if package_installed(config, package, &config.rootfs) {
+                done += 1;
+                progress.set_overall(done, config.bootstrap_seed.len() as u32);
+                continue;
+            }
+            if !install_package(config, package, &config.rootfs, 0, &mut progress) {
+                progress.finish();
+                return Err(format!("package '{}' could not be installed", package));
+            }
+            done += 1;
+            progress.set_overall(done, config.bootstrap_seed.len() as u32);
+        }
+    }
+    progress.finish();
     Ok(())
 }
 

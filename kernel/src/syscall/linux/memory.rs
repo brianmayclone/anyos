@@ -436,6 +436,51 @@ pub(super) fn linux_mprotect(_addr: u64, len: u64, _prot: u64) -> u64 {
     }
 }
 
+pub(super) fn linux_mincore(addr: u64, len: u64, vec_ptr: u64) -> u64 {
+    use crate::memory::address::VirtAddr;
+
+    const PAGE_SIZE: u64 = 4096;
+    const MAX_MINCORE_PAGES: u64 = 1 << 20;
+
+    if (addr & (PAGE_SIZE - 1)) != 0 {
+        return linux_err(EINVAL);
+    }
+    if len == 0 {
+        return 0;
+    }
+    if !handlers::helpers::is_valid_user_ptr(addr, len) {
+        return linux_err(ENOMEM);
+    }
+
+    let pages = match len.checked_add(PAGE_SIZE - 1) {
+        Some(size) => size / PAGE_SIZE,
+        None => return linux_err(ENOMEM),
+    };
+    if pages == 0 {
+        return 0;
+    }
+    if pages > MAX_MINCORE_PAGES {
+        return linux_err(ENOMEM);
+    }
+    if !handlers::helpers::is_user_range_accessible(vec_ptr, pages) {
+        return linux_err(EFAULT);
+    }
+
+    let mut out = alloc::vec![0u8; pages as usize];
+    for (idx, byte) in out.iter_mut().enumerate() {
+        let page = addr + (idx as u64 * PAGE_SIZE);
+        if !crate::memory::virtual_mem::is_page_mapped(VirtAddr::new(page)) {
+            return linux_err(ENOMEM);
+        }
+        *byte = 1;
+    }
+
+    if !handlers::helpers::copy_to_user_bytes(vec_ptr, &out, out.len()) {
+        return linux_err(EFAULT);
+    }
+    0
+}
+
 pub(super) fn linux_msync(addr: u64, len: u64, flags: u64) -> u64 {
     const PAGE_SIZE: u64 = 4096;
     const MS_ASYNC: u64 = 0x1;
