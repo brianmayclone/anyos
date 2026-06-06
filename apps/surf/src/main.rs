@@ -993,7 +993,9 @@ fn finish_script_slot(result: js_worker::JsWorkerResult) {
     }
     {
         let st = state();
-        if result.tab_index < st.tabs.len() && st.tabs[result.tab_index].webview.has_timers() {
+        if result.tab_index < st.tabs.len()
+            && st.tabs[result.tab_index].webview.has_pending_js_work()
+        {
             schedule_js_runtime_timer();
         }
     }
@@ -1088,7 +1090,7 @@ fn next_js_timer_tab() -> Option<(usize, u32)> {
         if tab.js_worker_busy {
             continue;
         }
-        let Some(delay_ms) = tab.webview.next_timer_delay_ms() else {
+        let Some(delay_ms) = tab.webview.next_js_task_delay_ms() else {
             continue;
         };
         let delay = delay_ms.min(u32::MAX as u64) as u32;

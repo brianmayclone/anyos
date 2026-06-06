@@ -623,10 +623,10 @@ fn load_page_inner(
             wv.relayout();
         }
         run_js_debug_probes(wv);
-        if wv.has_timers() {
+        if wv.has_pending_js_work() {
             if std::env::var_os("SURF_HOST_SKIP_INITIAL_TIMERS").is_some() {
                 eprintln!(
-                    "[js] skipping initial timer drain ({} timer(s) pending; SURF_HOST_SKIP_INITIAL_TIMERS set)",
+                    "[js] skipping initial JS drain ({} timer(s) pending; SURF_HOST_SKIP_INITIAL_TIMERS set)",
                     wv.timer_count()
                 );
             } else {
@@ -1068,7 +1068,7 @@ fn render_iframe_snapshot(
         if run_javascript(&mut frame, &base_url, cookies) {
             frame.relayout();
         }
-        if frame.has_timers() {
+        if frame.has_pending_js_work() {
             run_js_timers(&mut frame, &base_url, cookies, 250);
             frame.relayout();
         }
@@ -1280,7 +1280,7 @@ impl BrowserHostApp {
                 self.needs_redraw = true;
             }
         }
-        if self.wv.has_timers() {
+        if self.wv.has_pending_js_work() {
             self.wv.run_timers(16);
             if self.drain_js_side_effects() {
                 return;
@@ -1732,7 +1732,7 @@ impl eframe::App for BrowserHostApp {
 
         self.render_devtools(ctx);
 
-        if self.pending.is_done() && !self.wv.has_timers() && !self.wv.has_visual_work() {
+        if self.pending.is_done() && !self.wv.has_pending_js_work() && !self.wv.has_visual_work() {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
         } else {
             ctx.request_repaint();
@@ -2075,7 +2075,7 @@ fn main() {
             let step = 50u64;
             let mut waited = 0u64;
             while waited < args.delay_ms {
-                if run_screenshot_timers && wv.has_timers() {
+                if run_screenshot_timers && wv.has_pending_js_work() {
                     wv.run_timers_with_budget(step, HOST_SCREENSHOT_TIMER_CALLBACK_BUDGET);
                     if let Some(abs) = apply_host_js_mutations(&mut wv, &current_url, &mut cookies)
                     {
@@ -4989,17 +4989,17 @@ fn run_js_timers(
     cookies: &mut HostCookieJar,
     total_ms: u64,
 ) {
-    if !wv.has_timers() {
+    if !wv.has_pending_js_work() {
         return;
     }
     eprintln!(
-        "[js] running timers for {}ms ({} timers pending)...",
+        "[js] running JS tasks for {}ms ({} timers pending)...",
         total_ms,
         wv.timer_count()
     );
     let step = 50u64;
     let mut elapsed = 0u64;
-    while elapsed < total_ms && wv.has_timers() {
+    while elapsed < total_ms && wv.has_pending_js_work() {
         wv.run_timers(step);
         apply_host_js_mutations(wv, base_url, cookies);
         elapsed += step;
@@ -5009,8 +5009,9 @@ fn run_js_timers(
         }
     }
     eprintln!(
-        "[js] timer loop done ({} ms elapsed, timers remaining: {})",
+        "[js] JS task loop done ({} ms elapsed, work remaining: {}, timers remaining: {})",
         elapsed,
+        wv.has_pending_js_work(),
         wv.has_timers()
     );
 }

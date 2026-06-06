@@ -35,7 +35,7 @@ use crate::style::{apply_timing, TimingFunction, TransitionDef};
 const MAX_CONSOLE_MESSAGES: usize = 512;
 const MAX_PENDING_TIMERS: usize = 1024;
 const JS_TRACE: bool = false;
-const TIMER_CALLBACK_STEP_LIMIT: u64 = 1_000_000;
+const DEFAULT_TIMER_CALLBACK_STEP_LIMIT: u64 = 8_000_000;
 const DEFAULT_SCRIPT_STEP_LIMIT: u64 = 8_000_000;
 const DEFAULT_MAX_SCRIPTS: usize = 48;
 const DEFAULT_MAX_SCRIPT_BYTES: usize = 1024 * 1024;
@@ -199,6 +199,18 @@ fn configured_script_step_limit() -> u64 {
     }
     DEFAULT_SCRIPT_STEP_LIMIT
 }
+
+fn configured_timer_callback_step_limit() -> u64 {
+    #[cfg(feature = "host")]
+    {
+        if let Ok(raw) = std::env::var("LIBJS_TIMER_CALLBACK_STEP_LIMIT") {
+            if let Ok(limit) = raw.parse::<u64>() {
+                return limit.max(100_000);
+            }
+        }
+    }
+    DEFAULT_TIMER_CALLBACK_STEP_LIMIT
+}
 const QUIET_SELF_RESCHEDULE_MIN_DELAY_MS: u64 = 250;
 
 macro_rules! js_trace {
@@ -332,6 +344,7 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
                 ("title", "title"),
                 ("width", "width"),
                 ("height", "height"),
+                ("max", "max"),
                 ("viewBox", "viewBox"),
                 ("fill", "fill"),
                 ("stroke", "stroke"),
@@ -392,10 +405,10 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
                 value: cls,
             });
         }
-        "value" | "src" | "href" | "id" | "name" | "type" | "width" | "height" | "viewBox"
-        | "fill" | "stroke" | "strokeWidth" | "strokeLinecap" | "strokeLinejoin" | "xmlns"
-        | "role" | "aria-hidden" | "focusable" | "alt" | "decoding" | "loading" | "target"
-        | "rel" | "title" => {
+        "value" | "src" | "href" | "id" | "name" | "type" | "width" | "height" | "max"
+        | "viewBox" | "fill" | "stroke" | "strokeWidth" | "strokeLinecap" | "strokeLinejoin"
+        | "xmlns" | "role" | "aria-hidden" | "focusable" | "alt" | "decoding" | "loading"
+        | "target" | "rel" | "title" => {
             mutations.push(DomMutation::SetAttribute {
                 node_id,
                 name: String::from(key),
@@ -2692,8 +2705,12 @@ impl JsRuntime {
                             parent_id, new_child_id, ref_child_id, real_parent, real_new, real_ref
                         );
                     }
-                    if let (Some(p), Some(n), Some(r)) = (real_parent, real_new, real_ref) {
-                        dom.insert_before(p, n, r);
+                    if let (Some(p), Some(n)) = (real_parent, real_new) {
+                        if let Some(r) = real_ref {
+                            dom.insert_before(p, n, r);
+                        } else {
+                            dom.append_child(p, n);
+                        }
                         expected_parents.push((n, p));
                     }
                 }
@@ -3122,14 +3139,136 @@ impl JsRuntime {
         self.tick_with_budget(dom, delta_ms, usize::MAX)
     }
 
+    pub fn has_pending_microtasks(&self) -> bool {
+        self.engine.has_pending_microtasks()
+    }
+
+    pub fn has_pending_js_work(&self) -> bool {
+        !self.timers.is_empty() || self.has_pending_microtasks()
+    }
+
+    fn run_microtask_checkpoint(&mut self, dom: &Dom) -> bool {
+        if !self.engine.has_pending_microtasks() {
+            return false;
+        }
+
+        #[cfg(feature = "host")]
+        if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
+            eprintln!("[js-dom-debug] drain microtasks");
+        }
+
+        let mut bridge = DomBridge {
+            dom: dom as *const Dom,
+            mutations: Vec::new(),
+            event_listeners: Vec::new(),
+            installed_event_listeners: &self.event_listeners as *const Vec<EventListener>,
+            next_virtual_id: self.next_virtual_id,
+            virtual_nodes: core::mem::take(&mut self.virtual_nodes),
+            real_node_ids: core::mem::take(&mut self.real_node_ids),
+            pending_http_requests: Vec::new(),
+            pending_navigation_requests: Vec::new(),
+            timers: Vec::new(),
+            next_timer_id: self.next_timer_id,
+            propagation_stopped: false,
+            immediate_stopped: false,
+            prevented: false,
+            pending_ws_connects: Vec::new(),
+            pending_ws_sends: Vec::new(),
+            pending_ws_closes: Vec::new(),
+            ws_registry: Vec::new(),
+            remove_listeners: Vec::new(),
+            pending_style_animations: Vec::new(),
+            motion_final_styles: Vec::new(),
+        };
+        self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
+        unsafe {
+            MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>;
+            VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
+            NAVIGATION_TARGET =
+                &mut bridge.pending_navigation_requests as *mut Vec<PendingNavigationRequest>;
+            EVENT_LISTENERS_TARGET = &mut bridge.event_listeners as *mut Vec<EventListener>;
+            MOTION_FINAL_STYLES_TARGET =
+                &mut bridge.motion_final_styles as *mut Vec<MotionFinalStyle>;
+        }
+
+        self.engine
+            .set_step_limit(configured_timer_callback_step_limit());
+        self.engine.vm().steps = 0;
+        self.engine.vm().drain_microtasks();
+
+        #[cfg(feature = "host")]
+        if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
+            if let Some(ref exc) = self.engine.vm().last_exception {
+                eprintln!(
+                    "[js-dom-debug] microtask exception: {}",
+                    js_exception_summary(exc)
+                );
+            }
+            if let Some(ref exc) = self.engine.vm().pending_exception {
+                eprintln!(
+                    "[js-dom-debug] microtask pending exception: {}",
+                    js_exception_summary(exc)
+                );
+            }
+        }
+
+        self.engine.vm().last_exception = None;
+        self.engine.vm().pending_exception = None;
+        self.engine.vm().frames.clear();
+        self.engine.vm().stack.clear();
+
+        unsafe {
+            MUTATION_TARGET = core::ptr::null_mut();
+            VIRTUAL_NODES_TARGET = core::ptr::null_mut();
+            NAVIGATION_TARGET = core::ptr::null_mut();
+            EVENT_LISTENERS_TARGET = core::ptr::null_mut();
+            MOTION_FINAL_STYLES_TARGET = core::ptr::null_mut();
+        }
+        self.collect_engine_console();
+        for log_msg in self.engine.vm().engine_log.iter() {
+            js_trace!("[js] microtask: {}", log_msg);
+        }
+        self.engine.vm().engine_log.clear();
+
+        let produced_work = !bridge.mutations.is_empty()
+            || !bridge.event_listeners.is_empty()
+            || !bridge.remove_listeners.is_empty()
+            || !bridge.pending_http_requests.is_empty()
+            || !bridge.pending_navigation_requests.is_empty()
+            || !bridge.pending_ws_connects.is_empty()
+            || !bridge.pending_ws_sends.is_empty()
+            || !bridge.pending_ws_closes.is_empty()
+            || !bridge.pending_style_animations.is_empty()
+            || !bridge.motion_final_styles.is_empty()
+            || !bridge.timers.is_empty();
+
+        self.mutations.extend(bridge.mutations);
+        self.virtual_nodes = bridge.virtual_nodes;
+        self.next_virtual_id = bridge.next_virtual_id;
+        self.real_node_ids = bridge.real_node_ids;
+        self.event_listeners.extend(bridge.event_listeners);
+        self.pending_http_requests
+            .extend(bridge.pending_http_requests);
+        self.pending_navigation_requests
+            .extend(bridge.pending_navigation_requests);
+        self.next_timer_id = bridge.next_timer_id;
+        self.active_style_animations
+            .extend(bridge.pending_style_animations);
+        extend_pending_timers(&mut self.timers, bridge.timers);
+        self.engine.vm().userdata = core::ptr::null_mut();
+
+        produced_work
+    }
+
     /// Advance timers by `delta_ms`, executing at most `max_callbacks` due
     /// callbacks. Due timers beyond the budget remain queued for the next host
     /// tick so timer-heavy pages cannot monopolize the UI thread.
     pub fn tick_with_budget(&mut self, dom: &Dom, delta_ms: u64, max_callbacks: usize) -> usize {
         self.total_elapsed_ms += delta_ms;
 
-        // Short-circuit: no allocation or work when there are no timers.
+        // Short-circuit only when neither macrotasks nor Promise jobs exist.
         if self.timers.is_empty() {
+            self.run_microtask_checkpoint(dom);
             return 0;
         }
 
@@ -3189,7 +3328,8 @@ impl JsRuntime {
                 // Timer callbacks should be short tasks. Heavy recurring
                 // analytics/ad loops must not burn a full script-sized budget
                 // on every frame.
-                self.engine.set_step_limit(TIMER_CALLBACK_STEP_LIMIT);
+                self.engine
+                    .set_step_limit(configured_timer_callback_step_limit());
                 self.engine.vm().steps = 0;
                 // rAF callbacks receive a DOMHighResTimeStamp (W3C spec).
                 let cb_args: Vec<JsValue> = if t.is_raf {
@@ -3291,6 +3431,7 @@ impl JsRuntime {
             }
         }
         self.timers = keep;
+        self.run_microtask_checkpoint(dom);
         fired
     }
 
@@ -4351,6 +4492,16 @@ mod tests {
             checkSmoke('urlSearchParams', function(){ return new URL('https://example.com/path?q=test#x').searchParams.get('q') === 'test'; });
             checkSmoke('searchParams', function(){ return new URLSearchParams('a=1').get('a') === '1'; });
             checkSmoke('searchParamsIterator', function(){ return Array.from(new URLSearchParams('a=1&b=2'))[1][0] === 'b'; });
+            var smokeBlob = new Blob(['ab', 'c'], { type: 'TEXT/PLAIN' });
+            checkSmoke('blobSize', function(){ return smokeBlob.size === 3; });
+            checkSmoke('blobType', function(){ return smokeBlob.type === 'text/plain'; });
+            checkSmoke('blobArrayBuffer', function(){ return typeof smokeBlob.arrayBuffer === 'function'; });
+            checkSmoke('blobObjectUrl', function(){
+              var url = URL.createObjectURL(smokeBlob);
+              return typeof url === 'string' && url.indexOf('blob:anyos/') === 0;
+            });
+            checkSmoke('blobRevokeObjectUrl', function(){ return URL.revokeObjectURL(URL.createObjectURL(smokeBlob)) === undefined; });
+            smokeBlob.text().then(function(text){ globalThis.__blob_text = text; });
             checkSmoke('textEncoder', function(){ return typeof new TextEncoder().encode === 'function'; });
             checkSmoke('textDecoder', function(){ return typeof new TextDecoder().decode === 'function'; });
             checkSmoke('abortController', function(){ return !!new AbortController().signal; });
@@ -4386,6 +4537,11 @@ mod tests {
                 .vm()
                 .get_global("__ctor_smoke_failures")
                 .to_js_string()
+        );
+        runtime.run_microtask_checkpoint(&dom);
+        assert_eq!(
+            runtime.engine.vm().get_global("__blob_text").to_js_string(),
+            "abc"
         );
         assert!(
             matches!(
@@ -4599,6 +4755,139 @@ mod tests {
                 )
             }),
             "className assignment should become a real class attribute"
+        );
+    }
+
+    #[test]
+    fn insert_before_null_appends_virtual_node_to_real_dom() {
+        let mut dom = html::parse("<html><body></body></html>");
+        let mut runtime = JsRuntime::new();
+        runtime.execute_script_sources(
+            &dom,
+            "https://example.test/",
+            &[String::from(
+                r#"
+                const frame = document.createElement('iframe');
+                frame.id = 'bench-frame';
+                document.body.insertBefore(frame, null);
+                "#,
+            )],
+        );
+        runtime.apply_mutations(&mut dom);
+
+        let body_id = dom.find_body().expect("body should exist");
+        assert!(
+            dom.nodes[body_id].children.iter().any(|&child_id| {
+                matches!(
+                    &dom.nodes[child_id].node_type,
+                    crate::dom::NodeType::Element { tag: crate::dom::Tag::Iframe, attrs }
+                        if attrs.iter().any(|a| a.name == "id" && a.value == "bench-frame")
+                )
+            }),
+            "insertBefore(node, null) should append the virtual node into the real DOM"
+        );
+    }
+
+    #[test]
+    fn progress_max_property_assignment_updates_real_dom_attribute() {
+        let mut dom = html::parse(
+            "<html><body><progress id=\"progress-completed\"></progress></body></html>",
+        );
+        let mut runtime = JsRuntime::new();
+        runtime.execute_script_sources(
+            &dom,
+            "https://browserbench.org/Speedometer3.1/",
+            &[String::from(
+                r#"
+                const progress = document.getElementById('progress-completed');
+                progress.max = 580;
+                progress.value = 290;
+                "#,
+            )],
+        );
+        runtime.apply_mutations(&mut dom);
+
+        let progress_id = dom
+            .nodes
+            .iter()
+            .enumerate()
+            .find_map(|(idx, node)| {
+                matches!(
+                    &node.node_type,
+                    crate::dom::NodeType::Element {
+                        tag: crate::dom::Tag::Progress,
+                        ..
+                    }
+                )
+                .then_some(idx)
+            })
+            .expect("progress element should exist");
+
+        assert_eq!(dom.attr(progress_id, "max"), Some("580"));
+        assert_eq!(dom.attr(progress_id, "value"), Some("290"));
+    }
+
+    #[test]
+    fn moving_node_detaches_from_previous_js_parent() {
+        let mut dom = html::parse("<html><body></body></html>");
+        let mut runtime = JsRuntime::new();
+        runtime.execute_script_sources(
+            &dom,
+            "https://example.test/",
+            &[String::from(
+                r#"
+                const a = document.createElement('section');
+                const b = document.createElement('section');
+                const frame = document.createElement('iframe');
+                document.body.appendChild(a);
+                document.body.appendChild(b);
+                a.appendChild(frame);
+                b.appendChild(frame);
+                globalThis.__move_status = [
+                    a.children.length,
+                    a.firstChild === null,
+                    frame.parentNode === b,
+                    b.firstChild === frame,
+                    b.children.length
+                ].join('|');
+                globalThis.__move_detached_old =
+                    a.children.length === 0 &&
+                    a.firstChild === null &&
+                    frame.parentNode === b &&
+                    b.firstChild === frame;
+                frame.parentNode.removeChild(frame);
+                globalThis.__move_removed_current =
+                    b.children.length === 0 &&
+                    b.firstChild === null &&
+                    frame.parentNode === null;
+                "#,
+            )],
+        );
+
+        let window = runtime.engine.vm().get_global("window");
+        assert!(
+            matches!(
+                window.get_property("__move_detached_old"),
+                JsValue::Bool(true)
+            ),
+            "move status: {}",
+            window.get_property("__move_status").to_js_string()
+        );
+        assert!(matches!(
+            window.get_property("__move_removed_current"),
+            JsValue::Bool(true)
+        ));
+
+        runtime.apply_mutations(&mut dom);
+        let body_id = dom.find_body().expect("body should exist");
+        let live_iframe_count = dom.nodes[body_id]
+            .children
+            .iter()
+            .filter(|&&child_id| matches!(dom.tag(child_id), Some(crate::dom::Tag::Iframe)))
+            .count();
+        assert_eq!(
+            live_iframe_count, 0,
+            "moved iframe should not remain attached after current-parent removeChild"
         );
     }
 
@@ -4894,6 +5183,351 @@ mod tests {
         assert_eq!(
             window.get_property("__iframe_src").to_js_string(),
             "resources/warmup/index.html"
+        );
+    }
+
+    #[test]
+    fn speedometer_perf_dashboard_iframe_chain_reaches_score_callback() {
+        let dom = html::parse("<html><body></body></html>");
+        let mut runtime = JsRuntime::new();
+        runtime.execute_script_sources(
+            &dom,
+            "https://browserbench.org/Speedometer3.1/",
+            &[String::from(
+                r#"
+                const params = {
+                    measurementMethod: 'raf',
+                    viewport: { width: 800, height: 600 },
+                    waitBeforeSync: 0,
+                    warmupBeforeSync: 0
+                };
+
+                class BenchmarkTestStep {
+                    constructor(name, run) {
+                        this.name = name;
+                        this.run = run;
+                    }
+                }
+
+                class Page {
+                    constructor(frame) {
+                        this._frame = frame;
+                    }
+                    async waitForElement(selector) {
+                        return new Promise((resolve) => {
+                            const resolveIfReady = () => {
+                                const element = this.querySelector(selector);
+                                window.requestAnimationFrame(element ? () => resolve(element) : resolveIfReady);
+                            };
+                            resolveIfReady();
+                        });
+                    }
+                    querySelector(selector) {
+                        const element = this._frame.contentDocument.querySelector(selector);
+                        return element === null ? null : this._wrapElement(element);
+                    }
+                    call(functionName) {
+                        this._frame.contentWindow[functionName]();
+                        return null;
+                    }
+                    callAsync(functionName) {
+                        setTimeout(() => {
+                            this._frame.contentWindow[functionName]();
+                        }, 0);
+                    }
+                    callToGetElement(functionName) {
+                        return this._wrapElement(this._frame.contentWindow[functionName]());
+                    }
+                    _wrapElement(element) {
+                        return new PageElement(element);
+                    }
+                }
+
+                class PageElement {
+                    #node;
+                    constructor(node) {
+                        this.#node = node;
+                    }
+                    dispatchKeyEvent(type, keyCode, key, options) {
+                        let eventOptions = { bubbles: true, cancelable: true, keyCode, which: keyCode, key };
+                        if (options !== undefined)
+                            eventOptions = Object.assign(eventOptions, options);
+                        const event = new KeyboardEvent(type, eventOptions);
+                        this.#node.dispatchEvent(event);
+                    }
+                    dispatchMouseEvent(type, offsetX, offsetY, options) {
+                        const boundingRect = this.#node.getBoundingClientRect();
+                        const clientX = offsetX + boundingRect.x;
+                        const clientY = offsetY + boundingRect.y;
+                        const contentWindow = this.#node.ownerDocument.defaultView;
+                        const screenX = clientX + contentWindow.screenX;
+                        const screenY = clientY + contentWindow.screenY;
+                        let eventOptions = { bubbles: true, cancelable: true, clientX, clientY, screenX, screenY };
+                        if (options !== undefined)
+                            eventOptions = Object.assign(eventOptions, options);
+                        const event = new contentWindow.MouseEvent(type, eventOptions);
+                        this.#node.dispatchEvent(event);
+                    }
+                }
+
+                class TestInvoker {
+                    constructor(syncCallback, asyncCallback, reportCallback) {
+                        this._syncCallback = syncCallback;
+                        this._asyncCallback = asyncCallback;
+                        this._reportCallback = reportCallback;
+                    }
+                }
+
+                class RAFTestInvoker extends TestInvoker {
+                    start() {
+                        return new Promise((resolve) => {
+                            requestAnimationFrame(() => this._syncCallback());
+                            requestAnimationFrame(() => {
+                                setTimeout(() => {
+                                    this._asyncCallback();
+                                    setTimeout(async () => {
+                                        await this._reportCallback();
+                                        resolve();
+                                    }, 0);
+                                }, 0);
+                            });
+                        });
+                    }
+                }
+
+                class BenchmarkRunner {
+                    constructor(suites, client) {
+                        this._suites = suites;
+                        this._client = client;
+                        this._frame = null;
+                        this._page = null;
+                        this._metrics = null;
+                        this._measuredValues = null;
+                    }
+                    async runMultipleIterations() {
+                        try {
+                            await this._runAllSuites();
+                        } catch (error) {
+                            globalThis.__speedometer_error = error && (error.message || String(error));
+                            return;
+                        }
+                        if (this._client?.didFinishLastIteration)
+                            await this._client.didFinishLastIteration(this._metrics);
+                    }
+                    async _runAllSuites() {
+                        this._measuredValues = { tests: {}, total: 0, mean: NaN, geomean: NaN, score: NaN };
+                        this._removeFrame();
+                        await this._appendFrame();
+                        this._page = new Page(this._frame);
+                        for (const suite of this._suites)
+                            await this._runSuite(suite);
+                        await this._finishRunAllSuites();
+                    }
+                    async _appendFrame() {
+                        const frame = document.createElement('iframe');
+                        const style = frame.style;
+                        style.width = `${params.viewport.width}px`;
+                        style.height = `${params.viewport.height}px`;
+                        style.border = '0px none';
+                        frame.className = 'test-runner';
+                        document.body.insertBefore(frame, document.body.firstChild);
+                        this._frame = frame;
+                        return frame;
+                    }
+                    _removeFrame() {
+                        if (this._frame) {
+                            this._frame.parentNode.removeChild(this._frame);
+                            this._frame = null;
+                            globalThis.__speedometer_frame_removed = 1;
+                        }
+                    }
+                    async _finishRunAllSuites() {
+                        this._removeFrame();
+                        await this._finalize();
+                    }
+                    async _runSuite(suite) {
+                        await this._prepareSuite(suite);
+                        for (const test of suite.tests)
+                            await this._runTestAndRecordResults(suite, test);
+                    }
+                    async _prepareSuite(suite) {
+                        return new Promise((resolve) => {
+                            const frame = this._page._frame;
+                            frame.onload = async () => {
+                                await suite.prepare(this._page);
+                                resolve();
+                            };
+                            frame.src = `resources/${suite.url}`;
+                        });
+                    }
+                    async _runTestAndRecordResults(suite, test) {
+                        if (this._client?.willRunTest)
+                            await this._client.willRunTest(suite, test);
+                        let syncTime = 0;
+                        let asyncTime = 0;
+                        let asyncStartTime = 0;
+                        const runSync = () => {
+                            const syncStartTime = performance.now();
+                            test.run(this._page);
+                            syncTime = performance.now() - syncStartTime;
+                            asyncStartTime = performance.now();
+                        };
+                        const measureAsync = () => {
+                            const height = this._frame.contentDocument.body.getBoundingClientRect().height;
+                            asyncTime = performance.now() - asyncStartTime;
+                            this._frame.contentWindow._unusedHeightValue = height;
+                        };
+                        const report = () => this._recordTestResults(suite, test, syncTime, asyncTime);
+                        return new RAFTestInvoker(runSync, measureAsync, report).start();
+                    }
+                    async _recordTestResults(suite, test, syncTime, asyncTime) {
+                        const suiteResults = this._measuredValues.tests[suite.name] || { tests: {}, total: 0 };
+                        const total = syncTime + asyncTime;
+                        this._measuredValues.tests[suite.name] = suiteResults;
+                        suiteResults.tests[test.name] = { tests: { Sync: syncTime, Async: asyncTime }, total };
+                        suiteResults.total += total;
+                        if (this._client?.didRunTest)
+                            await this._client.didRunTest(suite, test);
+                    }
+                    async _finalize() {
+                        const values = [];
+                        let product = 1;
+                        for (const suiteName in this._measuredValues.tests) {
+                            const suiteTotal = this._measuredValues.tests[suiteName].total;
+                            product *= suiteTotal;
+                            values.push(suiteTotal);
+                        }
+                        const total = values.reduce((a, b) => a + b);
+                        const geomean = Math.pow(product, 1 / values.length);
+                        this._measuredValues.total = total;
+                        this._measuredValues.mean = total / values.length;
+                        this._measuredValues.geomean = geomean;
+                        this._measuredValues.score = 1000 / geomean;
+                        if (this._client?.didRunSuites)
+                            await this._client.didRunSuites(this._measuredValues);
+                    }
+                }
+
+                const suite = {
+                    name: 'Perf-Dashboard',
+                    url: 'perf.webkit.org/public/v3/#/charts/',
+                    async prepare(page) {
+                        await page.waitForElement('#app-is-ready');
+                        page.call('startTest');
+                        page.callAsync('serviceRAF');
+                        await new Promise((resolve) => setTimeout(resolve, 1));
+                    },
+                    tests: [
+                        new BenchmarkTestStep('Render', (page) => {
+                            page.call('openCharts');
+                            page.call('serviceRAF');
+                        }),
+                        new BenchmarkTestStep('SelectingPoints', (page) => {
+                            const chartPane = page.callToGetElement('getChartPane');
+                            for (let i = 0; i < 20; ++i) {
+                                chartPane.dispatchKeyEvent('keydown', 39, 'ArrowRight');
+                                page.call('serviceRAF');
+                            }
+                        }),
+                        new BenchmarkTestStep('SelectingRange', (page) => {
+                            const canvas = page.callToGetElement('getChartCanvas');
+                            const startingX = 200;
+                            const startingY = 200;
+                            const endingX = 600;
+                            const endingY = 400;
+                            canvas.dispatchMouseEvent('mousedown', startingX, startingY);
+                            page.call('serviceRAF');
+                            for (let i = 1; i <= 4; ++i) {
+                                canvas.dispatchMouseEvent('mousemove', startingX + ((endingX - startingX) * i) / 4, startingY + ((endingY - startingY) * i) / 4);
+                                page.call('serviceRAF');
+                            }
+                            canvas.dispatchMouseEvent('mouseup', endingX, endingY);
+                            page.call('serviceRAF');
+                        }),
+                    ],
+                };
+
+                const client = {
+                    async willRunTest() {
+                        globalThis.__speedometer_will = (globalThis.__speedometer_will || 0) + 1;
+                    },
+                    async didRunTest() {
+                        globalThis.__speedometer_did = (globalThis.__speedometer_did || 0) + 1;
+                    },
+                    async didRunSuites(values) {
+                        globalThis.__speedometer_score = values.score;
+                        globalThis.__speedometer_done = 1;
+                    },
+                    async didFinishLastIteration() {
+                        globalThis.__speedometer_finished = 1;
+                    }
+                };
+
+                globalThis.__speedometer_error = '';
+                globalThis.__speedometer_done = 0;
+                globalThis.__speedometer_finished = 0;
+                globalThis.__speedometer_frame_removed = 0;
+                new BenchmarkRunner([suite], client).runMultipleIterations().then(() => {
+                    globalThis.__speedometer_resolved = 1;
+                }, (error) => {
+                    globalThis.__speedometer_error = error && (error.message || String(error));
+                });
+                "#,
+            )],
+        );
+
+        assert!(
+            runtime.engine.vm().last_exception.is_none(),
+            "unexpected JS exception: {:?}",
+            runtime.engine.vm().last_exception
+        );
+        for _ in 0..80 {
+            if !runtime.has_pending_js_work() {
+                break;
+            }
+            runtime.tick(&dom, 50);
+        }
+        assert!(
+            !runtime.has_pending_js_work(),
+            "speedometer mini-run left JS work pending"
+        );
+
+        let window = runtime.engine.vm().get_global("window");
+        assert_eq!(
+            window.get_property("__speedometer_error").to_js_string(),
+            "",
+            "speedometer mini-run threw an error"
+        );
+        assert_eq!(
+            window.get_property("__speedometer_will").to_number() as i32,
+            3
+        );
+        assert_eq!(
+            window.get_property("__speedometer_did").to_number() as i32,
+            3
+        );
+        assert!(matches!(
+            window.get_property("__speedometer_frame_removed"),
+            JsValue::Number(1.0)
+        ));
+        assert!(matches!(
+            window.get_property("__speedometer_done"),
+            JsValue::Number(1.0)
+        ));
+        assert!(matches!(
+            window.get_property("__speedometer_finished"),
+            JsValue::Number(1.0)
+        ));
+        assert!(matches!(
+            window.get_property("__speedometer_resolved"),
+            JsValue::Number(1.0)
+        ));
+        assert!(
+            window
+                .get_property("__speedometer_score")
+                .to_number()
+                .is_finite(),
+            "score callback should receive a finite score"
         );
     }
 }

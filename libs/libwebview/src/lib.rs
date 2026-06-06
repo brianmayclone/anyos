@@ -168,6 +168,10 @@ impl JsExecutionState {
         self.runtime
             .tick_with_budget(&self.dom, delta_ms, callback_budget)
     }
+
+    pub fn has_pending_js_work(&self) -> bool {
+        self.runtime.has_pending_js_work()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1292,6 +1296,11 @@ impl WebView {
         !self.js_runtime.timers.is_empty()
     }
 
+    /// Check if JavaScript has timer callbacks or Promise jobs waiting.
+    pub fn has_pending_js_work(&self) -> bool {
+        self.js_runtime.has_pending_js_work()
+    }
+
     /// Check if visual-only work still needs animation ticks.
     pub fn has_visual_work(&self) -> bool {
         self.pending_tiles
@@ -1308,6 +1317,14 @@ impl WebView {
 
     pub fn next_timer_delay_ms(&self) -> Option<u64> {
         self.js_runtime.next_timer_delay_ms()
+    }
+
+    pub fn next_js_task_delay_ms(&self) -> Option<u64> {
+        if self.js_runtime.has_pending_microtasks() {
+            Some(0)
+        } else {
+            self.next_timer_delay_ms()
+        }
     }
 
     /// Get the page title from the current DOM (if any).
@@ -1602,10 +1619,10 @@ impl WebView {
         let viewport_h = self.viewport_height.max(1) as i32;
         let node_count = self.dom_val.as_ref().map_or(0, |d| d.nodes.len());
 
-        self.deferred_layout_budget_px = self
-            .deferred_layout_budget_px
-            .saturating_mul(2)
-            .max(self.deferred_layout_budget_px.saturating_add(viewport_h * 4));
+        self.deferred_layout_budget_px = self.deferred_layout_budget_px.saturating_mul(2).max(
+            self.deferred_layout_budget_px
+                .saturating_add(viewport_h * 4),
+        );
         self.deferred_style_node_budget = self
             .deferred_style_node_budget
             .saturating_mul(2)
@@ -6228,6 +6245,44 @@ mod tests {
         assert_eq!(bar_bx.width, 120);
         assert_eq!(item_bx.width, 48);
         assert_eq!(bx.width, 48);
+    }
+
+    #[test]
+    fn progress_control_respects_author_size_and_value_ratio() {
+        let mut wv = WebView::new(500, 160);
+        wv.set_url("https://browserbench.org/Speedometer3.1/");
+        wv.set_html_no_js(
+            r#"
+            <html><body>
+              <div id="track"><progress id="progress-completed" max="580" value="290"></progress></div>
+            </body></html>
+            "#,
+        );
+        wv.add_stylesheet(
+            r#"
+            body { margin: 0; }
+            #track { width: 400px; }
+            #progress-completed {
+                width: 100%;
+                height: 6px;
+                appearance: none;
+                border: none;
+            }
+            "#,
+        );
+        wv.relayout();
+
+        let progress = {
+            let dom = wv.dom().expect("dom");
+            find_node_by_id(dom, "progress-completed")
+        };
+        let root = wv.layout_root_ref().expect("layout root");
+        let bx = find_layout_box_by_node(root, progress).expect("progress layout box");
+
+        assert!(matches!(bx.form_field, Some(FormFieldKind::Progress)));
+        assert_eq!(bx.width, 400);
+        assert_eq!(bx.height, 6);
+        assert_eq!(bx.form_value.as_deref(), Some("500"));
     }
 
     #[test]

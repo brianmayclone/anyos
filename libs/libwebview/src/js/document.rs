@@ -1212,8 +1212,7 @@ fn frag_remove_js_child(fragment: &JsValue, child_id: i64) {
     let children = fragment.get_property("children");
     if let JsValue::Array(arr) = &children {
         arr.borrow_mut()
-            .elements
-            .retain(|_k, el| element::extract_node_id_pub(el) != child_id);
+            .retain_values_dense(|el| element::extract_node_id_pub(el) != child_id);
         refresh_fragment_children_metadata(fragment);
     }
 }

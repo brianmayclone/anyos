@@ -501,6 +501,35 @@ impl Compiler {
                             .add_local_with_flags(name.clone(), false, true);
                     }
                 }
+                Stmt::Export(ExportDecl::Decl(inner)) => match inner.as_ref() {
+                    Stmt::VarDecl { kind, decls } => {
+                        for decl in decls {
+                            let mut names = Vec::new();
+                            Self::collect_pattern_names(&decl.name, &mut names);
+                            for name in names {
+                                if self.scope().resolve_local(&name).is_none() {
+                                    self.scope_mut().add_local_with_flags(
+                                        name,
+                                        *kind != VarKind::Const,
+                                        *kind != VarKind::Var,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Stmt::FunctionDecl { name, .. } => {
+                        if self.scope().resolve_local(name).is_none() {
+                            self.scope_mut().add_local(name.clone());
+                        }
+                    }
+                    Stmt::ClassDecl { name, .. } => {
+                        if self.scope().resolve_local(name).is_none() {
+                            self.scope_mut()
+                                .add_local_with_flags(name.clone(), false, true);
+                        }
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }

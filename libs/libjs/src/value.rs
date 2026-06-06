@@ -899,6 +899,24 @@ impl JsArray {
         self.elements.values().cloned().collect()
     }
 
+    /// Retain values in index order and compact the array to a dense layout.
+    pub fn retain_values_dense<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(&JsValue) -> bool,
+    {
+        let kept: Vec<JsValue> = self
+            .elements
+            .values()
+            .filter(|value| keep(value))
+            .cloned()
+            .collect();
+        self.elements.clear();
+        self.length = 0;
+        for value in kept {
+            self.push(value);
+        }
+    }
+
     /// Remove element at index and shift higher indices down by 1
     /// (used by `shift`, `splice`).
     pub fn remove_and_shift(&mut self, index: usize) -> JsValue {
