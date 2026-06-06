@@ -99,7 +99,10 @@ fn notify_result_ready() {
     }
 }
 
-pub(crate) fn submit(req: JsWorkerRequest) {
+pub(crate) fn submit(req: JsWorkerRequest) -> Result<(), JsWorkerRequest> {
+    if !ensure_worker() {
+        return Err(req);
+    }
     acquire(&REQUEST_LOCK);
     unsafe {
         if let Some(queue) = REQUEST_QUEUE.as_mut() {
@@ -107,7 +110,17 @@ pub(crate) fn submit(req: JsWorkerRequest) {
         }
     }
     release(&REQUEST_LOCK);
-    ensure_worker();
+    if ensure_worker() {
+        Ok(())
+    } else {
+        acquire(&REQUEST_LOCK);
+        let recovered = unsafe { REQUEST_QUEUE.as_mut().and_then(|queue| queue.pop_back()) };
+        release(&REQUEST_LOCK);
+        match recovered {
+            Some(req) => Err(req),
+            None => Ok(()),
+        }
+    }
 }
 
 pub(crate) fn drain_results() -> Vec<JsWorkerResult> {
@@ -138,12 +151,12 @@ pub(crate) fn has_pending_activity() -> bool {
     result_pending
 }
 
-fn ensure_worker() {
+fn ensure_worker() -> bool {
     if ACTIVE_WORKERS
         .compare_exchange(0, 1, Ordering::SeqCst, Ordering::Relaxed)
         .is_err()
     {
-        return;
+        return true;
     }
     match anyos_std::process::Thread::spawn_with_stack(
         worker_entry,
@@ -157,6 +170,7 @@ fn ensure_worker() {
                 anyos_std::sys::uptime_ms(),
                 JS_WORKER_STACK_BYTES
             );
+            true
         }
         Err(_) => {
             ACTIVE_WORKERS.store(0, Ordering::SeqCst);
@@ -164,6 +178,7 @@ fn ensure_worker() {
                 "[surf-js-worker {:>8}ms] ERROR: failed to spawn worker thread",
                 anyos_std::sys::uptime_ms()
             );
+            false
         }
     }
 }
@@ -249,7 +264,7 @@ fn worker_entry() {
     }
     ACTIVE_WORKERS.store(0, Ordering::SeqCst);
     if request_pending() {
-        ensure_worker();
+        let _ = ensure_worker();
     }
     anyos_std::process::exit(0);
 }

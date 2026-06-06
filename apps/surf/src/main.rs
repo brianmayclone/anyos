@@ -129,6 +129,7 @@ const RELAYOUT_FOLLOWUP_DELAY_MS: u32 = 16;
 const IMAGE_REPAINT_BURST_DELAY_MS: u32 = 64;
 const NET_POLL_INTERVAL_MS: u32 = 250;
 const NET_STALE_WAIT_EMPTY_POLLS: u32 = 20;
+const JS_WORKER_POLL_INTERVAL_MS: u32 = 50;
 const DEBUG_SKIP_BLOCKING_SLOT2: bool = false;
 
 fn debug_text_fingerprint(text: &str) -> u64 {
@@ -312,6 +313,8 @@ struct AppState {
     script_pump_timer: u32,
     /// Timer ID for scheduling JS runtime timers onto the JS worker.
     js_runtime_timer: u32,
+    /// Timer ID for draining JS worker results if marshal dispatch is delayed.
+    js_worker_poll_timer: u32,
     /// Timer ID for delayed startup navigation (0 = not running).
     start_nav_timer: u32,
     /// Consecutive JS timer worker ticks that fired without visible/host work.
@@ -492,6 +495,9 @@ pub(crate) fn start_anim_timer() {
                 net_results.len()
             );
             process_fetched_results(net_results);
+        }
+        if process_js_worker_results() {
+            schedule_js_runtime_timer();
         }
         let active_tab = st.active_tab;
         let now_ms = anyos_std::sys::uptime_ms();
@@ -886,7 +892,7 @@ fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &st
         script_label,
         preview
     );
-    js_worker::submit(js_worker::JsWorkerRequest {
+    let request = js_worker::JsWorkerRequest {
         tab_index,
         job: js_worker::JsWorkerJob::Script {
             slot,
@@ -896,7 +902,18 @@ fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &st
         },
         state: js_state,
         generation,
-    });
+    };
+    match js_worker::submit(request) {
+        Ok(()) => ensure_js_worker_poll_timer(),
+        Err(request) => {
+            crate::surf_log!(
+                "[surf] JS worker unavailable for {} script [{}]; running inline",
+                label,
+                slot
+            );
+            run_js_worker_request_inline(request);
+        }
+    }
 }
 
 fn finish_script_slot(result: js_worker::JsWorkerResult) {
@@ -1117,7 +1134,7 @@ fn submit_js_timer_tick(tab_index: usize, elapsed_ms: u32) -> bool {
         st.tabs[tab_index].js_worker_busy = true;
         js_state = state_value;
     }
-    js_worker::submit(js_worker::JsWorkerRequest {
+    let request = js_worker::JsWorkerRequest {
         tab_index,
         job: js_worker::JsWorkerJob::Timer {
             delta_ms: elapsed_ms.max(1) as u64,
@@ -1125,7 +1142,14 @@ fn submit_js_timer_tick(tab_index: usize, elapsed_ms: u32) -> bool {
         },
         state: js_state,
         generation,
-    });
+    };
+    match js_worker::submit(request) {
+        Ok(()) => ensure_js_worker_poll_timer(),
+        Err(request) => {
+            crate::surf_log!("[surf] JS worker unavailable for timer job; running inline");
+            run_js_worker_request_inline(request);
+        }
+    }
     true
 }
 
@@ -1182,6 +1206,7 @@ pub(crate) fn handle_js_worker_results_ready() {
     if had_results {
         schedule_js_runtime_timer();
     }
+    ensure_js_worker_poll_timer();
 }
 
 fn process_js_worker_results() -> bool {
@@ -1194,6 +1219,72 @@ fn process_js_worker_results() -> bool {
         finish_script_slot(result);
     }
     true
+}
+
+fn js_worker_work_pending() -> bool {
+    let st = state();
+    st.tabs.iter().any(|tab| tab.js_worker_busy) || js_worker::has_pending_activity()
+}
+
+fn start_js_worker_poll_timer() {
+    let st = state();
+    if st.js_worker_poll_timer != 0 {
+        return;
+    }
+    st.js_worker_poll_timer = ui_lib::set_timer(JS_WORKER_POLL_INTERVAL_MS, || {
+        let had_results = process_js_worker_results();
+        if had_results {
+            schedule_js_runtime_timer();
+        }
+        if js_worker_work_pending() {
+            return;
+        }
+        let st = state();
+        if st.js_worker_poll_timer != 0 {
+            defer_kill_timer(st.js_worker_poll_timer);
+            st.js_worker_poll_timer = 0;
+        }
+    });
+}
+
+fn ensure_js_worker_poll_timer() {
+    if js_worker_work_pending() {
+        start_js_worker_poll_timer();
+    }
+}
+
+fn run_js_worker_request_inline(mut req: js_worker::JsWorkerRequest) {
+    let start_ms = anyos_std::sys::uptime_ms();
+    let kind = match req.job {
+        js_worker::JsWorkerJob::Script {
+            slot,
+            label,
+            script_label,
+            script,
+        } => {
+            req.state.execute_script_source(script);
+            js_worker::JsWorkerResultKind::Script {
+                slot,
+                label,
+                script_label,
+            }
+        }
+        js_worker::JsWorkerJob::Timer {
+            delta_ms,
+            callback_budget,
+        } => {
+            let fired = req.state.run_timers_with_budget(delta_ms, callback_budget);
+            js_worker::JsWorkerResultKind::Timer { fired }
+        }
+    };
+    let exec_ms = anyos_std::sys::uptime_ms().wrapping_sub(start_ms);
+    finish_script_slot(js_worker::JsWorkerResult {
+        tab_index: req.tab_index,
+        kind,
+        state: req.state,
+        exec_ms,
+        generation: req.generation,
+    });
 }
 
 fn execute_buffered_async_scripts(tab_index: usize) {
@@ -2919,6 +3010,7 @@ fn queue_module_dependencies(
 
     if queued > 0 {
         st.tabs[tab_index].load_state.on_module_added(queued);
+        ensure_net_poll_timer();
     }
     queued
 }
@@ -3297,6 +3389,7 @@ fn main() {
             net_poll_timer: 0,
             script_pump_timer: 0,
             js_runtime_timer: 0,
+            js_worker_poll_timer: 0,
             start_nav_timer: 0,
             js_timer_quiet_ticks: [0; 16],
             render_dirty: [RenderWork::None; 16],
