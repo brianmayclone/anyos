@@ -136,6 +136,7 @@ fn main() -> u32 {
     if !ui::init() {
         return u32::MAX;
     }
+    ui::set_menubar_visible(false);
     i18n::init();
 
     // ── Load users (uid:username:fullname per line) ─────────────────────
@@ -664,7 +665,11 @@ fn main() -> u32 {
 
     ui::run();
 
-    unsafe { LOGIN_UID }
+    let login_uid = unsafe { LOGIN_UID };
+    if login_uid != u32::MAX {
+        ui::set_menubar_visible(true);
+    }
+    login_uid
 }
 
 fn current_username() -> &'static str {

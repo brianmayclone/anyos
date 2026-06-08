@@ -10,6 +10,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+static mut SUPPRESS_NEXT_CANVAS_EVENT_CLICK_CTRL: u32 = 0;
+
 // ═══════════════════════════════════════════════════════════
 // Link click callback
 // ═══════════════════════════════════════════════════════════
@@ -19,18 +21,19 @@ use alloc::vec::Vec;
 /// Resolves the link URL relative to the page's base URL and navigates to it.
 /// Also handles canvas-based submit button hits (since the canvas only has one callback).
 pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata: u64) {
-    let st = crate::state();
-    let tab = &mut st.tabs[st.active_tab];
-    let control_node = tab.webview.node_id_for_control(ctrl_id);
-
     match _event_type {
         libanyui_client::EVENT_MOUSE_MOVE => {
+            let st = crate::state();
+            let tab = &mut st.tabs[st.active_tab];
             if tab.webview.handle_mouse_move_for_control(ctrl_id) {
                 crate::ensure_anim_timer();
             }
             return;
         }
         libanyui_client::EVENT_MOUSE_DOWN => {
+            let st = crate::state();
+            let tab = &mut st.tabs[st.active_tab];
+            let control_node = tab.webview.node_id_for_control(ctrl_id);
             let active = control_node.or_else(|| tab.webview.hit_test_node_canvas(ctrl_id));
             let changed =
                 tab.webview.set_active_node(active) | tab.webview.set_hovered_node(active);
@@ -40,20 +43,46 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
             return;
         }
         libanyui_client::EVENT_MOUSE_ENTER => {
+            let st = crate::state();
+            let tab = &mut st.tabs[st.active_tab];
             if tab.webview.handle_mouse_move_for_control(ctrl_id) {
                 crate::ensure_anim_timer();
             }
             return;
         }
         libanyui_client::EVENT_MOUSE_UP => {
-            let hovered = control_node.or_else(|| tab.webview.hit_test_node_canvas(ctrl_id));
-            let changed = tab.webview.set_active_node(None) | tab.webview.set_hovered_node(hovered);
-            if changed {
-                crate::ensure_anim_timer();
+            let canvas_click_node = {
+                let st = crate::state();
+                let tab = &mut st.tabs[st.active_tab];
+                let control_node = tab.webview.node_id_for_control(ctrl_id);
+                let canvas_node = tab.webview.hit_test_node_canvas(ctrl_id);
+                let hovered = control_node.or(canvas_node);
+                let changed =
+                    tab.webview.set_active_node(None) | tab.webview.set_hovered_node(hovered);
+                if changed {
+                    crate::ensure_anim_timer();
+                }
+                if control_node.is_none() {
+                    canvas_node
+                } else {
+                    None
+                }
+            };
+            if let Some(node_id) = canvas_click_node {
+                crate::surf_log!(
+                    "[surf] canvas mouse-up dispatching DOM click: ctrl={} node={}",
+                    ctrl_id,
+                    node_id
+                );
+                suppress_next_canvas_event_click(ctrl_id);
+                handle_page_click(ctrl_id);
             }
             return;
         }
         libanyui_client::EVENT_FOCUS => {
+            let st = crate::state();
+            let tab = &mut st.tabs[st.active_tab];
+            let control_node = tab.webview.node_id_for_control(ctrl_id);
             let focused = control_node;
             if tab.webview.set_focused_node(focused, true) {
                 crate::ensure_anim_timer();
@@ -61,12 +90,16 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
             return;
         }
         libanyui_client::EVENT_BLUR => {
+            let st = crate::state();
+            let tab = &mut st.tabs[st.active_tab];
             if tab.webview.set_focused_node(None, false) {
                 crate::ensure_anim_timer();
             }
             return;
         }
         libanyui_client::EVENT_MOUSE_LEAVE => {
+            let st = crate::state();
+            let tab = &mut st.tabs[st.active_tab];
             let changed = tab.webview.set_hovered_node(None) | tab.webview.set_active_node(None);
             if changed {
                 crate::ensure_anim_timer();
@@ -79,7 +112,33 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
     if _event_type != libanyui_client::EVENT_CLICK {
         return;
     }
+    if take_suppressed_canvas_event_click(ctrl_id) {
+        return;
+    }
 
+    handle_page_click(ctrl_id);
+}
+
+fn suppress_next_canvas_event_click(ctrl_id: u32) {
+    unsafe {
+        SUPPRESS_NEXT_CANVAS_EVENT_CLICK_CTRL = ctrl_id;
+    }
+}
+
+fn take_suppressed_canvas_event_click(ctrl_id: u32) -> bool {
+    unsafe {
+        if SUPPRESS_NEXT_CANVAS_EVENT_CLICK_CTRL == ctrl_id {
+            SUPPRESS_NEXT_CANVAS_EVENT_CLICK_CTRL = 0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn handle_page_click(ctrl_id: u32) {
+    let st = crate::state();
+    let tab = &mut st.tabs[st.active_tab];
     // DevTools element-picker mode: route the click to the inspector instead
     // of the page's normal link/submit handling.
     if st.devtools.picker_active {
@@ -96,11 +155,20 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
         .dispatch_click_for_control(ctrl_id)
     {
         process_dom_event_side_effects(tab_index);
+        crate::queue_iframe_snapshots_for_tab(tab_index);
+        crate::schedule_js_runtime_timer();
+        crate::ensure_anim_timer();
         return;
     }
     if process_dom_event_side_effects(tab_index) {
+        crate::queue_iframe_snapshots_for_tab(tab_index);
+        crate::schedule_js_runtime_timer();
+        crate::ensure_anim_timer();
         return;
     }
+    crate::queue_iframe_snapshots_for_tab(tab_index);
+    crate::schedule_js_runtime_timer();
+    crate::ensure_anim_timer();
     let tab = &mut st.tabs[tab_index];
 
     // Try link hit first.

@@ -31,6 +31,7 @@ const CMD_SET_MODAL_OWNER: u32 = 0x1024;
 const CMD_SET_FULLSCREEN_CAP: u32 = 0x1030;
 const CMD_REQUEST_FULLSCREEN: u32 = 0x1031;
 const CMD_EXIT_FULLSCREEN: u32 = 0x1032;
+const CMD_SET_MENUBAR_VISIBLE: u32 = 0x1036;
 const RESP_WINDOW_CREATED: u32 = 0x2001;
 const RESP_VRAM_WINDOW_CREATED: u32 = 0x2004;
 const RESP_VRAM_WINDOW_FAILED: u32 = 0x2005;
@@ -39,7 +40,7 @@ const RESP_CLIPBOARD_DATA: u32 = 0x2010;
 const RESP_FULLSCREEN_ENTERED: u32 = 0x2020;
 const RESP_FULLSCREEN_EXITED: u32 = 0x2021;
 
-const NUM_EXPORTS: u32 = 28;
+const NUM_EXPORTS: u32 = 29;
 const PENDING_EVENT_CAP: usize = 64;
 
 static mut PENDING_EVENTS: [[u32; 5]; PENDING_EVENT_CAP] = [[0; 5]; PENDING_EVENT_CAP];
@@ -299,6 +300,9 @@ pub struct LibcompositorExports {
 
     /// Exit fullscreen mode for a window.
     pub exit_fullscreen: extern "C" fn(channel_id: u32, window_id: u32),
+
+    /// Show or hide the global menubar.
+    pub set_menubar_visible: extern "C" fn(channel_id: u32, visible: u32),
 }
 
 #[link_section = ".exports"]
@@ -337,6 +341,7 @@ pub static LIBCOMPOSITOR_EXPORTS: LibcompositorExports = LibcompositorExports {
     set_fullscreen_capable: export_set_fullscreen_capable,
     request_fullscreen: export_request_fullscreen,
     exit_fullscreen: export_exit_fullscreen,
+    set_menubar_visible: export_set_menubar_visible,
 };
 
 // ── Export Implementations ───────────────────────────────────────────────────
@@ -1037,5 +1042,11 @@ extern "C" fn export_request_fullscreen(
 extern "C" fn export_exit_fullscreen(channel_id: u32, window_id: u32) {
     let tid = syscall::get_tid();
     let cmd: [u32; 5] = [CMD_EXIT_FULLSCREEN, window_id, tid, 0, 0];
+    syscall::evt_chan_emit(channel_id, &cmd);
+}
+
+extern "C" fn export_set_menubar_visible(channel_id: u32, visible: u32) {
+    let tid = syscall::get_tid();
+    let cmd: [u32; 5] = [CMD_SET_MENUBAR_VISIBLE, visible.min(1), tid, 0, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
 }

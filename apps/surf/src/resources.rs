@@ -1425,10 +1425,6 @@ pub(crate) fn queue_iframe_snapshots(base_url: &crate::http::Url, tab_index: usi
             if !matches!(dom.tag(node_id), Some(libwebview::dom::Tag::Iframe)) {
                 continue;
             }
-            let image_key = libwebview::iframe_snapshot_key(node_id);
-            if tab.webview.has_decoded_image(&image_key) {
-                continue;
-            }
 
             let srcdoc = dom.attr(node_id, "srcdoc").unwrap_or("").trim();
             let src_attr = dom.attr(node_id, "src").unwrap_or("").trim();
@@ -1544,6 +1540,8 @@ pub(crate) fn queue_iframe_snapshots(base_url: &crate::http::Url, tab_index: usi
                     base_url,
                     html.as_bytes(),
                     "content-type: text/html; charset=utf-8",
+                    Vec::new(),
+                    Vec::new(),
                     candidate.width,
                     candidate.height,
                     generation,
@@ -1579,6 +1577,8 @@ pub(crate) fn add_iframe_snapshot_from_html(
     url: &crate::http::Url,
     body: &[u8],
     headers: &str,
+    stylesheets: Vec<libwebview::css::Stylesheet>,
+    scripts: Vec<String>,
     width: u32,
     height: u32,
     generation: u32,
@@ -1591,7 +1591,8 @@ pub(crate) fn add_iframe_snapshot_from_html(
             return false;
         }
     }
-    let Some((pixels, w, h)) = render_iframe_snapshot_from_html(url, body, headers, width, height)
+    let Some((pixels, w, h)) =
+        render_iframe_snapshot_from_html(url, body, headers, stylesheets, scripts, width, height)
     else {
         return false;
     };
@@ -1610,6 +1611,8 @@ fn render_iframe_snapshot_from_html(
     url: &crate::http::Url,
     body: &[u8],
     headers: &str,
+    stylesheets: Vec<libwebview::css::Stylesheet>,
+    scripts: Vec<String>,
     width: u32,
     height: u32,
 ) -> Option<(Vec<u32>, u32, u32)> {
@@ -1623,7 +1626,22 @@ fn render_iframe_snapshot_from_html(
 
     let mut frame = libwebview::WebView::new(width, height);
     frame.set_url(&crate::ui::format_url(url));
-    frame.set_html_no_js(&html);
+    frame.set_html_dom_only(&html);
+    for stylesheet in stylesheets {
+        frame.add_parsed_stylesheet(stylesheet);
+    }
+    if !scripts.is_empty() {
+        let limits = libwebview::js::ScriptExecutionLimits {
+            max_scripts: scripts.len(),
+            max_script_bytes: None,
+        };
+        frame.execute_js_with_limits(&scripts, limits);
+        for _ in 0..4 {
+            if !frame.run_timers_with_budget(16, 256) {
+                break;
+            }
+        }
+    }
     frame.relayout();
 
     let mut pending = true;

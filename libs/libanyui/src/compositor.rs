@@ -128,6 +128,8 @@ struct LibcompositorExports {
     ) -> u32,
 
     exit_fullscreen: extern "C" fn(channel_id: u32, window_id: u32),
+
+    set_menubar_visible: extern "C" fn(channel_id: u32, visible: u32),
 }
 
 fn exports() -> &'static LibcompositorExports {
@@ -443,4 +445,11 @@ pub fn set_menu(channel_id: u32, window_id: u32, data: *const u8, len: u32) {
 /// Update a menu item's flags (enable/disable/check).
 pub fn update_menu_item(channel_id: u32, window_id: u32, item_id: u32, new_flags: u32) {
     (exports().update_menu_item)(channel_id, window_id, item_id, new_flags);
+}
+
+pub fn set_menubar_visible(channel_id: u32, visible: bool) {
+    let exports = exports();
+    if exports.num_exports >= 29 {
+        (exports.set_menubar_visible)(channel_id, if visible { 1 } else { 0 });
+    }
 }

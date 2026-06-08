@@ -178,6 +178,8 @@ pub(crate) enum FetchResult {
         url: Url,
         body: Vec<u8>,
         headers: String,
+        stylesheets: Vec<libwebview::css::Stylesheet>,
+        scripts: Vec<String>,
         width: u32,
         height: u32,
         timing: Option<http::RequestTiming>,
@@ -774,6 +776,8 @@ const MAX_CACHEABLE_IMAGE_BODY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_DISK_CACHEABLE_BODY_BYTES: usize = 32 * 1024 * 1024;
 const DISK_CACHE_MIN_FREE_BYTES: u64 = 512 * 1024 * 1024;
 const DISK_CACHE_DEFAULT_MAX_AGE_SECS: u32 = 60 * 60;
+const MAX_IFRAME_STYLESHEETS: usize = 24;
+const MAX_IFRAME_SCRIPTS: usize = 96;
 /// A cached HTTP response for a sub-resource.
 struct CacheEntry {
     /// Cache key: fully-qualified URL string.
@@ -1471,6 +1475,117 @@ fn cache_key(url: &http::Url) -> String {
     key
 }
 
+fn fetch_cached_subresource(
+    url: &http::Url,
+    destination: http::FetchDestination,
+    pool: &mut ConnPool,
+) -> Option<(Vec<u8>, String)> {
+    let key = cache_key(url);
+    if let Some(hit) = cache_get(&key) {
+        return Some(hit);
+    }
+    let mut cookies = CookieJar::new();
+    match http::fetch_with_destination(url, &mut cookies, pool, destination) {
+        Ok(resp) if resp.status >= 200 && resp.status < 400 => {
+            cache_put(key, resp.body.clone(), resp.headers.clone());
+            Some((resp.body, resp.headers))
+        }
+        Ok(resp) => {
+            surf_net_log!(
+                "iframe subresource HTTP failure: status={} bytes={} key={}",
+                resp.status,
+                resp.body.len(),
+                key
+            );
+            None
+        }
+        Err(e) => {
+            surf_net_log!(
+                "iframe subresource fetch failed: key={} ({})",
+                key,
+                fetch_error_msg(e)
+            );
+            None
+        }
+    }
+}
+
+fn collect_iframe_subresources(
+    document_url: &http::Url,
+    body: &[u8],
+    headers: &str,
+    pool: &mut ConnPool,
+) -> (Vec<libwebview::css::Stylesheet>, Vec<String>) {
+    let html = crate::resources::decode_http_body(body, headers);
+    if html.trim().is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let dom = libwebview::html::parse(&html);
+    let mut stylesheets = Vec::new();
+    for (node_id, node) in dom.nodes.iter().enumerate() {
+        if stylesheets.len() >= MAX_IFRAME_STYLESHEETS {
+            break;
+        }
+        if !matches!(
+            &node.node_type,
+            libwebview::dom::NodeType::Element {
+                tag: libwebview::dom::Tag::Link,
+                ..
+            }
+        ) {
+            continue;
+        }
+        let rel = dom.attr(node_id, "rel").unwrap_or("");
+        if !rel
+            .split_ascii_whitespace()
+            .any(|tok| tok.eq_ignore_ascii_case("stylesheet"))
+        {
+            continue;
+        }
+        let Some(href) = dom.attr(node_id, "href") else {
+            continue;
+        };
+        if href.trim().is_empty() {
+            continue;
+        }
+        let css_url = http::resolve_url(document_url, href);
+        if let Some((css_body, css_headers)) =
+            fetch_cached_subresource(&css_url, http::FetchDestination::Style, pool)
+        {
+            let css_text = crate::resources::decode_http_body(&css_body, &css_headers);
+            let css_text = crate::resources::resolve_css_resource_urls(&css_text, &css_url);
+            stylesheets.push(libwebview::css::parse_stylesheet(&css_text));
+        }
+    }
+
+    let mut scripts = Vec::new();
+    for entry in libwebview::js::JsRuntime::collect_script_entries(&dom) {
+        if scripts.len() >= MAX_IFRAME_SCRIPTS {
+            break;
+        }
+        match entry {
+            libwebview::js::ScriptEntry::Inline { source, .. } => {
+                scripts.push(source);
+            }
+            libwebview::js::ScriptEntry::External { src, .. } => {
+                if src.trim().is_empty() {
+                    continue;
+                }
+                let script_url = http::resolve_url(document_url, &src);
+                if let Some((script_body, script_headers)) =
+                    fetch_cached_subresource(&script_url, http::FetchDestination::Script, pool)
+                {
+                    scripts.push(crate::resources::decode_http_body(
+                        &script_body,
+                        &script_headers,
+                    ));
+                }
+            }
+        }
+    }
+    (stylesheets, scripts)
+}
+
 fn stamp_worker_timing(
     timing: &mut http::RequestTiming,
     request_id: u32,
@@ -1828,6 +1943,8 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
             let key = cache_key(&url);
             if let Some((body, headers)) = cache_get(&key) {
                 surf_net_log!("iframe cache hit: node={} {}", node_id, src);
+                let (stylesheets, scripts) =
+                    collect_iframe_subresources(&url, &body, &headers, pool);
                 enqueue_result(FetchResult::IframeSnapshotDone {
                     tab_index,
                     node_id,
@@ -1835,6 +1952,8 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     url,
                     body,
                     headers,
+                    stylesheets,
+                    scripts,
                     width,
                     height,
                     timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
@@ -1854,6 +1973,8 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                 Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
                     stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
                     cache_put(key, resp.body.clone(), resp.headers.clone());
+                    let (stylesheets, scripts) =
+                        collect_iframe_subresources(&url, &resp.body, &resp.headers, pool);
                     enqueue_result(FetchResult::IframeSnapshotDone {
                         tab_index,
                         node_id,
@@ -1861,6 +1982,8 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         url,
                         body: resp.body,
                         headers: resp.headers,
+                        stylesheets,
+                        scripts,
                         width,
                         height,
                         timing: Some(resp.timing),
@@ -1884,6 +2007,8 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         url,
                         body: Vec::new(),
                         headers: resp.headers,
+                        stylesheets: Vec::new(),
+                        scripts: Vec::new(),
                         width,
                         height,
                         timing: Some(resp.timing),
@@ -1905,6 +2030,8 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         url,
                         body: Vec::new(),
                         headers: String::new(),
+                        stylesheets: Vec::new(),
+                        scripts: Vec::new(),
                         width,
                         height,
                         timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),

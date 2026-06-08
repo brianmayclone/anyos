@@ -693,6 +693,28 @@ fn apply_js_host_mutations(tab_index: usize) {
     }
 }
 
+pub(crate) fn queue_iframe_snapshots_for_tab(tab_index: usize) -> usize {
+    let base_url = {
+        let st = state();
+        if tab_index >= st.tabs.len() {
+            return 0;
+        }
+        st.tabs[tab_index].current_url.clone()
+    };
+    let Some(base_url) = base_url else {
+        return 0;
+    };
+    let queued = resources::queue_iframe_snapshots(&base_url, tab_index);
+    if queued > 0 {
+        crate::surf_log!(
+            "[surf] queued iframe snapshots after DOM update: tab={} count={}",
+            tab_index,
+            queued
+        );
+    }
+    queued
+}
+
 fn drain_js_navigation_for_tab(tab_index: usize) -> bool {
     let st = state();
     if tab_index >= st.tabs.len() {
@@ -982,6 +1004,7 @@ fn finish_script_slot(result: js_worker::JsWorkerResult) {
                     }
                 }
             }
+            queue_iframe_snapshots_for_tab(result.tab_index);
             pump_deferred_images_for_tab(result.tab_index);
         }
         ensure_anim_timer();
@@ -1075,6 +1098,7 @@ fn finish_js_timer_job(
                     }
                 }
             }
+            queue_iframe_snapshots_for_tab(tab_index);
             pump_deferred_images_for_tab(tab_index);
         }
         ensure_anim_timer();
@@ -1955,6 +1979,8 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
             url,
             body,
             headers,
+            stylesheets,
+            scripts,
             width,
             height,
             timing,
@@ -1963,16 +1989,27 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
         } => {
             record_resource_completion(&url, body.len() as u64, timing, from_cache);
             crate::surf_log!(
-                "[surf] received IframeSnapshotDone: tab={} node={} src={} bytes={} gen={}",
+                "[surf] received IframeSnapshotDone: tab={} node={} src={} bytes={} css={} scripts={} gen={}",
                 tab_index,
                 node_id,
                 src,
                 body.len(),
+                stylesheets.len(),
+                scripts.len(),
                 generation
             );
             let start_ms = anyos_std::sys::uptime_ms();
             let changed = resources::add_iframe_snapshot_from_html(
-                tab_index, node_id, &url, &body, &headers, width, height, generation,
+                tab_index,
+                node_id,
+                &url,
+                &body,
+                &headers,
+                stylesheets,
+                scripts,
+                width,
+                height,
+                generation,
             );
             log_main_phase_elapsed("handle_iframe_snapshot_done", start_ms);
             if changed {

@@ -406,6 +406,7 @@ struct AnyuiLib {
     set_menu_fn: extern "C" fn(u32, *const u8, u32),
     update_menu_item_fn: extern "C" fn(u32, u32, u32),
     on_menu_item_fn: extern "C" fn(u32, Callback, u64),
+    set_menubar_visible_fn: Option<extern "C" fn(u32)>,
     // TabBar extensions
     pub(crate) tabbar_show_plus: extern "C" fn(u32, u32),
     pub(crate) tabbar_set_tab_icon: extern "C" fn(u32, u32, *const u32, u32, u32),
@@ -748,6 +749,7 @@ pub fn init() -> bool {
             set_menu_fn: resolve(&handle, "anyui_set_menu"),
             update_menu_item_fn: resolve(&handle, "anyui_update_menu_item"),
             on_menu_item_fn: resolve(&handle, "anyui_on_menu_item"),
+            set_menubar_visible_fn: resolve_optional(&handle, "anyui_set_menubar_visible"),
             tabbar_show_plus: resolve(&handle, "anyui_tabbar_show_plus"),
             tabbar_set_tab_icon: resolve(&handle, "anyui_tabbar_set_tab_icon"),
             _handle: handle,
@@ -1636,6 +1638,15 @@ pub fn screen_size() -> (u32, u32) {
     let mut h: u32 = 0;
     (lib().screen_size)(&mut w, &mut h);
     (w, h)
+}
+
+/// Show or hide the compositor's global menubar.
+///
+/// On systems with an older libanyui this is a no-op.
+pub fn set_menubar_visible(visible: bool) {
+    if let Some(f) = lib().set_menubar_visible_fn {
+        f(if visible { 1 } else { 0 });
+    }
 }
 
 // ── Multi-monitor screen API ────────────────────────────────────────

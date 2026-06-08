@@ -465,6 +465,14 @@ impl CompositorClient {
     pub fn exit_fullscreen_vram(&self, handle: &VramWindowHandle) {
         (raw::exports().exit_fullscreen)(self.channel_id, handle.id);
     }
+
+    /// Show or hide the global menubar.
+    pub fn set_menubar_visible(&self, visible: bool) {
+        let exports = raw::exports();
+        if exports.num_exports >= 29 {
+            (exports.set_menubar_visible)(self.channel_id, if visible { 1 } else { 0 });
+        }
+    }
 }
 
 /// Convenience: get screen size without a client connection.

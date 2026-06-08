@@ -4738,6 +4738,13 @@ pub extern "C" fn anyui_update_menu_item(win_id: u32, item_id: u32, new_flags: u
     }
 }
 
+/// Show or hide the global compositor menubar.
+#[no_mangle]
+pub extern "C" fn anyui_set_menubar_visible(visible: u32) {
+    let st = state();
+    compositor::set_menubar_visible(st.channel_id, visible != 0);
+}
+
 /// Register a callback for menu item clicks on a window.
 /// Callback receives (item_id, EVT_MENU_ITEM, userdata).
 #[no_mangle]

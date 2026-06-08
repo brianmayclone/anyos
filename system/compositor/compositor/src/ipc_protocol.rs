@@ -273,6 +273,10 @@ pub const CMD_LIST_WINDOW_TIDS: u32 = 0x1034;
 /// Compositor responds with EVT_CURSOR_POS on that reply target.
 pub const CMD_GET_CURSOR_POS: u32 = 0x1035;
 
+/// Show or hide the global menubar.
+/// [CMD, visible (0=hide, 1=show), requester_tid, 0, 0]
+pub const CMD_SET_MENUBAR_VISIBLE: u32 = 0x1036;
+
 // ── Compositor → App: Notification Events ────────────────────────────────
 
 /// Notification clicked by user: [EVT, notification_id, sender_tid, 0, 0]

@@ -336,6 +336,10 @@ impl Desktop {
                 }
                 None
             }
+            proto::CMD_SET_MENUBAR_VISIBLE => {
+                self.set_menubar_visible(cmd[1] != 0);
+                None
+            }
             proto::CMD_RESIZE_SHM => {
                 let window_id = cmd[1];
                 let new_shm_id = cmd[2];
@@ -1045,10 +1049,7 @@ impl Desktop {
         // Mark as the fullscreen window
         self.fullscreen_window = Some(window_id);
 
-        // Hide menubar layer
-        if let Some(mb) = self.compositor.get_layer_mut(self.menubar_layer_id) {
-            mb.visible = false;
-        }
+        self.apply_menubar_layer_visibility();
 
         // Hide all other window layers (don't destroy, just make invisible)
         for w in &self.windows {
@@ -1116,10 +1117,7 @@ impl Desktop {
             self.render_window(window_id);
         }
 
-        // Restore menubar layer visibility
-        if let Some(mb) = self.compositor.get_layer_mut(self.menubar_layer_id) {
-            mb.visible = true;
-        }
+        self.apply_menubar_layer_visibility();
 
         // Restore background layer visibility
         if let Some(bg) = self.compositor.get_layer_mut(self.bg_layer_id) {
