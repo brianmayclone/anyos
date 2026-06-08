@@ -5742,47 +5742,5 @@ fn extract_pixels(
     height: usize,
     scroll_y: i32,
 ) {
-    // Tile canvases have positions set by the renderer (pos_y = row * 256).
-    // We composite each canvas at its actual position, adjusted by scroll.
-    for canvas_id in wv.tile_canvas_ids() {
-        if let Some((pixels, cw, ch, _px, py)) = libanyui_client::host_get_canvas_pixels(canvas_id)
-        {
-            let cw = cw as usize;
-            let ch = ch as usize;
-            if cw == 0 || ch == 0 || pixels.len() < cw * ch {
-                continue;
-            }
-
-            // Canvas position in document coordinates, adjusted by scroll
-            let canvas_top = py - scroll_y;
-            let canvas_bottom = canvas_top + ch as i32;
-
-            // Skip if entirely outside viewport
-            if canvas_bottom <= 0 || canvas_top >= height as i32 {
-                continue;
-            }
-
-            let src_start = if canvas_top < 0 {
-                (-canvas_top) as usize
-            } else {
-                0
-            };
-            let dst_start = if canvas_top > 0 {
-                canvas_top as usize
-            } else {
-                0
-            };
-
-            for row in src_start..ch {
-                let dst_y = dst_start + row - src_start;
-                if dst_y >= height {
-                    break;
-                }
-                let copy_w = cw.min(width);
-                let src_off = row * cw;
-                let dst_off = dst_y * width;
-                fb[dst_off..dst_off + copy_w].copy_from_slice(&pixels[src_off..src_off + copy_w]);
-            }
-        }
-    }
+    wv.snapshot_viewport_pixels(fb, width, height, scroll_y);
 }

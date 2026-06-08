@@ -1060,6 +1060,7 @@ fn win_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             node_id: usize::MAX, // window pseudo-node
             event,
             callback,
+            inline: false,
             capture,
         });
     }
@@ -1941,6 +1942,7 @@ fn win_mutation_observer_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                     node_id: usize::MAX - 1, // special sentinel for mutation observers
                     event: String::from("__mutation_observer"),
                     callback: observer,
+                    inline: false,
                     capture: false,
                 });
             }

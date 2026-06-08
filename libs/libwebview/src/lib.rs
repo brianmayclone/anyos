@@ -1415,6 +1415,22 @@ impl WebView {
         self.renderer.tile_canvas_ids()
     }
 
+    /// Copy the already-rasterized viewport into a plain BGRA buffer.
+    ///
+    /// The caller should first render the requested viewport with
+    /// `render_viewport_at`; this method intentionally reads the shared tile
+    /// cache so host tools and Surf use the same renderer output.
+    pub fn snapshot_viewport_pixels(
+        &self,
+        fb: &mut [u32],
+        width: usize,
+        height: usize,
+        scroll_y: i32,
+    ) {
+        self.renderer
+            .copy_viewport_pixels(fb, width, height, scroll_y, self.bg_color_cached);
+    }
+
     /// Render tiles for the given scroll position (public wrapper).
     /// Returns `true` if there are pending tiles not yet rasterized.
     pub fn render_viewport_at(&mut self, scroll_y: i32) -> bool {

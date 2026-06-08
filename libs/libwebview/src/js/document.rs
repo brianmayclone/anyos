@@ -878,6 +878,7 @@ fn doc_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             node_id: 0,
             event,
             callback,
+            inline: false,
             capture,
         });
     }

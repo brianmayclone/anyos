@@ -76,6 +76,17 @@ pub(crate) enum FetchRequest {
         from_deferred: bool,
         generation: u32,
     },
+    /// Same-origin/remote iframe document fetch used to render a snapshot into
+    /// libwebview's iframe replacement image.
+    IframeSnapshot {
+        tab_index: usize,
+        node_id: usize,
+        src: String,
+        url: Url,
+        width: u32,
+        height: u32,
+        generation: u32,
+    },
     /// Web font fetch (@font-face src).
     Font {
         tab_index: usize,
@@ -159,6 +170,20 @@ pub(crate) enum FetchResult {
         from_cache: bool,
         generation: u32,
     },
+    /// Iframe document fetch completed.
+    IframeSnapshotDone {
+        tab_index: usize,
+        node_id: usize,
+        src: String,
+        url: Url,
+        body: Vec<u8>,
+        headers: String,
+        width: u32,
+        height: u32,
+        timing: Option<http::RequestTiming>,
+        from_cache: bool,
+        generation: u32,
+    },
     /// Web font fetch completed successfully.
     FontDone {
         tab_index: usize,
@@ -205,6 +230,7 @@ impl FetchResult {
             | FetchResult::NavError { tab_index, .. }
             | FetchResult::CssDone { tab_index, .. }
             | FetchResult::ImageDone { tab_index, .. }
+            | FetchResult::IframeSnapshotDone { tab_index, .. }
             | FetchResult::FontDone { tab_index, .. }
             | FetchResult::ScriptDone { tab_index, .. }
             | FetchResult::ModuleScriptDone { tab_index, .. } => *tab_index,
@@ -377,6 +403,7 @@ fn request_worker_class(req: &FetchRequest) -> WorkerClass {
         | FetchRequest::Css { .. } => WorkerClass::Critical,
         FetchRequest::Script { .. } | FetchRequest::ModuleScript { .. } => WorkerClass::Script,
         FetchRequest::Font { .. } => WorkerClass::Font,
+        FetchRequest::IframeSnapshot { .. } => WorkerClass::Visible,
         FetchRequest::Image { priority, .. } => match priority {
             ImagePriority::Viewport => WorkerClass::Visible,
             ImagePriority::Deferred => WorkerClass::Background,
@@ -505,6 +532,9 @@ fn record_started(req: &FetchRequest) -> u32 {
         FetchRequest::Image { url, .. } => {
             crate::devtools::record_request_started("GET", "img", url)
         }
+        FetchRequest::IframeSnapshot { url, .. } => {
+            crate::devtools::record_request_started("GET", "iframe", url)
+        }
         FetchRequest::Font { url, .. } => {
             crate::devtools::record_request_started("GET", "font", url)
         }
@@ -621,6 +651,7 @@ pub(crate) fn new_generation() -> u32 {
                     FetchRequest::Navigate { .. } | FetchRequest::NavigatePost { .. } => true,
                     FetchRequest::Css { generation, .. }
                     | FetchRequest::Image { generation, .. }
+                    | FetchRequest::IframeSnapshot { generation, .. }
                     | FetchRequest::Font { generation, .. }
                     | FetchRequest::Script { generation, .. }
                     | FetchRequest::ModuleScript { generation, .. } => *generation == gen,
@@ -638,6 +669,7 @@ pub(crate) fn new_generation() -> u32 {
                     FetchResult::NavDone { .. } | FetchResult::NavError { .. } => true,
                     FetchResult::CssDone { generation, .. }
                     | FetchResult::ImageDone { generation, .. }
+                    | FetchResult::IframeSnapshotDone { generation, .. }
                     | FetchResult::FontDone { generation, .. }
                     | FetchResult::ScriptDone { generation, .. }
                     | FetchResult::ModuleScriptDone { generation, .. } => *generation == gen,
@@ -1223,6 +1255,7 @@ fn request_host(req: &FetchRequest) -> &str {
         | FetchRequest::NavigatePost { url, .. }
         | FetchRequest::Css { url, .. }
         | FetchRequest::Image { url, .. }
+        | FetchRequest::IframeSnapshot { url, .. }
         | FetchRequest::Font { url, .. }
         | FetchRequest::Script { url, .. }
         | FetchRequest::ModuleScript { url, .. } => &url.host,
@@ -1312,6 +1345,7 @@ fn request_priority(req: &FetchRequest) -> u8 {
         FetchRequest::Css { .. } => 4,
         FetchRequest::Script { .. } | FetchRequest::ModuleScript { .. } => 3,
         FetchRequest::Font { .. } => 2,
+        FetchRequest::IframeSnapshot { .. } => 1,
         FetchRequest::Image { priority, .. } => match priority {
             ImagePriority::Viewport => 1,
             ImagePriority::Deferred => 0,
@@ -1325,6 +1359,7 @@ fn request_tab_index_mut(req: &mut FetchRequest) -> &mut usize {
         | FetchRequest::NavigatePost { tab_index, .. }
         | FetchRequest::Css { tab_index, .. }
         | FetchRequest::Image { tab_index, .. }
+        | FetchRequest::IframeSnapshot { tab_index, .. }
         | FetchRequest::Font { tab_index, .. }
         | FetchRequest::Script { tab_index, .. }
         | FetchRequest::ModuleScript { tab_index, .. } => tab_index,
@@ -1383,6 +1418,10 @@ fn stamp_result_enqueued(result: &mut FetchResult) {
             ..
         }
         | FetchResult::ImageDone {
+            timing: Some(timing),
+            ..
+        }
+        | FetchResult::IframeSnapshotDone {
             timing: Some(timing),
             ..
         }
@@ -1765,6 +1804,109 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         decoded_raster: None,
                         priority,
                         from_deferred,
+                        timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                        from_cache: false,
+                        generation,
+                    });
+                }
+            }
+        }
+
+        FetchRequest::IframeSnapshot {
+            tab_index,
+            node_id,
+            src,
+            url,
+            width,
+            height,
+            generation,
+        } => {
+            if generation != current_gen {
+                return;
+            }
+
+            let key = cache_key(&url);
+            if let Some((body, headers)) = cache_get(&key) {
+                surf_net_log!("iframe cache hit: node={} {}", node_id, src);
+                enqueue_result(FetchResult::IframeSnapshotDone {
+                    tab_index,
+                    node_id,
+                    src,
+                    url,
+                    body,
+                    headers,
+                    width,
+                    height,
+                    timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                    from_cache: true,
+                    generation,
+                });
+                return;
+            }
+
+            surf_net_log!("fetching iframe: node={} {}", node_id, src);
+            match http::fetch_with_destination(
+                &url,
+                &mut CookieJar::new(),
+                pool,
+                http::FetchDestination::Document,
+            ) {
+                Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
+                    stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
+                    cache_put(key, resp.body.clone(), resp.headers.clone());
+                    enqueue_result(FetchResult::IframeSnapshotDone {
+                        tab_index,
+                        node_id,
+                        src,
+                        url,
+                        body: resp.body,
+                        headers: resp.headers,
+                        width,
+                        height,
+                        timing: Some(resp.timing),
+                        from_cache: false,
+                        generation,
+                    });
+                }
+                Ok(mut resp) => {
+                    stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
+                    surf_net_log!(
+                        "iframe fetch HTTP failure: node={} status={} bytes={} src={}",
+                        node_id,
+                        resp.status,
+                        resp.body.len(),
+                        src
+                    );
+                    enqueue_result(FetchResult::IframeSnapshotDone {
+                        tab_index,
+                        node_id,
+                        src,
+                        url,
+                        body: Vec::new(),
+                        headers: resp.headers,
+                        width,
+                        height,
+                        timing: Some(resp.timing),
+                        from_cache: false,
+                        generation,
+                    });
+                }
+                Err(e) => {
+                    surf_net_log!(
+                        "iframe fetch failed: node={} {} ({})",
+                        node_id,
+                        src,
+                        fetch_error_msg(e)
+                    );
+                    enqueue_result(FetchResult::IframeSnapshotDone {
+                        tab_index,
+                        node_id,
+                        src,
+                        url,
+                        body: Vec::new(),
+                        headers: String::new(),
+                        width,
+                        height,
                         timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
                         from_cache: false,
                         generation,

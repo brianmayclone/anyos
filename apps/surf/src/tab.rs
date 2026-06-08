@@ -497,6 +497,8 @@ pub(crate) struct TabState {
     pub(crate) deferred_images: Vec<DeferredImageRequest>,
     /// Image `src` keys already submitted or deferred during this navigation.
     pub(crate) requested_image_urls: Vec<String>,
+    /// Iframe snapshot keys already queued during this navigation.
+    pub(crate) requested_iframe_snapshots: Vec<String>,
     /// Number of deferred image requests currently in flight.
     pub(crate) deferred_images_inflight: usize,
     /// External CSS has completed and background images should be discovered
@@ -538,6 +540,7 @@ impl TabState {
             deferred_fonts_inflight: 0,
             deferred_images: Vec::new(),
             requested_image_urls: Vec::new(),
+            requested_iframe_snapshots: Vec::new(),
             deferred_images_inflight: 0,
             css_background_scan_pending: false,
             inline_svg_cache: Vec::new(),
@@ -755,6 +758,7 @@ fn navigate_file(path: &str) {
     st.tabs[tab_idx].deferred_fonts_inflight = 0;
     st.tabs[tab_idx].deferred_images.clear();
     st.tabs[tab_idx].requested_image_urls.clear();
+    st.tabs[tab_idx].requested_iframe_snapshots.clear();
     st.tabs[tab_idx].deferred_images_inflight = 0;
     st.tabs[tab_idx].css_background_scan_pending = false;
     st.tabs[tab_idx].inline_svg_cache.clear();
@@ -825,10 +829,8 @@ fn navigate_file(path: &str) {
                         .register_module_source(&specifier, text);
                     load_local_module_dependencies(tab_idx, path, text, &mut module_seen, 0);
                     pending.push(Some(crate::module_import_wrapper(&specifier)));
-                } else if crate::script_within_surf_limit(slot, &label, text) {
-                    pending.push(Some(text.clone()));
                 } else {
-                    pending.push(None);
+                    pending.push(Some(text.clone()));
                 }
                 modes.push(mode.clone());
                 labels.push(label);
@@ -874,7 +876,7 @@ fn navigate_file(path: &str) {
                         );
                         pending.push(Some(crate::module_import_wrapper(&key)));
                     }
-                } else if !text.is_empty() && crate::script_within_surf_limit(slot, &label, &text) {
+                } else if !text.is_empty() {
                     pending.push(Some(text));
                 } else {
                     pending.push(None);

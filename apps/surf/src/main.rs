@@ -123,7 +123,6 @@ const JS_TIMER_QUIET_DEEP_BACKOFF_AFTER: u16 = 24;
 const JS_TIMER_QUIET_BACKOFF_DELAY_MS: u32 = 1000;
 const JS_TIMER_QUIET_DEEP_BACKOFF_DELAY_MS: u32 = 5000;
 const JS_TIMER_CALLBACK_BUDGET: usize = 4;
-const MAX_SCRIPT_SOURCE_BYTES: usize = usize::MAX;
 const DEBUG_SKIP_BLOCKING_SLOT0: bool = false;
 const RELAYOUT_FOLLOWUP_DELAY_MS: u32 = 16;
 const IMAGE_REPAINT_BURST_DELAY_MS: u32 = 64;
@@ -150,20 +149,6 @@ fn debug_text_prefix(text: &str, max_chars: usize) -> String {
         }
     }
     out
-}
-
-fn script_within_surf_limit(slot: usize, label: &str, source: &str) -> bool {
-    if source.len() <= MAX_SCRIPT_SOURCE_BYTES {
-        return true;
-    }
-    crate::surf_log!(
-        "[surf] skipping script [{}]: {} bytes exceeds Surf limit {} bytes label={}",
-        slot,
-        source.len(),
-        MAX_SCRIPT_SOURCE_BYTES,
-        label
-    );
-    false
 }
 
 fn phase_name(phase: PageLoadPhase) -> &'static str {
@@ -840,9 +825,6 @@ fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &st
             .cloned()
             .unwrap_or_else(|| String::from("<unknown>"))
     };
-    if !script_within_surf_limit(slot, &script_label, &script) {
-        return;
-    }
     let preview = script_preview(&script);
     log_script_dump(slot, label, &script_label, &script);
     if DEBUG_SKIP_BLOCKING_SLOT0 && label == "blocking/defer" && slot == 0 {
@@ -1736,6 +1718,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
     let mut nav_count = 0usize;
     let mut css_count = 0usize;
     let mut image_count = 0usize;
+    let mut iframe_count = 0usize;
     let mut font_count = 0usize;
     let mut script_count = 0usize;
     let mut module_count = 0usize;
@@ -1746,6 +1729,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
             }
             net_worker::FetchResult::CssDone { .. } => css_count += 1,
             net_worker::FetchResult::ImageDone { .. } => image_count += 1,
+            net_worker::FetchResult::IframeSnapshotDone { .. } => iframe_count += 1,
             net_worker::FetchResult::FontDone { .. } => font_count += 1,
             net_worker::FetchResult::ScriptDone { .. } => script_count += 1,
             net_worker::FetchResult::ModuleScriptDone { .. } => module_count += 1,
@@ -1758,11 +1742,12 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
         }
     }
     crate::surf_log!(
-        "[surf] drain_results: total={} nav={} css={} image={} font={} script={} module={}",
-        nav_count + css_count + image_count + font_count + script_count + module_count,
+        "[surf] drain_results: total={} nav={} css={} image={} iframe={} font={} script={} module={}",
+        nav_count + css_count + image_count + iframe_count + font_count + script_count + module_count,
         nav_count,
         css_count,
         image_count,
+        iframe_count,
         font_count,
         script_count,
         module_count
@@ -1782,11 +1767,12 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                 net_worker::FetchResult::ScriptDone { .. }
                 | net_worker::FetchResult::ModuleScriptDone { .. } => script_results.push(result),
                 net_worker::FetchResult::FontDone { .. } => font_results.push(result),
-                net_worker::FetchResult::ImageDone { .. } => images.push(result),
+                net_worker::FetchResult::ImageDone { .. }
+                | net_worker::FetchResult::IframeSnapshotDone { .. } => images.push(result),
             }
         }
         crate::surf_log!(
-            "[surf] tab {} result batch: nav={} css={} script={} font={} image={}",
+            "[surf] tab {} result batch: nav={} css={} script={} font={} image_or_iframe={}",
             tab_index,
             nav_results.len(),
             css_results.len(),
@@ -1799,6 +1785,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                 net_worker::ImagePriority::Viewport => 0usize,
                 net_worker::ImagePriority::Deferred => 1usize,
             },
+            net_worker::FetchResult::IframeSnapshotDone { .. } => 0usize,
             _ => 0usize,
         });
 
@@ -1828,9 +1815,13 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
 
         let batch_start_ms = anyos_std::sys::uptime_ms();
         let mut processed = 0usize;
-        let image_only_batch = urgent
-            .iter()
-            .all(|result| matches!(result, net_worker::FetchResult::ImageDone { .. }));
+        let image_only_batch = urgent.iter().all(|result| {
+            matches!(
+                result,
+                net_worker::FetchResult::ImageDone { .. }
+                    | net_worker::FetchResult::IframeSnapshotDone { .. }
+            )
+        });
         while !urgent.is_empty() {
             let result = urgent.remove(0);
             process_single_fetch_result(result);
@@ -1954,6 +1945,37 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
             if needs_layout {
                 request_layout_refresh(tab_index);
             } else {
+                request_image_refresh(tab_index);
+            }
+        }
+        net_worker::FetchResult::IframeSnapshotDone {
+            tab_index,
+            node_id,
+            src,
+            url,
+            body,
+            headers,
+            width,
+            height,
+            timing,
+            from_cache,
+            generation,
+        } => {
+            record_resource_completion(&url, body.len() as u64, timing, from_cache);
+            crate::surf_log!(
+                "[surf] received IframeSnapshotDone: tab={} node={} src={} bytes={} gen={}",
+                tab_index,
+                node_id,
+                src,
+                body.len(),
+                generation
+            );
+            let start_ms = anyos_std::sys::uptime_ms();
+            let changed = resources::add_iframe_snapshot_from_html(
+                tab_index, node_id, &url, &body, &headers, width, height, generation,
+            );
+            log_main_phase_elapsed("handle_iframe_snapshot_done", start_ms);
+            if changed {
                 request_image_refresh(tab_index);
             }
         }
@@ -2135,6 +2157,16 @@ fn flush_relayout_for_tab(tab_idx: usize) {
         }
     }
     if work == RenderWork::Layout {
+        if let Some(base_url) = st.tabs[tab_idx].current_url.clone() {
+            let queued = resources::queue_iframe_snapshots(&base_url, tab_idx);
+            if queued > 0 {
+                crate::surf_log!(
+                    "[surf] queued iframe snapshots after layout: tab={} count={}",
+                    tab_idx,
+                    queued
+                );
+            }
+        }
         let _ = resources::submit_viewport_deferred_images(tab_idx, DEFERRED_IMAGE_BATCH_SIZE);
     }
     let elapsed_ms = anyos_std::sys::uptime_ms().wrapping_sub(start_ms);
@@ -2282,6 +2314,7 @@ fn handle_nav_done(
     st.tabs[tab_idx].deferred_fonts_inflight = 0;
     st.tabs[tab_idx].deferred_images.clear();
     st.tabs[tab_idx].requested_image_urls.clear();
+    st.tabs[tab_idx].requested_iframe_snapshots.clear();
     st.tabs[tab_idx].deferred_images_inflight = 0;
     st.tabs[tab_idx].favicon_pixels.clear();
     st.tabs[tab_idx].favicon_w = 0;
@@ -2416,10 +2449,8 @@ fn handle_nav_done(
                             .register_module_source(&specifier, text);
                         queue_module_dependencies(tab_idx, &base_url, text, generation);
                         pending.push(Some(module_import_wrapper(&specifier)));
-                    } else if script_within_surf_limit(slot, &label, text) {
-                        pending.push(Some(text.clone()));
                     } else {
-                        pending.push(None);
+                        pending.push(Some(text.clone()));
                     }
                     modes.push(mode.clone());
                     labels.push(label);
@@ -3103,10 +3134,8 @@ fn handle_script_done(
     if matches!(mode, libwebview::js::ScriptMode::Module) {
         st.tabs[tab_index].pending_scripts[slot] =
             Some(module_import_wrapper(&module_url_key(&url)));
-    } else if script_within_surf_limit(slot, &label, &text) {
-        st.tabs[tab_index].pending_scripts[slot] = Some(text);
     } else {
-        st.tabs[tab_index].pending_scripts[slot] = None;
+        st.tabs[tab_index].pending_scripts[slot] = Some(text);
     }
 
     let mode = st.tabs[tab_index]

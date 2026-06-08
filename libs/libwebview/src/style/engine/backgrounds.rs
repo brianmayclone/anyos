@@ -49,22 +49,16 @@ fn parse_background_image_val(s: &str) -> Option<BackgroundImageVal> {
     {
         return extract_css_url_function(trimmed).map(BackgroundImageVal::Url);
     }
-    if lower.starts_with("linear-gradient(") {
-        let inner = lower
-            .trim_start_matches("linear-gradient(")
-            .trim_end_matches(')');
+    if lower.starts_with("linear-gradient(") && lower.ends_with(')') {
+        let inner = &lower["linear-gradient(".len()..lower.len() - 1];
         return parse_linear_gradient(inner);
     }
-    if lower.starts_with("radial-gradient(") {
-        let inner = lower
-            .trim_start_matches("radial-gradient(")
-            .trim_end_matches(')');
+    if lower.starts_with("radial-gradient(") && lower.ends_with(')') {
+        let inner = &lower["radial-gradient(".len()..lower.len() - 1];
         return parse_radial_gradient(inner);
     }
-    if lower.starts_with("conic-gradient(") {
-        let inner = lower
-            .trim_start_matches("conic-gradient(")
-            .trim_end_matches(')');
+    if lower.starts_with("conic-gradient(") && lower.ends_with(')') {
+        let inner = &lower["conic-gradient(".len()..lower.len() - 1];
         return parse_conic_gradient(inner);
     }
     None
@@ -705,7 +699,7 @@ mod declaration_tests {
         assert!(matches!(decls[0].value, CssValue::Keyword(_)));
 
         let resolved = crate::css::parse_value(&Property::Width, "calc(956px + 2 * 20px)");
-        assert!(matches!(resolved, CssValue::Length(996, Unit::Px)));
+        assert!(matches!(resolved, CssValue::Length(99_600, Unit::Px)));
     }
 
     #[test]

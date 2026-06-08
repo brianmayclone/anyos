@@ -35,10 +35,9 @@ use crate::style::{apply_timing, TimingFunction, TransitionDef};
 const MAX_CONSOLE_MESSAGES: usize = 512;
 const MAX_PENDING_TIMERS: usize = 1024;
 const JS_TRACE: bool = false;
-const DEFAULT_TIMER_CALLBACK_STEP_LIMIT: u64 = 8_000_000;
-const DEFAULT_SCRIPT_STEP_LIMIT: u64 = 8_000_000;
-const DEFAULT_MAX_SCRIPTS: usize = 48;
-const DEFAULT_MAX_SCRIPT_BYTES: usize = 1024 * 1024;
+const DEFAULT_TIMER_CALLBACK_STEP_LIMIT: u64 = u64::MAX;
+const DEFAULT_SCRIPT_STEP_LIMIT: u64 = u64::MAX;
+const DEFAULT_MAX_SCRIPTS: usize = usize::MAX;
 const SURF_IMMEDIATE_SCHEDULER_JS: &str = r#"
 (function(){
     function patch(s){
@@ -183,7 +182,7 @@ impl Default for ScriptExecutionLimits {
     fn default() -> Self {
         ScriptExecutionLimits {
             max_scripts: DEFAULT_MAX_SCRIPTS,
-            max_script_bytes: Some(DEFAULT_MAX_SCRIPT_BYTES),
+            max_script_bytes: None,
         }
     }
 }
@@ -292,13 +291,10 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
                     &mut *EVENT_LISTENERS_TARGET
                 };
                 listeners.push(EventListener {
-                    node_id: if node_id >= 0 {
-                        node_id as usize
-                    } else {
-                        usize::MAX
-                    },
+                    node_id: event_listener_node_key(node_id),
                     event: String::from(&key[2..]),
                     callback: value.clone(),
+                    inline: true,
                     capture: false,
                 });
             }
@@ -472,6 +468,21 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
         // Ignore internal properties and methods.
         _ => {}
     }
+}
+
+fn event_listener_node_key(node_id: i64) -> usize {
+    if node_id >= 0 {
+        return node_id as usize;
+    }
+
+    // Reserve usize::MAX for window and usize::MAX - 1 for mutation observers.
+    // Synthetic DOM nodes use negative IDs; keep each one addressable so iframe
+    // load listeners do not bleed across distinct frame elements.
+    let offset = node_id
+        .checked_neg()
+        .and_then(|n| n.checked_sub(1))
+        .unwrap_or(i64::MAX) as usize;
+    usize::MAX.saturating_sub(2).saturating_sub(offset)
 }
 
 fn dataset_property_hook(data: *mut u8, key: &str, value: &JsValue) {
@@ -854,6 +865,7 @@ pub struct EventListener {
     pub node_id: usize,
     pub event: String,
     pub callback: JsValue,
+    pub inline: bool,
     /// True when registered with `{ capture: true }` or a bare `true` third arg.
     pub capture: bool,
 }
@@ -1662,13 +1674,10 @@ impl JsRuntime {
             total_bytes
         );
 
-        // Per-script step limit to keep pages responsive.
-        //
-        // Surf runs page JavaScript on the UI thread today. A very high budget
-        // lets heavy third-party bundles monopolize the browser for seconds and
-        // makes already-fetched images/fonts appear as slow "UI" work in the
-        // network panel. Keep this deliberately tight until scripts can run on
-        // a preemptible worker.
+        // Browsers do not reject large application bundles after a fixed VM
+        // instruction count. Surf runs page JavaScript on a worker, so the
+        // default budget is effectively unbounded; host tests may still set a
+        // diagnostic limit via LIBJS_SCRIPT_STEP_LIMIT.
         let script_step_limit = configured_script_step_limit();
         self.engine.set_step_limit(script_step_limit);
 
@@ -1788,7 +1797,7 @@ impl JsRuntime {
                 );
                 continue;
             }
-            // Reset step counter and engine state before each script so each gets the full budget.
+            // Reset step counter and engine state before each script.
             js_trace!(
                 "[js] prepare #{} begin: bytes={} frames={} stack={} last_exc={} pending_exc={}",
                 idx,
@@ -1801,7 +1810,7 @@ impl JsRuntime {
             self.engine.vm().steps = 0;
             self.engine.vm().last_exception = None;
             self.engine.set_step_limit(script_step_limit);
-            // Clear any leftover call frames from aborted scripts (e.g. step-limit abort).
+            // Clear any leftover call frames from an aborted script.
             self.engine.vm().frames.clear();
             self.engine.vm().stack.clear();
             js_trace!(
@@ -3325,9 +3334,8 @@ impl JsRuntime {
                         &mut bridge.motion_final_styles as *mut Vec<MotionFinalStyle>;
                 }
 
-                // Timer callbacks should be short tasks. Heavy recurring
-                // analytics/ad loops must not burn a full script-sized budget
-                // on every frame.
+                // Use the same browser-like default as scripts. Host tests may
+                // still set LIBJS_TIMER_CALLBACK_STEP_LIMIT for diagnostics.
                 self.engine
                     .set_step_limit(configured_timer_callback_step_limit());
                 self.engine.vm().steps = 0;
@@ -4326,7 +4334,7 @@ fn native_remove_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         _ => false,
     };
     let nid = this_node_id(vm);
-    let node_id = if nid >= 0 { nid as usize } else { usize::MAX };
+    let node_id = event_listener_node_key(nid);
     if let Some(bridge) = get_bridge(vm) {
         bridge
             .remove_listeners
@@ -4664,14 +4672,22 @@ mod tests {
         let dom = html::parse("<html><body></body></html>");
         let mut runtime = JsRuntime::new();
         let script = r#"
-            globalThis.__global_function_window_ok =
-                window.parseFloat('12.5px') === 12.5 &&
-                globalThis.parseInt('10', 10) === 10 &&
-                window.isFinite(4) === true &&
-                window.isNaN(NaN) === true &&
-                typeof window.eval === 'function' &&
-                window.eval('1 + 2') === 3 &&
+            globalThis.__global_parse_float_ok = window.parseFloat('12.5px') === 12.5;
+            globalThis.__global_parse_int_ok = globalThis.parseInt('10', 10) === 10;
+            globalThis.__global_is_finite_ok = window.isFinite(4) === true;
+            globalThis.__global_is_nan_ok = window.isNaN(NaN) === true;
+            globalThis.__global_eval_type_ok = typeof window.eval === 'function';
+            globalThis.__global_eval_ok = window.eval('1 + 2') === 3;
+            globalThis.__global_uri_ok =
                 window.decodeURIComponent(encodeURIComponent('ä')) === 'ä';
+            globalThis.__global_function_window_ok =
+                globalThis.__global_parse_float_ok &&
+                globalThis.__global_parse_int_ok &&
+                globalThis.__global_is_finite_ok &&
+                globalThis.__global_is_nan_ok &&
+                globalThis.__global_eval_type_ok &&
+                globalThis.__global_eval_ok &&
+                globalThis.__global_uri_ok;
         "#;
 
         runtime.execute_script_sources(&dom, "https://example.com/", &[script.to_string()]);
@@ -5128,6 +5144,17 @@ mod tests {
                 r#"
                 const frame = document.createElement('iframe');
                 globalThis.__iframe_loaded = 0;
+                globalThis.__iframe_listener_loaded = 0;
+                globalThis.__iframe_event_ok = false;
+                globalThis.__iframe_setattr_loaded = 0;
+                globalThis.__iframe_srcdoc_loaded = 0;
+                frame.addEventListener('load', (event) => {
+                    globalThis.__iframe_listener_loaded++;
+                    globalThis.__iframe_event_ok =
+                        event.type === 'load' &&
+                        event.target === frame &&
+                        event.currentTarget === frame;
+                });
                 frame.onload = () => {
                     globalThis.__iframe_loaded = 1;
                     globalThis.__iframe_context_ok =
@@ -5143,19 +5170,48 @@ mod tests {
                     child.setAttribute('class', 'todo active');
                     child.appendChild(frame.contentDocument.createTextNode('ready'));
                     frame.contentDocument.body.appendChild(child);
-                    globalThis.__iframe_dom_ops_ok =
-                        frame.contentDocument.body.firstChild === child &&
-                        child.parentNode === frame.contentDocument.body &&
+                    globalThis.__iframe_first_child_ok =
+                        frame.contentDocument.body.firstChild === child;
+                    globalThis.__iframe_parent_ok =
+                        child.parentNode === frame.contentDocument.body;
+                    globalThis.__iframe_attr_ok =
                         child.getAttribute('class') === 'todo active' &&
-                        child.hasAttribute('id') &&
-                        child.matches('.todo') &&
-                        child.closest('section') === child &&
-                        frame.contentWindow.getComputedStyle(child) === child.style &&
+                        child.hasAttribute('id');
+                    globalThis.__iframe_matches_ok = child.matches('.todo');
+                    globalThis.__iframe_closest_ok =
+                        child.closest('section') === child;
+                    globalThis.__iframe_style_ok =
+                        frame.contentWindow.getComputedStyle(child) === child.style;
+                    globalThis.__iframe_fragment_ok =
                         frame.contentDocument.createDocumentFragment().nodeType === 11;
+                    globalThis.__iframe_dom_ops_ok =
+                        globalThis.__iframe_first_child_ok &&
+                        globalThis.__iframe_parent_ok &&
+                        globalThis.__iframe_attr_ok &&
+                        globalThis.__iframe_matches_ok &&
+                        globalThis.__iframe_closest_ok &&
+                        globalThis.__iframe_style_ok &&
+                        globalThis.__iframe_fragment_ok;
                 };
                 document.body.appendChild(frame);
                 frame.src = 'resources/warmup/index.html';
                 globalThis.__iframe_src = frame.src;
+
+                const frame2 = document.createElement('iframe');
+                frame2.addEventListener('load', () => {
+                    globalThis.__iframe_setattr_loaded = 1;
+                    globalThis.__iframe_setattr_src = frame2.src;
+                });
+                document.body.appendChild(frame2);
+                frame2.setAttribute('src', 'resources/set-attribute/index.html');
+
+                const frame3 = document.createElement('iframe');
+                frame3.addEventListener('load', () => {
+                    globalThis.__iframe_srcdoc_loaded = 1;
+                    globalThis.__iframe_srcdoc = frame3.srcdoc;
+                });
+                document.body.appendChild(frame3);
+                frame3.srcdoc = '<p>inline</p>';
                 "#,
             )],
         );
@@ -5165,9 +5221,17 @@ mod tests {
             "unexpected JS exception: {:?}",
             runtime.engine.vm().last_exception
         );
-        assert_eq!(runtime.tick(&dom, 0), 1);
+        assert_eq!(runtime.tick(&dom, 0), 3);
         let window = runtime.engine.vm().get_global("window");
         assert_eq!(window.get_property("__iframe_loaded").to_number() as i32, 1);
+        assert_eq!(
+            window.get_property("__iframe_listener_loaded").to_number() as i32,
+            1
+        );
+        assert!(matches!(
+            window.get_property("__iframe_event_ok"),
+            JsValue::Bool(true)
+        ));
         assert!(matches!(
             window.get_property("__iframe_context_ok"),
             JsValue::Bool(true)
@@ -5177,12 +5241,56 @@ mod tests {
             JsValue::Bool(true)
         ));
         assert!(matches!(
+            window.get_property("__iframe_first_child_ok"),
+            JsValue::Bool(true)
+        ));
+        assert!(matches!(
+            window.get_property("__iframe_parent_ok"),
+            JsValue::Bool(true)
+        ));
+        assert!(matches!(
+            window.get_property("__iframe_attr_ok"),
+            JsValue::Bool(true)
+        ));
+        assert!(matches!(
+            window.get_property("__iframe_matches_ok"),
+            JsValue::Bool(true)
+        ));
+        assert!(matches!(
+            window.get_property("__iframe_closest_ok"),
+            JsValue::Bool(true)
+        ));
+        assert!(matches!(
+            window.get_property("__iframe_style_ok"),
+            JsValue::Bool(true)
+        ));
+        assert!(matches!(
+            window.get_property("__iframe_fragment_ok"),
+            JsValue::Bool(true)
+        ));
+        assert!(matches!(
             window.get_property("__iframe_dom_ops_ok"),
             JsValue::Bool(true)
         ));
         assert_eq!(
             window.get_property("__iframe_src").to_js_string(),
             "resources/warmup/index.html"
+        );
+        assert_eq!(
+            window.get_property("__iframe_setattr_loaded").to_number() as i32,
+            1
+        );
+        assert_eq!(
+            window.get_property("__iframe_setattr_src").to_js_string(),
+            "resources/set-attribute/index.html"
+        );
+        assert_eq!(
+            window.get_property("__iframe_srcdoc_loaded").to_number() as i32,
+            1
+        );
+        assert_eq!(
+            window.get_property("__iframe_srcdoc").to_js_string(),
+            "<p>inline</p>"
         );
     }
 

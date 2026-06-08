@@ -174,7 +174,10 @@ impl JsEngine {
         self.vm.console_output.clear();
     }
 
-    /// Set maximum execution steps (prevents infinite loops).
+    /// Set a maximum execution step count.
+    ///
+    /// The default VM limit is unbounded; hosts can opt into a finite limit for
+    /// diagnostics or controlled test execution.
     pub fn set_step_limit(&mut self, limit: u64) {
         self.vm.set_step_limit(limit);
     }
@@ -377,7 +380,7 @@ mod tests {
              run().then(v => { seen = v; }); \
              seen",
         );
-        assert_eq!(result.to_js_string(), "function");
+        assert_eq!(result.to_js_string(), "pending");
         let result = engine.eval("seen");
         assert_eq!(result.to_js_string(), "1");
     }
@@ -1578,6 +1581,25 @@ mod tests {
             engine.last_exception()
         );
         assert_eq!(result.to_js_string(), "number,true,object");
+    }
+
+    #[test]
+    fn parse_float_accepts_longest_numeric_prefix() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "[
+                parseFloat('12.5px') === 12.5,
+                parseFloat('1e+px') === 1,
+                parseFloat('.25rem') === 0.25,
+                Number('12.5px')
+            ].join(',')",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "true,true,true,NaN");
     }
 
     #[test]

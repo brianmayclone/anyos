@@ -80,7 +80,66 @@ pub fn global_parse_int(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn global_parse_float(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = args.first().map(|v| v.to_js_string()).unwrap_or_default();
-    JsValue::Number(parse_js_float(&s))
+    JsValue::Number(parse_js_float_prefix(&s))
+}
+
+fn parse_js_float_prefix(s: &str) -> f64 {
+    let s = s.trim_start();
+    if s.is_empty() {
+        return f64::NAN;
+    }
+
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    if matches!(bytes.get(i), Some(b'+' | b'-')) {
+        i += 1;
+    }
+    let sign_end = i;
+
+    if s[sign_end..].starts_with("Infinity") {
+        return if bytes.first() == Some(&b'-') {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
+    }
+
+    let mut has_digits = false;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+        has_digits = true;
+    }
+
+    if i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+            has_digits = true;
+        }
+    }
+
+    if !has_digits {
+        return f64::NAN;
+    }
+
+    let number_end = i;
+    if i < bytes.len() && matches!(bytes[i], b'e' | b'E') {
+        let exp_start = i;
+        i += 1;
+        if i < bytes.len() && matches!(bytes[i], b'+' | b'-') {
+            i += 1;
+        }
+        let exp_digits_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == exp_digits_start {
+            i = exp_start;
+        }
+    }
+
+    let end = i.max(number_end);
+    parse_js_float(&s[..end])
 }
 
 pub fn global_is_nan(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
