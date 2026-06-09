@@ -176,6 +176,7 @@ const SURF_SERVERJS_ROOT_FAST_PATH_JS: &str = r#"
 pub struct ScriptExecutionLimits {
     pub max_scripts: usize,
     pub max_script_bytes: Option<usize>,
+    pub step_limit: Option<u64>,
 }
 
 impl Default for ScriptExecutionLimits {
@@ -183,6 +184,7 @@ impl Default for ScriptExecutionLimits {
         ScriptExecutionLimits {
             max_scripts: DEFAULT_MAX_SCRIPTS,
             max_script_bytes: None,
+            step_limit: None,
         }
     }
 }
@@ -1678,7 +1680,9 @@ impl JsRuntime {
         // instruction count. Surf runs page JavaScript on a worker, so the
         // default budget is effectively unbounded; host tests may still set a
         // diagnostic limit via LIBJS_SCRIPT_STEP_LIMIT.
-        let script_step_limit = configured_script_step_limit();
+        let script_step_limit = limits
+            .step_limit
+            .unwrap_or_else(configured_script_step_limit);
         self.engine.set_step_limit(script_step_limit);
 
         // Set up DOM bridge via userdata.

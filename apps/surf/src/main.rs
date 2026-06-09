@@ -108,8 +108,10 @@ const IMAGE_BURST_MIN_GRACE_MS: u32 = 48;
 const MAX_RESULTS_PER_UI_POLL: usize = 24;
 const RESULT_PROCESS_BUDGET_MS: u32 = 10;
 const SCROLL_INTERACTION_GRACE_MS: u32 = 160;
-const MAX_DEFERRED_IMAGE_INFLIGHT: usize = 32;
-const DEFERRED_IMAGE_BATCH_SIZE: usize = 16;
+const MAX_DEFERRED_IMAGE_INFLIGHT: usize = 12;
+const DEFERRED_IMAGE_BATCH_SIZE: usize = 6;
+const VIEWPORT_DEFERRED_IMAGE_BATCH_SIZE: usize = 8;
+const IMAGE_RESULT_BACKLOG_DEFER_THRESHOLD: usize = 8;
 const MAX_DEFERRED_FONT_INFLIGHT: usize = 2;
 const DEFERRED_FONT_BATCH_SIZE: usize = 2;
 const MAX_BACKGROUND_RENDERS_PER_FLUSH: usize = 2;
@@ -582,6 +584,9 @@ fn scroll_interaction_hot() -> bool {
 }
 
 pub(crate) fn pump_deferred_images_for_tab(tab_index: usize) {
+    if net_worker::result_mailbox_len_for_tab(tab_index) >= IMAGE_RESULT_BACKLOG_DEFER_THRESHOLD {
+        return;
+    }
     let allowance = {
         let st = state();
         if tab_index >= st.tabs.len() {
@@ -598,6 +603,24 @@ pub(crate) fn pump_deferred_images_for_tab(tab_index: usize) {
     }
     let batch = core::cmp::min(allowance, DEFERRED_IMAGE_BATCH_SIZE);
     let _ = resources::submit_deferred_images(tab_index, batch);
+}
+
+fn promote_viewport_deferred_images_for_tab(tab_index: usize) -> usize {
+    if net_worker::result_mailbox_len_for_tab(tab_index) >= IMAGE_RESULT_BACKLOG_DEFER_THRESHOLD {
+        return 0;
+    }
+    let allowance = {
+        let st = state();
+        if tab_index >= st.tabs.len() {
+            return 0;
+        }
+        MAX_DEFERRED_IMAGE_INFLIGHT.saturating_sub(st.tabs[tab_index].deferred_images_inflight)
+    };
+    if allowance == 0 {
+        return 0;
+    }
+    let batch = core::cmp::min(allowance, VIEWPORT_DEFERRED_IMAGE_BATCH_SIZE);
+    resources::submit_viewport_deferred_images(tab_index, batch)
 }
 
 pub(crate) fn pump_deferred_fonts_for_tab(tab_index: usize) {
@@ -1977,38 +2000,39 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
             node_id,
             src,
             url,
-            body,
-            headers,
-            stylesheets,
-            scripts,
-            width,
-            height,
+            body_len,
+            pixels,
+            render_width,
+            render_height,
+            stylesheet_count,
+            script_count,
+            render_ms,
+            width: _requested_width,
+            height: _requested_height,
             timing,
             from_cache,
             generation,
         } => {
-            record_resource_completion(&url, body.len() as u64, timing, from_cache);
+            record_resource_completion(&url, body_len as u64, timing, from_cache);
             crate::surf_log!(
-                "[surf] received IframeSnapshotDone: tab={} node={} src={} bytes={} css={} scripts={} gen={}",
+                "[surf] received IframeSnapshotDone: tab={} node={} src={} bytes={} css={} scripts={} pixels={} render_ms={} gen={}",
                 tab_index,
                 node_id,
                 src,
-                body.len(),
-                stylesheets.len(),
-                scripts.len(),
+                body_len,
+                stylesheet_count,
+                script_count,
+                pixels.len(),
+                render_ms,
                 generation
             );
             let start_ms = anyos_std::sys::uptime_ms();
-            let changed = resources::add_iframe_snapshot_from_html(
+            let changed = resources::add_iframe_snapshot_pixels(
                 tab_index,
                 node_id,
-                &url,
-                &body,
-                &headers,
-                stylesheets,
-                scripts,
-                width,
-                height,
+                pixels,
+                render_width,
+                render_height,
                 generation,
             );
             log_main_phase_elapsed("handle_iframe_snapshot_done", start_ms);
@@ -2204,7 +2228,7 @@ fn flush_relayout_for_tab(tab_idx: usize) {
                 );
             }
         }
-        let _ = resources::submit_viewport_deferred_images(tab_idx, DEFERRED_IMAGE_BATCH_SIZE);
+        let _ = promote_viewport_deferred_images_for_tab(tab_idx);
     }
     let elapsed_ms = anyos_std::sys::uptime_ms().wrapping_sub(start_ms);
     crate::surf_log!(
@@ -2351,6 +2375,7 @@ fn handle_nav_done(
     st.tabs[tab_idx].deferred_fonts_inflight = 0;
     st.tabs[tab_idx].deferred_images.clear();
     st.tabs[tab_idx].requested_image_urls.clear();
+    st.tabs[tab_idx].image_request_aliases.clear();
     st.tabs[tab_idx].requested_iframe_snapshots.clear();
     st.tabs[tab_idx].deferred_images_inflight = 0;
     st.tabs[tab_idx].favicon_pixels.clear();
@@ -2555,7 +2580,7 @@ fn handle_nav_done(
         let startup_critical_only =
             pending_stylesheet_count > 0 || st.tabs[tab_idx].load_state.pending_script_count > 0;
         resources::queue_images(dom, &base_url, tab_idx, startup_critical_only);
-        let _ = resources::submit_viewport_deferred_images(tab_idx, DEFERRED_IMAGE_BATCH_SIZE);
+        let _ = promote_viewport_deferred_images_for_tab(tab_idx);
     }
     log_tab_load_state(tab_idx, "after_queue_images");
 
@@ -2871,12 +2896,43 @@ fn handle_image_done(
                 tab_index
             );
         }
-        needs_layout = st.tabs[tab_index].webview.add_image_and_get_layout_effect(
-            &src,
-            decoded_raster.pixels,
-            decoded_raster.width,
-            decoded_raster.height,
-        );
+        let request_key = resources::image_request_key_for_url(&url);
+        let mut image_srcs = Vec::new();
+        image_srcs.push(src.clone());
+        for alias in &st.tabs[tab_index].image_request_aliases {
+            if alias.request_key == request_key
+                && alias.src != src
+                && !image_srcs.iter().any(|existing| existing == &alias.src)
+            {
+                image_srcs.push(alias.src.clone());
+            }
+        }
+        let alias_count = image_srcs.len().saturating_sub(1);
+        let width = decoded_raster.width;
+        let height = decoded_raster.height;
+        let mut pixels = decoded_raster.pixels;
+        let last_idx = image_srcs.len().saturating_sub(1);
+        for (idx, image_src) in image_srcs.into_iter().enumerate() {
+            let pixels_for_src = if idx == last_idx {
+                core::mem::take(&mut pixels)
+            } else {
+                pixels.clone()
+            };
+            needs_layout |= st.tabs[tab_index].webview.add_image_and_get_layout_effect(
+                &image_src,
+                pixels_for_src,
+                width,
+                height,
+            );
+        }
+        if alias_count > 0 {
+            crate::surf_log!(
+                "[surf] image aliases applied: tab={} key={} aliases={}",
+                tab_index,
+                request_key,
+                alias_count
+            );
+        }
     } else {
         crate::surf_log!(
             "[surf] image unavailable after worker decode: tab={} src={} bytes={}",

@@ -347,6 +347,12 @@ pub(crate) struct DeferredImageRequest {
 }
 
 #[derive(Clone)]
+pub(crate) struct ImageRequestAlias {
+    pub(crate) request_key: String,
+    pub(crate) src: String,
+}
+
+#[derive(Clone)]
 pub(crate) struct DeferredFontRequest {
     pub(crate) family: String,
     pub(crate) weight: u32,
@@ -495,8 +501,10 @@ pub(crate) struct TabState {
     pub(crate) deferred_fonts_inflight: usize,
     /// Deferred image requests that are intentionally not submitted yet.
     pub(crate) deferred_images: Vec<DeferredImageRequest>,
-    /// Image `src` keys already submitted or deferred during this navigation.
+    /// Canonical image request keys already submitted or deferred during this navigation.
     pub(crate) requested_image_urls: Vec<String>,
+    /// DOM image `src` aliases covered by canonical image requests.
+    pub(crate) image_request_aliases: Vec<ImageRequestAlias>,
     /// Iframe snapshot keys already queued during this navigation.
     pub(crate) requested_iframe_snapshots: Vec<String>,
     /// Number of deferred image requests currently in flight.
@@ -540,6 +548,7 @@ impl TabState {
             deferred_fonts_inflight: 0,
             deferred_images: Vec::new(),
             requested_image_urls: Vec::new(),
+            image_request_aliases: Vec::new(),
             requested_iframe_snapshots: Vec::new(),
             deferred_images_inflight: 0,
             css_background_scan_pending: false,
@@ -758,6 +767,7 @@ fn navigate_file(path: &str) {
     st.tabs[tab_idx].deferred_fonts_inflight = 0;
     st.tabs[tab_idx].deferred_images.clear();
     st.tabs[tab_idx].requested_image_urls.clear();
+    st.tabs[tab_idx].image_request_aliases.clear();
     st.tabs[tab_idx].requested_iframe_snapshots.clear();
     st.tabs[tab_idx].deferred_images_inflight = 0;
     st.tabs[tab_idx].css_background_scan_pending = false;

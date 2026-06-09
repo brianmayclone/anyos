@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 
 pub(crate) const FAVICON_SRC_PREFIX: &str = "surf-internal:favicon:";
 const FAVICON_SIZE: u32 = 16;
+const IFRAME_SNAPSHOT_SCRIPT_STEP_LIMIT: u64 = 500_000;
 
 fn fnv1a64(data: &str) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
@@ -47,37 +48,91 @@ pub(crate) fn scale_icon_pixels(src: &[u32], sw: u32, sh: u32) -> Option<(Vec<u3
     Some((dst, FAVICON_SIZE, FAVICON_SIZE))
 }
 
-fn image_already_queued_or_decoded(tab_index: usize, src: &str) -> bool {
-    let st = crate::state();
-    if tab_index >= st.tabs.len() {
-        return true;
-    }
-    let tab = &st.tabs[tab_index];
-    tab.webview.has_decoded_image(src)
-        || tab
-            .requested_image_urls
-            .iter()
-            .any(|existing| existing == src)
-        || tab.deferred_images.iter().any(|req| req.src == src)
+pub(crate) fn image_request_key_for_url(url: &crate::http::Url) -> String {
+    crate::ui::format_url(url)
 }
 
-fn mark_image_requested(tab_index: usize, src: &str) -> bool {
-    let st = crate::state();
-    if tab_index >= st.tabs.len() {
-        return false;
+fn remember_image_request_alias(tab: &mut crate::tab::TabState, request_key: &str, src: &str) {
+    if tab
+        .image_request_aliases
+        .iter()
+        .any(|alias| alias.request_key == request_key && alias.src == src)
+    {
+        return;
     }
-    let tab = &mut st.tabs[tab_index];
-    if tab.webview.has_decoded_image(src)
-        || tab
+    tab.image_request_aliases
+        .push(crate::tab::ImageRequestAlias {
+            request_key: String::from(request_key),
+            src: String::from(src),
+        });
+}
+
+fn materialize_decoded_image_alias(
+    tab: &mut crate::tab::TabState,
+    request_key: &str,
+    src: &str,
+) -> Option<bool> {
+    if tab.webview.has_decoded_image(src) {
+        return Some(false);
+    }
+    let source_src = tab
+        .image_request_aliases
+        .iter()
+        .find(|alias| {
+            alias.request_key == request_key
+                && alias.src != src
+                && tab.webview.has_decoded_image(&alias.src)
+        })
+        .map(|alias| alias.src.clone());
+    let Some(source_src) = source_src else {
+        return None;
+    };
+    let Some((pixels, width, height)) = tab
+        .webview
+        .images
+        .get_ref(&source_src)
+        .map(|entry| (entry.pixels.clone(), entry.width, entry.height))
+    else {
+        return None;
+    };
+    let needs_layout = tab
+        .webview
+        .add_image_and_get_layout_effect(src, pixels, width, height);
+    Some(needs_layout)
+}
+
+fn mark_image_requested(tab_index: usize, request_key: &str, src: &str) -> bool {
+    let mut refresh_alias: Option<bool> = None;
+    let should_submit = {
+        let st = crate::state();
+        if tab_index >= st.tabs.len() {
+            return false;
+        }
+        let tab = &mut st.tabs[tab_index];
+        if tab.webview.has_decoded_image(src) {
+            return false;
+        }
+        let already_requested = tab
             .requested_image_urls
             .iter()
-            .any(|existing| existing == src)
-        || tab.deferred_images.iter().any(|req| req.src == src)
-    {
-        return false;
+            .any(|existing| existing == request_key);
+        remember_image_request_alias(tab, request_key, src);
+        if already_requested {
+            refresh_alias = materialize_decoded_image_alias(tab, request_key, src);
+            false
+        } else {
+            tab.requested_image_urls.push(String::from(request_key));
+            true
+        }
+    };
+    if let Some(needs_layout) = refresh_alias {
+        if needs_layout {
+            crate::request_layout_refresh(tab_index);
+        } else {
+            crate::request_image_refresh(tab_index);
+        }
     }
-    tab.requested_image_urls.push(String::from(src));
-    true
+    should_submit
 }
 
 fn inline_svg_cache_matches(tab_index: usize, node_id: usize, content_hash: u64) -> bool {
@@ -1021,12 +1076,11 @@ pub(crate) fn queue_images(
 
                 if src.starts_with("data:") {
                     // Decode inline — no network fetch needed.
-                    if image_already_queued_or_decoded(tab_index, &src) {
-                        continue;
-                    }
                     if let Some((bytes, is_svg)) = decode_data_uri(&src) {
                         let key = src.clone();
-                        mark_image_requested(tab_index, &key);
+                        if !mark_image_requested(tab_index, &key, &src) {
+                            continue;
+                        }
                         if is_svg {
                             decode_svg_no_relayout(&bytes, &key, tab_index);
                         } else {
@@ -1036,10 +1090,8 @@ pub(crate) fn queue_images(
                     continue;
                 }
 
-                if image_already_queued_or_decoded(tab_index, &src) {
-                    continue;
-                }
                 let img_url = crate::http::resolve_url(base_url, &src);
+                let request_key = image_request_key_for_url(&img_url);
                 let loading = dom.attr(i, "loading").unwrap_or("");
                 let fetchpriority = dom.attr(i, "fetchpriority").unwrap_or("");
                 let lazy_requested = loading.eq_ignore_ascii_case("lazy");
@@ -1095,7 +1147,7 @@ pub(crate) fn queue_images(
                 };
 
                 if should_start_immediately {
-                    if !mark_image_requested(tab_index, &src) {
+                    if !mark_image_requested(tab_index, &request_key, &src) {
                         continue;
                     }
                     crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
@@ -1110,7 +1162,7 @@ pub(crate) fn queue_images(
                     });
                     immediate_count += 1;
                 } else {
-                    if !mark_image_requested(tab_index, &src) {
+                    if !mark_image_requested(tab_index, &request_key, &src) {
                         continue;
                     }
                     let priority = if high_priority || (!lazy_requested && i < 24) {
@@ -1166,12 +1218,11 @@ pub(crate) fn queue_images(
                     bg_data_uri_decodes.push(bg_src.clone());
                     continue;
                 }
-                if image_already_queued_or_decoded(tab_index, bg_src)
-                    || deferred.iter().any(|(_, req)| req.src == *bg_src)
-                {
+                if deferred.iter().any(|(_, req)| req.src == *bg_src) {
                     continue;
                 }
                 let img_url = crate::http::resolve_url(base_url, bg_src);
+                let request_key = image_request_key_for_url(&img_url);
                 let priority = crate::net_worker::ImagePriority::Viewport;
                 let (width, height, initial_viewport_hit) = {
                     let viewport_h = webview.viewport_height() as i32;
@@ -1183,7 +1234,7 @@ pub(crate) fn queue_images(
                 };
                 if initial_viewport_hit && immediate_budget > 0 {
                     immediate_budget -= 1;
-                    if !mark_image_requested(tab_index, bg_src) {
+                    if !mark_image_requested(tab_index, &request_key, bg_src) {
                         continue;
                     }
                     crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
@@ -1200,7 +1251,7 @@ pub(crate) fn queue_images(
                     count += 1;
                     continue;
                 }
-                if !mark_image_requested(tab_index, bg_src) {
+                if !mark_image_requested(tab_index, &request_key, bg_src) {
                     continue;
                 }
                 let rank = deferred_image_rank(i, None, None, false, true);
@@ -1226,7 +1277,9 @@ pub(crate) fn queue_images(
 
     for key in bg_data_uri_decodes {
         if let Some((bytes, is_svg)) = decode_data_uri(&key) {
-            mark_image_requested(tab_index, &key);
+            if !mark_image_requested(tab_index, &key, &key) {
+                continue;
+            }
             if is_svg {
                 decode_svg_no_relayout(&bytes, &key, tab_index);
             } else {
@@ -1298,14 +1351,7 @@ pub(crate) fn queue_background_images(
                 continue;
             }
             if webview.has_decoded_image(bg_src)
-                || st.tabs[tab_index]
-                    .requested_image_urls
-                    .iter()
-                    .any(|existing| existing == bg_src)
-                || st.tabs[tab_index]
-                    .deferred_images
-                    .iter()
-                    .any(|req| req.src == *bg_src)
+                || candidates.iter().any(|(_, req)| req.src == *bg_src)
             {
                 continue;
             }
@@ -1335,7 +1381,9 @@ pub(crate) fn queue_background_images(
 
     for key in data_uri_decodes {
         if let Some((bytes, is_svg)) = decode_data_uri(&key) {
-            mark_image_requested(tab_index, &key);
+            if !mark_image_requested(tab_index, &key, &key) {
+                continue;
+            }
             if is_svg {
                 decode_svg_no_relayout(&bytes, &key, tab_index);
             } else {
@@ -1353,8 +1401,9 @@ pub(crate) fn queue_background_images(
     let mut submitted_immediate = 0usize;
     let mut deferred = Vec::new();
     for (idx, (_, req)) in candidates.into_iter().enumerate() {
+        let request_key = image_request_key_for_url(&req.url);
         if idx < immediate_count {
-            if !mark_image_requested(tab_index, &req.src) {
+            if !mark_image_requested(tab_index, &request_key, &req.src) {
                 continue;
             }
             crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
@@ -1369,7 +1418,7 @@ pub(crate) fn queue_background_images(
             });
             submitted_immediate += 1;
         } else {
-            if !mark_image_requested(tab_index, &req.src) {
+            if !mark_image_requested(tab_index, &request_key, &req.src) {
                 continue;
             }
             deferred.push(req);
@@ -1592,7 +1641,7 @@ pub(crate) fn add_iframe_snapshot_from_html(
         }
     }
     let Some((pixels, w, h)) =
-        render_iframe_snapshot_from_html(url, body, headers, stylesheets, scripts, width, height)
+        render_iframe_snapshot_pixels(url, body, headers, stylesheets, scripts, width, height)
     else {
         return false;
     };
@@ -1607,7 +1656,29 @@ pub(crate) fn add_iframe_snapshot_from_html(
     true
 }
 
-fn render_iframe_snapshot_from_html(
+pub(crate) fn add_iframe_snapshot_pixels(
+    tab_index: usize,
+    node_id: usize,
+    pixels: Vec<u32>,
+    width: u32,
+    height: u32,
+    generation: u32,
+) -> bool {
+    if pixels.is_empty() || width == 0 || height == 0 {
+        return false;
+    }
+    let st = crate::state();
+    if tab_index >= st.tabs.len() || !st.tabs[tab_index].load_state.generation_matches(generation) {
+        return false;
+    }
+    let image_key = libwebview::iframe_snapshot_key(node_id);
+    st.tabs[tab_index]
+        .webview
+        .add_image(&image_key, pixels, width, height);
+    true
+}
+
+pub(crate) fn render_iframe_snapshot_pixels(
     url: &crate::http::Url,
     body: &[u8],
     headers: &str,
@@ -1634,13 +1705,9 @@ fn render_iframe_snapshot_from_html(
         let limits = libwebview::js::ScriptExecutionLimits {
             max_scripts: scripts.len(),
             max_script_bytes: None,
+            step_limit: Some(IFRAME_SNAPSHOT_SCRIPT_STEP_LIMIT),
         };
         frame.execute_js_with_limits(&scripts, limits);
-        for _ in 0..4 {
-            if !frame.run_timers_with_budget(16, 256) {
-                break;
-            }
-        }
     }
     frame.relayout();
 

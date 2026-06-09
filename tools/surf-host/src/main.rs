@@ -36,6 +36,7 @@ const SURF_HOST_USER_AGENT: &str =
 const HOST_SYNC_WEB_FONT_LIMIT: usize = 6;
 const HOST_VIEWPORT_RENDER_PASS_LIMIT: usize = 128;
 const HOST_SCREENSHOT_TIMER_CALLBACK_BUDGET: usize = 64;
+const HOST_IFRAME_SNAPSHOT_SCRIPT_STEP_LIMIT: u64 = 500_000;
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
 
@@ -619,7 +620,16 @@ fn load_page_inner(
         start_image_loading(wv, &base_url, image_backend) // images (async, parallel threads)
     };
     if js_enabled {
-        if run_javascript(wv, &base_url, cookies) {
+        if run_javascript(
+            wv,
+            &base_url,
+            cookies,
+            libwebview::js::ScriptExecutionLimits {
+                max_scripts: 256,
+                max_script_bytes: None,
+                step_limit: None,
+            },
+        ) {
             wv.relayout();
         }
         run_js_debug_probes(wv);
@@ -1061,15 +1071,19 @@ fn render_iframe_snapshot(
     if let Some(cookie_hdr) = cookies.cookie_header_for_url(&base_url) {
         frame.js_runtime().set_cookies(&cookie_hdr);
     }
-    frame.set_html_no_js(&html);
+    frame.set_html_dom_only(&html);
     load_resources(&mut frame, &base_url, image_backend, load_web_fonts);
-    let run_snapshot_js = js_enabled && std::env::var_os("SURF_HOST_IFRAME_SNAPSHOT_JS").is_some();
-    if run_snapshot_js {
-        if run_javascript(&mut frame, &base_url, cookies) {
-            frame.relayout();
-        }
-        if frame.has_pending_js_work() {
-            run_js_timers(&mut frame, &base_url, cookies, 250);
+    if js_enabled {
+        if run_javascript(
+            &mut frame,
+            &base_url,
+            cookies,
+            libwebview::js::ScriptExecutionLimits {
+                max_scripts: 256,
+                max_script_bytes: None,
+                step_limit: Some(HOST_IFRAME_SNAPSHOT_SCRIPT_STEP_LIMIT),
+            },
+        ) {
             frame.relayout();
         }
     }
@@ -4746,6 +4760,7 @@ fn run_javascript(
     wv: &mut libwebview::WebView,
     base_url: &str,
     cookies: &mut HostCookieJar,
+    limits: libwebview::js::ScriptExecutionLimits,
 ) -> bool {
     // Register synchronous HTTP handler so fetch()/XHR work inside JS.
     register_http_handler(wv);
@@ -4845,13 +4860,7 @@ fn run_javascript(
     }
 
     // Execute all scripts.
-    let changed = wv.execute_js_with_limits(
-        &scripts,
-        libwebview::js::ScriptExecutionLimits {
-            max_scripts: 256,
-            max_script_bytes: None,
-        },
-    );
+    let changed = wv.execute_js_with_limits(&scripts, limits);
     apply_host_js_mutations(wv, base_url, cookies);
 
     // Print console output.

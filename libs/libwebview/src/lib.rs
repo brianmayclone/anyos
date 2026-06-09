@@ -160,6 +160,7 @@ impl JsExecutionState {
             js::ScriptExecutionLimits {
                 max_scripts: 1,
                 max_script_bytes: None,
+                step_limit: None,
             },
         );
     }

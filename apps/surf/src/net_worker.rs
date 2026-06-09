@@ -176,10 +176,13 @@ pub(crate) enum FetchResult {
         node_id: usize,
         src: String,
         url: Url,
-        body: Vec<u8>,
-        headers: String,
-        stylesheets: Vec<libwebview::css::Stylesheet>,
-        scripts: Vec<String>,
+        body_len: usize,
+        pixels: Vec<u32>,
+        render_width: u32,
+        render_height: u32,
+        stylesheet_count: usize,
+        script_count: usize,
+        render_ms: u32,
         width: u32,
         height: u32,
         timing: Option<http::RequestTiming>,
@@ -259,8 +262,10 @@ const CRITICAL_WORKER_LANES: u32 = 4;
 const TLS_WORKER_LANES: u32 = 8;
 const SCRIPT_WORKER_LANES: u32 = 4;
 const FONT_WORKER_LANES: u32 = 4;
-const VISIBLE_WORKER_LANES: u32 = 8;
+const VISIBLE_WORKER_LANES: u32 = 4;
 const BACKGROUND_WORKER_LANES: u32 = 8;
+const DEFAULT_WORKER_STACK_BYTES: usize = 256 * 1024;
+const RENDER_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 static mut REQUEST_QUEUE_CRITICAL: Option<Vec<QueuedFetchRequest>> = None;
 static mut REQUEST_QUEUE_TLS: Option<Vec<QueuedFetchRequest>> = None;
@@ -364,6 +369,13 @@ fn worker_lane_target(class: WorkerClass) -> u32 {
     }
 }
 
+fn worker_stack_bytes(class: WorkerClass) -> usize {
+    match class {
+        WorkerClass::Visible => RENDER_WORKER_STACK_BYTES,
+        _ => DEFAULT_WORKER_STACK_BYTES,
+    }
+}
+
 unsafe fn request_queue_mut(class: WorkerClass) -> Option<&'static mut Vec<QueuedFetchRequest>> {
     match class {
         WorkerClass::Critical => REQUEST_QUEUE_CRITICAL.as_mut(),
@@ -445,14 +457,16 @@ fn ensure_worker(class: WorkerClass) {
             WorkerClass::Visible => (worker_entry_visible, "surf-net-vis"),
             WorkerClass::Background => (worker_entry_background, "surf-net-bg"),
         };
-        match anyos_std::process::Thread::spawn_with_stack(entry, 256 * 1024, thread_name) {
+        let stack_bytes = worker_stack_bytes(class);
+        match anyos_std::process::Thread::spawn_with_stack(entry, stack_bytes, thread_name) {
             Ok(handle) => {
                 core::mem::forget(handle);
                 surf_net_log!(
-                    "{} worker thread started ({}/{})",
+                    "{} worker thread started ({}/{}, stack={} bytes)",
                     worker_label(class),
                     active.load(Ordering::Relaxed),
-                    target
+                    target,
+                    stack_bytes
                 );
             }
             Err(_) => {
@@ -593,7 +607,7 @@ pub(crate) fn result_mailboxes_pending() -> bool {
     pending
 }
 
-fn result_mailbox_len_for_tab(tab_index: usize) -> usize {
+pub(crate) fn result_mailbox_len_for_tab(tab_index: usize) -> usize {
     acquire(&RESULT_LOCK);
     let len = unsafe {
         RESULT_MAILBOXES
@@ -1564,8 +1578,8 @@ fn collect_iframe_subresources(
             break;
         }
         match entry {
-            libwebview::js::ScriptEntry::Inline { source, .. } => {
-                scripts.push(source);
+            libwebview::js::ScriptEntry::Inline { text, .. } => {
+                scripts.push(text);
             }
             libwebview::js::ScriptEntry::External { src, .. } => {
                 if src.trim().is_empty() {
@@ -1584,6 +1598,41 @@ fn collect_iframe_subresources(
         }
     }
     (stylesheets, scripts)
+}
+
+fn render_iframe_snapshot_offthread(
+    url: &http::Url,
+    body: &[u8],
+    headers: &str,
+    width: u32,
+    height: u32,
+    pool: &mut ConnPool,
+) -> (Vec<u32>, u32, u32, usize, usize, u32) {
+    let (stylesheets, scripts) = collect_iframe_subresources(url, body, headers, pool);
+    let stylesheet_count = stylesheets.len();
+    let script_count = scripts.len();
+    let start_ms = anyos_std::sys::uptime_ms();
+    let rendered = crate::resources::render_iframe_snapshot_pixels(
+        url,
+        body,
+        headers,
+        stylesheets,
+        scripts,
+        width,
+        height,
+    );
+    let render_ms = anyos_std::sys::uptime_ms().wrapping_sub(start_ms);
+    match rendered {
+        Some((pixels, render_width, render_height)) => (
+            pixels,
+            render_width,
+            render_height,
+            stylesheet_count,
+            script_count,
+            render_ms,
+        ),
+        None => (Vec::new(), 0, 0, stylesheet_count, script_count, render_ms),
+    }
 }
 
 fn stamp_worker_timing(
@@ -1943,17 +1992,36 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
             let key = cache_key(&url);
             if let Some((body, headers)) = cache_get(&key) {
                 surf_net_log!("iframe cache hit: node={} {}", node_id, src);
-                let (stylesheets, scripts) =
-                    collect_iframe_subresources(&url, &body, &headers, pool);
+                let body_len = body.len();
+                let (
+                    pixels,
+                    render_width,
+                    render_height,
+                    stylesheet_count,
+                    script_count,
+                    render_ms,
+                ) = render_iframe_snapshot_offthread(&url, &body, &headers, width, height, pool);
+                surf_net_log!(
+                    "iframe rendered: node={} css={} scripts={} pixels={} render_ms={} src={}",
+                    node_id,
+                    stylesheet_count,
+                    script_count,
+                    pixels.len(),
+                    render_ms,
+                    src
+                );
                 enqueue_result(FetchResult::IframeSnapshotDone {
                     tab_index,
                     node_id,
                     src,
                     url,
-                    body,
-                    headers,
-                    stylesheets,
-                    scripts,
+                    body_len,
+                    pixels,
+                    render_width,
+                    render_height,
+                    stylesheet_count,
+                    script_count,
+                    render_ms,
                     width,
                     height,
                     timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
@@ -1973,17 +2041,43 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                 Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
                     stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
                     cache_put(key, resp.body.clone(), resp.headers.clone());
-                    let (stylesheets, scripts) =
-                        collect_iframe_subresources(&url, &resp.body, &resp.headers, pool);
+                    let body_len = resp.body.len();
+                    let (
+                        pixels,
+                        render_width,
+                        render_height,
+                        stylesheet_count,
+                        script_count,
+                        render_ms,
+                    ) = render_iframe_snapshot_offthread(
+                        &url,
+                        &resp.body,
+                        &resp.headers,
+                        width,
+                        height,
+                        pool,
+                    );
+                    surf_net_log!(
+                        "iframe rendered: node={} css={} scripts={} pixels={} render_ms={} src={}",
+                        node_id,
+                        stylesheet_count,
+                        script_count,
+                        pixels.len(),
+                        render_ms,
+                        src
+                    );
                     enqueue_result(FetchResult::IframeSnapshotDone {
                         tab_index,
                         node_id,
                         src,
                         url,
-                        body: resp.body,
-                        headers: resp.headers,
-                        stylesheets,
-                        scripts,
+                        body_len,
+                        pixels,
+                        render_width,
+                        render_height,
+                        stylesheet_count,
+                        script_count,
+                        render_ms,
                         width,
                         height,
                         timing: Some(resp.timing),
@@ -2005,10 +2099,13 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         node_id,
                         src,
                         url,
-                        body: Vec::new(),
-                        headers: resp.headers,
-                        stylesheets: Vec::new(),
-                        scripts: Vec::new(),
+                        body_len: resp.body.len(),
+                        pixels: Vec::new(),
+                        render_width: 0,
+                        render_height: 0,
+                        stylesheet_count: 0,
+                        script_count: 0,
+                        render_ms: 0,
                         width,
                         height,
                         timing: Some(resp.timing),
@@ -2028,10 +2125,13 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         node_id,
                         src,
                         url,
-                        body: Vec::new(),
-                        headers: String::new(),
-                        stylesheets: Vec::new(),
-                        scripts: Vec::new(),
+                        body_len: 0,
+                        pixels: Vec::new(),
+                        render_width: 0,
+                        render_height: 0,
+                        stylesheet_count: 0,
+                        script_count: 0,
+                        render_ms: 0,
                         width,
                         height,
                         timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
