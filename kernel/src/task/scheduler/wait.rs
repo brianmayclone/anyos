@@ -88,7 +88,7 @@ pub fn debug_wait4_snapshot(tag: &str, pid: i64, options: u64) {
             args[..args_copy_len].copy_from_slice(&t.args[..args_copy_len]);
             current = WaitThreadSnapshot {
                 tid: t.tid,
-                state: t.state,
+                state: t.state.get(),
                 exit: t.exit_code.unwrap_or(u32::MAX),
                 waiter: t.exit_waiter_tid.unwrap_or(0),
                 retain: t.retain_exit_status,
@@ -111,7 +111,7 @@ pub fn debug_wait4_snapshot(tag: &str, pid: i64, options: u64) {
                     args[..args_copy_len].copy_from_slice(&t.args[..args_copy_len]);
                     children[printed] = WaitThreadSnapshot {
                         tid: t.tid,
-                        state: t.state,
+                        state: t.state.get(),
                         exit: t.exit_code.unwrap_or(u32::MAX),
                         waiter: t.exit_waiter_tid.unwrap_or(0),
                         retain: t.retain_exit_status,
@@ -196,7 +196,7 @@ pub fn waitpid(tid: u32) -> u32 {
                 // context.
                 sched.threads[idx].last_cpu = cpu_id;
                 sched.threads[idx].wake_at_tick = None;
-                sched.threads[idx].state = ThreadState::Blocked;
+                sched.threads[idx].state.set(ThreadState::Blocked);
                 sched.threads[idx].context.save_complete = 0;
             }
         }
@@ -278,7 +278,7 @@ pub fn waitpid_any() -> (u32, u32) {
         if let Some(idx) = sched.current_idx(get_cpu_id()) {
             sched.threads[idx].last_cpu = get_cpu_id();
             sched.threads[idx].wake_at_tick = None;
-            sched.threads[idx].state = ThreadState::Blocked;
+            sched.threads[idx].state.set(ThreadState::Blocked);
             sched.threads[idx].context.save_complete = 0;
         }
     }
@@ -402,7 +402,7 @@ pub fn prepare_to_block_until(wake_at: u32) {
     if let Some(idx) = sched.current_idx(cpu_id) {
         sched.threads[idx].wake_at_tick = Some(wake_at);
         sched.threads[idx].last_cpu = cpu_id;
-        sched.threads[idx].state = ThreadState::Blocked;
+        sched.threads[idx].state.set(ThreadState::Blocked);
         sched.threads[idx].context.save_complete = 0;
         super::note_sleeper_deadline(wake_at);
     }
@@ -424,7 +424,7 @@ pub fn sleep_until(wake_at: u32) {
             // with save_complete==0).
             sched.threads[idx].wake_at_tick = Some(wake_at);
             sched.threads[idx].last_cpu = cpu_id;
-            sched.threads[idx].state = ThreadState::Blocked;
+            sched.threads[idx].state.set(ThreadState::Blocked);
             sched.threads[idx].context.save_complete = 0;
             super::note_sleeper_deadline(wake_at);
         }
@@ -471,7 +471,7 @@ pub fn prepare_to_block_current() {
         // (same rationale as waitpid).
         sched.threads[idx].last_cpu = cpu_id;
         sched.threads[idx].wake_at_tick = None;
-        sched.threads[idx].state = ThreadState::Blocked;
+        sched.threads[idx].state.set(ThreadState::Blocked);
         sched.threads[idx].context.save_complete = 0;
     }
 }

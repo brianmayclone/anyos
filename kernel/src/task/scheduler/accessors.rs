@@ -158,7 +158,7 @@ pub fn check_current_stack_canary(syscall_num: u32) {
             sched.threads[idx].name_str(),
             tid,
         );
-        sched.threads[idx].state = ThreadState::Terminated;
+        sched.threads[idx].state.set(ThreadState::Terminated);
         sched.threads[idx].exit_code = Some(139);
         sched.threads[idx].terminated_at_tick = Some(crate::arch::hal::timer_current_ticks());
     }

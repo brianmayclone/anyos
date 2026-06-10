@@ -1123,7 +1123,7 @@ impl Scheduler {
             }
         };
         thread.is_idle = true;
-        thread.state = ThreadState::Ready;
+        thread.state.set(ThreadState::Ready);
         thread.last_cpu = cpu_id;
         thread.affinity_cpu = cpu_id;
 
@@ -1223,7 +1223,7 @@ impl Scheduler {
             if t.is_idle || self.is_idle_tid(t.tid) {
                 continue;
             }
-            match t.state {
+            match t.state.get() {
                 ThreadState::Ready | ThreadState::Running => {
                     let c = t.affinity_cpu;
                     if c < n_cpus {
@@ -1259,7 +1259,7 @@ impl Scheduler {
             if t.is_idle || self.is_idle_tid(t.tid) || t.critical || t.affinity_cpu != busiest_cpu {
                 continue;
             }
-            match t.state {
+            match t.state.get() {
                 ThreadState::Ready | ThreadState::Running => {
                     if victim_idx.is_none() || t.priority <= victim_pri {
                         victim_idx = Some(idx);
@@ -1301,7 +1301,7 @@ impl Scheduler {
                 let tid = self.threads[idx].tid;
                 let pri = self.threads[idx].priority;
                 let target_cpu = self.ready_cpu_for_thread(idx);
-                self.threads[idx].state = ThreadState::Ready;
+                self.threads[idx].state.set(ThreadState::Ready);
                 self.threads[idx].wake_at_tick = None;
                 self.adopt_affinity_if_movable(idx, target_cpu);
                 self.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
@@ -1469,7 +1469,7 @@ impl Scheduler {
     /// See [`add_thread`] — pre-allocation avoids allocator contention inside the lock.
     fn add_thread_blocked(&mut self, mut thread: ThreadBox) -> u32 {
         let tid = thread.tid;
-        thread.state = ThreadState::Blocked;
+        thread.state.set(ThreadState::Blocked);
         let cpu = self.least_loaded_cpu();
         thread.last_cpu = cpu;
         thread.affinity_cpu = cpu;
@@ -1732,7 +1732,7 @@ impl Scheduler {
     fn wake_thread_inner(&mut self, tid: u32) -> Option<usize> {
         if let Some(idx) = self.find_idx(tid) {
             if self.threads[idx].state == ThreadState::Blocked {
-                self.threads[idx].state = ThreadState::Ready;
+                self.threads[idx].state.set(ThreadState::Ready);
                 self.threads[idx].wake_at_tick = None;
                 let target = self.ready_cpu_for_thread(idx);
                 self.adopt_affinity_if_movable(idx, target);
@@ -1874,7 +1874,7 @@ fn kunit_make_pinned_user_thread(
         Thread::new(never_run, 42, "kunit/pinned-cont").expect("kunit thread allocation failed");
     let mut thread = alloc_thread_box(thread).expect("kunit thread object allocation failed");
     thread.is_user = true;
-    thread.state = state;
+    thread.state.set(state);
     thread.last_cpu = last_cpu;
     thread.affinity_cpu = affinity_cpu;
     let stack_top = thread.kernel_stack_top();
@@ -1897,7 +1897,7 @@ fn kunit_make_movable_user_thread(
         Thread::new(never_run, 42, "kunit/movable").expect("kunit thread allocation failed");
     let mut thread = alloc_thread_box(thread).expect("kunit thread object allocation failed");
     thread.is_user = true;
-    thread.state = state;
+    thread.state.set(state);
     thread.last_cpu = last_cpu;
     thread.affinity_cpu = affinity_cpu;
     let stack_top = thread.kernel_stack_top();
@@ -2126,7 +2126,7 @@ pub fn init() {
         let idle_tid = s.idle_tid[0];
         s.per_cpu[0].current_tid = Some(idle_tid);
         s.per_cpu[0].current_idx = Some(idx);
-        s.threads[idx].state = ThreadState::Running;
+        s.threads[idx].state.set(ThreadState::Running);
     }
     crate::serial_verbose_println!(
         "[OK] Mach scheduler initialized ({} priority levels, {} CPUs max, lazy FPU)",
@@ -2294,7 +2294,7 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
             if sched.threads[idx].state == ThreadState::Running {
                 sched.threads[idx].cpu_ticks += 1;
                 save_user_irq_context(&mut sched.threads[idx], frame_ptr);
-                sched.threads[idx].state = ThreadState::Ready;
+                sched.threads[idx].state.set(ThreadState::Ready);
                 sched.threads[idx].last_cpu = cpu_id;
                 let pri = sched.threads[idx].priority;
                 let target_cpu = sched.preempt_requeue_cpu(cpu_id, idx);
@@ -2308,7 +2308,7 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
         if let Some(next_tid) = sched.pick_next(cpu_id) {
             if next_tid == outgoing_tid.unwrap_or(0) {
                 if let Some(idx) = sched.find_idx(next_tid) {
-                    sched.threads[idx].state = ThreadState::Running;
+                    sched.threads[idx].state.set(ThreadState::Running);
                     sched.per_cpu[cpu_id].current_tid = Some(next_tid);
                     sched.per_cpu[cpu_id].current_idx = Some(idx);
                     PER_CPU_HAS_THREAD[cpu_id].store(true, Ordering::Relaxed);
@@ -2336,7 +2336,7 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                 let kstack_bottom = sched.threads[next_idx].kernel_stack_bottom();
                 sched.per_cpu[cpu_id].current_tid = Some(next_tid);
                 sched.per_cpu[cpu_id].current_idx = Some(next_idx);
-                sched.threads[next_idx].state = ThreadState::Running;
+                sched.threads[next_idx].state.set(ThreadState::Running);
                 sched.threads[next_idx].last_cpu = cpu_id;
                 sched.adopt_affinity_if_movable(next_idx, cpu_id);
                 PER_CPU_HAS_THREAD[cpu_id]
@@ -2379,7 +2379,7 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
             let idle_kstack_top = sched.threads[idle_idx].kernel_stack_top();
             sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
             sched.per_cpu[cpu_id].current_idx = Some(idle_idx);
-            sched.threads[idle_idx].state = ThreadState::Running;
+            sched.threads[idle_idx].state.set(ThreadState::Running);
             PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
             PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
             PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
@@ -2727,7 +2727,7 @@ fn schedule_inner(from_timer: bool) {
                 // ALWAYS mark context as unsaved for non-idle outgoing threads.
                 sched.threads[idx].context.save_complete = 0;
                 if sched.threads[idx].state == ThreadState::Running {
-                    sched.threads[idx].state = ThreadState::Ready;
+                    sched.threads[idx].state.set(ThreadState::Ready);
                     sched.threads[idx].last_cpu = cpu_id;
                     let pri = sched.threads[idx].priority;
                     let target_cpu = sched.preempt_requeue_cpu(cpu_id, idx);
@@ -2754,7 +2754,7 @@ fn schedule_inner(from_timer: bool) {
                         next_tid,
                         kstack_top,
                     );
-                    sched.threads[next_idx].state = ThreadState::Terminated;
+                    sched.threads[next_idx].state.set(ThreadState::Terminated);
                     sched.threads[next_idx].exit_code = Some(139);
                     sched.threads[next_idx].terminated_at_tick =
                         Some(crate::arch::hal::timer_current_ticks());
@@ -2769,7 +2769,7 @@ fn schedule_inner(from_timer: bool) {
                     // Commit: update per-CPU state
                     sched.per_cpu[cpu_id].current_tid = Some(next_tid);
                     sched.per_cpu[cpu_id].current_idx = Some(next_idx);
-                    sched.threads[next_idx].state = ThreadState::Running;
+                    sched.threads[next_idx].state.set(ThreadState::Running);
                     sched.threads[next_idx].last_cpu = cpu_id;
                     sched.adopt_affinity_if_movable(next_idx, cpu_id);
 
@@ -2889,7 +2889,7 @@ fn schedule_inner(from_timer: bool) {
                         sched.threads[idx].context.save_complete = 0;
                         sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
                         sched.per_cpu[cpu_id].current_idx = Some(idle_idx);
-                        sched.threads[idle_idx].state = ThreadState::Running;
+                        sched.threads[idle_idx].state.set(ThreadState::Running);
                         PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
                         PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
                         PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
@@ -3008,7 +3008,7 @@ fn schedule_inner(from_timer: bool) {
 
                 // Kill the corrupt incoming thread
                 if let Some(next_idx) = sched.find_idx(next_tid) {
-                    sched.threads[next_idx].state = ThreadState::Terminated;
+                    sched.threads[next_idx].state.set(ThreadState::Terminated);
                     sched.threads[next_idx].exit_code = Some(139);
                     sched.threads[next_idx].terminated_at_tick =
                         Some(crate::arch::hal::timer_current_ticks());
@@ -3025,7 +3025,7 @@ fn schedule_inner(from_timer: bool) {
                         // It's still in the run queue, but safe: pick_eligible checks
                         // state==Ready, so it will be dequeued and re-enqueued without
                         // being selected.
-                        sched.threads[out_idx].state = ThreadState::Running;
+                        sched.threads[out_idx].state.set(ThreadState::Running);
                     }
                     sched.threads[out_idx].context.save_complete = 1;
                     if sched.threads[out_idx].state == ThreadState::Running {
@@ -3043,7 +3043,7 @@ fn schedule_inner(from_timer: bool) {
                 sched.per_cpu[cpu_id].current_tid = Some(restore_tid);
                 if let Some(ri) = sched.find_idx(restore_tid) {
                     if restore_tid != out_tid {
-                        sched.threads[ri].state = ThreadState::Running;
+                        sched.threads[ri].state.set(ThreadState::Running);
                     }
                     PER_CPU_HAS_THREAD[cpu_id].store(!sched.threads[ri].is_idle, Ordering::Relaxed);
                     PER_CPU_CURRENT_TID[cpu_id].store(restore_tid, Ordering::Relaxed);
@@ -3257,7 +3257,7 @@ pub fn register_ap_idle(cpu_id: usize) {
         let idle_tid = sched.idle_tid[cpu_id];
         sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
         sched.per_cpu[cpu_id].current_idx = Some(idx);
-        sched.threads[idx].state = ThreadState::Running;
+        sched.threads[idx].state.set(ThreadState::Running);
         let kstack_top = sched.threads[idx].kernel_stack_top();
         let kstack_bottom = sched.threads[idx].kernel_stack_bottom();
         crate::debug_println!(

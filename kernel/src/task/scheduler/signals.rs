@@ -20,7 +20,7 @@ pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
 
         // SIGTSTP/SIGSTOP: stop the thread (default action)
         if (sig == SIGTSTP || sig == SIGSTOP) && handler == SIG_DFL {
-            let state = sched.threads[idx].state;
+            let state = sched.threads[idx].state.get();
             if state == ThreadState::Ready
                 || state == ThreadState::Running
                 || state == ThreadState::Blocked
@@ -40,7 +40,7 @@ pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
                         sched.threads[idx].wake_at_tick = None;
                     }
                 }
-                sched.threads[idx].state = ThreadState::Stopped;
+                sched.threads[idx].state.set(ThreadState::Stopped);
                 crate::serial_verbose_println!(
                     "Signal {}: stopped T{} (was {:?})",
                     sig,
@@ -65,7 +65,7 @@ pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
                     let wake_at = now.wrapping_add(sched.threads[idx].sleep_remaining);
                     sched.threads[idx].wake_at_tick = Some(wake_at);
                     sched.threads[idx].sleep_remaining = 0;
-                    sched.threads[idx].state = ThreadState::Blocked;
+                    sched.threads[idx].state.set(ThreadState::Blocked);
                     super::note_sleeper_deadline(wake_at);
                     crate::serial_verbose_println!(
                         "Signal {}: continued T{} (re-sleeping)",
@@ -73,7 +73,7 @@ pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
                         tid
                     );
                 } else {
-                    sched.threads[idx].state = ThreadState::Ready;
+                    sched.threads[idx].state.set(ThreadState::Ready);
                     let cpu = sched.threads[idx].affinity_cpu;
                     let n = sched.num_cpus();
                     let target = if cpu < n { cpu } else { 0 };
@@ -379,7 +379,7 @@ pub fn stop_current_thread(sig: u32) {
                 sig,
                 sched.threads[idx].tid
             );
-            sched.threads[idx].state = ThreadState::Stopped;
+            sched.threads[idx].state.set(ThreadState::Stopped);
             sched.threads[idx].context.save_complete = 0;
             // Wake any waitpid waiter so it can see the stopped state
             if let Some(waiter_tid) = sched.threads[idx].exit_waiter_tid {

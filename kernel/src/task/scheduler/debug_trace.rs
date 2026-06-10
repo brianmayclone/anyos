@@ -55,12 +55,12 @@ pub fn debug_attach(debugger_tid: u32, target_tid: u32) -> u32 {
         let target_cpu = if cpu < n { cpu } else { 0 };
         sched.per_cpu[target_cpu].run_queue.remove(target_tid);
         sched.threads[idx].wake_at_tick = None;
-        sched.threads[idx].state = ThreadState::Blocked;
+        sched.threads[idx].state.set(ThreadState::Blocked);
     } else if sched.threads[idx].state == ThreadState::Running {
         // Thread is currently running on some CPU — mark for suspend.
         // It will be blocked on next schedule tick.
         sched.threads[idx].wake_at_tick = None;
-        sched.threads[idx].state = ThreadState::Blocked;
+        sched.threads[idx].state.set(ThreadState::Blocked);
         sched.threads[idx].context.save_complete = 0;
     } else if sched.threads[idx].state == ThreadState::Blocked {
         sched.threads[idx].wake_at_tick = None;
@@ -113,7 +113,7 @@ pub fn debug_detach(debugger_tid: u32, target_tid: u32) -> u32 {
 
         // Resume thread if it's blocked
         if sched.threads[idx].state == ThreadState::Blocked {
-            sched.threads[idx].state = ThreadState::Ready;
+            sched.threads[idx].state.set(ThreadState::Ready);
             let cpu = sched.threads[idx].affinity_cpu;
             let n = sched.num_cpus();
             let target_cpu = if cpu < n { cpu } else { 0 };
@@ -158,10 +158,10 @@ pub fn debug_suspend(debugger_tid: u32, target_tid: u32) -> u32 {
         let target_cpu = if cpu < n { cpu } else { 0 };
         sched.per_cpu[target_cpu].run_queue.remove(target_tid);
         sched.threads[idx].wake_at_tick = None;
-        sched.threads[idx].state = ThreadState::Blocked;
+        sched.threads[idx].state.set(ThreadState::Blocked);
     } else if sched.threads[idx].state == ThreadState::Running {
         sched.threads[idx].wake_at_tick = None;
-        sched.threads[idx].state = ThreadState::Blocked;
+        sched.threads[idx].state.set(ThreadState::Blocked);
         sched.threads[idx].context.save_complete = 0;
     } else if sched.threads[idx].state == ThreadState::Blocked {
         sched.threads[idx].wake_at_tick = None;
@@ -204,7 +204,7 @@ pub fn debug_resume(debugger_tid: u32, target_tid: u32) -> u32 {
 
     // Wake thread if it's blocked due to debug suspension
     if sched.threads[idx].state == ThreadState::Blocked {
-        sched.threads[idx].state = ThreadState::Ready;
+        sched.threads[idx].state.set(ThreadState::Ready);
         let cpu = sched.threads[idx].affinity_cpu;
         let n = sched.num_cpus();
         let target_cpu = if cpu < n { cpu } else { 0 };
@@ -648,7 +648,7 @@ pub fn debug_single_step(debugger_tid: u32, target_tid: u32) -> u32 {
     // Resume the thread so it executes one instruction
     sched.threads[idx].debug_suspended = false;
     if sched.threads[idx].state == ThreadState::Blocked {
-        sched.threads[idx].state = ThreadState::Ready;
+        sched.threads[idx].state.set(ThreadState::Ready);
         let cpu = sched.threads[idx].affinity_cpu;
         let n = sched.num_cpus();
         let target_cpu = if cpu < n { cpu } else { 0 };
@@ -787,7 +787,7 @@ pub fn thread_info_ex(target_tid: u32, buf_ptr: u64, size: u32) -> u32 {
     let mut buf = [0u8; 128];
 
     // Pack fields into buffer
-    let state_u32: u32 = match thread.state {
+    let state_u32: u32 = match thread.state.get() {
         ThreadState::Ready => 0,
         ThreadState::Running => 1,
         ThreadState::Blocked => 2,
@@ -887,7 +887,7 @@ pub fn debug_auto_suspend(tid: u32, event_type: u32, addr: u64) {
                     // then clear save_complete (same rationale as wait.rs).
                     if sched.threads[idx].state == ThreadState::Running {
                         sched.threads[idx].wake_at_tick = None;
-                        sched.threads[idx].state = ThreadState::Blocked;
+                        sched.threads[idx].state.set(ThreadState::Blocked);
                         sched.threads[idx].context.save_complete = 0;
                     }
                 }

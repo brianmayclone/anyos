@@ -98,17 +98,73 @@ static NEXT_TID: AtomicU32 = AtomicU32::new(1);
 
 /// Execution state of a thread in the scheduler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum ThreadState {
     /// Eligible to be picked by the scheduler.
-    Ready,
+    Ready = 0,
     /// Currently executing on the CPU.
-    Running,
+    Running = 1,
     /// Waiting for an event (e.g. waitpid) and not schedulable.
-    Blocked,
+    Blocked = 2,
     /// Finished execution; awaiting reaping by the scheduler.
-    Terminated,
+    Terminated = 3,
     /// Stopped by a signal (SIGTSTP/SIGSTOP). Not schedulable until SIGCONT.
-    Stopped,
+    Stopped = 4,
+}
+
+impl ThreadState {
+    #[inline]
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => ThreadState::Ready,
+            1 => ThreadState::Running,
+            2 => ThreadState::Blocked,
+            3 => ThreadState::Terminated,
+            _ => ThreadState::Stopped,
+        }
+    }
+}
+
+/// Atomic wrapper around `ThreadState` so the scheduler can read and update a
+/// thread's state without holding the global scheduler lock — the prerequisite
+/// for the Phase 4b per-CPU run-queue lock split. While the global lock still
+/// guards every transition (today), `Relaxed` ordering is sufficient and the
+/// behavior is identical to the previous plain field. `compare_exchange` is
+/// provided for the lock-free transitions a later stage will need.
+pub struct AtomicThreadState(core::sync::atomic::AtomicU8);
+
+impl AtomicThreadState {
+    #[inline]
+    pub const fn new(s: ThreadState) -> Self {
+        AtomicThreadState(core::sync::atomic::AtomicU8::new(s as u8))
+    }
+    #[inline]
+    pub fn get(&self) -> ThreadState {
+        ThreadState::from_u8(self.0.load(Ordering::Relaxed))
+    }
+    #[inline]
+    pub fn set(&self, s: ThreadState) {
+        self.0.store(s as u8, Ordering::Relaxed);
+    }
+    /// Atomic compare-and-set. Returns true on success. For the lock-free
+    /// state transitions the per-CPU run-queue lock split (stage 5) will use.
+    #[inline]
+    #[allow(dead_code)]
+    pub fn compare_exchange(&self, current: ThreadState, new: ThreadState) -> bool {
+        self.0
+            .compare_exchange(current as u8, new as u8, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+}
+
+/// `thread.state == ThreadState::X` / `!= X` read the atomic directly, so the
+/// common comparison sites need no `.get()`. Assignments use `.set()` and
+/// `match` uses `.get()`.
+impl PartialEq<ThreadState> for AtomicThreadState {
+    #[inline]
+    fn eq(&self, other: &ThreadState) -> bool {
+        self.get() == *other
+    }
 }
 
 /// Size of the FPU/SSE/AVX save area.
@@ -148,7 +204,7 @@ impl Default for FxState {
 /// A kernel or user thread with its own stack, saved context, and process metadata.
 pub struct Thread {
     pub tid: u32,
-    pub state: ThreadState,
+    pub state: AtomicThreadState,
     pub context: CpuContext,
     pub kernel_stack: PageAlignedStack,
     pub priority: u8,
@@ -380,7 +436,7 @@ impl Thread {
 
         Some(Thread {
             tid,
-            state: ThreadState::Ready,
+            state: AtomicThreadState::new(ThreadState::Ready),
             context,
             kernel_stack: stack,
             priority,

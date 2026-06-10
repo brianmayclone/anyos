@@ -92,7 +92,7 @@ where
             idle_stack_top = kstack_top;
             sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
             sched.per_cpu[cpu_id].current_idx = Some(idx);
-            sched.threads[idx].state = ThreadState::Running;
+            sched.threads[idx].state.set(ThreadState::Running);
             PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
             PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
             PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
@@ -208,7 +208,7 @@ fn collect_and_terminate_children(
     for &child_tid in &to_kill {
         if let Some(idx) = sched.find_idx(child_tid) {
             if sched.threads[idx].state != ThreadState::Terminated {
-                sched.threads[idx].state = ThreadState::Terminated;
+                sched.threads[idx].state.set(ThreadState::Terminated);
                 sched.threads[idx].exit_code = Some(9); // SIGKILL
                 sched.threads[idx].terminated_at_tick = Some(tick);
             }
@@ -335,7 +335,7 @@ pub fn terminate_exec_siblings(current_tid: u32, old_pd: PhysAddr) -> bool {
 
             sched.remove_from_all_queues(tid);
             let waiter = sched.threads[idx].exit_waiter_tid;
-            sched.threads[idx].state = ThreadState::Terminated;
+            sched.threads[idx].state.set(ThreadState::Terminated);
             sched.threads[idx].exit_code = Some(9);
             sched.threads[idx].terminated_at_tick = Some(tick);
             sched.threads[idx].page_directory = None;
@@ -431,7 +431,7 @@ fn terminate_same_pd_threads_for_fault(
         let waiter = sched.threads[idx].exit_waiter_tid;
         sched.remove_from_all_queues(tid);
         if sched.threads[idx].state != ThreadState::Terminated {
-            sched.threads[idx].state = ThreadState::Terminated;
+            sched.threads[idx].state.set(ThreadState::Terminated);
             sched.threads[idx].exit_code = Some(code);
             sched.threads[idx].terminated_at_tick = Some(tick);
         }
@@ -514,7 +514,7 @@ pub fn exit_current(code: u32) {
         }
 
         // ── Mark self as Terminated ───────────────────────────────
-        sched.threads[idx].state = ThreadState::Terminated;
+        sched.threads[idx].state.set(ThreadState::Terminated);
         sched.threads[idx].exit_code = Some(code);
         sched.threads[idx].terminated_at_tick = Some(tick);
         crate::serial_verbose_println!(
@@ -669,7 +669,7 @@ pub fn try_exit_current(code: u32) -> bool {
         }
         sched.remove_from_all_queues(current_tid);
         try_exit_diag_mark(b'I');
-        sched.threads[idx].state = ThreadState::Terminated;
+        sched.threads[idx].state.set(ThreadState::Terminated);
         sched.threads[idx].exit_code = Some(code);
         sched.threads[idx].terminated_at_tick = Some(tick);
         sched.threads[idx].page_directory = None;
@@ -688,7 +688,7 @@ pub fn try_exit_current(code: u32) -> bool {
         idle_stack_top = kstack_top;
         sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
         sched.per_cpu[cpu_id].current_idx = Some(idle_idx);
-        sched.threads[idle_idx].state = ThreadState::Running;
+        sched.threads[idle_idx].state.set(ThreadState::Running);
         PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
         PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
         PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
@@ -766,7 +766,7 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
                         sched.threads[idx].name_str(),
                         current_tid,
                     );
-                    sched.threads[idx].state = ThreadState::Ready;
+                    sched.threads[idx].state.set(ThreadState::Ready);
                     sched.threads[idx].context.save_complete = 1;
                     let pri = sched.threads[idx].priority;
                     sched.per_cpu[cpu_id].run_queue.enqueue(current_tid, pri);
@@ -791,7 +791,7 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
                         }
                     }
                     sched.remove_from_all_queues(current_tid);
-                    sched.threads[idx].state = ThreadState::Terminated;
+                    sched.threads[idx].state.set(ThreadState::Terminated);
                     sched.threads[idx].exit_code = Some(139);
                     sched.threads[idx].terminated_at_tick =
                         Some(crate::arch::hal::timer_current_ticks());
@@ -893,7 +893,7 @@ pub fn fault_kill_tid_and_idle(tid: u32, signal: u32) -> ! {
                     }
                 }
                 sched.remove_from_all_queues(tid);
-                sched.threads[idx].state = ThreadState::Terminated;
+                sched.threads[idx].state.set(ThreadState::Terminated);
                 sched.threads[idx].exit_code = Some(signal);
                 sched.threads[idx].terminated_at_tick = Some(tick);
                 sched.threads[idx].page_directory = None;
@@ -977,7 +977,7 @@ pub fn kill_thread(tid: u32) -> u32 {
             );
         }
 
-        sched.threads[target_idx].state = ThreadState::Terminated;
+        sched.threads[target_idx].state.set(ThreadState::Terminated);
         sched.threads[target_idx].exit_code = Some(u32::MAX - 1);
         sched.threads[target_idx].terminated_at_tick = Some(tick);
         sched.remove_from_all_queues(tid);

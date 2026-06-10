@@ -92,7 +92,7 @@ pub fn list_threads() -> Vec<ThreadInfo> {
                 if count >= MAX_SNAP {
                     break;
                 }
-                let state_num = match thread.state {
+                let state_num = match thread.state.get() {
                     ThreadState::Ready => 0u8,
                     ThreadState::Running => 1,
                     ThreadState::Blocked => 2,
