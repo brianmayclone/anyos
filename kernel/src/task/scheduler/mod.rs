@@ -687,10 +687,11 @@ pub(super) fn store_per_cpu_linux_rootfs(
 /// Lock-free read of the running thread's Linux rootfs into `buf`. Returns the
 /// number of bytes written (0 if the current thread has no Linux rootfs).
 ///
-/// CURRENTLY UNUSED: reverted from `current_thread_linux_rootfs` for the same
-/// staleness reason as `load_per_cpu_abi` above. Kept for the future robust
-/// (TID-validated) version.
-#[allow(dead_code)]
+/// Used by `current_thread_linux_rootfs` as its lock-free fast path: reading
+/// under disabled interrupts pins the caller to the current CPU and the
+/// thread running on it, so this per-CPU value is authoritative (the
+/// staleness that motivated the earlier revert only applies to lock-free
+/// reads with interrupts ENABLED, where a migration could intervene).
 #[inline]
 pub(super) fn load_per_cpu_linux_rootfs(cpu_id: usize, buf: &mut [u8]) -> usize {
     if cpu_id >= MAX_CPUS {

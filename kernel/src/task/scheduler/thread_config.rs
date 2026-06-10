@@ -140,6 +140,25 @@ pub fn set_thread_linux_rootfs(tid: u32, rootfs: &str) {
 /// NOTE: reverted to the lock-based read (see `current_thread_abi` above for
 /// why the lock-free per-CPU cache read was unsafe without TID validation).
 pub fn current_thread_linux_rootfs(buf: &mut [u8]) -> usize {
+    // Fast path: lock-free per-CPU rootfs cache. It is refreshed on every
+    // context switch (store_per_cpu_linux_rootfs in update_per_cpu_name) and
+    // whenever the running thread retargets its rootfs. Reading it with
+    // interrupts disabled pins us to the current CPU and the thread currently
+    // running on it — ourselves — so the cached value is authoritative and no
+    // scheduler lock is needed. Same lock-free pattern as current_thread_abi().
+    // This matters because path translation calls this on EVERY filesystem
+    // syscall (openat/stat/access/...); the global IRQ-off scheduler spinlock
+    // here serialized all LXE file I/O against scheduling on every CPU.
+    let flags = crate::arch::hal::save_and_disable_interrupts();
+    let cpu_id = get_cpu_id();
+    let len = super::load_per_cpu_linux_rootfs(cpu_id, buf);
+    crate::arch::hal::restore_interrupt_state(flags);
+    if len > 0 {
+        return len;
+    }
+
+    // Slow path: cache reports no Linux rootfs (non-Linux thread, or rootfs
+    // genuinely unset). Confirm under the lock so behavior is unchanged.
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
     if let Some(sched) = guard.as_ref() {

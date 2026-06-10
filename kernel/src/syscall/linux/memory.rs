@@ -739,9 +739,6 @@ pub(super) fn linux_read_fd_at(
         let chunk_len = (len - total).min(FILE_MAP_COPY_CHUNK);
         let mut chunk = alloc::vec![0u8; chunk_len];
         let chunk_offset = offset.checked_add(total as u64).ok_or(EINVAL)?;
-        if chunk_offset > i32::MAX as u64 {
-            return Err(EINVAL);
-        }
         let n = linux_read_global_chunk_at(global_id, chunk_offset, &mut chunk)?;
         if n == 0 {
             break;
@@ -769,8 +766,7 @@ fn linux_read_global_chunk_at(global_id: u32, offset: u64, out: &mut [u8]) -> Re
         Err(crate::fs::vfs::FsError::NotSupported) => {}
         Err(e) => return Err(fs_errno(e)),
     }
-    let (_file_type, _size, old_pos, _mtime) =
-        crate::fs::vfs::fstat(global_id).map_err(fs_errno)?;
+    let old_pos = crate::fs::vfs::lseek(global_id, 0, 1).map_err(fs_errno)?;
     crate::fs::vfs::lseek(global_id, offset as i64, 0).map_err(fs_errno)?;
     let read_result = crate::fs::vfs::read(global_id, out).map_err(fs_errno);
     let _ = crate::fs::vfs::lseek(global_id, old_pos as i64, 0);

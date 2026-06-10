@@ -530,15 +530,24 @@ fn linux_file_global_id(fd: u32) -> Result<u32, i32> {
 fn linux_read_fd_kernel(fd: u32, buf: &mut [u8], offset: Option<u64>) -> Result<usize, i32> {
     let global_id = linux_file_global_id(fd)?;
     if let Some(offset) = offset {
-        if offset > i32::MAX as u64 {
+        if offset > i64::MAX as u64 {
             return Err(EINVAL);
         }
-        let (_file_type, _size, old_pos, _mtime) =
-            crate::fs::vfs::fstat(global_id).map_err(fs_errno)?;
-        crate::fs::vfs::lseek(global_id, offset as i64, 0).map_err(fs_errno)?;
-        let result = crate::fs::vfs::read(global_id, buf).map_err(fs_errno);
-        let _ = crate::fs::vfs::lseek(global_id, old_pos as i64, 0);
-        result
+        // Position-independent read: read_at does not disturb the file's
+        // stored position, so no fstat (a full directory walk) or lseek
+        // save/restore is needed. Fall back to the seek dance only if the
+        // backend cannot do positional reads.
+        match crate::fs::vfs::read_at(global_id, offset, buf) {
+            Ok(n) => Ok(n),
+            Err(crate::fs::vfs::FsError::NotSupported) => {
+                let old_pos = crate::fs::vfs::lseek(global_id, 0, 1).map_err(fs_errno)?;
+                crate::fs::vfs::lseek(global_id, offset as i64, 0).map_err(fs_errno)?;
+                let result = crate::fs::vfs::read(global_id, buf).map_err(fs_errno);
+                let _ = crate::fs::vfs::lseek(global_id, old_pos as i64, 0);
+                result
+            }
+            Err(e) => Err(fs_errno(e)),
+        }
     } else {
         crate::fs::vfs::read(global_id, buf).map_err(fs_errno)
     }
@@ -547,11 +556,12 @@ fn linux_read_fd_kernel(fd: u32, buf: &mut [u8], offset: Option<u64>) -> Result<
 fn linux_write_fd_kernel(fd: u32, buf: &[u8], offset: Option<u64>) -> Result<usize, i32> {
     let global_id = linux_file_global_id(fd)?;
     if let Some(offset) = offset {
-        if offset > i32::MAX as u64 {
+        if offset > i64::MAX as u64 {
             return Err(EINVAL);
         }
-        let (_file_type, _size, old_pos, _mtime) =
-            crate::fs::vfs::fstat(global_id).map_err(fs_errno)?;
+        // Capture the position with SEEK_CUR (cheap) instead of fstat (a full
+        // directory walk) just to restore it after the positional write.
+        let old_pos = crate::fs::vfs::lseek(global_id, 0, 1).map_err(fs_errno)?;
         crate::fs::vfs::lseek(global_id, offset as i64, 0).map_err(fs_errno)?;
         let result = crate::fs::vfs::write(global_id, buf).map_err(fs_errno);
         let _ = crate::fs::vfs::lseek(global_id, old_pos as i64, 0);
@@ -567,8 +577,8 @@ fn linux_write_fd_at(fd: u32, buf_ptr: u64, len: usize, offset: u64) -> Result<u
         return Err(EINVAL);
     }
     let global_id = linux_file_global_id(fd)?;
-    let (_file_type, _size, old_pos, _mtime) =
-        crate::fs::vfs::fstat(global_id).map_err(fs_errno)?;
+    // SEEK_CUR captures the position without the directory walk fstat does.
+    let old_pos = crate::fs::vfs::lseek(global_id, 0, 1).map_err(fs_errno)?;
     crate::fs::vfs::lseek(global_id, offset as i64, 0).map_err(fs_errno)?;
 
     let mut total = 0usize;
