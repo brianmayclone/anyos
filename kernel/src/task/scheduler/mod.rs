@@ -341,6 +341,53 @@ static DEFERRED_WAKE_TIDS: [AtomicU32; DEFERRED_WAKE_SLOTS] = {
 /// here and the next drain recovers by waking all event-blocked threads.
 static DEFERRED_WAKE_OVERFLOW: AtomicBool = AtomicBool::new(false);
 
+/// Per-CPU bitmask of remote CPUs that a deferred-wake drain woke a thread onto
+/// and that therefore need a reschedule IPI. Populated under the scheduler lock
+/// by `drain_deferred_wakes`/`wake_all_event_blocked` (which otherwise ignore
+/// `wake_thread_inner`'s needs-kick return), and flushed as resched IPIs right
+/// after the lock is released in the schedule paths. This removes the previous
+/// reliance on the target CPU's next timer tick to notice the woken thread —
+/// the timer-tick wake backstop added up to ~1 ms latency to I/O-completion
+/// wakes that fell back to the deferred path under lock contention.
+static PER_CPU_PENDING_KICKS: [AtomicU32; MAX_CPUS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; MAX_CPUS]
+};
+
+/// Send the deferred-wake reschedule IPIs accumulated for `cpu_id`. Must be
+/// called AFTER the scheduler lock is released (the target's schedule_tick
+/// takes the lock; sending while we hold it would make its try_lock fail and
+/// drop the edge-triggered kick). Skips `cpu_id` itself — the local CPU is
+/// already scheduling.
+#[inline]
+fn flush_pending_kicks(cpu_id: usize) {
+    if cpu_id >= MAX_CPUS {
+        return;
+    }
+    let mut mask = PER_CPU_PENDING_KICKS[cpu_id].swap(0, Ordering::AcqRel);
+    mask &= !(1u32 << cpu_id);
+    #[cfg(target_arch = "x86_64")]
+    while mask != 0 {
+        let target = mask.trailing_zeros() as usize;
+        mask &= mask - 1;
+        crate::arch::x86::smp::resched_cpu(target);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = mask;
+}
+
+/// Record that `target` (a `wake_thread_inner` needs-kick result) should get a
+/// reschedule IPI once the lock is released. Called from the deferred-wake
+/// drain, which runs under the lock on `cpu_id`.
+#[inline]
+fn record_pending_kick(cpu_id: usize, target: Option<usize>) {
+    if let Some(t) = target {
+        if cpu_id < MAX_CPUS && t < MAX_CPUS {
+            PER_CPU_PENDING_KICKS[cpu_id].fetch_or(1u32 << t, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Number of pending deferred wakes. The timer drain loop skips the
 /// 256-slot scan entirely when this is zero, reducing SCHEDULER lock
 /// hold time from ~256 atomic ops to a single Relaxed load per tick.
@@ -1721,12 +1768,14 @@ impl Scheduler {
     /// re-checks its wait condition on resume (the condition-recheck contract,
     /// e.g. `ipc::anon_pipe`), so over-waking is safe and no wake is ever lost.
     fn drain_deferred_wakes(&mut self) {
+        let cpu_id = get_cpu_id();
         if DEFERRED_WAKE_PENDING.load(Ordering::Relaxed) > 0 {
             for slot in &DEFERRED_WAKE_TIDS {
                 let tid = slot.swap(0, Ordering::Acquire);
                 if tid != 0 {
                     DEFERRED_WAKE_PENDING.fetch_sub(1, Ordering::Relaxed);
-                    self.wake_thread_inner(tid);
+                    let kick = self.wake_thread_inner(tid);
+                    record_pending_kick(cpu_id, kick);
                 }
             }
         }
@@ -1739,13 +1788,15 @@ impl Scheduler {
     /// only as the rare deferred-wake overflow recovery. Timed sleepers
     /// (`wake_at_tick` set) are left alone — their own timer wakes them.
     fn wake_all_event_blocked(&mut self) {
+        let cpu_id = get_cpu_id();
         let n = self.threads.len();
         for idx in 0..n {
             if self.threads[idx].state == ThreadState::Blocked
                 && self.threads[idx].wake_at_tick.is_none()
             {
                 let tid = self.threads[idx].tid;
-                self.wake_thread_inner(tid);
+                let kick = self.wake_thread_inner(tid);
+                record_pending_kick(cpu_id, kick);
             }
         }
     }
@@ -2372,6 +2423,11 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
     }
 
     guard.release_no_irq_restore();
+
+    // Deliver deferred-wake reschedule IPIs now that the lock is dropped
+    // (still IRQs-off, so get_cpu_id() is stable). Sending while holding the
+    // lock would make the target's schedule_tick try_lock fail and drop the kick.
+    flush_pending_kicks(get_cpu_id());
 
     if let Some((old_ctx, new_ctx, old_fpu, _new_fpu, outgoing_tid, _next_tid)) = switch_info {
         let fpu_owner = PER_CPU_FPU_OWNER[cpu_id].load(Ordering::Relaxed);
@@ -3013,6 +3069,11 @@ fn schedule_inner(from_timer: bool) {
 
     // Release lock WITHOUT restoring IF — keeps interrupts disabled through context_switch
     guard.release_no_irq_restore();
+
+    // Deliver deferred-wake reschedule IPIs now that the lock is dropped
+    // (still IRQs-off, so get_cpu_id() is stable). Sending while holding the
+    // lock would make the target's schedule_tick try_lock fail and drop the kick.
+    flush_pending_kicks(get_cpu_id());
 
     // Verbose diagnostics AFTER lock released (serial I/O is slow, ~3ms/char at 115200)
     if let Some((reason, next_tid, ctx_ptr)) = corrupt_diag {
