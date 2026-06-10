@@ -1,6 +1,6 @@
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Image cache
@@ -41,11 +41,21 @@ impl ImageEntry {
     }
 }
 
+/// iframe snapshot pseudo-images are produced by the snapshot renderer, not
+/// fetched from the network; once evicted they cannot be re-decoded on
+/// demand. They must never be auto-evicted (see `iframe_snapshot_key`).
+fn is_iframe_snapshot_src(src: &str) -> bool {
+    src.starts_with("__iframe_")
+}
+
 /// LRU cache of decoded images with a total byte-size cap.
 pub struct ImageCache {
     pub entries: Vec<ImageEntry>,
     generation: Cell<u64>,
     total_bytes: usize,
+    /// Sources whose pixels were evicted but were looked up again during
+    /// rasterization. Drained by the embedder to re-fetch/re-decode them.
+    evicted_misses: RefCell<Vec<String>>,
 }
 
 impl ImageCache {
@@ -54,7 +64,21 @@ impl ImageCache {
             entries: Vec::new(),
             generation: Cell::new(0),
             total_bytes: 0,
+            evicted_misses: RefCell::new(Vec::new()),
         }
+    }
+
+    fn note_evicted_miss(&self, src: &str) {
+        let mut misses = self.evicted_misses.borrow_mut();
+        if misses.len() >= 64 || misses.iter().any(|s| s == src) {
+            return;
+        }
+        misses.push(String::from(src));
+    }
+
+    /// Drain the evicted-but-needed sources recorded during rasterization.
+    pub fn take_evicted_misses(&mut self) -> Vec<String> {
+        core::mem::take(&mut *self.evicted_misses.borrow_mut())
     }
 
     fn bump_generation(&self) -> u64 {
@@ -66,8 +90,11 @@ impl ImageCache {
     /// Look up a cached image by URL.  Bumps the LRU generation on hit.
     pub fn get(&mut self, src: &str) -> Option<&ImageEntry> {
         let gen = self.bump_generation();
-        if let Some(entry) = self.entries.iter_mut().find(|e| e.src == src) {
+        if let Some(entry) = self.entries.iter().find(|e| e.src == src) {
             entry.generation.set(gen);
+            if !entry.has_pixels() {
+                self.note_evicted_miss(src);
+            }
             return Some(entry);
         }
         None
@@ -78,6 +105,11 @@ impl ImageCache {
         if let Some(entry) = self.entries.iter().find(|e| e.src == src) {
             let gen = self.bump_generation();
             entry.generation.set(gen);
+            if !entry.has_pixels() {
+                // Pixels were evicted under memory pressure but the painter
+                // still needs them: ask the embedder to re-fetch.
+                self.note_evicted_miss(src);
+            }
             return Some(entry);
         }
         None
@@ -124,6 +156,7 @@ impl ImageCache {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.total_bytes = 0;
+        self.evicted_misses.borrow_mut().clear();
     }
 
     fn evict_to_budget(&mut self) {
@@ -138,6 +171,7 @@ impl ImageCache {
                 .iter()
                 .enumerate()
                 .filter(|(_, e)| !e.pixels.is_empty())
+                .filter(|(_, e)| !is_iframe_snapshot_src(&e.src))
                 .filter(|(_, e)| e.byte_size() > IMAGE_CACHE_SMALL_IMAGE_PROTECT_BYTES)
                 .min_by_key(|(_, e)| e.generation.get())
                 .map(|(i, _)| i)
@@ -146,6 +180,7 @@ impl ImageCache {
                         .iter()
                         .enumerate()
                         .filter(|(_, e)| !e.pixels.is_empty())
+                        .filter(|(_, e)| !is_iframe_snapshot_src(&e.src))
                         .min_by_key(|(_, e)| e.generation.get())
                         .map(|(i, _)| i)
                 });

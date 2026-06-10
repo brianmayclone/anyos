@@ -182,26 +182,16 @@ impl Renderer {
                     visible_y_start,
                     visible_y_end
                 );
-                self.hit_regions.clear();
-                self.link_map.clear();
-                for fc in &mut self.form_controls {
-                    fc.seen = false;
+                let (build_y_start, build_y_end) =
+                    self.expand_display_list_band(root, doc_h, visible_y_start, visible_y_end);
+                self.rebuild_controls_for_range(root, parent, build_y_start, build_y_end);
+            } else if self.controls_walk_pending {
+                if let Some((built_y_start, built_y_end)) = self.display_list_y_range {
+                    self.rebuild_controls_for_range(root, parent, built_y_start, built_y_end);
                 }
-                self.walk_controls_visible(
-                    root,
-                    0,
-                    0,
-                    parent,
-                    self.submit_cb,
-                    self.submit_cb_ud,
-                    visible_y_start,
-                    visible_y_end,
-                );
-                self.display_list =
-                    DisplayList::build_visible(root, visible_y_start, visible_y_end);
-                self.display_list_complete = false;
-                self.display_list_y_range = Some((visible_y_start, visible_y_end));
             }
+        } else if self.controls_walk_pending {
+            self.rebuild_controls_for_range(root, parent, 0, doc_h.max(1) as i32);
         }
 
         for row in immediate_rows.iter().copied() {
@@ -239,9 +229,21 @@ impl Renderer {
             return;
         }
 
-        self.display_list = DisplayList::build_visible(root, y0, y1);
-        self.display_list_complete = false;
-        self.display_list_y_range = Some((y0, y1));
+        if self.display_list_complete {
+            // The full list stays authoritative — rebuild it in place so the
+            // band bookkeeping (and every offscreen tile outside the mutated
+            // rows) survives paint-only JS mutations.
+            self.display_list = DisplayList::build(root);
+        } else {
+            let (built_y_start, built_y_end) = self.display_list_y_range.unwrap_or((y0, y1));
+            let build_y_start = built_y_start.min(y0);
+            let build_y_end = built_y_end.max(y1);
+            self.display_list = DisplayList::build_visible(root, build_y_start, build_y_end);
+            self.display_list_y_range = Some((build_y_start, build_y_end));
+            if self.doc_h > 0 {
+                self.mark_display_list_complete_if_covering(self.doc_h);
+            }
+        }
         self.invalidate_y_range(y0, y1 - y0);
     }
 
@@ -332,7 +334,7 @@ impl Renderer {
                 // visible work and must not keep the 16 ms timer alive forever.
             }
             if needs_band_expand && (!defer_display_list_expand || visible_tile_missing) {
-                let (build_y_start, build_y_end) = if visible_tile_missing {
+                let (target_y_start, target_y_end) = if visible_tile_missing {
                     let start = (scroll_y - TILE_HEIGHT as i32).max(0);
                     let end = (scroll_y + viewport_h as i32 + TILE_HEIGHT as i32).min(doc_h as i32);
                     (start, end.max(start + 1))
@@ -341,34 +343,24 @@ impl Renderer {
                 };
                 crate::debug_surf!(
                     "[render] expanding visible display list for scroll range [{}..{})",
-                    build_y_start,
-                    build_y_end
+                    target_y_start,
+                    target_y_end
                 );
-                self.hit_regions.clear();
-                self.link_map.clear();
-                if !scrolling {
-                    for fc in &mut self.form_controls {
-                        fc.seen = false;
-                    }
-                    self.walk_controls_visible(
-                        root,
-                        0,
-                        0,
-                        parent,
-                        self.submit_cb,
-                        self.submit_cb_ud,
-                        build_y_start,
-                        build_y_end,
-                    );
+                // The band grows as a union of old and new coverage; tiles
+                // rasterized inside the old band stay valid, only the newly
+                // covered rows are invalidated. This is what keeps already
+                // rendered content (e.g. the top of the page) alive when the
+                // user scrolls back up.
+                let (build_y_start, build_y_end) =
+                    self.expand_display_list_band(root, doc_h, target_y_start, target_y_end);
+                if scrolling {
+                    // Walking controls/hit regions over the band is sync work
+                    // a scroll frame cannot afford; the next idle/repaint pass
+                    // rebuilds them for the expanded band.
+                    self.controls_walk_pending = true;
+                } else {
+                    self.rebuild_controls_for_range(root, parent, build_y_start, build_y_end);
                 }
-                self.display_list = DisplayList::build_visible(root, build_y_start, build_y_end);
-                self.display_list_complete = false;
-                self.display_list_y_range = Some((build_y_start, build_y_end));
-                // The visible display list is rebuilt, not appended. Cached
-                // tile pixels inside the rebuilt band may have been rasterized
-                // against an older command set (for example before late PNGs
-                // arrived), so do not reuse them with the new band.
-                self.invalidate_y_range(build_y_start, build_y_end - build_y_start);
             }
         }
 
@@ -407,21 +399,11 @@ impl Renderer {
             }
 
             if self.tile_cache.get(row).is_none() {
-                if !self.display_list_complete {
-                    let row_y_start = (row * TILE_HEIGHT) as i32;
-                    let row_y_end = row_y_start + TILE_HEIGHT as i32;
-                    let row_covered = self
-                        .display_list_y_range
-                        .map(|(built_y_start, built_y_end)| {
-                            row_y_start < built_y_end && row_y_end > built_y_start
-                        })
-                        .unwrap_or(false);
-                    if !row_covered {
-                        if row_is_visible {
-                            pending = true;
-                        }
-                        continue;
+                if !self.row_fully_covered(row, doc_h) {
+                    if row_is_visible {
+                        pending = true;
                     }
+                    continue;
                 }
                 if rasterized >= max_tiles {
                     if !scrolling || row_is_visible {
@@ -534,48 +516,21 @@ impl Renderer {
                 None => true,
             };
             if needs_band_expand {
-                let old_range = self.display_list_y_range;
-                let (old_y_start, old_y_end) =
-                    old_range.unwrap_or((render_y_start, render_y_start + vp));
-                let build_y_start = old_y_start.min(render_y_start).max(0);
-                let build_y_end = old_y_end
-                    .max(render_y_end)
-                    .min(doc_h_i32)
-                    .max(build_y_start + 1);
                 crate::debug_surf!(
                     "[render] idle display-list prewarm range [{}..{})",
-                    build_y_start,
-                    build_y_end
+                    render_y_start,
+                    render_y_end
                 );
-                self.hit_regions.clear();
-                self.link_map.clear();
-                for fc in &mut self.form_controls {
-                    fc.seen = false;
-                }
-                self.walk_controls_visible(
-                    root,
-                    0,
-                    0,
-                    parent,
-                    self.submit_cb,
-                    self.submit_cb_ud,
-                    build_y_start,
-                    build_y_end,
-                );
-                self.display_list = DisplayList::build_visible(root, build_y_start, build_y_end);
-                self.display_list_complete = false;
-                self.display_list_y_range = Some((build_y_start, build_y_end));
-                if old_range.is_none() {
-                    self.invalidate_y_range(build_y_start, build_y_end - build_y_start);
-                } else {
-                    if build_y_start < old_y_start {
-                        self.invalidate_y_range(build_y_start, old_y_start - build_y_start);
-                    }
-                    if build_y_end > old_y_end {
-                        self.invalidate_y_range(old_y_end, build_y_end - old_y_end);
-                    }
+                let (build_y_start, build_y_end) =
+                    self.expand_display_list_band(root, doc_h, render_y_start, render_y_end);
+                self.rebuild_controls_for_range(root, parent, build_y_start, build_y_end);
+            } else if self.controls_walk_pending {
+                if let Some((built_y_start, built_y_end)) = self.display_list_y_range {
+                    self.rebuild_controls_for_range(root, parent, built_y_start, built_y_end);
                 }
             }
+        } else if self.controls_walk_pending {
+            self.rebuild_controls_for_range(root, parent, 0, doc_h_i32);
         }
 
         let keep_first = first_row.saturating_sub(32);
@@ -590,19 +545,9 @@ impl Renderer {
         let mut did_work = false;
 
         for row in prioritized_rows {
-            let row_y_start = (row * TILE_HEIGHT) as i32;
-            let row_y_end = row_y_start + TILE_HEIGHT as i32;
-            if !self.display_list_complete {
-                let row_covered = self
-                    .display_list_y_range
-                    .map(|(built_y_start, built_y_end)| {
-                        row_y_start < built_y_end && row_y_end > built_y_start
-                    })
-                    .unwrap_or(false);
-                if !row_covered {
-                    pending = true;
-                    continue;
-                }
+            if !self.row_fully_covered(row, doc_h) {
+                pending = true;
+                continue;
             }
 
             if self.tile_cache.get(row).is_none() {
@@ -665,4 +610,92 @@ impl Renderer {
     // ─────────────────────────────────────────────────────────────────────
     // Internal helpers
     // ─────────────────────────────────────────────────────────────────────
+
+    /// True when the display list covers tile `row` completely, i.e. a tile
+    /// rasterized from it cannot contain culled holes at the band edges.
+    fn row_fully_covered(&self, row: u32, doc_h: u32) -> bool {
+        if self.display_list_complete {
+            return true;
+        }
+        let Some((built_y_start, built_y_end)) = self.display_list_y_range else {
+            return false;
+        };
+        let row_y_start = (row * TILE_HEIGHT) as i32;
+        let row_y_end = ((row as u64 + 1) * TILE_HEIGHT as u64).min(doc_h.max(1) as u64) as i32;
+        row_y_start >= built_y_start && row_y_end <= built_y_end
+    }
+
+    /// Flip `display_list_complete` once the built band covers the document.
+    fn mark_display_list_complete_if_covering(&mut self, doc_h: u32) {
+        if self.display_list_complete {
+            return;
+        }
+        if let Some((built_y_start, built_y_end)) = self.display_list_y_range {
+            if built_y_start <= 0 && built_y_end >= doc_h.max(1) as i32 {
+                self.display_list_complete = true;
+            }
+        }
+    }
+
+    /// Rebuild hit regions, link map and form controls for a document Y range.
+    fn rebuild_controls_for_range(
+        &mut self,
+        root: &LayoutBox,
+        parent: &ui::View,
+        y_start: i32,
+        y_end: i32,
+    ) {
+        self.hit_regions.clear();
+        self.link_map.clear();
+        for fc in &mut self.form_controls {
+            fc.seen = false;
+        }
+        self.walk_controls_visible(
+            root,
+            0,
+            0,
+            parent,
+            self.submit_cb,
+            self.submit_cb_ud,
+            y_start,
+            y_end,
+        );
+        self.controls_walk_pending = false;
+    }
+
+    /// Expand the progressive display-list band to the union of the current
+    /// band and `[target_y_start, target_y_end)`, then invalidate only the
+    /// newly covered tile rows. Tiles rasterized inside the previous band were
+    /// produced from identical draw commands and stay valid.
+    fn expand_display_list_band(
+        &mut self,
+        root: &LayoutBox,
+        doc_h: u32,
+        target_y_start: i32,
+        target_y_end: i32,
+    ) -> (i32, i32) {
+        let doc_h_i32 = doc_h.max(1) as i32;
+        let old_range = self.display_list_y_range;
+        let (old_y_start, old_y_end) = old_range.unwrap_or((target_y_start, target_y_start));
+        let build_y_start = old_y_start.min(target_y_start).max(0);
+        let build_y_end = old_y_end
+            .max(target_y_end)
+            .min(doc_h_i32)
+            .max(build_y_start + 1);
+        self.display_list = DisplayList::build_visible(root, build_y_start, build_y_end);
+        self.display_list_y_range = Some((build_y_start, build_y_end));
+        self.mark_display_list_complete_if_covering(doc_h);
+        match old_range {
+            None => self.invalidate_y_range(build_y_start, build_y_end - build_y_start),
+            Some((prev_y_start, prev_y_end)) => {
+                if build_y_start < prev_y_start {
+                    self.invalidate_y_range(build_y_start, prev_y_start - build_y_start);
+                }
+                if build_y_end > prev_y_end {
+                    self.invalidate_y_range(prev_y_end, build_y_end - prev_y_end);
+                }
+            }
+        }
+        (build_y_start, build_y_end)
+    }
 }

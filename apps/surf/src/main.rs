@@ -536,6 +536,7 @@ pub(crate) fn start_anim_timer() {
             if prerender_due {
                 st.last_idle_tile_prerender_ms = now_ms;
                 changed = st.tabs[active_tab].webview.prerender_idle_tiles();
+                resources::requeue_evicted_images(active_tab);
             }
         }
         if changed {
@@ -670,6 +671,10 @@ pub(crate) fn refresh_active_viewport_tiles() {
         st.tabs[tab_index].webview.upgrade_deferred_layout();
     }
     let pending = st.tabs[tab_index].webview.render_viewport_at(scroll_y);
+    // Rasterization may have hit images whose pixels were evicted under
+    // memory pressure; queue them for a re-fetch so they reappear instead of
+    // staying blank until navigation.
+    resources::requeue_evicted_images(tab_index);
     if pending {
         state().scroll_render_pending = true;
         ensure_anim_timer();
@@ -1207,6 +1212,11 @@ fn schedule_js_runtime_timer() {
             JS_TIMER_QUIET_DEEP_BACKOFF_DELAY_MS
         } else if quiet_ticks >= JS_TIMER_QUIET_BACKOFF_AFTER {
             JS_TIMER_QUIET_BACKOFF_DELAY_MS
+        } else if quiet_ticks == 0 {
+            // The previous pump produced visible/host work (e.g. a ticker
+            // mutating the DOM): keep pumping at frame rate so visual timers
+            // animate smoothly instead of being floored to the idle delay.
+            JS_TIMER_ACTIVE_MIN_DELAY_MS
         } else {
             JS_TIMER_IDLE_MIN_DELAY_MS
         }

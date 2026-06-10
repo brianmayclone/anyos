@@ -74,7 +74,14 @@ impl Renderer {
             display_list: DisplayList::new(),
             display_list_complete: true,
             display_list_y_range: None,
+            controls_walk_pending: false,
+            headless: false,
         }
+    }
+
+    /// Switch this renderer into headless mode (see `Renderer::headless`).
+    pub fn set_headless(&mut self) {
+        self.headless = true;
     }
 
     fn visible_tile_row_range(scroll_y: i32, viewport_h: u32, doc_h: u32) -> (u32, u32) {
@@ -131,6 +138,7 @@ impl Renderer {
         self.display_list.clear();
         self.display_list_complete = true;
         self.display_list_y_range = None;
+        self.controls_walk_pending = false;
     }
 
     /// Hard clear: destroy everything.
@@ -157,5 +165,6 @@ impl Renderer {
         self.display_list.clear();
         self.display_list_complete = true;
         self.display_list_y_range = None;
+        self.controls_walk_pending = false;
     }
 }

@@ -65,6 +65,13 @@ pub(crate) struct Renderer {
     display_list: DisplayList,
     display_list_complete: bool,
     display_list_y_range: Option<(i32, i32)>,
+    /// True when a scroll-time display-list expansion skipped the controls/
+    /// hit-region walk; the next idle/repaint pass must rebuild them.
+    controls_walk_pending: bool,
+    /// Headless mode: rasterize into the tile cache only, never create or
+    /// touch compositor controls (canvases, form controls). Required when a
+    /// WebView runs off the UI thread (e.g. iframe snapshot rendering).
+    headless: bool,
 }
 
 include!("runtime/core.rs");

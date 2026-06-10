@@ -544,6 +544,9 @@ pub struct WebView {
     js_quiet_timer_ticks: u32,
     /// Real elapsed time accumulated while quiet timers are throttled.
     js_timer_throttle_accum_ms: u64,
+    /// Headless mode: never create or touch compositor controls. Set for
+    /// WebViews that render off the UI thread (iframe snapshots).
+    headless: bool,
 }
 
 impl WebView {
@@ -560,6 +563,31 @@ impl WebView {
         content_view.set_color(0xFFFFFFFF); // white background
         scroll_view.add(&content_view);
 
+        Self::new_with_views(scroll_view, content_view, w, h)
+    }
+
+    /// Create a WebView that never creates or touches compositor controls.
+    ///
+    /// Safe to construct and render off the UI thread (e.g. iframe snapshot
+    /// rendering on the network worker): tiles are rasterized into the
+    /// in-memory tile cache only and read back via
+    /// `snapshot_viewport_pixels()`. Form controls and hit regions are not
+    /// materialized.
+    pub fn new_headless(w: u32, h: u32) -> Self {
+        libfont_client::init();
+        let mut webview =
+            Self::new_with_views(ui::ScrollView::from_id(0), ui::View::from_id(0), w, h);
+        webview.headless = true;
+        webview.renderer.set_headless();
+        webview
+    }
+
+    fn new_with_views(
+        scroll_view: ui::ScrollView,
+        content_view: ui::View,
+        w: u32,
+        h: u32,
+    ) -> Self {
         let default_sheet = default_stylesheet();
 
         let mut webview = Self {
@@ -609,6 +637,7 @@ impl WebView {
             selector_state: style::SelectorState::default(),
             js_quiet_timer_ticks: 0,
             js_timer_throttle_accum_ms: 0,
+            headless: false,
         };
         webview.js_runtime.set_viewport(w, h);
         webview
@@ -617,6 +646,15 @@ impl WebView {
     /// Returns the ScrollView container (add this to your window).
     pub fn scroll_view(&self) -> &ui::ScrollView {
         &self.scroll_view
+    }
+
+    /// Current vertical scroll offset (always 0 in headless mode).
+    fn scroll_state_y(&self) -> i32 {
+        if self.headless {
+            0
+        } else {
+            self.scroll_view.get_state() as i32
+        }
     }
 
     /// Returns the content View (all rendered controls are children of this).
@@ -779,9 +817,11 @@ impl WebView {
         self.invalidate_image_usage_cache();
         self.clear_deferred_layout_state();
         self.selector_state = style::SelectorState::default();
-        self.content_view
-            .set_size(self.viewport_width as u32, self.viewport_height.max(1));
-        self.content_view.set_color(0xFFFFFFFF);
+        if !self.headless {
+            self.content_view
+                .set_size(self.viewport_width as u32, self.viewport_height.max(1));
+            self.content_view.set_color(0xFFFFFFFF);
+        }
         // Clear all stylesheets (external + inline).
         self.external_sheets.clear();
         self.inline_sheets.clear();
@@ -855,6 +895,13 @@ impl WebView {
 
     pub fn has_decoded_image(&self, src: &str) -> bool {
         self.images.has_pixels_for(src)
+    }
+
+    /// Drain image sources whose decoded pixels were evicted under memory
+    /// pressure but were needed again during rasterization. The embedder
+    /// should re-fetch and re-decode these (there is no encoded copy kept).
+    pub fn take_evicted_image_misses(&mut self) -> Vec<String> {
+        self.images.take_evicted_misses()
     }
 
     /// Returns true when loading `src` can change geometry and therefore needs
@@ -1461,7 +1508,7 @@ impl WebView {
             Some(ref root) => root as *const LayoutBox,
             None => return false,
         };
-        let scroll_y = self.scroll_view.get_state() as i32;
+        let scroll_y = self.scroll_state_y();
         let doc_w = self.viewport_width as u32;
         let doc_h = (self.total_height_val as u32).max(1);
 
@@ -1498,12 +1545,14 @@ impl WebView {
         self.viewport_height = h;
         self.prepared_stylesheets = None;
         self.js_runtime.set_viewport(w, h);
-        self.scroll_view.set_size(w, h);
+        if !self.headless {
+            self.scroll_view.set_size(w, h);
+        }
 
         // If we have a DOM, re-layout (invalidates cached layout tree).
         if self.dom_val.is_some() {
             self.relayout();
-        } else {
+        } else if !self.headless {
             self.content_view.set_size(w, h.max(1));
             self.content_view.set_color(0xFFFFFFFF);
         }
@@ -1666,7 +1715,7 @@ impl WebView {
 
         let doc_w = self.viewport_width.max(1) as u32;
         let doc_h = (self.total_height_val as u32).max(1);
-        let scroll_y = self.scroll_view.get_state() as i32;
+        let scroll_y = self.scroll_state_y();
         let bg_color = if self.bg_color_cached != 0 {
             self.bg_color_cached
         } else {
@@ -1819,7 +1868,7 @@ impl WebView {
         // keeps running until all visible tiles are rasterized.  The per-tick
         // limit prevents blocking the event loop.
         if self.layout_root.is_some() {
-            let scroll_y = self.scroll_view.get_state() as i32;
+            let scroll_y = self.scroll_state_y();
             let delta = (scroll_y - self.last_render_scroll_y).abs();
             if delta > 4 || self.pending_tiles {
                 let pending = self.render_viewport(scroll_y, false);
@@ -1880,9 +1929,11 @@ impl WebView {
         self.last_render_scroll_y = 0;
         self.pending_tiles = false;
         self.clear_deferred_layout_state();
-        self.content_view
-            .set_size(self.viewport_width as u32, self.viewport_height.max(1));
-        self.content_view.set_color(0xFFFFFFFF);
+        if !self.headless {
+            self.content_view
+                .set_size(self.viewport_width as u32, self.viewport_height.max(1));
+            self.content_view.set_color(0xFFFFFFFF);
+        }
     }
 
     /// Access the current DOM (if set).
@@ -4066,7 +4117,7 @@ impl WebView {
     }
 
     fn y_range_intersects_viewport(&self, y: i32, h: i32) -> bool {
-        let viewport_top = self.scroll_view.get_state() as i32;
+        let viewport_top = self.scroll_state_y();
         let viewport_bottom = viewport_top + self.viewport_height.max(1) as i32;
         let margin = (self.viewport_height.max(1) as i32 / 4).clamp(96, 384);
         let y0 = y;
@@ -4651,11 +4702,15 @@ impl WebView {
         styles: &[style::ComputedStyle],
     ) {
         let bg_color = resolve_root_background_color(dom, styles);
-        self.content_view.set_color(bg_color);
+        if !self.headless {
+            self.content_view.set_color(bg_color);
+        }
         self.bg_color_cached = bg_color;
         let doc_w = self.viewport_width.max(1) as u32;
         let doc_h = (self.total_height_val as u32).max(1);
-        self.content_view.set_size(doc_w, doc_h);
+        if !self.headless {
+            self.content_view.set_size(doc_w, doc_h);
+        }
 
         let Some(root) = self.layout_root.as_ref() else {
             return;
@@ -5352,12 +5407,16 @@ impl WebView {
 
         // Sync content view background to the propagated root/html background.
         let bg_color = resolve_root_background_color(d, &styles);
-        self.content_view.set_color(bg_color);
+        if !self.headless {
+            self.content_view.set_color(bg_color);
+        }
 
         // Set content view height to document height.
         let doc_w = self.viewport_width as u32;
         let doc_h = (self.total_height_val as u32).max(1);
-        self.content_view.set_size(doc_w, doc_h);
+        if !self.headless {
+            self.content_view.set_size(doc_w, doc_h);
+        }
 
         // Cache the resolved root background for scroll re-renders.
         self.bg_color_cached = bg_color;

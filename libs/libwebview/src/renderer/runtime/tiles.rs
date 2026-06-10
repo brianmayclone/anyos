@@ -155,6 +155,12 @@ impl Renderer {
     }
 
     fn create_tile_canvas(&mut self, row: u32, doc_w: u32, doc_h: u32, parent: &ui::View) -> bool {
+        if self.headless {
+            // Headless rendering keeps pixels in the tile cache only; the
+            // caller reads them back via copy_viewport_pixels().
+            self.tile_cache.touch(row);
+            return self.tile_cache.get(row).is_some();
+        }
         self.tile_cache.touch(row);
         let pixels = match self.tile_cache.get(row) {
             Some(px) => px,

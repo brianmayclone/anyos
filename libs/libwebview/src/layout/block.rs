@@ -1326,6 +1326,7 @@ fn build_block_internal(
                     style.display,
                     Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
                 ));
+        let mut ch = ch;
         if !is_bfc && bx.border_width == 0 && bx.padding.top == 0 && style.border_top.width == 0 {
             // Find first in-flow child — its y == its margin.top (since cursor_y was 0).
             if let Some(first_child) = bx.children.iter().find(|c| !c.is_out_of_flow) {
@@ -1340,16 +1341,41 @@ fn build_block_internal(
                         child.y -= first_margin;
                     }
                     // Reduce the content height accordingly.
-                    ch - first_margin
-                } else {
-                    ch
+                    ch -= first_margin;
                 }
-            } else {
-                ch
             }
-        } else {
-            ch
         }
+
+        // ── Parent-last-child bottom margin collapse (CSS §8.3.1) ──────────────
+        // With auto height, no bottom border/padding and no BFC, the bottom
+        // margin of the last in-flow child escapes the parent: it collapses
+        // with the parent's own margin-bottom instead of adding content
+        // height. Without this, nested containers (`<div><p>…</p></div>`)
+        // accumulate spurious whitespace at their bottom edges.
+        let height_is_auto = style.height.is_none()
+            && style.height_pct.is_none()
+            && style.height_calc.is_none()
+            && forced_outer_height.is_none();
+        if !is_bfc
+            && height_is_auto
+            && bx.border_width == 0
+            && bx.padding.bottom == 0
+            && style.border_bottom.width == 0
+        {
+            if let Some(last_child) = bx.children.iter().rev().find(|c| !c.is_out_of_flow) {
+                let last_margin = last_child.margin.bottom.max(0);
+                // Only collapse when that margin actually forms the bottom
+                // edge of the content (nothing else — e.g. a float or a later
+                // sibling — extends below it).
+                if last_margin > 0 && last_child.y + last_child.height + last_margin >= ch {
+                    if last_margin > bx.margin.bottom {
+                        bx.margin.bottom = last_margin;
+                    }
+                    ch -= last_margin;
+                }
+            }
+        }
+        ch
     };
 
     // ---- Height resolution ----

@@ -26,7 +26,7 @@ impl Renderer {
         submit_cb: Option<ui::Callback>,
         submit_cb_ud: u64,
     ) {
-        if bx.visibility_hidden {
+        if self.headless || bx.visibility_hidden {
             return;
         }
 
@@ -58,7 +58,7 @@ impl Renderer {
         visible_y_start: i32,
         visible_y_end: i32,
     ) {
-        if bx.visibility_hidden {
+        if self.headless || bx.visibility_hidden {
             return;
         }
 

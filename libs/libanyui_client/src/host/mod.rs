@@ -296,6 +296,14 @@ impl Widget for View {
 }
 
 impl View {
+    pub fn from_id(id: u32) -> Self {
+        View {
+            container: Container {
+                ctrl: Control { id },
+            },
+        }
+    }
+
     pub fn new() -> Self {
         View {
             container: Container {
@@ -325,6 +333,14 @@ impl Widget for ScrollView {
 }
 
 impl ScrollView {
+    pub fn from_id(id: u32) -> Self {
+        ScrollView {
+            container: Container {
+                ctrl: Control { id },
+            },
+        }
+    }
+
     pub fn new() -> Self {
         ScrollView {
             container: Container {

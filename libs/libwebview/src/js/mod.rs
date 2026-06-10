@@ -3289,8 +3289,31 @@ impl JsRuntime {
         let mut keep = Vec::new();
         let timers = core::mem::take(&mut self.timers);
 
-        for mut t in timers {
-            t.elapsed_ms += delta_ms;
+        // Advance elapsed time for every timer first, then run due timers in
+        // order of how overdue they are. Processing in registration order
+        // starved late-registered timers (e.g. a news ticker registered after
+        // dozens of analytics intervals) whenever the per-tick callback
+        // budget was exhausted: the same early timers won every tick.
+        let mut slots: Vec<Option<PendingTimer>> = timers
+            .into_iter()
+            .map(|mut t| {
+                t.elapsed_ms += delta_ms;
+                Some(t)
+            })
+            .collect();
+        let mut order: Vec<usize> = (0..slots.len()).collect();
+        order.sort_by_key(|&i| match &slots[i] {
+            Some(t) if t.elapsed_ms >= t.delay_ms => {
+                // Most overdue first; saturate to avoid i64 overflow.
+                -(t.elapsed_ms.saturating_sub(t.delay_ms).min(i64::MAX as u64) as i64)
+            }
+            _ => i64::MAX,
+        });
+
+        for idx in order {
+            let Some(mut t) = slots[idx].take() else {
+                continue;
+            };
             if t.elapsed_ms >= t.delay_ms {
                 if fired >= max_callbacks {
                     keep.push(t);

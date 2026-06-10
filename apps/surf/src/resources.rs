@@ -1035,6 +1035,71 @@ fn decode_font_data_uri(src: &str) -> Option<Vec<u8>> {
 /// Scan the DOM for `<img src="…">` tags and submit them to the background
 /// network worker for async fetching. `data:` URIs are decoded inline without
 /// a network round-trip and added directly to the image cache.
+/// Re-fetch images whose decoded pixels were evicted from libwebview's image
+/// cache under memory pressure but were needed again during rasterization.
+/// Without this, an evicted image stays blank until the next navigation.
+pub(crate) fn requeue_evicted_images(tab_index: usize) {
+    let (misses, base_url) = {
+        let st = crate::state();
+        if tab_index >= st.tabs.len() {
+            return;
+        }
+        let tab = &mut st.tabs[tab_index];
+        let misses = tab.webview.take_evicted_image_misses();
+        if misses.is_empty() {
+            return;
+        }
+        let Some(base_url) = tab.current_url.clone() else {
+            return;
+        };
+        (misses, base_url)
+    };
+    let generation = crate::net_worker::current_generation();
+    for src in misses {
+        if src.starts_with("__iframe_") {
+            continue;
+        }
+        if src.starts_with("data:") {
+            // Inline data URIs need no network round-trip — decode directly.
+            if let Some((bytes, is_svg)) = decode_data_uri(&src) {
+                if is_svg {
+                    decode_svg_no_relayout(&bytes, &src, tab_index);
+                } else {
+                    decode_raster_no_relayout(&bytes, &src, tab_index);
+                }
+            }
+            continue;
+        }
+        let img_url = crate::http::resolve_url(&base_url, &src);
+        let request_key = image_request_key_for_url(&img_url);
+        {
+            // Drop the dedup entry so mark_image_requested accepts the
+            // re-request for this previously fetched image.
+            let st = crate::state();
+            if tab_index >= st.tabs.len() {
+                return;
+            }
+            st.tabs[tab_index]
+                .requested_image_urls
+                .retain(|existing| existing != &request_key);
+        }
+        if !mark_image_requested(tab_index, &request_key, &src) {
+            continue;
+        }
+        crate::surf_log!("[surf] re-fetching evicted image {}", request_key);
+        crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
+            tab_index,
+            src,
+            url: img_url,
+            target_width: None,
+            target_height: None,
+            priority: crate::net_worker::ImagePriority::Viewport,
+            from_deferred: false,
+            generation,
+        });
+    }
+}
+
 pub(crate) fn queue_images(
     dom: &libwebview::dom::Dom,
     base_url: &crate::http::Url,
@@ -1695,7 +1760,10 @@ pub(crate) fn render_iframe_snapshot_pixels(
         return None;
     }
 
-    let mut frame = libwebview::WebView::new(width, height);
+    // Headless: this runs on the network worker thread. A regular WebView
+    // would create compositor controls (ScrollView/View/Canvas) from off the
+    // UI thread, racing the UI thread's libanyui IPC — the iframe freeze.
+    let mut frame = libwebview::WebView::new_headless(width, height);
     frame.set_url(&crate::ui::format_url(url));
     frame.set_html_dom_only(&html);
     for stylesheet in stylesheets {
