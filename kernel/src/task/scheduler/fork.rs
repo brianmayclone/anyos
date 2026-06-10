@@ -45,6 +45,10 @@ pub fn current_thread_fork_snapshot() -> Option<ForkSnapshot> {
     let idx = sched.current_idx(cpu)?;
     let thread = &sched.threads[idx];
     let pd = thread.page_directory?;
+    // Clone the FD table contents into an owned copy before building the
+    // snapshot so the lock guard's borrow of `guard` ends here, not in the
+    // returned value.
+    let fd_table = thread.fd_table.lock().clone();
     Some(ForkSnapshot {
         pd,
         abi: thread.abi,
@@ -71,7 +75,7 @@ pub fn current_thread_fork_snapshot() -> Option<ForkSnapshot> {
         user_pages: thread.user_pages,
         priority: thread.priority,
         name: thread.name,
-        fd_table: thread.fd_table.clone(),
+        fd_table,
         signals: thread.signals.clone(),
         parent_tid: thread.tid,
     })

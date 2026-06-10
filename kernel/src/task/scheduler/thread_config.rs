@@ -37,9 +37,12 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u64) {
         } else {
             FdKind::Tty
         };
-        thread.fd_table.alloc_at(0, stdio);
-        thread.fd_table.alloc_at(1, stdio);
-        thread.fd_table.alloc_at(2, stdio);
+        {
+            let mut fdt = thread.fd_table.lock();
+            fdt.alloc_at(0, stdio);
+            fdt.alloc_at(1, stdio);
+            fdt.alloc_at(2, stdio);
+        }
     }
 }
 
@@ -643,9 +646,12 @@ pub fn attach_thread_pty(tid: u32, pty_id: u32) {
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.pty_id = pty_id;
         let stdio = FdKind::PtySlave { pty_id };
-        thread.fd_table.alloc_at(0, stdio);
-        thread.fd_table.alloc_at(1, stdio);
-        thread.fd_table.alloc_at(2, stdio);
+        {
+            let mut fdt = thread.fd_table.lock();
+            fdt.alloc_at(0, stdio);
+            fdt.alloc_at(1, stdio);
+            fdt.alloc_at(2, stdio);
+        }
     }
 }
 

@@ -703,6 +703,7 @@ pub fn try_exit_current(code: u32) -> bool {
             &sched.threads[idle_idx].name,
             sched.threads[idle_idx].abi,
             &sched.threads[idle_idx].linux_rootfs,
+            &sched.threads[idle_idx].fd_table,
         );
         idle_ctx = Some(&sched.threads[idle_idx].context as *const CpuContext);
         try_exit_diag_mark(b'M');

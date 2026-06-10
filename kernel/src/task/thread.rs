@@ -6,6 +6,8 @@
 use crate::fs::fd_table::FdTable;
 use crate::ipc::signal::SignalState;
 use crate::memory::address::PhysAddr;
+use crate::sync::spinlock::Spinlock;
+use alloc::sync::Arc;
 use crate::task::abi::AbiPersonality;
 use crate::task::capabilities::CapSet;
 use crate::task::context::CpuContext;
@@ -238,7 +240,17 @@ pub struct Thread {
     pub linux_saved_gid: u16,
     pub linux_fs_gid: u16,
     /// Per-process file descriptor table (maps local FDs to global VFS slots / pipes).
-    pub fd_table: FdTable,
+    ///
+    /// Behind its own `Spinlock` (inside an `Arc`) rather than protected by the
+    /// global scheduler lock: FD syscalls (read/write/close/openat/dup/fcntl)
+    /// are on the hottest LXE path and previously took the global IRQ-off
+    /// scheduler spinlock just to reach this table, serializing all file I/O
+    /// against scheduling on every CPU. The Arc gives the lock a stable heap
+    /// address so a per-CPU pointer published at context switch lets the
+    /// running thread reach its own table lock-free of the scheduler. Each
+    /// thread still owns an independent table (fork/clone copy its contents),
+    /// preserving the previous semantics.
+    pub fd_table: Arc<Spinlock<FdTable>>,
     /// POSIX signal state: pending/blocked bitmasks and handler table.
     pub signals: SignalState,
     /// TID of the parent process (set by fork/spawn, 0 for init/kernel threads).
@@ -415,7 +427,7 @@ impl Thread {
             linux_real_gid: 0,
             linux_saved_gid: 0,
             linux_fs_gid: 0,
-            fd_table: FdTable::new(),
+            fd_table: Arc::new(Spinlock::new(FdTable::new())),
             signals: SignalState::new(),
             parent_tid: 0,
             abi: AbiPersonality::AnyOs,

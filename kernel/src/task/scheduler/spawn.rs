@@ -129,6 +129,7 @@ pub fn create_thread_in_current_process(
             Some(pd) => pd,
             None => return 0,
         };
+        let fd_table = thread.fd_table.lock().clone();
         (
             pd,
             thread.brk,
@@ -140,7 +141,7 @@ pub fn create_thread_in_current_process(
             thread.gid,
             thread.pcid,
             thread.mmap_next,
-            thread.fd_table.clone(),
+            fd_table,
         )
     };
 
@@ -181,7 +182,8 @@ pub fn create_thread_in_current_process(
             thread.uid = parent_uid;
             thread.gid = parent_gid;
             thread.mmap_next = parent_mmap_next;
-            thread.fd_table = parent_fd_table.clone();
+            thread.fd_table =
+                alloc::sync::Arc::new(crate::sync::spinlock::Spinlock::new(parent_fd_table.clone()));
             true
         } else {
             false
@@ -264,6 +266,7 @@ pub fn create_linux_clone_thread(
             Some(pd) => pd,
             None => return 0,
         };
+        let fd_table = thread.fd_table.lock().clone();
         (
             pd,
             thread.brk,
@@ -286,7 +289,7 @@ pub fn create_linux_clone_thread(
             thread.pcid,
             thread.mmap_next,
             thread.user_pages,
-            thread.fd_table.clone(),
+            fd_table,
             thread.signals.clone(),
             thread.args,
             thread.name,
@@ -340,7 +343,8 @@ pub fn create_linux_clone_thread(
             thread.pty_id = parent_pty_id;
             thread.mmap_next = parent_mmap_next;
             thread.user_pages = parent_user_pages;
-            thread.fd_table = parent_fd_table.clone();
+            thread.fd_table =
+                alloc::sync::Arc::new(crate::sync::spinlock::Spinlock::new(parent_fd_table.clone()));
             let mut signals = parent_signals.clone();
             signals.pending = 0;
             thread.signals = signals;

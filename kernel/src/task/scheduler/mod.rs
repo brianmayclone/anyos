@@ -61,10 +61,12 @@ pub use wait::*;
 use crate::arch::hal::MAX_CPUS;
 use crate::memory::slab::{KBox, KmemCache};
 use crate::sync::spinlock::Spinlock;
+use crate::fs::fd_table::FdTable;
+use alloc::sync::Arc;
 use crate::task::context::CpuContext;
 use crate::task::thread::{Thread, ThreadState};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use deferred::{process_deferred_thread_cleanup, DEFERRED_PD_DESTROY, DEFERRED_THREAD_CLEANUP};
 use run_queue::RunQueue;
 
@@ -544,6 +546,7 @@ fn update_per_cpu_name(
     name: &[u8; 32],
     abi: crate::task::abi::AbiPersonality,
     linux_rootfs: &[u8; 512],
+    fd_table: &Arc<Spinlock<FdTable>>,
 ) {
     unsafe {
         let dst = core::ptr::addr_of_mut!(PER_CPU_THREAD_NAME[cpu_id]);
@@ -551,6 +554,55 @@ fn update_per_cpu_name(
     }
     store_per_cpu_abi(cpu_id, abi);
     store_per_cpu_linux_rootfs(cpu_id, abi, linux_rootfs);
+    publish_per_cpu_fd_table(cpu_id, fd_table);
+}
+
+/// Per-CPU pointer to the SpinLock guarding the running thread's FD table.
+/// Published at every context switch (update_per_cpu_name). The pointer
+/// targets the lock INSIDE the running thread's `Arc<Spinlock<FdTable>>`,
+/// whose heap address is stable (slab-allocated Thread + Arc). This lets FD
+/// syscalls reach their table without the global scheduler lock.
+static PER_CPU_FD_TABLE_PTR: [AtomicPtr<Spinlock<FdTable>>; MAX_CPUS] = {
+    const INIT: AtomicPtr<Spinlock<FdTable>> = AtomicPtr::new(core::ptr::null_mut());
+    [INIT; MAX_CPUS]
+};
+
+#[inline]
+fn publish_per_cpu_fd_table(cpu_id: usize, fd_table: &Arc<Spinlock<FdTable>>) {
+    if cpu_id < MAX_CPUS {
+        PER_CPU_FD_TABLE_PTR[cpu_id].store(Arc::as_ptr(fd_table) as *mut _, Ordering::Release);
+    }
+}
+
+/// Run `f` against the current thread's FD table without taking the global
+/// scheduler lock. Returns `None` only before the first context switch on this
+/// CPU (pointer still null).
+///
+/// SAFETY model: with interrupts disabled the calling thread cannot migrate or
+/// be preempted, so the per-CPU pointer still describes *this* running thread,
+/// whose `Arc<Spinlock<FdTable>>` is alive (a running thread is never reaped)
+/// and stably addressed. We dereference only the published lock pointer and
+/// never form a `&Thread`, so there is no aliasing with the `&mut Thread` the
+/// scheduler may hold on another CPU. The FD spinlock then serializes against
+/// the rare by-tid paths (fork install / exit cleanup), which take it after
+/// the scheduler lock — no lock-order cycle since we acquire nothing else.
+pub(super) fn with_current_fd_table<R>(f: impl FnOnce(&mut FdTable) -> R) -> Option<R> {
+    let flags = crate::arch::hal::save_and_disable_interrupts();
+    let cpu_id = get_cpu_id();
+    let ptr = if cpu_id < MAX_CPUS {
+        PER_CPU_FD_TABLE_PTR[cpu_id].load(Ordering::Acquire)
+    } else {
+        core::ptr::null_mut()
+    };
+    let result = if ptr.is_null() {
+        None
+    } else {
+        let lock: &Spinlock<FdTable> = unsafe { &*ptr };
+        let mut guard = lock.lock();
+        Some(f(&mut guard))
+    };
+    crate::arch::hal::restore_interrupt_state(flags);
+    result
 }
 
 /// Lock-free write of the per-CPU ABI cache. Called from `update_per_cpu_name`
@@ -2216,6 +2268,7 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                         &sched.threads[idx].name,
                         sched.threads[idx].abi,
                         &sched.threads[idx].linux_rootfs,
+                        &sched.threads[idx].fd_table,
                     );
                     let kstack_top = sched.threads[idx].kernel_stack_top();
                     crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
@@ -2244,6 +2297,7 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                     &sched.threads[next_idx].name,
                     sched.threads[next_idx].abi,
                     &sched.threads[next_idx].linux_rootfs,
+                    &sched.threads[next_idx].fd_table,
                 );
                 crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
                 PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
@@ -2283,6 +2337,7 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                 &sched.threads[idle_idx].name,
                 sched.threads[idle_idx].abi,
                 &sched.threads[idle_idx].linux_rootfs,
+                &sched.threads[idle_idx].fd_table,
             );
             crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
             PER_CPU_STACK_BOTTOM[cpu_id].store(
@@ -2671,6 +2726,7 @@ fn schedule_inner(from_timer: bool) {
                         &sched.threads[next_idx].name,
                         sched.threads[next_idx].abi,
                         &sched.threads[next_idx].linux_rootfs,
+                        &sched.threads[next_idx].fd_table,
                     );
 
                     // Update TSS.RSP0 and SYSCALL kernel RSP
@@ -2786,6 +2842,7 @@ fn schedule_inner(from_timer: bool) {
                             &sched.threads[idle_idx].name,
                             sched.threads[idle_idx].abi,
                             &sched.threads[idle_idx].linux_rootfs,
+                            &sched.threads[idle_idx].fd_table,
                         );
                         let idle_kstack_top = sched.threads[idle_idx].kernel_stack_top();
                         crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
@@ -2826,6 +2883,7 @@ fn schedule_inner(from_timer: bool) {
                         &sched.threads[idle_idx].name,
                         sched.threads[idle_idx].abi,
                         &sched.threads[idle_idx].linux_rootfs,
+                        &sched.threads[idle_idx].fd_table,
                     );
                     let idle_kstack_top = sched.threads[idle_idx].kernel_stack_top();
                     crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
@@ -2939,6 +2997,7 @@ fn schedule_inner(from_timer: bool) {
                         &sched.threads[ri].name,
                         sched.threads[ri].abi,
                         &sched.threads[ri].linux_rootfs,
+                        &sched.threads[ri].fd_table,
                     );
                     let kstack_top = sched.threads[ri].kernel_stack_top();
                     crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
@@ -3097,6 +3156,7 @@ pub fn run() -> ! {
                     &sched.threads[idx].name,
                     sched.threads[idx].abi,
                     &sched.threads[idx].linux_rootfs,
+                    &sched.threads[idx].fd_table,
                 );
             }
         }
@@ -3156,6 +3216,7 @@ pub fn register_ap_idle(cpu_id: usize) {
             &sched.threads[idx].name,
             sched.threads[idx].abi,
             &sched.threads[idx].linux_rootfs,
+            &sched.threads[idx].fd_table,
         );
     } else {
         crate::debug_println!(
