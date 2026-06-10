@@ -191,7 +191,7 @@ impl Write for TextBuffer {
     }
 }
 
-const BOOT_ENTRIES: [BootEntry; 4] = [
+const BOOT_ENTRIES: [BootEntry; 5] = [
     BootEntry {
         title: "anyOS",
         params: b"",
@@ -207,6 +207,12 @@ const BOOT_ENTRIES: [BootEntry; 4] = [
     BootEntry {
         title: "anyOS (Verbose + 1920x1080)",
         params: b"verbose res=1920x1080",
+    },
+    BootEntry {
+        // Phase 4b safety net: runs the concurrent SMP scheduler stress test
+        // after userspace init. Watch the serial log for "SCHEDSTRESS: PASS".
+        title: "anyOS (Scheduler stress test)",
+        params: b"schedstress",
     },
 ];
 
@@ -598,6 +604,7 @@ fn wait_for_menu_key() -> MenuKey {
                     '2' => return MenuKey::Entry(1),
                     '3' => return MenuKey::Entry(2),
                     '4' => return MenuKey::Entry(3),
+                    '5' => return MenuKey::Entry(4),
                     _ => return MenuKey::Ignored,
                 },
                 _ => return MenuKey::Ignored,

@@ -69,6 +69,10 @@ fn parse_boot_params(boot_info: &BootInfo) {
                     crate::syscall::linux::set_trace_enabled(true);
                     serial_println!("LXE syscall trace enabled via boot params");
                 }
+                "schedstress" => {
+                    crate::boot::SCHED_STRESS.store(true, Ordering::Relaxed);
+                    serial_println!("Scheduler SMP stress test enabled via boot params");
+                }
                 _ => parse_resolution_override(token),
             }
         }

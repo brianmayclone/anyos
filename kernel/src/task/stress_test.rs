@@ -1,8 +1,15 @@
-//! Kernel thread lifecycle stress test.
+//! Scheduler stress tests.
 //!
-//! Rapidly creates and destroys kernel threads to exercise the full
-//! scheduler lifecycle: spawn → schedule → run → exit → reap.
-//! Enabled only with the `debug_verbose` Cargo feature.
+//! Two modes:
+//! - `stress_master`: the original single-threaded spawn→exit→reap loop
+//!   (lifecycle smoke test), enabled only with the `debug_verbose` feature.
+//! - `smp_stress_master`: a CONCURRENT multi-CPU stress test, opt-in via the
+//!   `schedstress` boot parameter. It is the safety net for the Phase 4b
+//!   per-CPU run-queue lock split: it hammers the scheduler with parallel
+//!   spawn / block / wake / exit / migration across all CPUs and verifies the
+//!   invariants a lock change could break (every worker completes, the thread
+//!   table returns to baseline = no leaked/lost threads). Run it before and
+//!   after any scheduler-locking change to catch SMP races and missed wakes.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -48,4 +55,134 @@ pub extern "C" fn stress_master() {
             );
         }
     }
+}
+
+// ── Concurrent SMP stress test (Phase 4b safety net) ─────────────────────────
+
+const SMP_ROUNDS: u32 = 40;
+const SMP_BATCH: u32 = 48;
+
+static SMP_SPAWNED: AtomicU32 = AtomicU32::new(0);
+static SMP_COMPLETED: AtomicU32 = AtomicU32::new(0);
+
+/// Concurrent worker: forces the block→wake→migrate→exit transitions a
+/// run-queue lock change is most likely to break. A short timed sleep makes
+/// the thread block and later be woken by the timer/sleeper path (re-enqueued,
+/// possibly on a different CPU), instead of just running straight to exit.
+extern "C" fn smp_stress_worker() {
+    let hz = crate::arch::hal::timer_frequency_hz().max(1) as u32;
+    // ~2 ms: long enough to actually block and be re-scheduled, short enough
+    // that a full round stays brief.
+    let ticks = (2 * hz / 1000).max(1);
+    let now = crate::arch::hal::timer_current_ticks();
+    crate::task::scheduler::sleep_until(now.wrapping_add(ticks));
+    SMP_COMPLETED.fetch_add(1, Ordering::Relaxed);
+    crate::task::scheduler::exit_current(0);
+}
+
+/// Count threads whose name marks them as stress workers — used to confirm the
+/// scheduler reaped them all (no leaked/stuck threads) after each round.
+fn live_stress_workers() -> usize {
+    crate::task::scheduler::list_threads()
+        .iter()
+        .filter(|t| t.name.starts_with("smp_stress"))
+        .count()
+}
+
+/// Master for the concurrent SMP scheduler stress test. Each round spawns
+/// `SMP_BATCH` workers *before* joining any, so up to `SMP_BATCH` threads run
+/// and block/wake concurrently across every CPU. After joining, it verifies no
+/// worker leaked. At the end it reports PASS/FAIL with the spawn/complete tally
+/// and the final thread-table size relative to the pre-test baseline.
+pub extern "C" fn smp_stress_master() {
+    let baseline = crate::task::scheduler::list_threads().len();
+    crate::serial_println!(
+        "SCHEDSTRESS: concurrent SMP stress starting (rounds={} batch={} baseline_threads={})",
+        SMP_ROUNDS,
+        SMP_BATCH,
+        baseline
+    );
+
+    let mut tids: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(SMP_BATCH as usize);
+    let mut worst_leftover = 0usize;
+
+    for round in 0..SMP_ROUNDS {
+        tids.clear();
+        for _ in 0..SMP_BATCH {
+            let tid = crate::task::scheduler::spawn(smp_stress_worker, 60, "smp_stress_w");
+            if tid != 0 {
+                SMP_SPAWNED.fetch_add(1, Ordering::Relaxed);
+                tids.push(tid);
+            }
+        }
+        // Join all workers of this round. They are already running/blocking on
+        // other CPUs concurrently; waitpid blocks us until each terminates.
+        for &tid in &tids {
+            crate::task::scheduler::waitpid(tid);
+        }
+
+        // Give the deferred reaper a moment, then check no worker is stuck.
+        let hz = crate::arch::hal::timer_frequency_hz().max(1) as u32;
+        let now = crate::arch::hal::timer_current_ticks();
+        crate::task::scheduler::sleep_until(now.wrapping_add((hz / 100).max(1)));
+        let leftover = live_stress_workers();
+        if leftover > worst_leftover {
+            worst_leftover = leftover;
+        }
+
+        if round % 5 == 0 || round == SMP_ROUNDS - 1 {
+            crate::serial_println!(
+                "SCHEDSTRESS: round {}/{} spawned={} completed={} live_workers={}",
+                round + 1,
+                SMP_ROUNDS,
+                SMP_SPAWNED.load(Ordering::Relaxed),
+                SMP_COMPLETED.load(Ordering::Relaxed),
+                leftover
+            );
+        }
+    }
+
+    // Final drain so the reaper recycles the last round.
+    let hz = crate::arch::hal::timer_frequency_hz().max(1) as u32;
+    let now = crate::arch::hal::timer_current_ticks();
+    crate::task::scheduler::sleep_until(now.wrapping_add(hz / 2));
+
+    let spawned = SMP_SPAWNED.load(Ordering::Relaxed);
+    let completed = SMP_COMPLETED.load(Ordering::Relaxed);
+    let final_threads = crate::task::scheduler::list_threads().len();
+    let leftover = live_stress_workers();
+
+    // Invariants:
+    //  - every spawned worker ran its body to completion (no lost wake / no
+    //    thread stuck Blocked forever),
+    //  - no stress worker is still in the table (all reaped),
+    //  - the thread table returned to ~baseline (no structural leak).
+    let all_completed = completed == spawned && spawned > 0;
+    let none_stuck = leftover == 0;
+    let no_leak = final_threads <= baseline + 2; // small slack for the master itself
+
+    if all_completed && none_stuck && no_leak {
+        crate::serial_println!(
+            "SCHEDSTRESS: PASS spawned={} completed={} final_threads={} (baseline={}) worst_leftover={}",
+            spawned,
+            completed,
+            final_threads,
+            baseline,
+            worst_leftover
+        );
+    } else {
+        crate::serial_println!(
+            "SCHEDSTRESS: FAIL spawned={} completed={} all_completed={} none_stuck={} no_leak={} final_threads={} baseline={} worst_leftover={}",
+            spawned,
+            completed,
+            all_completed,
+            none_stuck,
+            no_leak,
+            final_threads,
+            baseline,
+            worst_leftover
+        );
+    }
+
+    crate::task::scheduler::exit_current(0);
 }

@@ -1,7 +1,7 @@
 //! Display setup and userspace launch for x86_64 boot.
 
 use crate::arch;
-use crate::boot::{GPU_ACCEL, GPU_HW_CURSOR, SETUP_MODE};
+use crate::boot::{GPU_ACCEL, GPU_HW_CURSOR, SCHED_STRESS, SETUP_MODE};
 use crate::boot_info::BootInfo;
 use crate::drivers;
 use crate::serial_println;
@@ -46,6 +46,12 @@ pub(super) fn start_userspace(_boot_info: &BootInfo, nogui: bool) -> ! {
     task::scheduler::spawn(task::cpu_monitor::start, 10, "cpu_monitor");
     task::scheduler::spawn(drivers::usb::poll_thread, 50, "usb_poll");
     task::scheduler::spawn(crate::fs::vfs::writeback_daemon, 50, "fs_writeback");
+    // Opt-in (boot param `schedstress`): concurrent SMP scheduler stress test,
+    // the safety net for the Phase 4b run-queue lock split. Prints
+    // SCHEDSTRESS: PASS/FAIL to serial. Never runs by default.
+    if SCHED_STRESS.load(Ordering::Relaxed) {
+        task::scheduler::spawn(task::stress_test::smp_stress_master, 40, "schedstress");
+    }
 
     drivers::boot_console::stop_spinner();
 

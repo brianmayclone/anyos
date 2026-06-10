@@ -34,6 +34,11 @@ pub static NOGUI: AtomicBool = AtomicBool::new(false);
 /// Starts compositor + installer directly, skipping login/dock/init.
 pub static SETUP_MODE: AtomicBool = AtomicBool::new(false);
 
+/// Set when the kernel is booted with "schedstress" parameter. Spawns the
+/// concurrent SMP scheduler stress test after userspace init — the safety net
+/// for the Phase 4b run-queue lock split. Opt-in only; never runs by default.
+pub static SCHED_STRESS: AtomicBool = AtomicBool::new(false);
+
 /// Get the boot mode (0 = BIOS, 1 = UEFI).
 pub fn boot_mode() -> u8 {
     BOOT_MODE.load(Ordering::Relaxed)

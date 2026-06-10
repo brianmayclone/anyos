@@ -15,7 +15,10 @@ pub mod loader;
 pub mod permissions;
 pub mod process;
 pub mod scheduler;
-#[cfg(feature = "debug_verbose")]
+// Always compiled: `smp_stress_master` is gated at runtime by the `schedstress`
+// boot param (Phase 4b safety net). The legacy `stress_master` is dead code
+// without `debug_verbose`, hence the allow.
+#[allow(dead_code)]
 pub mod stress_test;
 pub mod thread;
 pub mod users;
