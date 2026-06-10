@@ -89,16 +89,17 @@ static AHCI_FLUSH_FAILED_MASK: AtomicU32 = AtomicU32::new(0);
 const IO_LOCK_WAIT_WARN_MS: u32 = 50;
 const IO_LOCK_HOLD_WARN_MS: u32 = 250;
 const IO_LOCK_LOG_LIMIT: u32 = 64;
-// Keep legacy serialized I/O slices short.  Large locked transfers make every
-// waiter resume as a pinned kernel continuation on its previous CPU, which can
-// starve latency-sensitive threads such as the compositor under LXE I/O storms.
+// Keep legacy serialized I/O slices bounded, but let bulk writes amortize AHCI
+// command setup.  The old 32-128 KiB write slices made sequential writers pay a
+// scheduler/IRQ round trip per tiny batch and capped LXE writes around HDD-era
+// throughput even on virtual SATA.
 const MAX_LOCKED_IO_SECTORS: u32 = 64;
 const MAX_LOCKED_READAHEAD_SECTORS: u32 = 64;
-const MAX_LOCKED_WRITE_SECTORS: u32 = 64;
-const MAX_LOCKED_WRITEBACK_SECTORS: u32 = 64;
-const MAX_LOCKED_DMA_IO_SECTORS: u32 = 256;
+const MAX_LOCKED_WRITE_SECTORS: u32 = 256;
+const MAX_LOCKED_WRITEBACK_SECTORS: u32 = 256;
+const MAX_LOCKED_DMA_IO_SECTORS: u32 = 1024;
 const MAX_LOCKED_LSI_IO_SECTORS: u32 = 128;
-const MAX_UNLOCKED_AHCI_IO_SECTORS: u32 = 512;
+const MAX_UNLOCKED_AHCI_IO_SECTORS: u32 = 1024;
 const RESPONSIVE_CACHE_BATCH_SECTORS: u32 = 16;
 const IO_OP_UNKNOWN: u32 = 0;
 const IO_OP_READ: u32 = 1;
@@ -244,6 +245,7 @@ static DISK_SECTORS: [AtomicU64; MAX_DISKS] = {
     [const { AtomicU64::new(0) }; MAX_DISKS]
 };
 static DISK_WRITE_GENERATION: [AtomicU64; MAX_DISKS] = [const { AtomicU64::new(0) }; MAX_DISKS];
+static DISK_HARDWARE_DIRTY: [AtomicBool; MAX_DISKS] = [const { AtomicBool::new(false) }; MAX_DISKS];
 
 /// Hinterlegt die Sektor-Anzahl einer physischen Disk.
 ///
@@ -276,6 +278,25 @@ fn disk_write_generation(disk_id: u8) -> u64 {
         return 0;
     }
     DISK_WRITE_GENERATION[disk_id as usize].load(Ordering::Acquire)
+}
+
+fn mark_disk_hardware_dirty(disk_id: u8) {
+    if (disk_id as usize) < MAX_DISKS {
+        DISK_HARDWARE_DIRTY[disk_id as usize].store(true, Ordering::Release);
+    }
+}
+
+fn disk_hardware_dirty(disk_id: u8) -> bool {
+    if (disk_id as usize) >= MAX_DISKS {
+        return true;
+    }
+    DISK_HARDWARE_DIRTY[disk_id as usize].load(Ordering::Acquire)
+}
+
+fn clear_disk_hardware_dirty(disk_id: u8) {
+    if (disk_id as usize) < MAX_DISKS {
+        DISK_HARDWARE_DIRTY[disk_id as usize].store(false, Ordering::Release);
+    }
 }
 
 fn has_io_override(disk_id: u8) -> bool {
@@ -1001,6 +1022,7 @@ pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> b
     let result = async_io::write_sectors_wait(disk_id, lba, count, buf, IO_OP_WRITE);
     if result && cache_active {
         bump_disk_write_generation(disk_id);
+        mark_disk_hardware_dirty(disk_id);
         // Direct/bulk writes already reached the backend. Keeping a clean copy
         // of every streamed sector in the read cache turns large writes into
         // thousands of cache insertions and LRU scans. Drop any stale entries
@@ -1010,6 +1032,7 @@ pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> b
     }
     if result && !cache_active {
         bump_disk_write_generation(disk_id);
+        mark_disk_hardware_dirty(disk_id);
     }
     result
 }
@@ -1081,6 +1104,7 @@ pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8
     let result = async_io::write_sectors_wait(disk_id, lba, count, buf, IO_OP_WRITEBACK);
     if result {
         bump_disk_write_generation(disk_id);
+        mark_disk_hardware_dirty(disk_id);
     }
     result
 }
@@ -1100,9 +1124,21 @@ pub fn flush_disk(disk_id: u8) {
     if bit != 0 && (AHCI_FLUSH_FAILED_MASK.load(Ordering::Relaxed) & bit) != 0 {
         return;
     }
-    io_lock_acquire(IoLockOp::new(IO_OP_FLUSH, disk_id, 0, 0));
+    if !disk_hardware_dirty(disk_id) {
+        return;
+    }
+
+    let use_legacy_lock = disk_id != 0;
+    if use_legacy_lock {
+        io_lock_acquire(IoLockOp::new(IO_OP_FLUSH, disk_id, 0, 0));
+    }
     let ok = ahci::flush_disk(disk_id);
-    io_lock_release();
+    if use_legacy_lock {
+        io_lock_release();
+    }
+    if ok {
+        clear_disk_hardware_dirty(disk_id);
+    }
     if !ok && bit != 0 {
         AHCI_FLUSH_FAILED_MASK.fetch_or(bit, Ordering::Relaxed);
         crate::serial_println!(

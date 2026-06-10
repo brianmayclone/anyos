@@ -43,12 +43,28 @@ pub static SUITE: TestSuite = TestSuite {
             run: test_deferred_wake_noop,
         },
         TestCase {
+            name: "deferred_wake_overflow_no_clobber",
+            run: test_deferred_wake_overflow,
+        },
+        TestCase {
+            name: "abi_cache_tid_validation",
+            run: test_abi_cache_tid_validation,
+        },
+        TestCase {
             name: "pinned_continuation_wakes_on_last_cpu",
             run: test_pinned_wake_cpu,
         },
         TestCase {
             name: "pinned_continuation_not_stolen",
             run: test_pinned_not_stolen,
+        },
+        TestCase {
+            name: "least_loaded_counts_running_thread",
+            run: test_least_loaded_counts_running,
+        },
+        TestCase {
+            name: "preempt_requeue_uses_lighter_cpu",
+            run: test_preempt_requeue_uses_lighter_cpu,
         },
         TestCase {
             name: "runqueue_state_invariants",
@@ -161,6 +177,26 @@ fn test_deferred_wake_noop(ctx: &mut TestContext) {
     ctx.expect_true(true, "deferred_wake(0) did not panic");
 }
 
+fn test_deferred_wake_overflow(ctx: &mut TestContext) {
+    // Filling all deferred-wake slots and then enqueuing one more must NOT
+    // clobber a queued wake (the original lost-wakeup bug): it sets the overflow
+    // flag so the drain's recovery path can still wake the dropped thread.
+    ctx.expect_true(
+        scheduler::kunit_deferred_wake_no_clobber_on_overflow(),
+        "deferred_wake overflow sets the flag without clobbering a queued wake",
+    );
+}
+
+fn test_abi_cache_tid_validation(ctx: &mut TestContext) {
+    // The lock-free syscall-dispatch ABI read must trust the per-CPU cache only
+    // when its tag matches the running TID, and reject a stale tag (the bug that
+    // reverted the earlier lock-free read).
+    ctx.expect_true(
+        scheduler::kunit_abi_cache_tid_validation(),
+        "TID-validated ABI cache hits on a matching tag and misses on a stale one",
+    );
+}
+
 fn test_pinned_wake_cpu(ctx: &mut TestContext) {
     ctx.expect_true(
         scheduler::kunit_pinned_continuation_wake_targets_last_cpu(),
@@ -172,6 +208,20 @@ fn test_pinned_not_stolen(ctx: &mut TestContext) {
     ctx.expect_true(
         scheduler::kunit_pinned_continuation_not_stolen(),
         "work stealing leaves pinned kernel continuation on last_cpu",
+    );
+}
+
+fn test_least_loaded_counts_running(ctx: &mut TestContext) {
+    ctx.expect_true(
+        scheduler::kunit_least_loaded_counts_running_thread(),
+        "CPU placement counts a currently running non-idle thread as load",
+    );
+}
+
+fn test_preempt_requeue_uses_lighter_cpu(ctx: &mut TestContext) {
+    ctx.expect_true(
+        scheduler::kunit_preempt_requeue_uses_lighter_cpu(),
+        "preempted movable thread leaves a locally backlogged CPU for a lighter one",
     );
 }
 

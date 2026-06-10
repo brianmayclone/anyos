@@ -24,6 +24,7 @@ pub(super) fn init_cpu() {
 
     arch::x86::cpuid::detect();
     arch::x86::cpuid::enable_smep();
+    arch::x86::cpuid::enable_write_protect();
     arch::x86::pit::init();
     serial_println!("[OK] PIT configured at {} Hz", arch::x86::pit::TICK_HZ);
     arch::x86::pit::calibrate_tsc();

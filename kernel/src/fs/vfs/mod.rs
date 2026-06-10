@@ -25,13 +25,15 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Maximum number of simultaneously open file descriptors (system-wide).
 const MAX_OPEN_FILES: usize = 1024;
-const EXFAT_APPEND_BUFFER_MAX: usize = 64 * 1024;
-const EXFAT_APPEND_BUFFER_WRITE_BYTES: usize = 4 * 1024;
-const EXFAT_READAHEAD_MIN_BYTES: u32 = 128 * 1024;
-const EXFAT_READAHEAD_LOW_MAX_BYTES: u32 = 256 * 1024;
-const EXFAT_READAHEAD_MED_MAX_BYTES: u32 = 1024 * 1024;
-const EXFAT_READAHEAD_HIGH_MAX_BYTES: u32 = 2 * 1024 * 1024;
-const EXFAT_READAHEAD_LARGE_MAX_BYTES: u32 = 4 * 1024 * 1024;
+const EXFAT_APPEND_BUFFER_MAX: usize = 256 * 1024;
+// Read-ahead window/cap tuning. `pub(crate)` so the kunit `vfs_readahead`
+// suite asserts the *policy* (min window, doubling, per-tier caps) against these
+// named constants rather than hard-coded magic numbers that rot on each retune.
+pub(crate) const EXFAT_READAHEAD_MIN_BYTES: u32 = 128 * 1024;
+pub(crate) const EXFAT_READAHEAD_LOW_MAX_BYTES: u32 = 256 * 1024;
+pub(crate) const EXFAT_READAHEAD_MED_MAX_BYTES: u32 = 1024 * 1024;
+pub(crate) const EXFAT_READAHEAD_HIGH_MAX_BYTES: u32 = 2 * 1024 * 1024;
+pub(crate) const EXFAT_READAHEAD_LARGE_MAX_BYTES: u32 = 4 * 1024 * 1024;
 const EXFAT_READAHEAD_MIN_FREE_BYTES: usize = 16 * 1024 * 1024;
 const EXFAT_READAHEAD_MIN_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
@@ -386,7 +388,7 @@ fn retarget_open_exfat_paths_after_rename(old_path: &str, new_path: &str) {
 }
 
 fn open_path_matches_after_exfat_rename(file: &OpenFile, path: &str, inode: u32) -> bool {
-    file.path == path || ((file.fs_id == 3 || file.fs_id == 6) && file.inode == inode)
+    file.path == path || ((file.fs_id == 3 || file.fs_id == 6) && inode != 0 && file.inode == inode)
 }
 
 /// Set the root partition LBA (called from main.rs after partition scanning).
@@ -3889,11 +3891,12 @@ fn prepare_exfat_append_buffer_write(
             && !file.flags.sync
             && file.file_type != FileType::Directory
             && file.position == file.size;
+        let append_buffer_would_fit =
+            file.append_buffer.len().saturating_add(buf.len()) <= EXFAT_APPEND_BUFFER_MAX;
         let can_append_existing = !file.append_buffer.is_empty()
             && is_exfat_append
-            && buf.len() == EXFAT_APPEND_BUFFER_WRITE_BYTES
             && file.append_buffer_offset + file.append_buffer.len() as u32 == file.position
-            && file.append_buffer.len().saturating_add(buf.len()) <= EXFAT_APPEND_BUFFER_MAX;
+            && append_buffer_would_fit;
         if !file.append_buffer.is_empty() && !can_append_existing {
             return Ok(ExFatAppendBufferWrite::NeedsFlush);
         }
@@ -3902,10 +3905,10 @@ fn prepare_exfat_append_buffer_write(
             || file.flags.sync
             || file.file_type == FileType::Directory
             || file.position != file.size
-            || buf.len() != EXFAT_APPEND_BUFFER_WRITE_BYTES
+            || buf.len() > EXFAT_APPEND_BUFFER_MAX
             || (!file.append_buffer.is_empty()
                 && file.append_buffer_offset + file.append_buffer.len() as u32 != file.position)
-            || file.append_buffer.len().saturating_add(buf.len()) > EXFAT_APPEND_BUFFER_MAX
+            || !append_buffer_would_fit
         {
             return Ok(ExFatAppendBufferWrite::NotApplicable);
         }
@@ -4218,10 +4221,57 @@ pub fn read_at(slot_id: FileDescriptor, offset: u32, buf: &mut [u8]) -> Result<u
 
 /// Write bytes from `buf` to an open file. `slot_id` is the global open_files index.
 /// Returns the number of bytes written.
+/// O_APPEND: reposition the handle to the CURRENT end of file before the
+/// write. POSIX requires every append-mode write to land atomically at EOF —
+/// the position set at open() time goes stale as soon as any other handle
+/// (or this one) extends the file. The effective EOF accounts for the sizes
+/// and unflushed append buffers of ALL open handles on the same path; the
+/// whole adjustment runs under the VFS lock, making it atomic with respect
+/// to every other write going through this VFS.
+fn seek_append_handle_to_eof(slot_id: FileDescriptor) -> Result<(), FsError> {
+    let mut vfs = vfs_lock();
+    let Some(state) = vfs.as_mut() else {
+        return Ok(());
+    };
+    let (path, fs_id, own_size) = {
+        let Some(Some(file)) = state.open_files.get(slot_id as usize) else {
+            return Ok(());
+        };
+        if !file.flags.append {
+            return Ok(());
+        }
+        (file.path.clone(), file.fs_id, file.size)
+    };
+    let mut eof = own_size;
+    for entry in state.open_files.iter().flatten() {
+        if entry.fs_id == fs_id && entry.path == path {
+            let buffered_end = entry
+                .append_buffer_offset
+                .saturating_add(entry.append_buffer.len() as u32);
+            eof = eof.max(entry.size).max(buffered_end);
+        }
+    }
+    if let Some(Some(file)) = state.open_files.get_mut(slot_id as usize) {
+        if file.position != eof {
+            file.position = eof;
+            file.readahead.reset(eof);
+        }
+    }
+    Ok(())
+}
+
 pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
+    seek_append_handle_to_eof(slot_id)?;
     match prepare_exfat_append_buffer_write(slot_id, buf)? {
         ExFatAppendBufferWrite::Buffered(buffered) => return Ok(buffered),
-        ExFatAppendBufferWrite::NeedsFlush => flush_exfat_append_buffer(slot_id)?,
+        ExFatAppendBufferWrite::NeedsFlush => {
+            flush_exfat_append_buffer(slot_id)?;
+            if let ExFatAppendBufferWrite::Buffered(buffered) =
+                prepare_exfat_append_buffer_write(slot_id, buf)?
+            {
+                return Ok(buffered);
+            }
+        }
         ExFatAppendBufferWrite::NotApplicable => {}
     }
     match prepare_detached_write(slot_id, buf.len())? {
@@ -4941,6 +4991,7 @@ pub fn delete(path: &str) -> Result<(), FsError> {
     if is_dev_path(path) {
         return Err(FsError::PermissionDenied);
     }
+    sync_open_exfat_path(path, false)?;
     if let Some(plan) = prepare_detached_delete(path)? {
         return execute_detached_delete(plan);
     }
@@ -5267,7 +5318,11 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
 
 /// Seek within an open file. `slot_id` is the global open_files index.
 /// Returns new position.
-pub fn lseek(slot_id: FileDescriptor, offset: i32, whence: u32) -> Result<u32, FsError> {
+/// Seek within an open file. Offsets are taken as i64 so callers (notably the
+/// LXE layer) are not artificially limited to 2 GiB; the resulting position
+/// must still fit the VFS's u32 file-position range (4 GiB — the current
+/// limit of the on-disk drivers).
+pub fn lseek(slot_id: FileDescriptor, offset: i64, whence: u32) -> Result<u32, FsError> {
     flush_exfat_append_buffer(slot_id)?;
     let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
@@ -5283,36 +5338,17 @@ pub fn lseek(slot_id: FileDescriptor, offset: i32, whence: u32) -> Result<u32, F
         return Ok(0);
     }
 
-    let new_pos = match whence {
-        0 => {
-            // SEEK_SET
-            if offset < 0 {
-                return Err(FsError::InvalidPath);
-            }
-            offset as u32
-        }
-        1 => {
-            // SEEK_CUR
-            if offset < 0 {
-                file.position
-                    .checked_sub((-offset) as u32)
-                    .ok_or(FsError::InvalidPath)?
-            } else {
-                file.position + offset as u32
-            }
-        }
-        2 => {
-            // SEEK_END
-            if offset < 0 {
-                file.size
-                    .checked_sub((-offset) as u32)
-                    .ok_or(FsError::InvalidPath)?
-            } else {
-                file.size + offset as u32
-            }
-        }
+    let base: i64 = match whence {
+        0 => 0,                    // SEEK_SET
+        1 => file.position as i64, // SEEK_CUR
+        2 => file.size as i64,     // SEEK_END
         _ => return Err(FsError::InvalidPath),
     };
+    let new_pos = base.checked_add(offset).ok_or(FsError::InvalidPath)?;
+    if new_pos < 0 || new_pos > u32::MAX as i64 {
+        return Err(FsError::InvalidPath);
+    }
+    let new_pos = new_pos as u32;
 
     file.position = new_pos;
     file.readahead.reset(file.position);
@@ -5605,6 +5641,13 @@ pub fn truncate_to(path: &str, new_size: u32) -> Result<(), FsError> {
     if is_dev_path(path) {
         return Err(FsError::PermissionDenied);
     }
+    // Flush every open writer's append buffer for this path BEFORE mutating the
+    // directory entry / FAT chain — exactly as rename/stat/read_at already do.
+    // Without this, a writer that still holds an unflushed append buffer (with a
+    // pre-truncate inode/size) flushes AFTER the truncate into now-freed /
+    // reallocated clusters, leaving the file unreadable. Must run before
+    // vfs_lock: sync_open_exfat_path acquires the VFS lock internally.
+    sync_open_exfat_path(path, false)?;
     let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
@@ -5700,7 +5743,20 @@ pub fn truncate_to(path: &str, new_size: u32) -> Result<(), FsError> {
 
 /// Resize an open file description.
 pub fn ftruncate_to(slot_id: FileDescriptor, new_size: u32) -> Result<(), FsError> {
-    flush_exfat_append_buffer(slot_id)?;
+    // Flush EVERY open writer for this path (not just this fd) before touching
+    // the chain, so no stale append buffer later writes into freed clusters.
+    // sync_open_exfat_path locks the VFS internally, so fetch the path first.
+    let sync_path = {
+        let vfs = vfs_lock();
+        let state = vfs.as_ref().ok_or(FsError::IoError)?;
+        state
+            .open_files
+            .get(slot_id as usize)
+            .and_then(|e| e.as_ref())
+            .map(|f| f.path.clone())
+            .ok_or(FsError::BadFd)?
+    };
+    sync_open_exfat_path(&sync_path, false)?;
     let exfat_plan = {
         let vfs = vfs_lock();
         let state = vfs.as_ref().ok_or(FsError::IoError)?;
@@ -5753,10 +5809,11 @@ pub fn ftruncate_to(slot_id: FileDescriptor, new_size: u32) -> Result<(), FsErro
             file.size = new_size;
             file.entry_dirty = false;
             file.readahead.reset(file.position);
-            if new_size == 0 {
-                file.seek_cache_offset = 0;
-                file.seek_cache_cluster = 0;
-            }
+            // Reset the seek cache on EVERY truncate, not only truncate-to-0: a
+            // shrink can flip the inode contiguous->fragmented and invalidate the
+            // cached seek cluster, which would otherwise misdirect later reads.
+            file.seek_cache_offset = 0;
+            file.seek_cache_cluster = 0;
         }
         return Ok(());
     }
@@ -5998,11 +6055,12 @@ pub fn fsync(slot_id: FileDescriptor) -> Result<(), FsError> {
     sync_file(slot_id, true)
 }
 
-/// Flush file data and filesystem metadata without forcing the device hardware
-/// cache. This matches the lighter-weight path Linux callers expect from
-/// fdatasync-style workloads and keeps benchmark fsync costs explicit.
+/// Flush file data (and the metadata required to reach it) durably to disk.
+/// POSIX fdatasync must not return before the data is on persistent media,
+/// so the device hardware write cache is flushed here as well — skipping it
+/// would let a power loss discard data that the caller was promised is safe.
 pub fn fdatasync(slot_id: FileDescriptor) -> Result<(), FsError> {
-    sync_file(slot_id, false)
+    sync_file(slot_id, true)
 }
 
 fn sync_file(slot_id: FileDescriptor, flush_hardware: bool) -> Result<(), FsError> {
@@ -6119,6 +6177,64 @@ fn sync_all_inner(flush_hardware: bool) {
 /// Flush all dirty filesystem metadata and storage write caches.
 pub fn sync_all() {
     sync_all_inner(true);
+}
+
+/// Background writeback daemon — bounds the crash-loss window for dirty data.
+///
+/// The write-counter based flush (`FLUSH_INTERVAL`) only fires while writes
+/// keep coming; when write activity stops below the threshold, dirty FAT/
+/// bitmap/directory metadata and dirty block-cache sectors would otherwise
+/// sit in RAM indefinitely. This thread writes them back every
+/// `WRITEBACK_PERIOD_MS` and additionally flushes the device hardware write
+/// cache every `HARDWARE_FLUSH_EVERY`th cycle (`flush_disk()` is a no-op for
+/// disks that saw no writes, so idle systems issue no FLUSH commands).
+pub extern "C" fn writeback_daemon() {
+    const WRITEBACK_PERIOD_MS: u64 = 1000;
+    const HARDWARE_FLUSH_EVERY: u32 = 5;
+    let mut cycle: u32 = 0;
+    loop {
+        let hz = crate::arch::hal::timer_frequency_hz().max(1);
+        let ticks = ((WRITEBACK_PERIOD_MS * hz) / 1000).max(1) as u32;
+        let now = crate::arch::hal::timer_current_ticks();
+        crate::task::scheduler::sleep_until(now.wrapping_add(ticks));
+
+        cycle = cycle.wrapping_add(1);
+        let flush_hardware = cycle % HARDWARE_FLUSH_EVERY == 0;
+        if flush_hardware {
+            flush_idle_append_buffers();
+        }
+        sync_all_inner(flush_hardware);
+    }
+}
+
+/// Write out append buffers that are still pending on open files. Called from
+/// the writeback daemon on its hardware-flush cycle so a long-lived fd with a
+/// small buffered tail (e.g. a log file) cannot hold data in RAM forever.
+/// Active high-throughput writers self-flush at EXFAT_APPEND_BUFFER_MAX long
+/// before this fires, so batching is not hurt.
+fn flush_idle_append_buffers() {
+    let slots: Vec<usize> = {
+        let vfs = vfs_lock();
+        let Some(state) = vfs.as_ref() else {
+            return;
+        };
+        state
+            .open_files
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, entry)| {
+                let file = entry.as_ref()?;
+                if (file.fs_id == 3 || file.fs_id == 6) && !file.append_buffer.is_empty() {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+    for slot in slots {
+        let _ = flush_exfat_append_buffer(slot as FileDescriptor);
+    }
 }
 
 /// Flush filesystem metadata and write-back data without forcing the drive's

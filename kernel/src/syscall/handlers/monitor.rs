@@ -3,7 +3,7 @@
 //! Provides userspace access to detected monitors, their EDID data,
 //! supported modes, and properties (physical size, color profile, etc.).
 
-use super::helpers::is_valid_user_ptr;
+use super::helpers::{copy_to_user_bytes, is_valid_user_ptr};
 
 /// SYS_MONITOR_COUNT (327): Returns the number of detected monitors.
 pub fn sys_monitor_count() -> u32 {
@@ -58,12 +58,18 @@ pub fn sys_monitor_info(monitor_id: u32, buf_ptr: u64) -> u32 {
         white_y: info.edid.chromaticity.white_y,
     };
 
+    let n = core::mem::size_of::<MonitorInfoFlat>();
+    let mut out = [0u8; core::mem::size_of::<MonitorInfoFlat>()];
+    // Kernel -> kernel copy of the packed struct into a local buffer (safe).
     unsafe {
         core::ptr::copy_nonoverlapping(
             &flat as *const MonitorInfoFlat as *const u8,
-            buf_ptr as *mut u8,
-            core::mem::size_of::<MonitorInfoFlat>(),
+            out.as_mut_ptr(),
+            n,
         );
+    }
+    if !copy_to_user_bytes(buf_ptr, &out, n) {
+        return u32::MAX;
     }
     0
 }
@@ -87,8 +93,8 @@ pub fn sys_monitor_edid(monitor_id: u32, buf_ptr: u64, buf_len: u32) -> u32 {
     if copy_len == 0 {
         return 0;
     }
-    unsafe {
-        core::ptr::copy_nonoverlapping(info.edid_raw.as_ptr(), buf_ptr as *mut u8, copy_len);
+    if !copy_to_user_bytes(buf_ptr, &info.edid_raw[..copy_len], copy_len) {
+        return 0;
     }
     copy_len as u32
 }
@@ -114,15 +120,22 @@ pub fn sys_monitor_modes(monitor_id: u32, buf_ptr: u64, buf_len: u32) -> u32 {
     let mode_size = 16usize; // 4 × u32
     let max_modes = (buf_len as usize) / mode_size;
     let write_count = max_modes.min(info.mode_count);
-    unsafe {
-        let buf = buf_ptr as *mut u32;
-        for i in 0..write_count {
-            let m = &info.modes[i];
-            *buf.add(i * 4) = m.width;
-            *buf.add(i * 4 + 1) = m.height;
-            *buf.add(i * 4 + 2) = m.refresh_hz_100;
-            *buf.add(i * 4 + 3) = (m.is_preferred as u32) | ((m.is_interlaced as u32) << 1);
-        }
+    let total = write_count * mode_size;
+    if total == 0 {
+        return 0;
+    }
+    let mut out = alloc::vec::Vec::with_capacity(total);
+    for i in 0..write_count {
+        let m = &info.modes[i];
+        out.extend_from_slice(&m.width.to_le_bytes());
+        out.extend_from_slice(&m.height.to_le_bytes());
+        out.extend_from_slice(&m.refresh_hz_100.to_le_bytes());
+        out.extend_from_slice(
+            &((m.is_preferred as u32) | ((m.is_interlaced as u32) << 1)).to_le_bytes(),
+        );
+    }
+    if !copy_to_user_bytes(buf_ptr, &out, total) {
+        return 0;
     }
     write_count as u32
 }

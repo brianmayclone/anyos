@@ -36,6 +36,7 @@ const SURF_HOST_USER_AGENT: &str =
 const HOST_SYNC_WEB_FONT_LIMIT: usize = 6;
 const HOST_VIEWPORT_RENDER_PASS_LIMIT: usize = 128;
 const HOST_SCREENSHOT_TIMER_CALLBACK_BUDGET: usize = 64;
+const HOST_IFRAME_SNAPSHOT_SCRIPT_STEP_LIMIT: u64 = 500_000;
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
 
@@ -619,14 +620,23 @@ fn load_page_inner(
         start_image_loading(wv, &base_url, image_backend) // images (async, parallel threads)
     };
     if js_enabled {
-        if run_javascript(wv, &base_url, cookies) {
+        if run_javascript(
+            wv,
+            &base_url,
+            cookies,
+            libwebview::js::ScriptExecutionLimits {
+                max_scripts: 256,
+                max_script_bytes: None,
+                step_limit: None,
+            },
+        ) {
             wv.relayout();
         }
         run_js_debug_probes(wv);
-        if wv.has_timers() {
+        if wv.has_pending_js_work() {
             if std::env::var_os("SURF_HOST_SKIP_INITIAL_TIMERS").is_some() {
                 eprintln!(
-                    "[js] skipping initial timer drain ({} timer(s) pending; SURF_HOST_SKIP_INITIAL_TIMERS set)",
+                    "[js] skipping initial JS drain ({} timer(s) pending; SURF_HOST_SKIP_INITIAL_TIMERS set)",
                     wv.timer_count()
                 );
             } else {
@@ -1061,15 +1071,19 @@ fn render_iframe_snapshot(
     if let Some(cookie_hdr) = cookies.cookie_header_for_url(&base_url) {
         frame.js_runtime().set_cookies(&cookie_hdr);
     }
-    frame.set_html_no_js(&html);
+    frame.set_html_dom_only(&html);
     load_resources(&mut frame, &base_url, image_backend, load_web_fonts);
-    let run_snapshot_js = js_enabled && std::env::var_os("SURF_HOST_IFRAME_SNAPSHOT_JS").is_some();
-    if run_snapshot_js {
-        if run_javascript(&mut frame, &base_url, cookies) {
-            frame.relayout();
-        }
-        if frame.has_timers() {
-            run_js_timers(&mut frame, &base_url, cookies, 250);
+    if js_enabled {
+        if run_javascript(
+            &mut frame,
+            &base_url,
+            cookies,
+            libwebview::js::ScriptExecutionLimits {
+                max_scripts: 256,
+                max_script_bytes: None,
+                step_limit: Some(HOST_IFRAME_SNAPSHOT_SCRIPT_STEP_LIMIT),
+            },
+        ) {
             frame.relayout();
         }
     }
@@ -1280,7 +1294,7 @@ impl BrowserHostApp {
                 self.needs_redraw = true;
             }
         }
-        if self.wv.has_timers() {
+        if self.wv.has_pending_js_work() {
             self.wv.run_timers(16);
             if self.drain_js_side_effects() {
                 return;
@@ -1732,7 +1746,7 @@ impl eframe::App for BrowserHostApp {
 
         self.render_devtools(ctx);
 
-        if self.pending.is_done() && !self.wv.has_timers() && !self.wv.has_visual_work() {
+        if self.pending.is_done() && !self.wv.has_pending_js_work() && !self.wv.has_visual_work() {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
         } else {
             ctx.request_repaint();
@@ -2075,7 +2089,7 @@ fn main() {
             let step = 50u64;
             let mut waited = 0u64;
             while waited < args.delay_ms {
-                if run_screenshot_timers && wv.has_timers() {
+                if run_screenshot_timers && wv.has_pending_js_work() {
                     wv.run_timers_with_budget(step, HOST_SCREENSHOT_TIMER_CALLBACK_BUDGET);
                     if let Some(abs) = apply_host_js_mutations(&mut wv, &current_url, &mut cookies)
                     {
@@ -4746,6 +4760,7 @@ fn run_javascript(
     wv: &mut libwebview::WebView,
     base_url: &str,
     cookies: &mut HostCookieJar,
+    limits: libwebview::js::ScriptExecutionLimits,
 ) -> bool {
     // Register synchronous HTTP handler so fetch()/XHR work inside JS.
     register_http_handler(wv);
@@ -4845,13 +4860,7 @@ fn run_javascript(
     }
 
     // Execute all scripts.
-    let changed = wv.execute_js_with_limits(
-        &scripts,
-        libwebview::js::ScriptExecutionLimits {
-            max_scripts: 256,
-            max_script_bytes: None,
-        },
-    );
+    let changed = wv.execute_js_with_limits(&scripts, limits);
     apply_host_js_mutations(wv, base_url, cookies);
 
     // Print console output.
@@ -4989,17 +4998,17 @@ fn run_js_timers(
     cookies: &mut HostCookieJar,
     total_ms: u64,
 ) {
-    if !wv.has_timers() {
+    if !wv.has_pending_js_work() {
         return;
     }
     eprintln!(
-        "[js] running timers for {}ms ({} timers pending)...",
+        "[js] running JS tasks for {}ms ({} timers pending)...",
         total_ms,
         wv.timer_count()
     );
     let step = 50u64;
     let mut elapsed = 0u64;
-    while elapsed < total_ms && wv.has_timers() {
+    while elapsed < total_ms && wv.has_pending_js_work() {
         wv.run_timers(step);
         apply_host_js_mutations(wv, base_url, cookies);
         elapsed += step;
@@ -5009,8 +5018,9 @@ fn run_js_timers(
         }
     }
     eprintln!(
-        "[js] timer loop done ({} ms elapsed, timers remaining: {})",
+        "[js] JS task loop done ({} ms elapsed, work remaining: {}, timers remaining: {})",
         elapsed,
+        wv.has_pending_js_work(),
         wv.has_timers()
     );
 }
@@ -5741,47 +5751,5 @@ fn extract_pixels(
     height: usize,
     scroll_y: i32,
 ) {
-    // Tile canvases have positions set by the renderer (pos_y = row * 256).
-    // We composite each canvas at its actual position, adjusted by scroll.
-    for canvas_id in wv.tile_canvas_ids() {
-        if let Some((pixels, cw, ch, _px, py)) = libanyui_client::host_get_canvas_pixels(canvas_id)
-        {
-            let cw = cw as usize;
-            let ch = ch as usize;
-            if cw == 0 || ch == 0 || pixels.len() < cw * ch {
-                continue;
-            }
-
-            // Canvas position in document coordinates, adjusted by scroll
-            let canvas_top = py - scroll_y;
-            let canvas_bottom = canvas_top + ch as i32;
-
-            // Skip if entirely outside viewport
-            if canvas_bottom <= 0 || canvas_top >= height as i32 {
-                continue;
-            }
-
-            let src_start = if canvas_top < 0 {
-                (-canvas_top) as usize
-            } else {
-                0
-            };
-            let dst_start = if canvas_top > 0 {
-                canvas_top as usize
-            } else {
-                0
-            };
-
-            for row in src_start..ch {
-                let dst_y = dst_start + row - src_start;
-                if dst_y >= height {
-                    break;
-                }
-                let copy_w = cw.min(width);
-                let src_off = row * cw;
-                let dst_off = dst_y * width;
-                fb[dst_off..dst_off + copy_w].copy_from_slice(&pixels[src_off..src_off + copy_w]);
-            }
-        }
-    }
+    wv.snapshot_viewport_pixels(fb, width, height, scroll_y);
 }

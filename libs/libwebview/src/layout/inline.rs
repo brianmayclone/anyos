@@ -79,8 +79,7 @@ impl TextMeasureCache {
             unsafe { core::ptr::replace(core::ptr::addr_of_mut!(PERSISTENT_MEASURE), None) };
         let buckets = match taken {
             Some(p)
-                if p.generation == generation
-                    && p.buckets.len() == TEXT_MEASURE_CACHE_BUCKETS =>
+                if p.generation == generation && p.buckets.len() == TEXT_MEASURE_CACHE_BUCKETS =>
             {
                 p.buckets
             }
@@ -253,6 +252,40 @@ fn inline_control_outer_size(
         + style.padding_top
         + style.padding_bottom;
     ((content_w + border_w).max(1), (content_h + border_h).max(1))
+}
+
+fn resolve_inline_control_width(
+    style: Option<&ComputedStyle>,
+    available_width: i32,
+    fallback: i32,
+) -> i32 {
+    let Some(style) = style else {
+        return fallback.max(1);
+    };
+    if let Some(w) = style.width {
+        return w.max(1);
+    }
+    if let Some(pct) = style.width_pct {
+        return ((available_width.max(0) as i64 * pct as i64) / 10000).max(1) as i32;
+    }
+    if let Some((px100, pct100)) = style.width_calc {
+        return (px100 / 100 + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32)
+            .max(1);
+    }
+    fallback.max(1)
+}
+
+fn resolve_inline_control_height(style: Option<&ComputedStyle>, fallback: i32) -> i32 {
+    let Some(style) = style else {
+        return fallback.max(1);
+    };
+    if let Some(h) = style.height {
+        return h.max(1);
+    }
+    if let Some((px100, _pct100)) = style.height_calc {
+        return (px100 / 100).max(1);
+    }
+    fallback.max(1)
 }
 
 fn inline_box_has_visuals(style: &ComputedStyle) -> bool {
@@ -1625,13 +1658,16 @@ fn collect_inline_fragments(
                     0.0
                 };
 
-                let w = 200;
-                let h = 20;
-
                 // Store the percentage in form_value as an integer 0..1000
                 // (fixed-point with 1 decimal, avoids format! / float-to-string).
                 let pct_i = (pct * 1000.0) as i32;
                 let mut pb = LayoutBox::new(Some(node_id), BoxType::Inline);
+                apply_inline_control_style(&mut pb, styles.get(node_id));
+                let (w, h) = inline_control_outer_size(
+                    styles.get(node_id),
+                    resolve_inline_control_width(styles.get(node_id), available_width, 200),
+                    resolve_inline_control_height(styles.get(node_id), 20),
+                );
                 pb.form_field = Some(FormFieldKind::Progress);
                 pb.width = w;
                 pb.height = h;
@@ -1650,13 +1686,6 @@ fn collect_inline_fragments(
                     val_str.push('X');
                 } // 100%
                 pb.form_value = Some(val_str);
-                if node_id < styles.len() {
-                    pb.bg_color = styles[node_id].background_color;
-                    pb.color = styles[node_id].color;
-                    pb.accent_color = styles[node_id].accent_color;
-                    pb.uses_dark_color_scheme =
-                        styles[node_id].color_scheme == crate::style::ColorSchemeVal::Dark;
-                }
                 out.push(InlineFragment {
                     width: w,
                     height: h,

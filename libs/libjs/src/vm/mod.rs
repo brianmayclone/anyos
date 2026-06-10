@@ -239,7 +239,7 @@ impl Vm {
             iterator_proto: Rc::new(RefCell::new(JsObject::new())),
             generator_proto: Rc::new(RefCell::new(JsObject::new())),
             typed_array_proto: Rc::new(RefCell::new(JsObject::new())),
-            step_limit: 10_000_000,
+            step_limit: u64::MAX,
             steps: 0,
             userdata: core::ptr::null_mut(),
             current_this: JsValue::Undefined,
@@ -773,7 +773,11 @@ impl Vm {
     }
 
     pub fn get_global(&mut self, name: &str) -> JsValue {
-        self.globals.borrow().get(name)
+        if self.globals.borrow().has(name) {
+            return self.globals.borrow().get(name);
+        }
+        self.browser_window_global_get(name)
+            .unwrap_or(JsValue::Undefined)
     }
 
     /// Fast path for repeated global reads at one bytecode site.
@@ -992,7 +996,10 @@ impl Vm {
     pub fn run(&mut self) -> JsValue {
         loop {
             self.steps += 1;
-            if (self.steps & STEP_CHECK_MASK) == 0 && self.steps > self.step_limit {
+            if self.step_limit != u64::MAX
+                && (self.steps & STEP_CHECK_MASK) == 0
+                && self.steps > self.step_limit
+            {
                 self.log_engine("[libjs] WARN: step limit reached — aborting execution");
                 #[cfg(feature = "host")]
                 if std::env::var_os("LIBJS_PROFILE_STEPS").is_some() {

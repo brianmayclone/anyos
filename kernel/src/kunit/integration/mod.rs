@@ -89,59 +89,13 @@ pub fn run_all() {
     crate::serial_println!("  KUnit — integration tests (hardware state)");
     crate::serial_println!("============================================================");
 
-    let mut total_pass: u32 = 0;
-    let mut total_fail: u32 = 0;
-    let mut suites_pass: u32 = 0;
-    let mut suites_fail: u32 = 0;
-
-    for suite in ALL_INTEGRATION_SUITES {
-        crate::serial_println!("");
-        crate::serial_println!("  [suite] {}", suite.name);
-
-        let mut cases_pass: u32 = 0;
-        let mut cases_fail: u32 = 0;
-
-        for case in suite.cases {
-            // Integration tests receive the context via a thread-local-style
-            // slot so their signature matches the standard `fn(&mut TestContext)`.
+    // Shared loop with the unit runner. Integration tests need the per-suite
+    // context published before each case (their signature is the standard
+    // `fn(&mut TestContext)`), so pass a `before_case` hook that does that.
+    let (total_pass, total_fail, suites_pass, suites_fail, _skipped) =
+        super::run_suite_array(ALL_INTEGRATION_SUITES, || {
             CURRENT_CTX.lock().replace(ctx.clone());
-            let mut test_ctx = TestContext::new(suite.name, case.name);
-            (case.run)(&mut test_ctx);
-
-            total_pass += test_ctx.passed;
-            total_fail += test_ctx.failed;
-
-            if test_ctx.is_ok() {
-                crate::serial_println!("    [PASS] {}", case.name);
-                cases_pass += 1;
-            } else {
-                crate::serial_println!(
-                    "    [FAIL] {} — {} assertion(s) failed",
-                    case.name,
-                    test_ctx.failed
-                );
-                cases_fail += 1;
-            }
-        }
-
-        if cases_fail == 0 {
-            crate::serial_println!(
-                "  [OK]   {} — {}/{} tests passed",
-                suite.name,
-                cases_pass,
-                cases_pass
-            );
-            suites_pass += 1;
-        } else {
-            crate::serial_println!(
-                "  [FAIL] {} — {}/{} tests failed",
-                suite.name,
-                cases_fail,
-                cases_pass + cases_fail
-            );
-            suites_fail += 1;
-        }
-    }
+        });
 
     crate::serial_println!("");
     crate::serial_println!("============================================================");
@@ -163,6 +117,11 @@ pub fn run_all() {
     }
     crate::serial_println!("============================================================");
     crate::serial_println!("");
+
+    // Integration is the last kunit phase — emit the overall completion signal
+    // and (if the isa-debug-exit device is present) exit QEMU with a pass/fail
+    // status code. A no-op when the device is absent.
+    super::report_and_exit(total_fail);
 }
 
 // ── Context slot (per-test context injection) ─────────────────────────────────

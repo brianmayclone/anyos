@@ -6,8 +6,9 @@
 use crate::kunit::{TestCase, TestContext, TestSuite};
 use crate::task::capabilities::{
     parse_capabilities, required_cap, CAP_ALL, CAP_AUDIO, CAP_AUTO_GRANTED, CAP_COMPOSITOR,
-    CAP_DEBUG, CAP_DEFAULT, CAP_DEVICE, CAP_DLL, CAP_EVENT, CAP_FILESYSTEM, CAP_MANAGE_PERMS,
-    CAP_NETWORK, CAP_PIPE, CAP_PROCESS, CAP_SHM, CAP_SYSTEM, CAP_THREAD,
+    CAP_DEBUG, CAP_DEFAULT, CAP_DEVICE, CAP_DISPLAY, CAP_DLL, CAP_EVENT, CAP_FILESYSTEM,
+    CAP_HYPERVISOR, CAP_MANAGE_PERMS, CAP_NETWORK, CAP_PIPE, CAP_PROCESS, CAP_SHM, CAP_SYSTEM,
+    CAP_THREAD,
 };
 
 pub static SUITE: TestSuite = TestSuite {
@@ -46,8 +47,8 @@ pub static SUITE: TestSuite = TestSuite {
             run: test_basic_syscalls,
         },
         TestCase {
-            name: "required_cap_fs_always_allowed",
-            run: test_fs_always_allowed,
+            name: "required_cap_fs_requires_filesystem",
+            run: test_fs_requires_filesystem,
         },
         TestCase {
             name: "required_cap_network",
@@ -108,7 +109,7 @@ fn test_parse_multiple(ctx: &mut TestContext) {
     );
 
     let all_str = "filesystem,network,audio,display,device,process,pipe,shm,event,\
-                   compositor,system,dll,thread,manage_perms,debug";
+                   compositor,system,dll,thread,manage_perms,debug,hypervisor";
     ctx.expect_eq(
         parse_capabilities(all_str),
         CAP_ALL,
@@ -135,13 +136,14 @@ fn test_parse_empty(ctx: &mut TestContext) {
 // ── Capability constants ──────────────────────────────────────────────────────
 
 fn test_cap_all(ctx: &mut TestContext) {
-    // CAP_ALL must have all 15 bits set.
-    ctx.expect_eq(CAP_ALL, (1u32 << 15) - 1, "CAP_ALL == 0x7FFF");
+    // CAP_ALL must have all 16 capability bits set (bits 0..=15).
+    ctx.expect_eq(CAP_ALL, (1u32 << 16) - 1, "CAP_ALL == 0xFFFF");
     // Every individual cap must be a subset of CAP_ALL.
     for (name, cap) in &[
         ("filesystem", CAP_FILESYSTEM),
         ("network", CAP_NETWORK),
         ("audio", CAP_AUDIO),
+        ("display", CAP_DISPLAY),
         ("device", CAP_DEVICE),
         ("process", CAP_PROCESS),
         ("pipe", CAP_PIPE),
@@ -153,6 +155,7 @@ fn test_cap_all(ctx: &mut TestContext) {
         ("thread", CAP_THREAD),
         ("manage_perms", CAP_MANAGE_PERMS),
         ("debug", CAP_DEBUG),
+        ("hypervisor", CAP_HYPERVISOR),
     ] {
         ctx.expect_eq(*cap & CAP_ALL, *cap, name);
     }
@@ -199,50 +202,40 @@ fn test_cap_auto_granted(ctx: &mut TestContext) {
 // ── required_cap ─────────────────────────────────────────────────────────────
 
 fn test_basic_syscalls(ctx: &mut TestContext) {
-    // Syscalls in the range typically used for EXIT, GETPID, YIELD, SLEEP
-    // require no capabilities (return 0).
-    // Syscall numbers 0-3 are universally unrestricted.
-    for n in [0u32, 1, 2, 3] {
+    use crate::syscall;
+    // Basic process-lifecycle / info syscalls require no capability (return 0).
+    // NOTE: syscall numbers are NOT 0..3 — those are filesystem syscalls in this
+    // ABI; the always-allowed set is named explicitly in `required_cap`.
+    for n in [
+        syscall::SYS_EXIT,
+        syscall::SYS_GETPID,
+        syscall::SYS_YIELD,
+        syscall::SYS_SLEEP,
+    ] {
         ctx.expect_eq(required_cap(n), 0u32, "basic syscall requires no cap");
     }
 }
 
-fn test_fs_always_allowed(ctx: &mut TestContext) {
-    // By design, all filesystem syscalls (open/read/write/close/stat/…) are
-    // "always allowed" — required_cap returns 0 for them.  Every app needs
-    // basic file access; CAP_FILESYSTEM gates the capability string parsing
-    // only, not the syscall dispatch.
+fn test_fs_requires_filesystem(ctx: &mut TestContext) {
+    // Filesystem syscalls (open/read/write/close/readdir/stat/…) now REQUIRE
+    // CAP_FILESYSTEM. CAP_FILESYSTEM is part of CAP_DEFAULT, so ordinary CLI
+    // programs still get filesystem access — but capability-restricted
+    // processes (and foreign ABIs without the cap) are correctly gated out.
     use crate::syscall;
-    ctx.expect_eq(
-        required_cap(syscall::SYS_OPEN),
-        0u32,
-        "SYS_OPEN always allowed",
-    );
-    ctx.expect_eq(
-        required_cap(syscall::SYS_READ),
-        0u32,
-        "SYS_READ always allowed",
-    );
-    ctx.expect_eq(
-        required_cap(syscall::SYS_WRITE),
-        0u32,
-        "SYS_WRITE always allowed",
-    );
-    ctx.expect_eq(
-        required_cap(syscall::SYS_CLOSE),
-        0u32,
-        "SYS_CLOSE always allowed",
-    );
-    ctx.expect_eq(
-        required_cap(syscall::SYS_READDIR),
-        0u32,
-        "SYS_READDIR always allowed",
-    );
-    ctx.expect_eq(
-        required_cap(syscall::SYS_STAT),
-        0u32,
-        "SYS_STAT always allowed",
-    );
+    for n in [
+        syscall::SYS_OPEN,
+        syscall::SYS_READ,
+        syscall::SYS_WRITE,
+        syscall::SYS_CLOSE,
+        syscall::SYS_READDIR,
+        syscall::SYS_STAT,
+    ] {
+        ctx.expect_eq(
+            required_cap(n),
+            CAP_FILESYSTEM,
+            "fs syscall requires CAP_FILESYSTEM",
+        );
+    }
 }
 
 fn test_net_syscalls(ctx: &mut TestContext) {

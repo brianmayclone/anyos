@@ -912,22 +912,18 @@ impl ExFatFs {
     }
 
     /// Convert a cluster number (>=2) to an absolute LBA.
+    ///
+    /// Returns `Err(FsError::IoError)` for an out-of-range cluster (FAT / inode
+    /// corruption) instead of panicking: a single bad cluster on the root
+    /// filesystem must not take down the whole kernel. Read/write callers
+    /// propagate with `?`; the read-plan builders truncate the plan. The
+    /// diagnostic that the old panic printed is preserved by `validate_cluster`.
     #[inline]
-    fn cluster_to_lba(&self, cluster: u32) -> u32 {
-        if cluster < 2 || cluster >= self.cluster_count + 2 {
-            panic!(
-                "exfat::cluster_to_lba: bogus cluster {} (#x={:#x}) — valid range [2, {}); part_start={} heap_off={} spc={}",
-                cluster,
-                cluster,
-                self.cluster_count + 2,
-                self.partition_start_lba,
-                self.cluster_heap_offset,
-                self.sectors_per_cluster()
-            );
-        }
-        self.partition_start_lba
+    fn cluster_to_lba(&self, cluster: u32) -> Result<u32, FsError> {
+        self.validate_cluster(cluster, "cluster_to_lba")?;
+        Ok(self.partition_start_lba
             + self.cluster_heap_offset
-            + (cluster - 2) * self.sectors_per_cluster()
+            + (cluster - 2) * self.sectors_per_cluster())
     }
 
     // =================================================================
@@ -994,7 +990,7 @@ impl ExFatFs {
                 let cluster_idx = global_sector / (cs / 512);
                 let sector_in_cluster = global_sector % (cs / 512);
                 let target_cluster = self.bitmap_cluster + cluster_idx as u32;
-                let lba = self.cluster_to_lba(target_cluster) + sector_in_cluster as u32;
+                let lba = self.cluster_to_lba(target_cluster)? + sector_in_cluster as u32;
                 let src_start = run_start * 512;
                 let src_end = (src_start + run_len * 512).min(self.bitmap.len());
                 // Pad last sector if needed
@@ -1049,7 +1045,7 @@ impl ExFatFs {
         if cache.lookup(cluster, buf) {
             return Ok(());
         }
-        let lba = self.cluster_to_lba(cluster);
+        let lba = self.cluster_to_lba(cluster)?;
         let spc = self.sectors_per_cluster();
         let cs = self.cluster_size() as usize;
         // Read-ahead: if the next few clusters are sequential, read them all
@@ -1096,7 +1092,7 @@ impl ExFatFs {
 
     fn write_cluster(&self, cluster: u32, buf: &[u8]) -> Result<(), FsError> {
         self.validate_cluster(cluster, "write_cluster")?;
-        let lba = self.cluster_to_lba(cluster);
+        let lba = self.cluster_to_lba(cluster)?;
         let cs = self.cluster_size() as usize;
         let cache = unsafe { &mut *self.cluster_cache.get() };
         if buf.len() >= cs {
@@ -1295,7 +1291,7 @@ impl ExFatFs {
                         total_bytes
                     );
                     let mut raw = vec![0u8; total_bytes];
-                    let lba = self.cluster_to_lba(bm_cluster);
+                    let lba = self.cluster_to_lba(bm_cluster)?;
                     crate::debug_println!("  [exFAT] load_bitmap: bitmap lba={}", lba);
                     self.read_sectors(lba, total_sectors, &mut raw)?;
                     raw.truncate(bm_size as usize);
@@ -2531,7 +2527,7 @@ impl ExFatFs {
             let bytes_needed = buf.len() - bytes_read + start_in_run;
             let max_clusters = ((bytes_needed as u32 + cs - 1) / cs).max(1);
 
-            let run_start_lba = self.cluster_to_lba(cluster);
+            let run_start_lba = self.cluster_to_lba(cluster)?;
             let mut run_clusters: u32 = 1;
             let mut last_cluster = cluster;
 
@@ -2597,11 +2593,11 @@ impl ExFatFs {
             let total_bytes = total_sectors as usize * 512;
 
             if total_bytes == buf.len() {
-                let lba = self.cluster_to_lba(first_cluster);
+                let lba = self.cluster_to_lba(first_cluster)?;
                 self.read_sectors(lba, total_sectors, buf)?;
             } else {
                 let mut tmp = vec![0u8; total_bytes];
-                let lba = self.cluster_to_lba(first_cluster);
+                let lba = self.cluster_to_lba(first_cluster)?;
                 self.read_sectors(lba, total_sectors, &mut tmp)?;
                 let copy_len = buf.len().min(total_bytes);
                 buf[..copy_len].copy_from_slice(&tmp[..copy_len]);
@@ -2625,7 +2621,7 @@ impl ExFatFs {
             let total_sectors = needed_clusters * spc;
             let total_bytes = total_sectors as usize * 512;
             let next_cluster = first_cluster + 1;
-            let lba = self.cluster_to_lba(next_cluster);
+            let lba = self.cluster_to_lba(next_cluster)?;
 
             if total_bytes <= remaining {
                 self.read_sectors(
@@ -2667,7 +2663,21 @@ impl ExFatFs {
         if contiguous {
             let cs = self.cluster_size() as u64;
             let n = ((file_size_u64 + cs - 1) / cs) as u32;
-            let lba = self.cluster_to_lba(start_cluster);
+            let lba = match self.cluster_to_lba(start_cluster) {
+                Ok(l) => l,
+                Err(_) => {
+                    // Corrupt start cluster: file is unreadable. Return an empty
+                    // plan (short read upstream) rather than panicking.
+                    return ExFatReadPlan {
+                        runs: Vec::new(),
+                        base_offset: 0,
+                        file_size: file_size_u64,
+                        disk_id: self.device_id,
+                        hint_offset: 0,
+                        hint_cluster: 0,
+                    };
+                }
+            };
             runs.push((lba, n * spc));
             return ExFatReadPlan {
                 runs,
@@ -2682,7 +2692,11 @@ impl ExFatFs {
         // Follow FAT chain, coalesce contiguous runs
         let mut cluster = start_cluster;
         loop {
-            let run_start_lba = self.cluster_to_lba(cluster);
+            let run_start_lba = match self.cluster_to_lba(cluster) {
+                Ok(l) => l,
+                // Corrupt cluster mid-chain: stop, returning the truncated plan.
+                Err(_) => break,
+            };
             let mut run_clusters: u32 = 1;
             let mut last = cluster;
             while let Some(next) = self.next_cluster(last) {
@@ -2743,7 +2757,20 @@ impl ExFatFs {
 
         if contiguous {
             let first_cluster = start_cluster + first_idx;
-            runs.push((self.cluster_to_lba(first_cluster), needed_clusters * spc));
+            let lba = match self.cluster_to_lba(first_cluster) {
+                Ok(l) => l,
+                Err(_) => {
+                    return ExFatReadPlan {
+                        runs: Vec::new(),
+                        base_offset: base_offset as u64,
+                        file_size: file_size_u64,
+                        disk_id: self.device_id,
+                        hint_offset: 0,
+                        hint_cluster: 0,
+                    };
+                }
+            };
+            runs.push((lba, needed_clusters * spc));
             return ExFatReadPlan {
                 runs,
                 base_offset: base_offset as u64,
@@ -2799,7 +2826,11 @@ impl ExFatFs {
                     _ => break,
                 }
             }
-            runs.push((self.cluster_to_lba(run_start), run_clusters * spc));
+            let run_start_lba = match self.cluster_to_lba(run_start) {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            runs.push((run_start_lba, run_clusters * spc));
             last_idx = cluster_idx + run_clusters - 1;
             remaining -= run_clusters;
             if remaining == 0 {
@@ -2988,7 +3019,7 @@ impl ExFatFs {
 
                 if run_clusters > 1 {
                     // Multi-cluster DMA write — single I/O for all consecutive clusters
-                    let lba = self.cluster_to_lba(cur);
+                    let lba = self.cluster_to_lba(cur)?;
                     let total_sectors = run_clusters * spc;
                     let total_bytes = run_clusters as usize * cs as usize;
                     self.write_sectors(lba, total_sectors, &data[written..written + total_bytes])?;

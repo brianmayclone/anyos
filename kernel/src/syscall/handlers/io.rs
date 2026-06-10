@@ -4,8 +4,8 @@
 //! isatty, ftruncate, and POSIX FD duplication (pipe2, dup, dup2, fcntl).
 
 use super::helpers::{
-    copy_to_user_bytes, copy_user_bytes, fs_err, is_valid_user_ptr, read_user_str_safe,
-    resolve_path,
+    copy_to_user_bytes, copy_user_bytes, fs_err, is_user_range_accessible, is_valid_user_ptr,
+    read_user_str_safe, resolve_path,
 };
 use crate::fs::permissions::{check_permission, PERM_CREATE};
 
@@ -533,7 +533,7 @@ pub fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
     match crate::task::scheduler::current_fd_get(fd) {
         Some(entry) => match entry.kind {
             FdKind::File { global_id } => {
-                match crate::fs::vfs::lseek(global_id, offset as i32, whence) {
+                match crate::fs::vfs::lseek(global_id, offset as i64, whence) {
                     Ok(pos) => pos,
                     Err(e) => fs_err(e),
                 }
@@ -569,12 +569,10 @@ pub fn sys_fstat(fd: u32, buf_ptr: u64) -> u32 {
             | FdKind::LinuxSocket { .. }
             | FdKind::LinuxFramebuffer { .. } => {
                 // Pipe/Tty FDs: report as character device, size 0
-                unsafe {
-                    let buf = buf_ptr as *mut u32;
-                    *buf = 2; // device
-                    *buf.add(1) = 0;
-                    *buf.add(2) = 0;
-                    *buf.add(3) = 0;
+                let mut out = [0u8; 16];
+                out[0..4].copy_from_slice(&2u32.to_le_bytes()); // device, rest already zero
+                if !copy_to_user_bytes(buf_ptr, &out, 16) {
+                    return u32::MAX;
                 }
                 return 0;
             }
@@ -588,12 +586,10 @@ pub fn sys_fstat(fd: u32, buf_ptr: u64) -> u32 {
         None => {
             // Backward compat: fd 0-2 are stdin/stdout/stderr
             if fd < 3 {
-                unsafe {
-                    let buf = buf_ptr as *mut u32;
-                    *buf = 2; // device
-                    *buf.add(1) = 0;
-                    *buf.add(2) = 0;
-                    *buf.add(3) = 0;
+                let mut out = [0u8; 16];
+                out[0..4].copy_from_slice(&2u32.to_le_bytes()); // device, rest already zero
+                if !copy_to_user_bytes(buf_ptr, &out, 16) {
+                    return u32::MAX;
                 }
                 return 0;
             }
@@ -604,16 +600,18 @@ pub fn sys_fstat(fd: u32, buf_ptr: u64) -> u32 {
 
     match crate::fs::vfs::fstat(slot) {
         Ok((file_type, size, position, mtime)) => {
-            unsafe {
-                let buf = buf_ptr as *mut u32;
-                *buf = match file_type {
-                    crate::fs::file::FileType::Regular => 0,
-                    crate::fs::file::FileType::Directory => 1,
-                    crate::fs::file::FileType::Device => 2,
-                };
-                *buf.add(1) = size;
-                *buf.add(2) = position;
-                *buf.add(3) = mtime;
+            let type_val: u32 = match file_type {
+                crate::fs::file::FileType::Regular => 0,
+                crate::fs::file::FileType::Directory => 1,
+                crate::fs::file::FileType::Device => 2,
+            };
+            let mut out = [0u8; 16];
+            out[0..4].copy_from_slice(&type_val.to_le_bytes());
+            out[4..8].copy_from_slice(&size.to_le_bytes());
+            out[8..12].copy_from_slice(&position.to_le_bytes());
+            out[12..16].copy_from_slice(&mtime.to_le_bytes());
+            if !copy_to_user_bytes(buf_ptr, &out, 16) {
+                return u32::MAX;
             }
             0
         }
@@ -673,7 +671,7 @@ pub fn sys_ftruncate(fd: u32, length: u32) -> u32 {
 /// arg2 = flags (O_CLOEXEC = 0x10).
 /// Returns 0 on success, u32::MAX on failure.
 pub fn sys_pipe2(pipefd_ptr: u64, flags: u32) -> u32 {
-    if pipefd_ptr == 0 || !is_valid_user_ptr(pipefd_ptr as u64, 8) {
+    if pipefd_ptr == 0 || !is_user_range_accessible(pipefd_ptr as u64, 8) {
         return u32::MAX;
     }
 
@@ -716,10 +714,17 @@ pub fn sys_pipe2(pipefd_ptr: u64, flags: u32) -> u32 {
     }
 
     // Write [read_fd, write_fd] to user memory as two u32 values
-    unsafe {
-        let ptr = pipefd_ptr as *mut u32;
-        *ptr = read_fd;
-        *ptr.add(1) = write_fd;
+    let mut out = [0u8; 8];
+    out[0..4].copy_from_slice(&read_fd.to_le_bytes());
+    out[4..8].copy_from_slice(&write_fd.to_le_bytes());
+    if !copy_to_user_bytes(pipefd_ptr, &out, 8) {
+        // Both FDs are allocated and the pipe is created at this point;
+        // close them so a bad user pointer does not leak FDs/pipe.
+        crate::task::scheduler::current_fd_close(read_fd);
+        crate::task::scheduler::current_fd_close(write_fd);
+        crate::ipc::anon_pipe::decref_read(pipe_id);
+        crate::ipc::anon_pipe::decref_write(pipe_id);
+        return u32::MAX;
     }
 
     crate::debug_println!(

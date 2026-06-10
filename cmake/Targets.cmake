@@ -378,6 +378,30 @@ add_custom_command(
 add_custom_target(uefi-bootloader DEPENDS ${UEFI_BOOTLOADER_EFI})
 add_custom_target(uefi-image DEPENDS ${UEFI_DISK_IMAGE} programs)
 
+# ── Fast KUnit image: kernel + UEFI bootloader only, NO userspace ────────────
+# The in-kernel KUnit self-tests run during early boot (before the root FS is
+# mounted / userspace starts) and then exit QEMU via isa-debug-exit, so a tiny
+# image with an empty data partition is sufficient. Crucially this target does
+# NOT depend on `programs`, so the test loop is just: rebuild kernel -> small
+# image -> boot, instead of rebuilding + packing the whole 4 GiB userspace.
+# Build with -DANYOS_KUNIT=ON so the kernel carries the `kunit` feature.
+set(KUNIT_DISK_IMAGE "${CMAKE_BINARY_DIR}/anyos-kunit.img")
+add_custom_command(
+  OUTPUT ${KUNIT_DISK_IMAGE}
+  COMMAND ${MKIMAGE_EXECUTABLE} --uefi
+    --bootloader ${UEFI_BOOTLOADER_EFI}
+    --kernel ${KERNEL_ELF}
+    --output ${KUNIT_DISK_IMAGE}
+    --image-size 128
+    --reset
+  DEPENDS
+    ${UEFI_BOOTLOADER_EFI}
+    ${KERNEL_ELF}
+    ${MKIMAGE_EXECUTABLE}
+  COMMENT "Creating minimal KUnit image (kernel + UEFI bootloader, no userspace)"
+)
+add_custom_target(kunit-image DEPENDS ${KUNIT_DISK_IMAGE})
+
 add_custom_target(run-uefi
   COMMAND ${QEMU_EXECUTABLE}
     ${QEMU_CPU_FLAGS}

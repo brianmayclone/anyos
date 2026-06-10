@@ -76,6 +76,17 @@ pub(crate) enum FetchRequest {
         from_deferred: bool,
         generation: u32,
     },
+    /// Same-origin/remote iframe document fetch used to render a snapshot into
+    /// libwebview's iframe replacement image.
+    IframeSnapshot {
+        tab_index: usize,
+        node_id: usize,
+        src: String,
+        url: Url,
+        width: u32,
+        height: u32,
+        generation: u32,
+    },
     /// Web font fetch (@font-face src).
     Font {
         tab_index: usize,
@@ -159,6 +170,25 @@ pub(crate) enum FetchResult {
         from_cache: bool,
         generation: u32,
     },
+    /// Iframe document fetch completed.
+    IframeSnapshotDone {
+        tab_index: usize,
+        node_id: usize,
+        src: String,
+        url: Url,
+        body_len: usize,
+        pixels: Vec<u32>,
+        render_width: u32,
+        render_height: u32,
+        stylesheet_count: usize,
+        script_count: usize,
+        render_ms: u32,
+        width: u32,
+        height: u32,
+        timing: Option<http::RequestTiming>,
+        from_cache: bool,
+        generation: u32,
+    },
     /// Web font fetch completed successfully.
     FontDone {
         tab_index: usize,
@@ -205,6 +235,7 @@ impl FetchResult {
             | FetchResult::NavError { tab_index, .. }
             | FetchResult::CssDone { tab_index, .. }
             | FetchResult::ImageDone { tab_index, .. }
+            | FetchResult::IframeSnapshotDone { tab_index, .. }
             | FetchResult::FontDone { tab_index, .. }
             | FetchResult::ScriptDone { tab_index, .. }
             | FetchResult::ModuleScriptDone { tab_index, .. } => *tab_index,
@@ -231,8 +262,10 @@ const CRITICAL_WORKER_LANES: u32 = 4;
 const TLS_WORKER_LANES: u32 = 8;
 const SCRIPT_WORKER_LANES: u32 = 4;
 const FONT_WORKER_LANES: u32 = 4;
-const VISIBLE_WORKER_LANES: u32 = 8;
+const VISIBLE_WORKER_LANES: u32 = 4;
 const BACKGROUND_WORKER_LANES: u32 = 8;
+const DEFAULT_WORKER_STACK_BYTES: usize = 256 * 1024;
+const RENDER_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 static mut REQUEST_QUEUE_CRITICAL: Option<Vec<QueuedFetchRequest>> = None;
 static mut REQUEST_QUEUE_TLS: Option<Vec<QueuedFetchRequest>> = None;
@@ -336,6 +369,13 @@ fn worker_lane_target(class: WorkerClass) -> u32 {
     }
 }
 
+fn worker_stack_bytes(class: WorkerClass) -> usize {
+    match class {
+        WorkerClass::Visible => RENDER_WORKER_STACK_BYTES,
+        _ => DEFAULT_WORKER_STACK_BYTES,
+    }
+}
+
 unsafe fn request_queue_mut(class: WorkerClass) -> Option<&'static mut Vec<QueuedFetchRequest>> {
     match class {
         WorkerClass::Critical => REQUEST_QUEUE_CRITICAL.as_mut(),
@@ -377,6 +417,7 @@ fn request_worker_class(req: &FetchRequest) -> WorkerClass {
         | FetchRequest::Css { .. } => WorkerClass::Critical,
         FetchRequest::Script { .. } | FetchRequest::ModuleScript { .. } => WorkerClass::Script,
         FetchRequest::Font { .. } => WorkerClass::Font,
+        FetchRequest::IframeSnapshot { .. } => WorkerClass::Visible,
         FetchRequest::Image { priority, .. } => match priority {
             ImagePriority::Viewport => WorkerClass::Visible,
             ImagePriority::Deferred => WorkerClass::Background,
@@ -416,14 +457,16 @@ fn ensure_worker(class: WorkerClass) {
             WorkerClass::Visible => (worker_entry_visible, "surf-net-vis"),
             WorkerClass::Background => (worker_entry_background, "surf-net-bg"),
         };
-        match anyos_std::process::Thread::spawn_with_stack(entry, 256 * 1024, thread_name) {
+        let stack_bytes = worker_stack_bytes(class);
+        match anyos_std::process::Thread::spawn_with_stack(entry, stack_bytes, thread_name) {
             Ok(handle) => {
                 core::mem::forget(handle);
                 surf_net_log!(
-                    "{} worker thread started ({}/{})",
+                    "{} worker thread started ({}/{}, stack={} bytes)",
                     worker_label(class),
                     active.load(Ordering::Relaxed),
-                    target
+                    target,
+                    stack_bytes
                 );
             }
             Err(_) => {
@@ -505,6 +548,9 @@ fn record_started(req: &FetchRequest) -> u32 {
         FetchRequest::Image { url, .. } => {
             crate::devtools::record_request_started("GET", "img", url)
         }
+        FetchRequest::IframeSnapshot { url, .. } => {
+            crate::devtools::record_request_started("GET", "iframe", url)
+        }
         FetchRequest::Font { url, .. } => {
             crate::devtools::record_request_started("GET", "font", url)
         }
@@ -561,7 +607,7 @@ pub(crate) fn result_mailboxes_pending() -> bool {
     pending
 }
 
-fn result_mailbox_len_for_tab(tab_index: usize) -> usize {
+pub(crate) fn result_mailbox_len_for_tab(tab_index: usize) -> usize {
     acquire(&RESULT_LOCK);
     let len = unsafe {
         RESULT_MAILBOXES
@@ -621,6 +667,7 @@ pub(crate) fn new_generation() -> u32 {
                     FetchRequest::Navigate { .. } | FetchRequest::NavigatePost { .. } => true,
                     FetchRequest::Css { generation, .. }
                     | FetchRequest::Image { generation, .. }
+                    | FetchRequest::IframeSnapshot { generation, .. }
                     | FetchRequest::Font { generation, .. }
                     | FetchRequest::Script { generation, .. }
                     | FetchRequest::ModuleScript { generation, .. } => *generation == gen,
@@ -638,6 +685,7 @@ pub(crate) fn new_generation() -> u32 {
                     FetchResult::NavDone { .. } | FetchResult::NavError { .. } => true,
                     FetchResult::CssDone { generation, .. }
                     | FetchResult::ImageDone { generation, .. }
+                    | FetchResult::IframeSnapshotDone { generation, .. }
                     | FetchResult::FontDone { generation, .. }
                     | FetchResult::ScriptDone { generation, .. }
                     | FetchResult::ModuleScriptDone { generation, .. } => *generation == gen,
@@ -742,6 +790,8 @@ const MAX_CACHEABLE_IMAGE_BODY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_DISK_CACHEABLE_BODY_BYTES: usize = 32 * 1024 * 1024;
 const DISK_CACHE_MIN_FREE_BYTES: u64 = 512 * 1024 * 1024;
 const DISK_CACHE_DEFAULT_MAX_AGE_SECS: u32 = 60 * 60;
+const MAX_IFRAME_STYLESHEETS: usize = 24;
+const MAX_IFRAME_SCRIPTS: usize = 96;
 /// A cached HTTP response for a sub-resource.
 struct CacheEntry {
     /// Cache key: fully-qualified URL string.
@@ -1223,6 +1273,7 @@ fn request_host(req: &FetchRequest) -> &str {
         | FetchRequest::NavigatePost { url, .. }
         | FetchRequest::Css { url, .. }
         | FetchRequest::Image { url, .. }
+        | FetchRequest::IframeSnapshot { url, .. }
         | FetchRequest::Font { url, .. }
         | FetchRequest::Script { url, .. }
         | FetchRequest::ModuleScript { url, .. } => &url.host,
@@ -1312,6 +1363,7 @@ fn request_priority(req: &FetchRequest) -> u8 {
         FetchRequest::Css { .. } => 4,
         FetchRequest::Script { .. } | FetchRequest::ModuleScript { .. } => 3,
         FetchRequest::Font { .. } => 2,
+        FetchRequest::IframeSnapshot { .. } => 1,
         FetchRequest::Image { priority, .. } => match priority {
             ImagePriority::Viewport => 1,
             ImagePriority::Deferred => 0,
@@ -1325,6 +1377,7 @@ fn request_tab_index_mut(req: &mut FetchRequest) -> &mut usize {
         | FetchRequest::NavigatePost { tab_index, .. }
         | FetchRequest::Css { tab_index, .. }
         | FetchRequest::Image { tab_index, .. }
+        | FetchRequest::IframeSnapshot { tab_index, .. }
         | FetchRequest::Font { tab_index, .. }
         | FetchRequest::Script { tab_index, .. }
         | FetchRequest::ModuleScript { tab_index, .. } => tab_index,
@@ -1386,6 +1439,10 @@ fn stamp_result_enqueued(result: &mut FetchResult) {
             timing: Some(timing),
             ..
         }
+        | FetchResult::IframeSnapshotDone {
+            timing: Some(timing),
+            ..
+        }
         | FetchResult::FontDone {
             timing: Some(timing),
             ..
@@ -1430,6 +1487,152 @@ fn cache_key(url: &http::Url) -> String {
         key.push_str("#ua=curl8");
     }
     key
+}
+
+fn fetch_cached_subresource(
+    url: &http::Url,
+    destination: http::FetchDestination,
+    pool: &mut ConnPool,
+) -> Option<(Vec<u8>, String)> {
+    let key = cache_key(url);
+    if let Some(hit) = cache_get(&key) {
+        return Some(hit);
+    }
+    let mut cookies = CookieJar::new();
+    match http::fetch_with_destination(url, &mut cookies, pool, destination) {
+        Ok(resp) if resp.status >= 200 && resp.status < 400 => {
+            cache_put(key, resp.body.clone(), resp.headers.clone());
+            Some((resp.body, resp.headers))
+        }
+        Ok(resp) => {
+            surf_net_log!(
+                "iframe subresource HTTP failure: status={} bytes={} key={}",
+                resp.status,
+                resp.body.len(),
+                key
+            );
+            None
+        }
+        Err(e) => {
+            surf_net_log!(
+                "iframe subresource fetch failed: key={} ({})",
+                key,
+                fetch_error_msg(e)
+            );
+            None
+        }
+    }
+}
+
+fn collect_iframe_subresources(
+    document_url: &http::Url,
+    body: &[u8],
+    headers: &str,
+    pool: &mut ConnPool,
+) -> (Vec<libwebview::css::Stylesheet>, Vec<String>) {
+    let html = crate::resources::decode_http_body(body, headers);
+    if html.trim().is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let dom = libwebview::html::parse(&html);
+    let mut stylesheets = Vec::new();
+    for (node_id, node) in dom.nodes.iter().enumerate() {
+        if stylesheets.len() >= MAX_IFRAME_STYLESHEETS {
+            break;
+        }
+        if !matches!(
+            &node.node_type,
+            libwebview::dom::NodeType::Element {
+                tag: libwebview::dom::Tag::Link,
+                ..
+            }
+        ) {
+            continue;
+        }
+        let rel = dom.attr(node_id, "rel").unwrap_or("");
+        if !rel
+            .split_ascii_whitespace()
+            .any(|tok| tok.eq_ignore_ascii_case("stylesheet"))
+        {
+            continue;
+        }
+        let Some(href) = dom.attr(node_id, "href") else {
+            continue;
+        };
+        if href.trim().is_empty() {
+            continue;
+        }
+        let css_url = http::resolve_url(document_url, href);
+        if let Some((css_body, css_headers)) =
+            fetch_cached_subresource(&css_url, http::FetchDestination::Style, pool)
+        {
+            let css_text = crate::resources::decode_http_body(&css_body, &css_headers);
+            let css_text = crate::resources::resolve_css_resource_urls(&css_text, &css_url);
+            stylesheets.push(libwebview::css::parse_stylesheet(&css_text));
+        }
+    }
+
+    let mut scripts = Vec::new();
+    for entry in libwebview::js::JsRuntime::collect_script_entries(&dom) {
+        if scripts.len() >= MAX_IFRAME_SCRIPTS {
+            break;
+        }
+        match entry {
+            libwebview::js::ScriptEntry::Inline { text, .. } => {
+                scripts.push(text);
+            }
+            libwebview::js::ScriptEntry::External { src, .. } => {
+                if src.trim().is_empty() {
+                    continue;
+                }
+                let script_url = http::resolve_url(document_url, &src);
+                if let Some((script_body, script_headers)) =
+                    fetch_cached_subresource(&script_url, http::FetchDestination::Script, pool)
+                {
+                    scripts.push(crate::resources::decode_http_body(
+                        &script_body,
+                        &script_headers,
+                    ));
+                }
+            }
+        }
+    }
+    (stylesheets, scripts)
+}
+
+fn render_iframe_snapshot_offthread(
+    url: &http::Url,
+    body: &[u8],
+    headers: &str,
+    width: u32,
+    height: u32,
+    pool: &mut ConnPool,
+) -> (Vec<u32>, u32, u32, usize, usize, u32) {
+    let (stylesheets, scripts) = collect_iframe_subresources(url, body, headers, pool);
+    let stylesheet_count = stylesheets.len();
+    let script_count = scripts.len();
+    let start_ms = anyos_std::sys::uptime_ms();
+    let rendered = crate::resources::render_iframe_snapshot_pixels(
+        url,
+        body,
+        headers,
+        stylesheets,
+        scripts,
+        width,
+        height,
+    );
+    let render_ms = anyos_std::sys::uptime_ms().wrapping_sub(start_ms);
+    match rendered {
+        Some((pixels, render_width, render_height)) => (
+            pixels,
+            render_width,
+            render_height,
+            stylesheet_count,
+            script_count,
+            render_ms,
+        ),
+        None => (Vec::new(), 0, 0, stylesheet_count, script_count, render_ms),
+    }
 }
 
 fn stamp_worker_timing(
@@ -1765,6 +1968,172 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         decoded_raster: None,
                         priority,
                         from_deferred,
+                        timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                        from_cache: false,
+                        generation,
+                    });
+                }
+            }
+        }
+
+        FetchRequest::IframeSnapshot {
+            tab_index,
+            node_id,
+            src,
+            url,
+            width,
+            height,
+            generation,
+        } => {
+            if generation != current_gen {
+                return;
+            }
+
+            let key = cache_key(&url);
+            if let Some((body, headers)) = cache_get(&key) {
+                surf_net_log!("iframe cache hit: node={} {}", node_id, src);
+                let body_len = body.len();
+                let (
+                    pixels,
+                    render_width,
+                    render_height,
+                    stylesheet_count,
+                    script_count,
+                    render_ms,
+                ) = render_iframe_snapshot_offthread(&url, &body, &headers, width, height, pool);
+                surf_net_log!(
+                    "iframe rendered: node={} css={} scripts={} pixels={} render_ms={} src={}",
+                    node_id,
+                    stylesheet_count,
+                    script_count,
+                    pixels.len(),
+                    render_ms,
+                    src
+                );
+                enqueue_result(FetchResult::IframeSnapshotDone {
+                    tab_index,
+                    node_id,
+                    src,
+                    url,
+                    body_len,
+                    pixels,
+                    render_width,
+                    render_height,
+                    stylesheet_count,
+                    script_count,
+                    render_ms,
+                    width,
+                    height,
+                    timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                    from_cache: true,
+                    generation,
+                });
+                return;
+            }
+
+            surf_net_log!("fetching iframe: node={} {}", node_id, src);
+            match http::fetch_with_destination(
+                &url,
+                &mut CookieJar::new(),
+                pool,
+                http::FetchDestination::Document,
+            ) {
+                Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
+                    stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
+                    cache_put(key, resp.body.clone(), resp.headers.clone());
+                    let body_len = resp.body.len();
+                    let (
+                        pixels,
+                        render_width,
+                        render_height,
+                        stylesheet_count,
+                        script_count,
+                        render_ms,
+                    ) = render_iframe_snapshot_offthread(
+                        &url,
+                        &resp.body,
+                        &resp.headers,
+                        width,
+                        height,
+                        pool,
+                    );
+                    surf_net_log!(
+                        "iframe rendered: node={} css={} scripts={} pixels={} render_ms={} src={}",
+                        node_id,
+                        stylesheet_count,
+                        script_count,
+                        pixels.len(),
+                        render_ms,
+                        src
+                    );
+                    enqueue_result(FetchResult::IframeSnapshotDone {
+                        tab_index,
+                        node_id,
+                        src,
+                        url,
+                        body_len,
+                        pixels,
+                        render_width,
+                        render_height,
+                        stylesheet_count,
+                        script_count,
+                        render_ms,
+                        width,
+                        height,
+                        timing: Some(resp.timing),
+                        from_cache: false,
+                        generation,
+                    });
+                }
+                Ok(mut resp) => {
+                    stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
+                    surf_net_log!(
+                        "iframe fetch HTTP failure: node={} status={} bytes={} src={}",
+                        node_id,
+                        resp.status,
+                        resp.body.len(),
+                        src
+                    );
+                    enqueue_result(FetchResult::IframeSnapshotDone {
+                        tab_index,
+                        node_id,
+                        src,
+                        url,
+                        body_len: resp.body.len(),
+                        pixels: Vec::new(),
+                        render_width: 0,
+                        render_height: 0,
+                        stylesheet_count: 0,
+                        script_count: 0,
+                        render_ms: 0,
+                        width,
+                        height,
+                        timing: Some(resp.timing),
+                        from_cache: false,
+                        generation,
+                    });
+                }
+                Err(e) => {
+                    surf_net_log!(
+                        "iframe fetch failed: node={} {} ({})",
+                        node_id,
+                        src,
+                        fetch_error_msg(e)
+                    );
+                    enqueue_result(FetchResult::IframeSnapshotDone {
+                        tab_index,
+                        node_id,
+                        src,
+                        url,
+                        body_len: 0,
+                        pixels: Vec::new(),
+                        render_width: 0,
+                        render_height: 0,
+                        stylesheet_count: 0,
+                        script_count: 0,
+                        render_ms: 0,
+                        width,
+                        height,
                         timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
                         from_cache: false,
                         generation,

@@ -334,12 +334,12 @@ impl Desktop {
         }
 
         // Handle window drag — clamp Y so windows can never go under the menubar.
+        let min_drag_y = self.menubar_reserved_height() as i32;
         if let Some(ref mut drag) = self.dragging {
             drag.moved = true;
             let win_id = drag.window_id;
             let new_x = self.mouse_x - drag.offset_x;
-            let min_y = menubar_height() as i32 + 1;
-            let new_y = (self.mouse_y - drag.offset_y).max(min_y);
+            let new_y = (self.mouse_y - drag.offset_y).max(min_drag_y);
             if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
                 let layer_id = self.windows[idx].layer_id;
                 self.windows[idx].x = new_x;
@@ -371,7 +371,7 @@ impl Desktop {
         }
 
         // Update dropdown hover state and menu-slide
-        if self.menu_bar.is_dropdown_open() {
+        if self.menu_bar.is_dropdown_open() && self.menubar_effective_visible() {
             if self.menu_bar.system_menu_open {
                 // System menu hover update
                 if self.menu_bar.update_hover(self.mouse_x, self.mouse_y) {
@@ -791,7 +791,7 @@ impl Desktop {
             }
 
             // Check if clicking within open dropdown
-            if self.menu_bar.is_dropdown_open() {
+            if self.menu_bar.is_dropdown_open() && self.menubar_effective_visible() {
                 if self.menu_bar.is_in_dropdown(self.mouse_x, self.mouse_y) {
                     if self.menu_bar.system_menu_open {
                         // System menu dropdown click
@@ -860,7 +860,7 @@ impl Desktop {
                     return;
                 }
 
-                if self.fullscreen_window.is_none() && self.mouse_y < menubar_height() as i32 {
+                if self.menubar_effective_visible() && self.mouse_y < menubar_height() as i32 {
                     self.handle_menubar_click();
                     return;
                 }
@@ -876,7 +876,7 @@ impl Desktop {
             }
 
             // Check menubar click (skip in fullscreen — menubar is hidden)
-            if self.fullscreen_window.is_none() && self.mouse_y < menubar_height() as i32 {
+            if self.menubar_effective_visible() && self.mouse_y < menubar_height() as i32 {
                 self.handle_menubar_click();
                 return;
             }
@@ -1299,24 +1299,26 @@ impl Desktop {
             } else if self.super_key_solo {
                 // Super released without pressing any other key → toggle system menu
                 self.super_key_solo = false;
-                if self.menu_bar.is_dropdown_open() {
-                    self.menu_bar
-                        .close_dropdown_with_compositor(&mut self.compositor);
-                } else {
-                    self.menu_bar.open_system_menu(&mut self.compositor);
-                    // Set hover to first non-separator item for keyboard nav
-                    if let Some(ref mut dd) = self.menu_bar.open_dropdown {
-                        dd.hover_idx = Some(0);
+                if self.menubar_effective_visible() {
+                    if self.menu_bar.is_dropdown_open() {
+                        self.menu_bar
+                            .close_dropdown_with_compositor(&mut self.compositor);
+                    } else {
+                        self.menu_bar.open_system_menu(&mut self.compositor);
+                        // Set hover to first non-separator item for keyboard nav
+                        if let Some(ref mut dd) = self.menu_bar.open_dropdown {
+                            dd.hover_idx = Some(0);
+                        }
+                        self.menu_bar.rerender_system_dropdown(&mut self.compositor);
                     }
-                    self.menu_bar.rerender_system_dropdown(&mut self.compositor);
+                    self.draw_menubar();
+                    self.compositor.add_damage(Rect::new(
+                        0,
+                        0,
+                        self.screen_width,
+                        menubar_height() + 1,
+                    ));
                 }
-                self.draw_menubar();
-                self.compositor.add_damage(Rect::new(
-                    0,
-                    0,
-                    self.screen_width,
-                    menubar_height() + 1,
-                ));
                 // Also broadcast for apps that want to react
                 if self.tray_ipc_events.len() < 256 {
                     self.tray_ipc_events
@@ -1575,7 +1577,7 @@ impl Desktop {
             }
 
             // F10: Activate menubar keyboard navigation
-            if key_code == KEY_F10 && !alt && !ctrl {
+            if key_code == KEY_F10 && !alt && !ctrl && self.menubar_effective_visible() {
                 self.activate_menubar_keyboard();
                 return;
             }
@@ -1731,6 +1733,9 @@ impl Desktop {
     }
 
     pub(crate) fn handle_menubar_click(&mut self) {
+        if !self.menubar_effective_visible() {
+            return;
+        }
         let mx = self.mouse_x;
         let my = self.mouse_y;
         match self.menu_bar.hit_test_menubar(mx, my) {
@@ -1974,6 +1979,9 @@ impl Desktop {
 
     /// Activate menubar keyboard navigation: open the first app menu.
     fn activate_menubar_keyboard(&mut self) {
+        if !self.menubar_effective_visible() {
+            return;
+        }
         if self.menu_bar.is_dropdown_open() {
             self.menu_bar
                 .close_dropdown_with_compositor(&mut self.compositor);

@@ -317,7 +317,7 @@ fn test_parse_valid_packet(ctx: &mut TestContext) {
     let pkt: &[u8] = &[
         0x45, 0x00, 0x00, 0x28, // ver=4, ihl=5, dscp, total=40
         0x00, 0x01, 0x40, 0x00, // id, DF flag, frag offset=0
-        0x40, 0x06, 0x00, 0x00, // ttl=64, proto=TCP(6), checksum
+        0x40, 0x06, 0xB7, 0x7B, // ttl=64, proto=TCP(6), valid header checksum 0xB77B
         0xC0, 0xA8, 0x01, 0x01, // src 192.168.1.1
         0xC0, 0xA8, 0x01, 0x02, // dst 192.168.1.2
         // 20 bytes of dummy TCP payload

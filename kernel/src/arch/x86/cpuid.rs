@@ -387,6 +387,23 @@ pub fn enable_smep() {
     crate::serial_verbose_println!("  SMEP enabled (CR4.SMEP=1)");
 }
 
+/// Enable CR0.WP (Write Protect, bit 16).
+///
+/// With WP=0 ring-0 writes ignore the R/W bit of page table entries. Copy-on-
+/// write fork depends on the kernel faulting when it writes to a write-
+/// protected user page (e.g. `read(2)` filling a COW buffer) — without WP the
+/// write would silently land in the frame still shared with the other process.
+///
+/// Safe to call from both BSP and AP initialization paths.
+pub fn enable_write_protect() {
+    unsafe {
+        let cr0: u64;
+        core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nostack, nomem, preserves_flags));
+        core::arch::asm!("mov cr0, {}", in(reg) cr0 | (1u64 << 16), options(nostack, nomem, preserves_flags));
+    }
+    crate::serial_verbose_println!("  Write protect enabled (CR0.WP=1)");
+}
+
 /// Enable XSAVE/XRSTOR and set XCR0 to enable x87 + SSE + AVX state.
 ///
 /// Sets CR4.OSXSAVE (bit 18) to allow XGETBV/XSETBV/XSAVE/XRSTOR, then

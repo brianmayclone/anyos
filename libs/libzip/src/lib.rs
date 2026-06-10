@@ -905,7 +905,7 @@ pub extern "C" fn libzip_tar_extract_to_file(
         Some(r) => r,
         None => return u32::MAX,
     };
-    let data = match reader.extract(index as usize) {
+    let data = match reader.entry_data(index as usize) {
         Some(d) => d,
         None => return u32::MAX,
     };

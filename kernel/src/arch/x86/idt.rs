@@ -1832,6 +1832,15 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 core::arch::asm!("mov {}, cr2", out(reg) cr2);
             }
 
+            // Copy-on-write: a write to a present but write-protected CoW page
+            // (from user mode, or from kernel mode writing into a user buffer
+            // with CR0.WP=1) resolves the share and retries the instruction.
+            let err_present = (frame.err_code & 1) != 0;
+            let err_write = (frame.err_code & 2) != 0;
+            if err_present && err_write && crate::memory::virtual_mem::handle_cow_fault(cr2) {
+                return;
+            }
+
             // Demand paging: if page not present and address is in committed heap range,
             // allocate a frame and map it transparently, then retry the instruction.
             let err_not_present = (frame.err_code & 1) == 0;

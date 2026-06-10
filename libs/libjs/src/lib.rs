@@ -174,7 +174,10 @@ impl JsEngine {
         self.vm.console_output.clear();
     }
 
-    /// Set maximum execution steps (prevents infinite loops).
+    /// Set a maximum execution step count.
+    ///
+    /// The default VM limit is unbounded; hosts can opt into a finite limit for
+    /// diagnostics or controlled test execution.
     pub fn set_step_limit(&mut self, limit: u64) {
         self.vm.set_step_limit(limit);
     }
@@ -192,6 +195,11 @@ impl JsEngine {
     /// Clear the last unhandled exception.
     pub fn clear_last_exception(&mut self) {
         self.vm.last_exception = None;
+    }
+
+    /// Whether the ECMAScript microtask queue still has Promise jobs to run.
+    pub fn has_pending_microtasks(&self) -> bool {
+        self.vm.event_loop.has_microtasks()
     }
 
     /// Compile JavaScript source without executing it.
@@ -340,6 +348,21 @@ mod tests {
     }
 
     #[test]
+    fn es_module_exported_function_captures_exported_const_in_destructuring_default() {
+        let mut engine = JsEngine::new();
+        engine.register_module_source(
+            "./metric-ui.js",
+            "export const COLORS = ['blue']; \
+             export function render(viewParams) { \
+                 let { colors = COLORS } = viewParams; \
+                 return colors[0]; \
+             }",
+        );
+        let result = engine.eval("var ns = __import__('./metric-ui.js'); ns.render({})");
+        assert_eq!(result.to_js_string(), "blue");
+    }
+
+    #[test]
     fn dynamic_import_keeps_entry_bundle_helper_binding() {
         let mut engine = JsEngine::new();
         engine.set_step_limit(1_000_000);
@@ -357,7 +380,7 @@ mod tests {
              run().then(v => { seen = v; }); \
              seen",
         );
-        assert_eq!(result.to_js_string(), "function");
+        assert_eq!(result.to_js_string(), "pending");
         let result = engine.eval("seen");
         assert_eq!(result.to_js_string(), "1");
     }
@@ -1561,6 +1584,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_float_accepts_longest_numeric_prefix() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "[
+                parseFloat('12.5px') === 12.5,
+                parseFloat('1e+px') === 1,
+                parseFloat('.25rem') === 0.25,
+                Number('12.5px')
+            ].join(',')",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "true,true,true,NaN");
+    }
+
+    #[test]
     fn computed_compound_assignment_uses_property_value_not_key() {
         let mut engine = JsEngine::new();
         let result = engine.eval(
@@ -1795,5 +1837,116 @@ mod tests {
             engine.last_exception()
         );
         assert_eq!(result.to_js_string(), "1,50,50");
+    }
+
+    #[test]
+    fn speedometer_raf_async_report_chain_resolves() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var finished = 0; \
+             var resolved = 0; \
+             var client = { didRunTest: function() { finished++; } }; \
+             function requestAnimationFrame(callback) { setTimeout(function() { callback(16); }, 16); } \
+             async function recordTest() { await client.didRunTest(); } \
+             function runStep(runSync) { \
+                 return new Promise(function(resolve) { \
+                     requestAnimationFrame(function() { runSync(); }); \
+                     requestAnimationFrame(function() { \
+                         setTimeout(function() { \
+                             setTimeout(async function() { \
+                                 await recordTest(); \
+                                 resolve(); \
+                             }, 0); \
+                         }, 0); \
+                     }); \
+                 }); \
+             } \
+             runStep(function() { \
+                 for (var i = 0; i < 21; i++) { Math.imul(i, i + 1); } \
+             }).then(function() { resolved = 1; }); \
+             'scheduled'",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "scheduled");
+        engine.vm().run_event_loop(1000);
+        assert_eq!(engine.vm().get_global("finished").to_number() as i32, 1);
+        assert_eq!(engine.vm().get_global("resolved").to_number() as i32, 1);
+    }
+
+    #[test]
+    fn speedometer_class_report_callback_chain_resolves() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var finished = 0; \
+             var resolved = 0; \
+             function requestAnimationFrame(callback) { setTimeout(function() { callback(16); }, 16); } \
+             class Client { \
+                 willRunTest() {} \
+                 didRunTest() { finished++; } \
+             } \
+             class TestInvoker { \
+                 constructor(syncCallback, asyncCallback, reportCallback) { \
+                     this._syncCallback = syncCallback; \
+                     this._asyncCallback = asyncCallback; \
+                     this._reportCallback = reportCallback; \
+                 } \
+             } \
+             class RAFTestInvoker extends TestInvoker { \
+                 start() { \
+                     return new Promise((resolve) => { \
+                         requestAnimationFrame(() => this._syncCallback()); \
+                         requestAnimationFrame(() => { \
+                             setTimeout(() => { \
+                                 this._asyncCallback(); \
+                                 setTimeout(async () => { \
+                                     await this._reportCallback(); \
+                                     resolve(); \
+                                 }, 0); \
+                             }, 0); \
+                         }); \
+                     }); \
+                 } \
+             } \
+             class Runner { \
+                 constructor(client) { \
+                     this._client = client; \
+                     this._measuredValues = { tests: {} }; \
+                 } \
+                 async runTest(suite, test) { \
+                     if (this._client?.willRunTest) \
+                         await this._client.willRunTest(suite, test); \
+                     const runSync = () => test.run(); \
+                     const measureAsync = () => {}; \
+                     const report = () => this._recordTestResults(suite, test, 0.05, 0.05); \
+                     return new RAFTestInvoker(runSync, measureAsync, report).start(); \
+                 } \
+                 async _recordTestResults(suite, test, syncTime, asyncTime) { \
+                     const suiteResults = this._measuredValues.tests[suite.name] || { tests: {}, total: 0 }; \
+                     const total = syncTime + asyncTime; \
+                     this._measuredValues.tests[suite.name] = suiteResults; \
+                     suiteResults.tests[test.name] = { tests: { Sync: syncTime, Async: asyncTime }, total: total }; \
+                     suiteResults.total += total; \
+                     if (this._client?.didRunTest) \
+                         await this._client.didRunTest(suite, test); \
+                 } \
+             } \
+             var suite = { name: 'Perf-Dashboard' }; \
+             var test = { name: 'SelectingRange', run: function() { Math.imul(7, 9); } }; \
+             new Runner(new Client()).runTest(suite, test).then(function() { resolved = 1; }); \
+             'scheduled'",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "scheduled");
+        engine.vm().run_event_loop(1000);
+        assert_eq!(engine.vm().get_global("finished").to_number() as i32, 1);
+        assert_eq!(engine.vm().get_global("resolved").to_number() as i32, 1);
     }
 }

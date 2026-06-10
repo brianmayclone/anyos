@@ -19,16 +19,16 @@ pub fn parse_value(property: &Property, value_str: &str) -> CssValue {
     if lower.contains("var(") {
         return CssValue::Keyword(String::from(s));
     }
-    if lower.starts_with("calc(") {
+    if is_entire_css_function(&lower, "calc") {
         return parse_calc_value(s);
     }
-    if lower.starts_with("min(") {
+    if is_entire_css_function(&lower, "min") {
         return parse_min_max_clamp_value(s, CssMathFunc::Min);
     }
-    if lower.starts_with("max(") {
+    if is_entire_css_function(&lower, "max") {
         return parse_min_max_clamp_value(s, CssMathFunc::Max);
     }
-    if lower.starts_with("clamp(") {
+    if is_entire_css_function(&lower, "clamp") {
         return parse_min_max_clamp_value(s, CssMathFunc::Clamp);
     }
 
@@ -83,6 +83,29 @@ pub fn parse_value(property: &Property, value_str: &str) -> CssValue {
     } else {
         CssValue::Keyword(lower)
     }
+}
+
+fn is_entire_css_function(s: &str, name: &str) -> bool {
+    let prefix_len = name.len();
+    if !s.starts_with(name) || s.as_bytes().get(prefix_len) != Some(&b'(') {
+        return false;
+    }
+
+    let bytes = s.as_bytes();
+    let mut depth = 0u32;
+    for (i, &b) in bytes.iter().enumerate().skip(prefix_len) {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return i == bytes.len() - 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn parse_var_value(property: &Property, s: &str) -> CssValue {

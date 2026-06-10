@@ -6,8 +6,8 @@
 
 #[allow(unused_imports)]
 use super::helpers::{
-    copy_user_bytes, is_user_range_accessible, is_valid_user_ptr, read_user_str,
-    read_user_str_safe, resolve_path,
+    copy_to_user_bytes, copy_user_bytes, is_user_range_accessible, is_valid_user_ptr,
+    read_user_str, read_user_str_safe, resolve_path,
 };
 #[allow(unused_imports)]
 use alloc::string::String;
@@ -58,6 +58,17 @@ pub fn sys_exit(status: u32) -> u32 {
                 | FdKind::None => {}
             }
         }
+    }
+
+    // Write MAP_SHARED file mappings back to their files while the user
+    // address space is still active — the dirty pages are read through
+    // their user virtual addresses. Only the last thread of the address
+    // space drops the registry entries.
+    if let Some(pd_phys) = pd {
+        crate::syscall::linux::shared_mmap_writeback_on_exit(
+            pd_phys.as_u64(),
+            !crate::task::scheduler::has_live_pd_siblings(),
+        );
     }
 
     // Clean up shared memory mappings while still in user PD context.
@@ -436,9 +447,10 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
         while addr < old_page_end {
             let pte = virtual_mem::read_pte(VirtAddr::new(addr));
             if pte & 1 != 0 {
-                let phys = PhysAddr::new(pte & 0x000F_FFFF_FFFF_F000);
                 virtual_mem::unmap_page(VirtAddr::new(addr));
-                physical::free_frame(phys);
+                // Heap pages can be CoW-shared after fork — release_user_frame
+                // frees only when this was the last referent.
+                virtual_mem::release_user_frame(pte);
                 freed += 1;
             }
             addr += PAGE_SIZE;
@@ -809,9 +821,11 @@ fn sys_munmap_impl(addr: u64, size: u64, high: bool) -> u64 {
     for _ in 0..num_pages {
         let pte = virtual_mem::read_pte(VirtAddr::new(page_addr as u64));
         if pte & 1 != 0 {
-            let phys_addr = crate::memory::address::PhysAddr::new(pte & 0x000F_FFFF_FFFF_F000);
             virtual_mem::unmap_page(VirtAddr::new(page_addr as u64));
-            physical::free_frame(phys_addr);
+            // CoW/VRAM aware: a fork-shared frame is only freed by its last
+            // referent; blindly free_frame()ing it here would corrupt the
+            // sibling process still mapping it.
+            virtual_mem::release_user_frame(pte);
             freed += 1;
         }
         page_addr += PAGE_SIZE;
@@ -858,13 +872,12 @@ pub fn sys_waitpid(tid: u32, child_tid_ptr: u64, options: u32) -> u32 {
         } else {
             crate::task::scheduler::waitpid_any()
         };
-        // Write actual child TID to user pointer (if provided)
+        // Write actual child TID to user pointer (if provided).
+        // copy_to_user_bytes performs its own mapping-validated range check;
+        // a bad/unmapped pointer is silently skipped (same as before) while
+        // waitpid still returns the exit code.
         if child_tid_ptr != 0 && child_tid != u32::MAX && child_tid != u32::MAX - 1 {
-            if is_valid_user_ptr(child_tid_ptr as u64, 4) {
-                unsafe {
-                    *(child_tid_ptr as *mut u32) = child_tid;
-                }
-            }
+            let _ = copy_to_user_bytes(child_tid_ptr, &child_tid.to_le_bytes(), 4);
         }
         code
     } else if wnohang {
@@ -1122,11 +1135,23 @@ pub fn sys_wxe_spawn(path_ptr: u64, args_ptr: u64) -> u32 {
 /// sys_getargs - Get command-line arguments for the current process.
 /// arg1=buf_ptr, arg2=buf_size. Returns bytes written.
 pub fn sys_getargs(buf_ptr: u64, buf_size: u32) -> u32 {
-    if buf_ptr == 0 || buf_size == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
+    if buf_ptr == 0 || buf_size == 0 {
         return 0;
     }
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
-    crate::task::scheduler::current_thread_args(buf) as u32
+    // current_thread_args copies at most 256 bytes (the args field size).
+    // Build into a fixed kernel buffer, then copy out via the mapping-validated
+    // helper instead of forming a raw slice over user memory.
+    let mut kbuf = [0u8; 256];
+    let cap = (buf_size as usize).min(kbuf.len());
+    let n = crate::task::scheduler::current_thread_args(&mut kbuf[..cap]);
+    if n == 0 {
+        return 0;
+    }
+    if copy_to_user_bytes(buf_ptr, &kbuf[..n], n) {
+        n as u32
+    } else {
+        0
+    }
 }
 
 /// sys_fork - Create a child process that is a copy of the parent.

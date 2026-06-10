@@ -28,8 +28,24 @@ pub fn sys_pipe_read(pipe_id: u32, buf_ptr: u64, len: u32) -> u32 {
     if buf_ptr == 0 || len == 0 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
         return 0;
     }
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
-    crate::ipc::pipe::read(pipe_id, buf)
+    // Read into a kernel buffer first, then copy out via the mapping-validated
+    // helper so an unmapped user page cannot fault the kernel.
+    let cap = (len as usize).min(64 * 1024);
+    let mut kbuf = alloc::vec![0u8; cap];
+    // pipe::read returns u32::MAX if the pipe was not found, or the byte count
+    // (0 when empty). Propagate u32::MAX unchanged, like the previous code did.
+    let ret = crate::ipc::pipe::read(pipe_id, &mut kbuf);
+    if ret == u32::MAX {
+        return u32::MAX;
+    }
+    let n = ret as usize;
+    if n == 0 {
+        return 0;
+    }
+    if !copy_to_user_bytes(buf_ptr, &kbuf[..n], n) {
+        return 0;
+    }
+    n as u32
 }
 
 /// sys_pipe_close - Destroy a pipe and free its buffer.
@@ -43,8 +59,13 @@ pub fn sys_pipe_write(pipe_id: u32, buf_ptr: u64, len: u32) -> u32 {
     if buf_ptr == 0 || len == 0 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
         return 0;
     }
-    let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
-    crate::ipc::pipe::write(pipe_id, buf)
+    // Copy the user data into a kernel buffer via the mapping-validated helper
+    // first, so an unmapped user page cannot fault the kernel on read.
+    let cap = (len as usize).min(64 * 1024);
+    let Some(kbuf) = copy_user_bytes(buf_ptr, cap, cap) else {
+        return 0;
+    };
+    crate::ipc::pipe::write(pipe_id, &kbuf)
 }
 
 /// sys_pipe_open - Open an existing pipe by name. Returns pipe_id or 0 if not found.
@@ -66,22 +87,27 @@ pub fn sys_pipe_list(buf_ptr: u64, buf_size: u32) -> u32 {
     let pipes = crate::ipc::pipe::list();
     let count = pipes.len();
     if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
-        let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
         let entry_size = 80usize;
         let max_entries = buf_size as usize / entry_size;
-        for (i, pipe) in pipes.iter().enumerate().take(max_entries.min(count)) {
-            let offset = i * entry_size;
-            // Zero the entry first
-            for b in &mut buf[offset..offset + entry_size] {
-                *b = 0;
+        let write = max_entries.min(count);
+        let total = write * entry_size;
+        if total > 0 {
+            // Assemble all entries in a kernel-owned buffer (zero-initialized),
+            // then copy out once via the mapping-validated helper.
+            let mut out = alloc::vec![0u8; total];
+            for (i, pipe) in pipes.iter().enumerate().take(write) {
+                let offset = i * entry_size;
+                // pipe_id [0..4]
+                out[offset..offset + 4].copy_from_slice(&pipe.id.to_le_bytes());
+                // buffered [4..8]
+                out[offset + 4..offset + 8].copy_from_slice(&(pipe.buffered as u32).to_le_bytes());
+                // name [8..72]
+                let nlen = pipe.name_len.min(63);
+                out[offset + 8..offset + 8 + nlen].copy_from_slice(&pipe.name[..nlen]);
             }
-            // pipe_id [0..4]
-            buf[offset..offset + 4].copy_from_slice(&pipe.id.to_le_bytes());
-            // buffered [4..8]
-            buf[offset + 4..offset + 8].copy_from_slice(&(pipe.buffered as u32).to_le_bytes());
-            // name [8..72]
-            let nlen = pipe.name_len.min(63);
-            buf[offset + 8..offset + 8 + nlen].copy_from_slice(&pipe.name[..nlen]);
+            // On failure, fall through and still return the total pipe count
+            // (matches the prior best-effort write semantics).
+            let _ = copy_to_user_bytes(buf_ptr, &out, total);
         }
     }
     count as u32

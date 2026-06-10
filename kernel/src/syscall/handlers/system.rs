@@ -4,7 +4,9 @@
 //! environment variables, keyboard layout, random numbers,
 //! hostname, crash info, and power management (shutdown).
 
-use super::helpers::{is_valid_user_ptr, read_user_str, read_user_str_safe, resolve_path};
+use super::helpers::{
+    copy_to_user_bytes, copy_user_bytes, read_user_str_safe, resolve_path,
+};
 
 // =========================================================================
 // System Information (SYS_TIME, SYS_UPTIME, SYS_SYSINFO)
@@ -17,18 +19,24 @@ pub fn sys_time(buf_ptr: u64) -> u32 {
     let (year, month, day, hour, min, sec) = crate::drivers::rtc::read_datetime();
     #[cfg(target_arch = "aarch64")]
     let (year, month, day, hour, min, sec): (u16, u8, u8, u8, u8, u8) = (1970, 1, 1, 0, 0, 0);
+    // NULL buffer keeps the historical no-op-and-succeed behavior; a non-NULL
+    // buffer is written through a mapping-validated copy so a kernel-space or
+    // unmapped pointer returns an error instead of faulting / corrupting the
+    // kernel.
     if buf_ptr != 0 {
-        unsafe {
-            let buf = buf_ptr as *mut u8;
-            let year_bytes = (year as u16).to_le_bytes();
-            *buf = year_bytes[0];
-            *buf.add(1) = year_bytes[1];
-            *buf.add(2) = month as u8;
-            *buf.add(3) = day as u8;
-            *buf.add(4) = hour as u8;
-            *buf.add(5) = min as u8;
-            *buf.add(6) = sec as u8;
-            *buf.add(7) = 0;
+        let yb = (year as u16).to_le_bytes();
+        let bytes = [
+            yb[0],
+            yb[1],
+            month as u8,
+            day as u8,
+            hour as u8,
+            min as u8,
+            sec as u8,
+            0,
+        ];
+        if !copy_to_user_bytes(buf_ptr, &bytes, bytes.len()) {
+            return u32::MAX;
         }
     }
     0
@@ -38,19 +46,19 @@ pub fn sys_time(buf_ptr: u64) -> u32 {
 /// arg1=buf_ptr: input [year_lo:u8, year_hi:u8, month:u8, day:u8, hour:u8, min:u8, sec:u8, pad:u8]
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_set_time(buf_ptr: u64) -> u32 {
-    if buf_ptr == 0 {
-        return u32::MAX;
-    }
-    let (year, month, day, hour, min, sec) = unsafe {
-        let buf = buf_ptr as *const u8;
-        let year = *buf as u16 | ((*buf.add(1) as u16) << 8);
-        let month = *buf.add(2);
-        let day = *buf.add(3);
-        let hour = *buf.add(4);
-        let min = *buf.add(5);
-        let sec = *buf.add(6);
-        (year, month, day, hour, min, sec)
+    // Read the 8-byte time record through a mapping-validated copy so a NULL,
+    // kernel-space, or unmapped pointer returns an error instead of faulting or
+    // reading kernel memory.
+    let buf = match copy_user_bytes(buf_ptr, 8, 8) {
+        Some(b) => b,
+        None => return u32::MAX,
     };
+    let year = buf[0] as u16 | ((buf[1] as u16) << 8);
+    let month = buf[2];
+    let day = buf[3];
+    let hour = buf[4];
+    let min = buf[5];
+    let sec = buf[6];
     // Basic validation.
     if month == 0
         || month > 12
@@ -106,8 +114,20 @@ pub fn sys_dmesg(buf_ptr: u64, buf_size: u32) -> u32 {
     if buf_ptr == 0 || buf_size == 0 {
         return 0;
     }
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
-    crate::drivers::serial::read_log(buf) as u32
+    // The kernel log ring buffer is 32 KiB, so cap the temporary allocation to
+    // that even though buf_size is fully user-controlled. Fill a bounded kernel
+    // buffer, then copy out through the mapping-validated helper so an unmapped
+    // user page returns 0 instead of faulting the kernel.
+    let n = (buf_size as usize).min(32 * 1024);
+    let mut tmp = alloc::vec![0u8; n];
+    let written = crate::drivers::serial::read_log(&mut tmp).min(n);
+    if written == 0 {
+        return 0;
+    }
+    if !copy_to_user_bytes(buf_ptr, &tmp[..written], n) {
+        return 0;
+    }
+    written as u32
 }
 
 /// sys_sysinfo - Get system information.
@@ -120,24 +140,31 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
             // Memory: u32 words [total_frames, free_frames, heap_used,
             // heap_total, swap_total_pages, swap_free_pages, swap_areas].
             if buf_ptr != 0 && buf_size >= 8 {
-                unsafe {
-                    let buf = buf_ptr as *mut u32;
-                    *buf = crate::memory::physical::total_frames() as u32;
-                    *buf.add(1) = crate::memory::physical::free_frames() as u32;
-                    if buf_size >= 16 {
-                        let (heap_used, heap_total) = crate::memory::heap::heap_stats();
-                        *buf.add(2) = heap_used as u32;
-                        *buf.add(3) = heap_total as u32;
-                    }
-                    if buf_size >= 24 {
-                        let swap = crate::memory::swap::stats();
-                        *buf.add(4) = swap.total_pages.min(u32::MAX as u64) as u32;
-                        *buf.add(5) = swap.free_pages.min(u32::MAX as u64) as u32;
-                        if buf_size >= 28 {
-                            *buf.add(6) = swap.areas;
-                        }
+                // Build the fixed 28-byte layout locally then copy only the
+                // byte count the caller asked for (matching the historic
+                // buf_size thresholds) through the mapping-validated helper.
+                let mut out = [0u8; 28];
+                out[0..4]
+                    .copy_from_slice(&(crate::memory::physical::total_frames() as u32).to_le_bytes());
+                out[4..8]
+                    .copy_from_slice(&(crate::memory::physical::free_frames() as u32).to_le_bytes());
+                if buf_size >= 16 {
+                    let (heap_used, heap_total) = crate::memory::heap::heap_stats();
+                    out[8..12].copy_from_slice(&(heap_used as u32).to_le_bytes());
+                    out[12..16].copy_from_slice(&(heap_total as u32).to_le_bytes());
+                }
+                if buf_size >= 24 {
+                    let swap = crate::memory::swap::stats();
+                    out[16..20]
+                        .copy_from_slice(&(swap.total_pages.min(u32::MAX as u64) as u32).to_le_bytes());
+                    out[20..24]
+                        .copy_from_slice(&(swap.free_pages.min(u32::MAX as u64) as u32).to_le_bytes());
+                    if buf_size >= 28 {
+                        out[24..28].copy_from_slice(&swap.areas.to_le_bytes());
                     }
                 }
+                let n = (buf_size as usize).min(28);
+                copy_to_user_bytes(buf_ptr, &out[..n], 28);
             }
             0
         }
@@ -152,14 +179,16 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
             if buf_ptr != 0 && buf_size > 0 {
                 let entry_size = 80usize;
                 let max = (buf_size as usize) / entry_size;
-                let buf = unsafe {
-                    core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize)
-                };
-                for (i, t) in threads.iter().enumerate().take(max) {
+                let count = threads.len().min(max);
+                // Serialize the records into a kernel-owned buffer first, then
+                // copy out via the mapping-validated helper so a bad user
+                // pointer cannot fault the kernel.
+                let mut out = alloc::vec![0u8; count * entry_size];
+                for (i, t) in threads.iter().enumerate().take(count) {
                     let off = i * entry_size;
-                    buf[off..off + 4].copy_from_slice(&t.tid.to_le_bytes());
-                    buf[off + 4] = t.priority;
-                    buf[off + 5] = match t.state {
+                    out[off..off + 4].copy_from_slice(&t.tid.to_le_bytes());
+                    out[off + 4] = t.priority;
+                    out[off + 5] = match t.state {
                         "ready" => 0,
                         "running" => 1,
                         "blocked" => 2,
@@ -167,28 +196,31 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
                         "stopped" => 4,
                         _ => 255,
                     };
-                    buf[off + 6] = t.arch_mode; // reserved (always 0 = 64-bit since 32-bit user removed)
-                    buf[off + 7] = if t.pd_shared { 1 } else { 0 };
+                    out[off + 6] = t.arch_mode; // reserved (always 0 = 64-bit since 32-bit user removed)
+                    out[off + 7] = if t.pd_shared { 1 } else { 0 };
                     let name_bytes = t.name.as_bytes();
                     let n = name_bytes.len().min(23);
-                    buf[off + 8..off + 8 + n].copy_from_slice(&name_bytes[..n]);
-                    buf[off + 8 + n] = 0;
+                    out[off + 8..off + 8 + n].copy_from_slice(&name_bytes[..n]);
+                    out[off + 8 + n] = 0;
                     // user_pages at offset 32
-                    buf[off + 32..off + 36].copy_from_slice(&t.user_pages.to_le_bytes());
+                    out[off + 32..off + 36].copy_from_slice(&t.user_pages.to_le_bytes());
                     // cpu_ticks at offset 36
-                    buf[off + 36..off + 40].copy_from_slice(&t.cpu_ticks.to_le_bytes());
+                    out[off + 36..off + 40].copy_from_slice(&t.cpu_ticks.to_le_bytes());
                     // io_read_bytes at offset 40, io_write_bytes at offset 48
-                    buf[off + 40..off + 48].copy_from_slice(&t.io_read_bytes.to_le_bytes());
-                    buf[off + 48..off + 56].copy_from_slice(&t.io_write_bytes.to_le_bytes());
+                    out[off + 40..off + 48].copy_from_slice(&t.io_read_bytes.to_le_bytes());
+                    out[off + 48..off + 56].copy_from_slice(&t.io_write_bytes.to_le_bytes());
                     // uid at offset 56, pad at 58
-                    buf[off + 56..off + 58].copy_from_slice(&t.uid.to_le_bytes());
-                    buf[off + 58] = 0;
-                    buf[off + 59] = 0;
+                    out[off + 56..off + 58].copy_from_slice(&t.uid.to_le_bytes());
+                    out[off + 58] = 0;
+                    out[off + 59] = 0;
                     // parent_tid at offset 60
-                    buf[off + 60..off + 64].copy_from_slice(&t.parent_tid.to_le_bytes());
+                    out[off + 60..off + 64].copy_from_slice(&t.parent_tid.to_le_bytes());
                     // net_tx_bytes at offset 64, net_rx_bytes at offset 72
-                    buf[off + 64..off + 72].copy_from_slice(&t.net_tx_bytes.to_le_bytes());
-                    buf[off + 72..off + 80].copy_from_slice(&t.net_rx_bytes.to_le_bytes());
+                    out[off + 64..off + 72].copy_from_slice(&t.net_tx_bytes.to_le_bytes());
+                    out[off + 72..off + 80].copy_from_slice(&t.net_rx_bytes.to_le_bytes());
+                }
+                if !out.is_empty() {
+                    copy_to_user_bytes(buf_ptr, &out, out.len());
                 }
             }
             threads.len() as u32
@@ -204,21 +236,28 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
             // Minimum 16 bytes for header, +8 per CPU
             let num_cpus = crate::arch::hal::cpu_count();
             if buf_ptr != 0 && buf_size >= 16 {
-                unsafe {
-                    let buf = buf_ptr as *mut u32;
-                    *buf = crate::task::scheduler::total_sched_ticks();
-                    *buf.add(1) = crate::task::scheduler::idle_sched_ticks();
-                    *buf.add(2) = num_cpus as u32;
-                    *buf.add(3) = 0;
-                    // Per-CPU data if buffer is large enough
-                    for i in 0..num_cpus {
-                        let off = 4 + i * 2;
-                        if (off + 2) * 4 <= buf_size as usize {
-                            *buf.add(off) = crate::task::scheduler::per_cpu_total_ticks(i);
-                            *buf.add(off + 1) = crate::task::scheduler::per_cpu_idle_ticks(i);
-                        }
+                // Build the contiguous prefix (16-byte header + per-CPU pairs
+                // that fit) into a kernel buffer, then copy out via the
+                // mapping-validated helper. `words` is bounded by the actual
+                // CPU count so a huge user buf_size cannot force an oversized
+                // allocation.
+                let mut words: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+                words.push(crate::task::scheduler::total_sched_ticks());
+                words.push(crate::task::scheduler::idle_sched_ticks());
+                words.push(num_cpus as u32);
+                words.push(0);
+                for i in 0..num_cpus {
+                    let off = 4 + i * 2;
+                    if (off + 2) * 4 <= buf_size as usize {
+                        words.push(crate::task::scheduler::per_cpu_total_ticks(i));
+                        words.push(crate::task::scheduler::per_cpu_idle_ticks(i));
                     }
                 }
+                let mut out = alloc::vec![0u8; words.len() * 4];
+                for (i, w) in words.iter().enumerate() {
+                    out[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+                }
+                copy_to_user_bytes(buf_ptr, &out, out.len());
             }
             0
         }
@@ -251,11 +290,12 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
             } else {
                 96usize
             };
-            if !is_valid_user_ptr(buf_ptr as u64, actual_size as u64) {
-                return u32::MAX;
-            }
-            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, actual_size) };
-            buf.fill(0);
+            // Build the fixed hardware struct in a local buffer, then copy out
+            // through the mapping-validated helper (which also validates the
+            // destination mapping, so the range-only is_valid_user_ptr gate is
+            // no longer needed).
+            let mut out = [0u8; 116];
+            let buf = &mut out[..actual_size];
 
             // CPU brand (48 bytes) and vendor (16 bytes)
             #[cfg(target_arch = "x86_64")]
@@ -317,6 +357,9 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
                 buf[112..116].copy_from_slice(&driver.to_le_bytes());
             }
 
+            if !copy_to_user_bytes(buf_ptr, &out[..actual_size], actual_size) {
+                return u32::MAX;
+            }
             actual_size as u32
         }
         5 => {
@@ -331,25 +374,25 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
                     u32::MAX
                 };
             }
-            if buf_ptr == 0 || buf_size < 20 || !is_valid_user_ptr(buf_ptr, 20) {
+            if buf_ptr == 0 || buf_size < 20 {
                 return u32::MAX;
             }
-            unsafe {
-                let buf = buf_ptr as *mut u32;
-                *buf = crate::arch::hal::cpu_power_profile();
-                *buf.add(1) = crate::arch::hal::cpu_power_driver_kind();
-                #[cfg(target_arch = "x86_64")]
-                {
-                    *buf.add(2) = crate::arch::x86::power::features_bitfield();
-                    *buf.add(3) = crate::arch::x86::power::average_frequency_mhz();
-                    *buf.add(4) = crate::arch::x86::power::max_frequency_mhz();
-                }
-                #[cfg(target_arch = "aarch64")]
-                {
-                    *buf.add(2) = 0;
-                    *buf.add(3) = 0;
-                    *buf.add(4) = 0;
-                }
+            // Build the fixed 20-byte (5 u32) struct locally, then copy out via
+            // the mapping-validated helper (replaces the range-only gate).
+            let mut out = [0u8; 20];
+            out[0..4].copy_from_slice(&crate::arch::hal::cpu_power_profile().to_le_bytes());
+            out[4..8].copy_from_slice(&crate::arch::hal::cpu_power_driver_kind().to_le_bytes());
+            #[cfg(target_arch = "x86_64")]
+            {
+                out[8..12].copy_from_slice(&crate::arch::x86::power::features_bitfield().to_le_bytes());
+                out[12..16]
+                    .copy_from_slice(&crate::arch::x86::power::average_frequency_mhz().to_le_bytes());
+                out[16..20]
+                    .copy_from_slice(&crate::arch::x86::power::max_frequency_mhz().to_le_bytes());
+            }
+            // aarch64: words 2..5 remain zero.
+            if !copy_to_user_bytes(buf_ptr, &out, 20) {
+                return u32::MAX;
             }
             20
         }
@@ -366,37 +409,48 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
             //   [8..] per-core current MHz, one u32 per CPU
             let num_cpus = crate::arch::hal::cpu_count().min(64);
             let required = 32usize.saturating_add(num_cpus.saturating_mul(4));
-            if buf_ptr == 0 || buf_size < 32 || !is_valid_user_ptr(buf_ptr, buf_size as u64) {
+            if buf_ptr == 0 || buf_size < 32 {
                 return u32::MAX;
             }
-            let words = (buf_size as usize) / 4;
-            unsafe {
-                let buf = buf_ptr as *mut u32;
-                for i in 0..words {
-                    *buf.add(i) = 0;
+            // Bound the word count to what we actually fill (8 header words plus
+            // one per CPU) so a huge user buf_size cannot force an oversized
+            // kernel allocation, then copy out via the mapping-validated helper.
+            let words = ((buf_size as usize) / 4).min(8 + num_cpus);
+            let mut buf = alloc::vec![0u32; words];
+            buf[0] = num_cpus as u32;
+            if words > 4 {
+                buf[4] = crate::arch::hal::cpu_power_driver_kind();
+            }
+            if words > 5 {
+                buf[5] = crate::arch::hal::cpu_power_profile();
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                crate::arch::x86::power::sample_current_cpu_frequency_mhz();
+                if words > 1 {
+                    buf[1] = crate::arch::x86::power::average_frequency_mhz();
                 }
-                *buf = num_cpus as u32;
-                *buf.add(4) = crate::arch::hal::cpu_power_driver_kind();
-                *buf.add(5) = crate::arch::hal::cpu_power_profile();
-                #[cfg(target_arch = "x86_64")]
-                {
-                    crate::arch::x86::power::sample_current_cpu_frequency_mhz();
-                    *buf.add(1) = crate::arch::x86::power::average_frequency_mhz();
-                    *buf.add(2) = crate::arch::x86::power::total_frequency_mhz();
-                    *buf.add(3) = crate::arch::x86::power::max_frequency_mhz();
-                    *buf.add(6) = crate::arch::x86::power::features_bitfield();
-                    let limit = num_cpus.min(words.saturating_sub(8));
-                    for cpu in 0..limit {
-                        *buf.add(8 + cpu) = crate::arch::x86::power::per_cpu_frequency_mhz(cpu);
-                    }
+                if words > 2 {
+                    buf[2] = crate::arch::x86::power::total_frequency_mhz();
                 }
-                #[cfg(target_arch = "aarch64")]
-                {
-                    *buf.add(1) = 0;
-                    *buf.add(2) = 0;
-                    *buf.add(3) = 0;
-                    *buf.add(6) = 0;
+                if words > 3 {
+                    buf[3] = crate::arch::x86::power::max_frequency_mhz();
                 }
+                if words > 6 {
+                    buf[6] = crate::arch::x86::power::features_bitfield();
+                }
+                let limit = num_cpus.min(words.saturating_sub(8));
+                for cpu in 0..limit {
+                    buf[8 + cpu] = crate::arch::x86::power::per_cpu_frequency_mhz(cpu);
+                }
+            }
+            // aarch64: words 1/2/3/6 remain zero (matching the original).
+            let mut out = alloc::vec![0u8; words * 4];
+            for (i, w) in buf.iter().enumerate() {
+                out[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+            }
+            if !out.is_empty() {
+                copy_to_user_bytes(buf_ptr, &out, out.len());
             }
             required.min(buf_size as usize) as u32
         }
@@ -412,13 +466,12 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
 /// arg1 = key_ptr (null-terminated), arg2 = val_ptr (null-terminated, or 0 to unset).
 /// Returns 0 on success.
 pub fn sys_setenv(key_ptr: u64, val_ptr: u64) -> u32 {
-    if key_ptr == 0 {
-        return u32::MAX;
-    }
-    let key = unsafe { read_user_str(key_ptr) };
-    if key.is_empty() {
-        return u32::MAX;
-    }
+    // Use the mapping-validated string reader so a bad key/value pointer
+    // returns an error instead of faulting on the scan-to-NUL.
+    let key = match read_user_str_safe(key_ptr) {
+        Some(k) if !k.is_empty() => k,
+        _ => return u32::MAX,
+    };
 
     let pd = match crate::task::scheduler::current_thread_page_directory() {
         Some(pd) => pd.as_u64(),
@@ -428,7 +481,10 @@ pub fn sys_setenv(key_ptr: u64, val_ptr: u64) -> u32 {
     if val_ptr == 0 {
         crate::task::env::unset(pd, key);
     } else {
-        let val = unsafe { read_user_str(val_ptr) };
+        let val = match read_user_str_safe(val_ptr) {
+            Some(v) => v,
+            None => return u32::MAX,
+        };
         crate::task::env::set(pd, key, val);
     }
     0
@@ -438,13 +494,11 @@ pub fn sys_setenv(key_ptr: u64, val_ptr: u64) -> u32 {
 /// arg1 = key_ptr (null-terminated), arg2 = val_buf_ptr, arg3 = val_buf_size.
 /// Returns length of value (bytes written, excluding null terminator), or u32::MAX if not found.
 pub fn sys_getenv(key_ptr: u64, val_buf_ptr: u64, val_buf_size: u32) -> u32 {
-    if key_ptr == 0 {
-        return u32::MAX;
-    }
-    let key = unsafe { read_user_str(key_ptr) };
-    if key.is_empty() {
-        return u32::MAX;
-    }
+    // Mapping-validated key read.
+    let key = match read_user_str_safe(key_ptr) {
+        Some(k) if !k.is_empty() => k,
+        _ => return u32::MAX,
+    };
 
     let pd = match crate::task::scheduler::current_thread_page_directory() {
         Some(pd) => pd.as_u64(),
@@ -455,16 +509,20 @@ pub fn sys_getenv(key_ptr: u64, val_buf_ptr: u64, val_buf_size: u32) -> u32 {
         Some(val) => {
             let val_bytes = val.as_bytes();
             let copy_len = val_bytes.len().min(val_buf_size as usize);
-            if val_buf_ptr != 0
-                && val_buf_size > 0
-                && is_valid_user_ptr(val_buf_ptr as u64, val_buf_size as u64)
-            {
-                let buf = unsafe {
-                    core::slice::from_raw_parts_mut(val_buf_ptr as *mut u8, val_buf_size as usize)
+            if val_buf_ptr != 0 && val_buf_size > 0 {
+                // Build the exact bytes to write (value + optional NUL when
+                // there is room) and copy out through the mapping-validated
+                // helper, replacing the raw slice + range-only gate.
+                let total = if copy_len < val_buf_size as usize {
+                    copy_len + 1
+                } else {
+                    copy_len
                 };
-                buf[..copy_len].copy_from_slice(&val_bytes[..copy_len]);
-                if copy_len < val_buf_size as usize {
-                    buf[copy_len] = 0;
+                if total > 0 {
+                    let mut out = alloc::vec![0u8; total];
+                    out[..copy_len].copy_from_slice(&val_bytes[..copy_len]);
+                    // out[copy_len] (the terminator slot, if present) is already 0.
+                    copy_to_user_bytes(val_buf_ptr, &out, val_buf_size as usize);
                 }
             }
             val_bytes.len() as u32
@@ -483,14 +541,25 @@ pub fn sys_listenv(buf_ptr: u64, buf_size: u32) -> u32 {
         None => return 0,
     };
 
-    if buf_ptr == 0 || buf_size == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
+    if buf_ptr == 0 || buf_size == 0 {
         // Just return the needed size
         let mut dummy = [0u8; 0];
         return crate::task::env::list(pd, &mut dummy) as u32;
     }
 
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
-    crate::task::env::list(pd, buf) as u32
+    // Fill a bounded kernel buffer (env::list writes only the entries that fit
+    // and returns the total needed size), then copy out through the
+    // mapping-validated helper. The cap keeps a huge user buf_size from forcing
+    // an unbounded allocation; env::list still reports the true needed size.
+    const MAX_ENV_BYTES: usize = 64 * 1024;
+    let n = (buf_size as usize).min(MAX_ENV_BYTES);
+    let mut tmp = alloc::vec![0u8; n];
+    let needed = crate::task::env::list(pd, &mut tmp);
+    let written = needed.min(n);
+    if written > 0 {
+        copy_to_user_bytes(buf_ptr, &tmp[..written], n);
+    }
+    needed as u32
 }
 
 // =========================================================================
@@ -521,12 +590,18 @@ pub fn sys_kbd_set_layout(layout_id: u32) -> u32 {
 /// Returns number of bytes written.
 pub fn sys_random(buf_ptr: u64, len: u32) -> u32 {
     let len = (len as usize).min(256);
-    if len == 0 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
+    if len == 0 {
         return 0;
     }
 
-    let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
-    crate::crypto::random::fill_random(dst);
+    // Generate into a fixed local buffer (len already capped to 256), then copy
+    // out through the mapping-validated helper instead of writing a raw user
+    // slice.
+    let mut tmp = [0u8; 256];
+    crate::crypto::random::fill_random(&mut tmp[..len]);
+    if !copy_to_user_bytes(buf_ptr, &tmp[..len], len) {
+        return 0;
+    }
     len as u32
 }
 
@@ -541,13 +616,18 @@ pub fn sys_kbd_list_layouts(buf_ptr: u64, max_entries: u32) -> u32 {
         let count = (max_entries as usize).min(LAYOUT_COUNT);
         let byte_size = count * core::mem::size_of::<LayoutInfo>();
 
-        if buf_ptr == 0 || byte_size == 0 || !is_valid_user_ptr(buf_ptr as u64, byte_size as u64) {
+        if buf_ptr == 0 || byte_size == 0 {
             return 0;
         }
 
-        let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut LayoutInfo, count) };
-        for i in 0..count {
-            dst[i] = LAYOUT_INFOS[i];
+        // LayoutInfo is repr(C) POD, so the first `count` entries of the static
+        // LAYOUT_INFOS form a contiguous kernel-internal byte slice we can copy
+        // out through the mapping-validated helper.
+        let src = unsafe {
+            core::slice::from_raw_parts(LAYOUT_INFOS.as_ptr() as *const u8, byte_size)
+        };
+        if !copy_to_user_bytes(buf_ptr, src, byte_size) {
+            return 0;
         }
         count as u32
     }
@@ -578,16 +658,19 @@ pub fn sys_get_crash_info(tid: u32, buf_ptr: u64, buf_size: u32) -> u32 {
         return 0;
     }
 
-    if !is_valid_user_ptr(buf_ptr as u64, needed as u64) {
-        return 0;
-    }
-
     match crash_info::take_crash(tid) {
         Some(report) => {
-            let src = &report as *const crash_info::CrashReport as *const u8;
-            let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, needed) };
-            unsafe {
-                core::ptr::copy_nonoverlapping(src, dst.as_mut_ptr(), needed);
+            // `report` is a kernel-local struct; expose its bytes as a
+            // kernel-internal slice and copy out through the mapping-validated
+            // helper (replaces the range-only is_valid_user_ptr gate).
+            let src = unsafe {
+                core::slice::from_raw_parts(
+                    &report as *const crash_info::CrashReport as *const u8,
+                    needed,
+                )
+            };
+            if !copy_to_user_bytes(buf_ptr, src, needed) {
+                return 0;
             }
             needed as u32
         }
@@ -649,13 +732,14 @@ pub fn sys_get_hostname(buf_ptr: u64, buf_len: u32) -> u32 {
     }
     let len = HOSTNAME_LEN.load(core::sync::atomic::Ordering::Relaxed);
     let copy_len = len.min(buf_len);
-    if !is_valid_user_ptr(buf_ptr as u64, copy_len as u64) {
-        return u32::MAX;
+    if copy_len == 0 {
+        return 0;
     }
+    // The HOSTNAME bytes are kernel-internal; copy them out through the
+    // mapping-validated helper instead of writing the raw user pointer.
     let host = HOSTNAME.lock();
-    let dst = buf_ptr as *mut u8;
-    unsafe {
-        core::ptr::copy_nonoverlapping(host.as_ptr(), dst, copy_len as usize);
+    if !copy_to_user_bytes(buf_ptr, &host[..copy_len as usize], copy_len as usize) {
+        return u32::MAX;
     }
     copy_len
 }
@@ -667,16 +751,17 @@ pub fn sys_set_hostname(name_ptr: u64, name_len: u32) -> u32 {
     if name_ptr == 0 || name_len == 0 || name_len > 63 {
         return u32::MAX;
     }
-    if !is_valid_user_ptr(name_ptr as u64, name_len as u64) {
-        return u32::MAX;
-    }
-    let src = name_ptr as *const u8;
+    // Read the name through the mapping-validated helper first, then store it
+    // under the lock, so a bad user pointer returns an error instead of
+    // faulting the kernel.
+    let bytes = match copy_user_bytes(name_ptr, name_len as usize, 63) {
+        Some(b) => b,
+        None => return u32::MAX,
+    };
     let mut host = HOSTNAME.lock();
-    unsafe {
-        core::ptr::copy_nonoverlapping(src, host.as_mut_ptr(), name_len as usize);
-    }
-    host[name_len as usize] = 0;
-    HOSTNAME_LEN.store(name_len, core::sync::atomic::Ordering::Relaxed);
+    host[..bytes.len()].copy_from_slice(&bytes);
+    host[bytes.len()] = 0;
+    HOSTNAME_LEN.store(bytes.len() as u32, core::sync::atomic::Ordering::Relaxed);
     0
 }
 
@@ -919,16 +1004,21 @@ pub fn sys_con_write(buf_ptr: u64, len: u32) -> u32 {
     if buf_ptr == 0 || len == 0 {
         return 0;
     }
-    if len > 65536 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
+    if len > 65536 {
         return u32::MAX;
     }
-    let slice = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
-    if let Ok(s) = core::str::from_utf8(slice) {
+    // Copy the user bytes in through the mapping-validated helper, then operate
+    // on the kernel-owned data instead of a raw user slice.
+    let data = match copy_user_bytes(buf_ptr, len as usize, 65536) {
+        Some(d) => d,
+        None => return u32::MAX,
+    };
+    if let Ok(s) = core::str::from_utf8(&data) {
         crate::drivers::textcon::write_str(s);
         len
     } else {
         // Write byte-by-byte, skipping non-ASCII
-        for &b in slice {
+        for &b in &data {
             if b < 128 {
                 crate::drivers::textcon::write_char(b);
             }
@@ -954,11 +1044,20 @@ pub fn sys_con_read(buf_ptr: u64, buf_len: u32) -> u32 {
     if buf_ptr == 0 || max_len == 0 {
         return 0;
     }
-    if max_len > 4096 || !is_valid_user_ptr(buf_ptr as u64, max_len as u64) {
+    if max_len > 4096 {
         return u32::MAX;
     }
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, max_len) };
-    crate::drivers::textcon::read_line(buf, echo) as u32
+    // Read the line into a bounded local buffer (max_len already <= 4096), then
+    // copy out through the mapping-validated helper instead of a raw user slice.
+    let mut tmp = [0u8; 4096];
+    let n = crate::drivers::textcon::read_line(&mut tmp[..max_len], echo).min(max_len);
+    if n == 0 {
+        return 0;
+    }
+    if !copy_to_user_bytes(buf_ptr, &tmp[..n], max_len) {
+        return u32::MAX;
+    }
+    n as u32
 }
 
 #[cfg(not(target_arch = "x86_64"))]

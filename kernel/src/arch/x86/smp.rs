@@ -274,6 +274,7 @@ extern "C" fn ap_entry() -> ! {
 
     // Enable SMEP on this AP (CPUID already detected by BSP; features() is global)
     crate::arch::x86::cpuid::enable_smep();
+    crate::arch::x86::cpuid::enable_write_protect();
     // TODO: enable_xsave() disabled — see main.rs
     // crate::arch::x86::cpuid::enable_xsave();
 
@@ -449,13 +450,17 @@ pub fn is_bsp() -> bool {
 /// `u64::MAX` means "full TLB flush" (invpcid/CR3 reload).
 static TLB_FLUSH_VA: AtomicU64 = AtomicU64::new(u64::MAX);
 
-/// Number of CPUs that still need to acknowledge the TLB shootdown.
-static TLB_ACK_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Bitmask of logical CPUs that still need to acknowledge the TLB shootdown.
+/// A mask (instead of a plain count) lets the timeout path re-send the IPI to
+/// exactly the CPUs that have not flushed yet — re-sending to an already-acked
+/// CPU with a counter would double-decrement and release the waiter while a
+/// straggler still holds a stale translation.
+static TLB_ACK_PENDING: AtomicU32 = AtomicU32::new(0);
 
 /// Serializes concurrent TLB shootdown requests.
 ///
 /// Without this lock, two CPUs calling `tlb_shootdown()` simultaneously can
-/// corrupt `TLB_ACK_COUNT` (the second `store` overwrites the first), leading
+/// corrupt `TLB_ACK_PENDING` (the second `store` overwrites the first), leading
 /// to either underflow (wrap to u32::MAX → infinite spin) or missed flushes.
 static TLB_SHOOTDOWN_LOCK: AtomicBool = AtomicBool::new(false);
 
@@ -531,21 +536,31 @@ fn tlb_shootdown_ipi_handler(_irq: u8) {
     let va = TLB_FLUSH_VA.load(Ordering::Acquire);
     unsafe {
         if va == u64::MAX {
-            // Full TLB flush via CR3 reload (flushes all non-global entries)
-            let cr3: u64;
-            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nostack, nomem));
-            core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, nomem));
+            if crate::memory::virtual_mem::pcid_enabled() {
+                // With PCID + no-flush context switches, translations of
+                // processes NOT currently running on this CPU stay cached
+                // under their PCID tags. A plain CR3 reload only drops the
+                // current PCID, so a CoW fork's write-protect would not reach
+                // them — the parent could later be rescheduled here with a
+                // stale writable entry and corrupt the child. Toggle CR4.PGE:
+                // architecturally guaranteed to flush ALL TLB entries for
+                // every PCID, including globals.
+                let cr4: u64;
+                core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nostack, nomem));
+                core::arch::asm!("mov cr4, {}", in(reg) cr4 & !(1u64 << 7), options(nostack, nomem));
+                core::arch::asm!("mov cr4, {}", in(reg) cr4, options(nostack, nomem));
+            } else {
+                // Full TLB flush via CR3 reload (flushes all non-global entries)
+                let cr3: u64;
+                core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nostack, nomem));
+                core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, nomem));
+            }
         } else {
             core::arch::asm!("invlpg [{}]", in(reg) va, options(nostack, preserves_flags));
         }
     }
-    let _ = TLB_ACK_COUNT.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-        if count == 0 {
-            None
-        } else {
-            Some(count - 1)
-        }
-    });
+    let my_bit = 1u32 << current_cpu_id().min(31);
+    TLB_ACK_PENDING.fetch_and(!my_bit, Ordering::AcqRel);
 }
 
 /// Send a TLB shootdown IPI to all other online CPUs and wait for acknowledgment.
@@ -591,7 +606,7 @@ pub fn tlb_shootdown_mask(va: u64, cpu_mask: u32) {
     }
 
     // Serialize concurrent shootdowns.  Without this, two CPUs can corrupt
-    // TLB_ACK_COUNT (store/store race → underflow → infinite spin).
+    // TLB_ACK_PENDING (store/store race → lost bits → missed flushes).
     while TLB_SHOOTDOWN_LOCK
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
@@ -599,40 +614,57 @@ pub fn tlb_shootdown_mask(va: u64, cpu_mask: u32) {
         core::hint::spin_loop();
     }
 
-    let targets = target_mask.count_ones();
-
     TLB_FLUSH_VA.store(va, Ordering::Release);
-    TLB_ACK_COUNT.store(targets, Ordering::Release);
+    TLB_ACK_PENDING.store(target_mask, Ordering::Release);
 
     // Ensure the stores are visible to other CPUs before IPIs arrive
     core::sync::atomic::fence(Ordering::SeqCst);
 
-    // Send IPI to every other online CPU
-    for i in 0..count as usize {
-        if (target_mask & (1u32 << i)) == 0 {
-            continue;
+    let send_ipis = |mask: u32| {
+        for i in 0..count as usize {
+            if (mask & (1u32 << i)) == 0 {
+                continue;
+            }
+            let lapic_id = unsafe { CPU_DATA[i].lapic_id };
+            crate::arch::x86::apic::send_ipi(lapic_id, crate::arch::x86::apic::VECTOR_IPI_TLB);
         }
-        let lapic_id = unsafe { CPU_DATA[i].lapic_id };
-        crate::arch::x86::apic::send_ipi(lapic_id, crate::arch::x86::apic::VECTOR_IPI_TLB);
-    }
+    };
+    send_ipis(target_mask);
 
-    // Spin until all remote CPUs have acknowledged
+    // Spin until all remote CPUs have acknowledged. On timeout, re-send the
+    // IPI to exactly the CPUs that have not acked (the original IPI may have
+    // been lost). Continuing with a stale remote TLB entry is NOT an option:
+    // the page may be reused by another process, and the straggler CPU would
+    // silently read/write foreign memory. If the stragglers stay silent
+    // through all retries, the machine state is no longer trustworthy — halt
+    // loudly instead of corrupting memory quietly.
+    const TLB_SHOOTDOWN_MAX_RETRIES: u32 = 4;
+    let mut retries = 0u32;
     let mut spin_count = 0u32;
-    while TLB_ACK_COUNT.load(Ordering::Acquire) > 0 {
+    while TLB_ACK_PENDING.load(Ordering::Acquire) != 0 {
         core::hint::spin_loop();
         spin_count = spin_count.saturating_add(1);
         if spin_count >= TLB_SHOOTDOWN_TIMEOUT_SPINS {
-            let pending = TLB_ACK_COUNT.swap(0, Ordering::AcqRel);
+            let pending = TLB_ACK_PENDING.load(Ordering::Acquire);
             diag_puts(b"\n!!! TLB SHOOTDOWN TIMEOUT cpu=");
             diag_dec(my_cpu as u32);
-            diag_puts(b" pending=");
-            diag_dec(pending);
+            diag_puts(b" pending_mask=");
+            diag_hex(pending as u64);
             diag_puts(b" va=");
             diag_hex(va);
-            diag_puts(b" cpus=");
-            diag_dec(count as u32);
+            diag_puts(b" retry=");
+            diag_dec(retries);
             diag_putc(b'\n');
-            break;
+            retries += 1;
+            if retries > TLB_SHOOTDOWN_MAX_RETRIES {
+                panic!(
+                    "TLB shootdown: CPUs {:#x} unresponsive after {} retries (va={:#x}) — \
+                     cannot guarantee TLB coherence, stale translations would corrupt memory",
+                    pending, TLB_SHOOTDOWN_MAX_RETRIES, va
+                );
+            }
+            send_ipis(pending);
+            spin_count = 0;
         }
     }
 

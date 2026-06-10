@@ -14,6 +14,7 @@ use alloc::vec::Vec;
 
 const SYSTEM_FONT_REGULAR: u32 = 0;
 const SYSTEM_FONT_MONO: u32 = 4;
+const LOCAL_RESOURCE_LOAD_DEPTH_LIMIT: usize = 8;
 
 fn register_builtin_web_fonts(wv: &mut libwebview::WebView) {
     for family in [
@@ -71,6 +72,238 @@ fn register_builtin_web_fonts(wv: &mut libwebview::WebView) {
     }
 }
 
+fn local_file_url(path: &str) -> crate::http::Url {
+    crate::http::Url {
+        scheme: String::from("file"),
+        host: String::new(),
+        port: 0,
+        path: String::from(path),
+    }
+}
+
+fn strip_local_url_suffix(raw: &str) -> &str {
+    let query = raw.find('?').unwrap_or(raw.len());
+    let hash = raw.find('#').unwrap_or(raw.len());
+    &raw[..core::cmp::min(query, hash)]
+}
+
+fn local_resource_path(base_path: &str, raw_ref: &str) -> Option<String> {
+    let raw = raw_ref.trim();
+    if raw.is_empty()
+        || raw.starts_with('#')
+        || raw.starts_with("//")
+        || raw.starts_with("http://")
+        || raw.starts_with("https://")
+        || raw.starts_with("data:")
+        || raw.starts_with("blob:")
+        || raw.starts_with("about:")
+        || raw.starts_with("javascript:")
+    {
+        return None;
+    }
+
+    let raw = raw.strip_prefix("file://").unwrap_or(raw);
+    let raw = strip_local_url_suffix(raw);
+    if raw.is_empty() {
+        return None;
+    }
+    if raw.starts_with('/') {
+        return Some(normalize_local_path(raw));
+    }
+
+    let mut combined = String::new();
+    if let Some(slash) = base_path.rfind('/') {
+        combined.push_str(&base_path[..slash + 1]);
+    }
+    combined.push_str(raw);
+    Some(normalize_local_path(&combined))
+}
+
+fn normalize_local_path(path: &str) -> String {
+    let absolute = path.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            if !parts.is_empty() {
+                parts.pop();
+            } else if !absolute {
+                parts.push(part);
+            }
+            continue;
+        }
+        parts.push(part);
+    }
+
+    let mut out = String::new();
+    if absolute {
+        out.push('/');
+    }
+    for (idx, part) in parts.iter().enumerate() {
+        if idx > 0 {
+            out.push('/');
+        }
+        out.push_str(part);
+    }
+    if out.is_empty() {
+        if absolute {
+            out.push('/');
+        } else {
+            out.push('.');
+        }
+    }
+    out
+}
+
+fn read_local_text(path: &str) -> Option<String> {
+    let bytes = anyos_std::fs::read_to_vec(path).ok()?;
+    Some(crate::resources::decode_http_body(&bytes, ""))
+}
+
+fn load_local_stylesheet_with_imports(
+    tab_index: usize,
+    css_path: &str,
+    seen: &mut Vec<String>,
+    depth: usize,
+) -> usize {
+    if depth > LOCAL_RESOURCE_LOAD_DEPTH_LIMIT || seen.iter().any(|path| path == css_path) {
+        return 0;
+    }
+    seen.push(String::from(css_path));
+
+    let Some(css_text) = read_local_text(css_path) else {
+        crate::surf_log!("[surf] local CSS load failed: {}", css_path);
+        return 0;
+    };
+
+    {
+        let st = crate::state();
+        if tab_index >= st.tabs.len() {
+            return 0;
+        }
+        st.tabs[tab_index].webview.add_stylesheet(&css_text);
+    }
+
+    let imports = {
+        let st = crate::state();
+        if tab_index >= st.tabs.len() {
+            Vec::new()
+        } else {
+            st.tabs[tab_index]
+                .webview
+                .last_stylesheet_imports()
+                .to_vec()
+        }
+    };
+
+    let mut loaded = 1usize;
+    for import in imports {
+        if let Some(path) = local_resource_path(css_path, &import) {
+            loaded += load_local_stylesheet_with_imports(tab_index, &path, seen, depth + 1);
+        }
+    }
+    loaded
+}
+
+fn load_local_stylesheets(tab_index: usize, document_path: &str) -> usize {
+    let hrefs = {
+        let st = crate::state();
+        if tab_index >= st.tabs.len() {
+            return 0;
+        }
+        let Some(dom) = st.tabs[tab_index].webview.dom() else {
+            return 0;
+        };
+        let mut hrefs = Vec::new();
+        for (node_id, node) in dom.nodes.iter().enumerate() {
+            if !matches!(
+                node.node_type,
+                libwebview::dom::NodeType::Element {
+                    tag: libwebview::dom::Tag::Link,
+                    ..
+                }
+            ) {
+                continue;
+            }
+            let rel = dom.attr(node_id, "rel").unwrap_or("");
+            if !rel
+                .split_ascii_whitespace()
+                .any(|token| token.eq_ignore_ascii_case("stylesheet"))
+            {
+                continue;
+            }
+            if let Some(href) = dom.attr(node_id, "href") {
+                if !href.is_empty() {
+                    hrefs.push(String::from(href));
+                }
+            }
+        }
+        hrefs
+    };
+
+    let mut seen = Vec::new();
+    let mut loaded = 0usize;
+    for href in hrefs {
+        if let Some(path) = local_resource_path(document_path, &href) {
+            loaded += load_local_stylesheet_with_imports(tab_index, &path, &mut seen, 0);
+        }
+    }
+    loaded
+}
+
+fn load_local_module_dependencies(
+    tab_index: usize,
+    referrer_path: &str,
+    source: &str,
+    seen: &mut Vec<String>,
+    depth: usize,
+) {
+    if depth >= LOCAL_RESOURCE_LOAD_DEPTH_LIMIT {
+        return;
+    }
+
+    let page_url = {
+        let st = crate::state();
+        st.tabs
+            .get(tab_index)
+            .and_then(|tab| tab.current_url.as_ref())
+            .map(crate::ui::format_url)
+            .unwrap_or_default()
+    };
+    let current_page_id = {
+        let st = crate::state();
+        st.tabs
+            .get(tab_index)
+            .and_then(|tab| tab.webview.dom())
+            .and_then(libwebview::js::extract_vike_page_id_from_dom)
+    };
+    let specs = libwebview::js::extract_module_specifiers_for_page_with_page_id(
+        source,
+        &page_url,
+        current_page_id.as_deref(),
+    );
+
+    for specifier in specs {
+        let Some(path) = local_resource_path(referrer_path, &specifier) else {
+            continue;
+        };
+        let url = local_file_url(&path);
+        let key = crate::ui::format_url(&url);
+        if seen.iter().any(|existing| existing == &key) {
+            continue;
+        }
+        let Some(text) = read_local_text(&path) else {
+            crate::surf_log!("[surf] local module load failed: {} ({})", specifier, path);
+            continue;
+        };
+        seen.push(key);
+        crate::register_module_source_aliases(tab_index, &specifier, &url, &text);
+        load_local_module_dependencies(tab_index, &path, &text, seen, depth + 1);
+    }
+}
+
 // ═══════════════════════════════════════════════════════════
 // Per-tab state
 // ═══════════════════════════════════════════════════════════
@@ -111,6 +344,12 @@ pub(crate) struct DeferredImageRequest {
     pub(crate) lazy_requested: bool,
     pub(crate) high_priority: bool,
     pub(crate) generation: u32,
+}
+
+#[derive(Clone)]
+pub(crate) struct ImageRequestAlias {
+    pub(crate) request_key: String,
+    pub(crate) src: String,
 }
 
 #[derive(Clone)]
@@ -262,8 +501,12 @@ pub(crate) struct TabState {
     pub(crate) deferred_fonts_inflight: usize,
     /// Deferred image requests that are intentionally not submitted yet.
     pub(crate) deferred_images: Vec<DeferredImageRequest>,
-    /// Image `src` keys already submitted or deferred during this navigation.
+    /// Canonical image request keys already submitted or deferred during this navigation.
     pub(crate) requested_image_urls: Vec<String>,
+    /// DOM image `src` aliases covered by canonical image requests.
+    pub(crate) image_request_aliases: Vec<ImageRequestAlias>,
+    /// Iframe snapshot keys already queued during this navigation.
+    pub(crate) requested_iframe_snapshots: Vec<String>,
     /// Number of deferred image requests currently in flight.
     pub(crate) deferred_images_inflight: usize,
     /// External CSS has completed and background images should be discovered
@@ -305,6 +548,8 @@ impl TabState {
             deferred_fonts_inflight: 0,
             deferred_images: Vec::new(),
             requested_image_urls: Vec::new(),
+            image_request_aliases: Vec::new(),
+            requested_iframe_snapshots: Vec::new(),
             deferred_images_inflight: 0,
             css_background_scan_pending: false,
             inline_svg_cache: Vec::new(),
@@ -513,11 +758,36 @@ fn navigate_file(path: &str) {
 
     // Clear all state from the previous page (DOM, layout, images, JS, CSS).
     st.tabs[tab_idx].webview.navigate_clear();
+    st.tabs[tab_idx].pending_scripts.clear();
+    st.tabs[tab_idx].pending_script_modes.clear();
+    st.tabs[tab_idx].pending_script_labels.clear();
+    st.tabs[tab_idx].requested_module_urls.clear();
+    st.tabs[tab_idx].deferred_fonts.clear();
+    st.tabs[tab_idx].requested_font_urls.clear();
+    st.tabs[tab_idx].deferred_fonts_inflight = 0;
+    st.tabs[tab_idx].deferred_images.clear();
+    st.tabs[tab_idx].requested_image_urls.clear();
+    st.tabs[tab_idx].image_request_aliases.clear();
+    st.tabs[tab_idx].requested_iframe_snapshots.clear();
+    st.tabs[tab_idx].deferred_images_inflight = 0;
+    st.tabs[tab_idx].css_background_scan_pending = false;
+    st.tabs[tab_idx].inline_svg_cache.clear();
     st.tabs[tab_idx].webview.set_url(&url_str);
+    st.tabs[tab_idx].current_url = Some(base_url.clone());
 
-    // Render the HTML.
+    // Parse the HTML first, then drive scripts through Surf's normal worker
+    // pipeline.  This keeps file:// test runs aligned with HTTP navigation.
     st.tabs[tab_idx].load_state.begin_parse();
-    st.tabs[tab_idx].webview.set_html(&html);
+    st.tabs[tab_idx].webview.set_html_dom_only(&html);
+    let local_stylesheets = load_local_stylesheets(tab_idx, path);
+    if local_stylesheets > 0 {
+        crate::surf_log!(
+            "[surf] loaded {} local stylesheet(s) for {}",
+            local_stylesheets,
+            path
+        );
+    }
+    st.tabs[tab_idx].webview.relayout();
 
     // Extract page title.
     let title = st.tabs[tab_idx]
@@ -544,10 +814,106 @@ fn navigate_file(path: &str) {
 
     st.tabs[tab_idx].page_title = title;
     st.tabs[tab_idx].url_text = url_str;
-    st.tabs[tab_idx].current_url = Some(base_url);
     st.tabs[tab_idx].status_text = String::from("Done");
     st.tabs[tab_idx].is_loading = false;
-    st.tabs[tab_idx].load_state.mark_interactive();
+
+    let generation = st.tabs[tab_idx].load_state.generation;
+    let entries = st.tabs[tab_idx].webview.script_entries();
+    let mut pending = Vec::with_capacity(entries.len());
+    let mut modes = Vec::with_capacity(entries.len());
+    let mut labels = Vec::with_capacity(entries.len());
+    let mut inline_count = 0usize;
+    let mut external_count = 0usize;
+    let mut async_count = 0usize;
+    let mut module_seen = Vec::new();
+
+    for (slot, entry) in entries.iter().enumerate() {
+        match entry {
+            libwebview::js::ScriptEntry::Inline { text, mode } => {
+                let label = String::from("<inline>");
+                if matches!(mode, libwebview::js::ScriptMode::Module) {
+                    let specifier = anyos_std::format!("<inline-module-{}>", slot);
+                    st.tabs[tab_idx]
+                        .webview
+                        .js_runtime()
+                        .register_module_source(&specifier, text);
+                    load_local_module_dependencies(tab_idx, path, text, &mut module_seen, 0);
+                    pending.push(Some(crate::module_import_wrapper(&specifier)));
+                } else {
+                    pending.push(Some(text.clone()));
+                }
+                modes.push(mode.clone());
+                labels.push(label);
+                inline_count += 1;
+                if matches!(mode, libwebview::js::ScriptMode::Async) {
+                    async_count += 1;
+                }
+            }
+            libwebview::js::ScriptEntry::External { src, mode } => {
+                let label = src.clone();
+                let Some(script_path) = local_resource_path(path, src) else {
+                    crate::surf_log!("[surf] skipped non-local file script [{}]: {}", slot, src);
+                    pending.push(None);
+                    modes.push(mode.clone());
+                    labels.push(label);
+                    continue;
+                };
+                let text = read_local_text(&script_path).unwrap_or_else(|| {
+                    crate::surf_log!(
+                        "[surf] local script load failed [{}]: {} ({})",
+                        slot,
+                        src,
+                        script_path
+                    );
+                    String::new()
+                });
+                if matches!(mode, libwebview::js::ScriptMode::Module) {
+                    if text.is_empty() {
+                        pending.push(None);
+                    } else {
+                        let script_url = local_file_url(&script_path);
+                        let key = crate::ui::format_url(&script_url);
+                        if !module_seen.iter().any(|existing| existing == &key) {
+                            module_seen.push(key.clone());
+                        }
+                        crate::register_module_source_aliases(tab_idx, src, &script_url, &text);
+                        load_local_module_dependencies(
+                            tab_idx,
+                            &script_path,
+                            &text,
+                            &mut module_seen,
+                            0,
+                        );
+                        pending.push(Some(crate::module_import_wrapper(&key)));
+                    }
+                } else if !text.is_empty() {
+                    pending.push(Some(text));
+                } else {
+                    pending.push(None);
+                }
+                modes.push(mode.clone());
+                labels.push(label);
+                external_count += 1;
+                if matches!(mode, libwebview::js::ScriptMode::Async) {
+                    async_count += 1;
+                }
+            }
+        }
+    }
+
+    st.tabs[tab_idx].pending_scripts = pending;
+    st.tabs[tab_idx].pending_script_modes = modes;
+    st.tabs[tab_idx].pending_script_labels = labels;
+    st.tabs[tab_idx].load_state.begin_subresource_load(0, 0);
+    crate::surf_log!(
+        "[surf] local subresources ready: tab={} scripts_total={} inline_scripts={} external_scripts={} async_scripts={} gen={}",
+        tab_idx,
+        entries.len(),
+        inline_count,
+        external_count,
+        async_count,
+        generation
+    );
 
     // Update chrome UI.
     let url_for_field = st.tabs[tab_idx].url_text.clone();
@@ -555,6 +921,11 @@ fn navigate_file(path: &str) {
     crate::ui::update_title();
     crate::ui::update_status();
     crate::ui::update_tab_labels();
+
+    if st.tabs[tab_idx].load_state.ready_for_script_execution() {
+        crate::execute_pending_scripts(tab_idx);
+    }
+    crate::ensure_anim_timer();
 
     crate::surf_log!("[surf] loaded local file: {}", path);
 }

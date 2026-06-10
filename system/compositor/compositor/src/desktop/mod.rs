@@ -194,6 +194,9 @@ pub struct Desktop {
 
     // Menu bar system
     pub(crate) menu_bar: MenuBar,
+    /// Desired global menubar visibility. Fullscreen can temporarily hide the
+    /// layer, but must not overwrite this setting.
+    pub(crate) menubar_visible: bool,
 
     // Button hover/press animation
     pub(crate) btn_hover: Option<(u32, u8)>,
@@ -330,6 +333,7 @@ impl Desktop {
             app_cursor: None,
             global_drag: None,
             menu_bar: MenuBar::new(),
+            menubar_visible: true,
             btn_hover: None,
             btn_pressed: None,
             btn_anims: anyos_std::anim::AnimSet::new(),
@@ -1045,6 +1049,33 @@ impl Desktop {
 
     /// Show or hide the menubar layer.
     pub fn set_menubar_visible(&mut self, visible: bool) {
+        self.menubar_visible = visible;
+        if !visible && self.menu_bar.is_dropdown_open() {
+            self.menu_bar
+                .close_dropdown_with_compositor(&mut self.compositor);
+        }
+        if visible {
+            self.draw_menubar();
+        }
+        self.apply_menubar_layer_visibility();
+        self.compositor
+            .add_damage(Rect::new(0, 0, self.screen_width, menubar_height() + 1));
+    }
+
+    pub(crate) fn menubar_effective_visible(&self) -> bool {
+        self.menubar_visible && self.fullscreen_window.is_none()
+    }
+
+    pub(crate) fn menubar_reserved_height(&self) -> u32 {
+        if self.menubar_effective_visible() {
+            menubar_height() + 1
+        } else {
+            0
+        }
+    }
+
+    pub(crate) fn apply_menubar_layer_visibility(&mut self) {
+        let visible = self.menubar_effective_visible();
         self.compositor
             .set_layer_visible(self.menubar_layer_id, visible);
     }
@@ -1055,6 +1086,10 @@ impl Desktop {
         let mut time_buf = [0u8; 8];
         anyos_std::sys::time(&mut time_buf);
         let min = time_buf[5] as u32;
+        if !self.menubar_effective_visible() {
+            self.last_clock_min = min;
+            return false;
+        }
         if min != self.last_clock_min {
             self.last_clock_min = min;
             let w = self.screen_width;

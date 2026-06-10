@@ -43,7 +43,7 @@ fn opt_str(v: JsValue, default: &str) -> JsValue {
 fn promise_resolve_value(vm: &mut Vm, value: JsValue) -> JsValue {
     let promise_ctor = vm.get_global("Promise");
     if let JsValue::Function(_) = &promise_ctor {
-        let resolve_fn = promise_ctor.get_property("resolve");
+        let resolve_fn = vm.get_property_with_proto(&promise_ctor, "resolve");
         if let JsValue::Function(f) = resolve_fn {
             let kind = f.borrow().kind.clone();
             if let libjs::value::FnKind::Native(native) = kind {
@@ -57,7 +57,7 @@ fn promise_resolve_value(vm: &mut Vm, value: JsValue) -> JsValue {
 fn promise_reject_value(vm: &mut Vm, value: JsValue) -> JsValue {
     let promise_ctor = vm.get_global("Promise");
     if let JsValue::Function(_) = &promise_ctor {
-        let reject_fn = promise_ctor.get_property("reject");
+        let reject_fn = vm.get_property_with_proto(&promise_ctor, "reject");
         if let JsValue::Function(f) = reject_fn {
             let kind = f.borrow().kind.clone();
             if let libjs::value::FnKind::Native(native) = kind {
@@ -657,7 +657,16 @@ pub fn make_window(
     );
 
     // URL / misc.
-    obj.set(String::from("URL"), native_ctor_fn("URL", win_url_ctor));
+    let url_ctor = native_ctor_fn("URL", win_url_ctor);
+    url_ctor.set_property(
+        String::from("createObjectURL"),
+        native_fn("createObjectURL", win_url_create_object_url),
+    );
+    url_ctor.set_property(
+        String::from("revokeObjectURL"),
+        native_fn("revokeObjectURL", win_url_revoke_object_url),
+    );
+    obj.set(String::from("URL"), url_ctor);
     obj.set(
         String::from("URLSearchParams"),
         native_ctor_fn("URLSearchParams", win_url_search_params),
@@ -1051,6 +1060,7 @@ fn win_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             node_id: usize::MAX, // window pseudo-node
             event,
             callback,
+            inline: false,
             capture,
         });
     }
@@ -1932,6 +1942,7 @@ fn win_mutation_observer_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                     node_id: usize::MAX - 1, // special sentinel for mutation observers
                     event: String::from("__mutation_observer"),
                     callback: observer,
+                    inline: false,
                     capture: false,
                 });
             }
@@ -3020,33 +3031,174 @@ fn win_abort_controller(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 fn win_blob(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let parts = args.first().cloned().unwrap_or(JsValue::Undefined);
     let opts = args.get(1).cloned().unwrap_or(JsValue::Undefined);
-    let typ = opts.get_property("type").to_js_string();
-    let mut size = 0usize;
-    if let JsValue::Array(arr) = &parts {
-        for (_idx, part) in arr.borrow().elements.iter() {
-            size = size.saturating_add(part.to_js_string().len());
+    let typ = blob_type_from_options(&opts);
+    let text = collect_blob_parts(&parts);
+    make_blob_object(text, typ)
+}
+
+fn blob_type_from_options(opts: &JsValue) -> String {
+    if opts.is_nullish() {
+        return String::new();
+    }
+    let type_value = opts.get_property("type");
+    if type_value.is_nullish() {
+        return String::new();
+    }
+    let mut typ = type_value.to_js_string();
+    typ.make_ascii_lowercase();
+    typ
+}
+
+fn collect_blob_parts(parts: &JsValue) -> String {
+    let mut text = String::new();
+    if let JsValue::Array(arr) = parts {
+        let arr = arr.borrow();
+        for idx in 0..arr.len() {
+            if let Some(part) = arr.elements.get(&idx) {
+                text.push_str(&blob_part_to_text(part));
+            }
         }
     }
+    text
+}
+
+fn blob_part_to_text(part: &JsValue) -> String {
+    if let JsValue::String(text) = part.get_property("__blobText") {
+        return text;
+    }
+
+    if let Some(buf) = libjs::vm::native_typed_array::get_buffer(part) {
+        let bytes = buf.borrow();
+        return string_from_utf8_bytes(&bytes);
+    }
+
+    if let JsValue::Array(arr) = part {
+        let arr = arr.borrow();
+        let byte_length = part.get_property("byteLength");
+        if let JsValue::Number(n) = byte_length {
+            let byte_len = n.max(0.0) as usize;
+            if byte_len == arr.len() {
+                let mut bytes = Vec::new();
+                for idx in 0..byte_len {
+                    if let Some(JsValue::Number(byte)) = arr.elements.get(&idx) {
+                        bytes.push(byte.clamp(0.0, 255.0) as u8);
+                    } else {
+                        bytes.clear();
+                        break;
+                    }
+                }
+                if bytes.len() == byte_len {
+                    return string_from_utf8_bytes(&bytes);
+                }
+            }
+        }
+    }
+
+    part.to_js_string()
+}
+
+fn string_from_utf8_bytes(bytes: &[u8]) -> String {
+    match core::str::from_utf8(bytes) {
+        Ok(text) => String::from(text),
+        Err(_) => bytes.iter().map(|&b| char::from(b)).collect(),
+    }
+}
+
+fn make_blob_object(text: String, typ: String) -> JsValue {
+    let size = text.as_bytes().len();
     let blob = JsValue::new_object();
+    if let JsValue::Object(obj) = &blob {
+        obj.borrow_mut().internal_tag = Some(String::from("__blob__"));
+    }
     blob.set_property(String::from("size"), JsValue::Number(size as f64));
     blob.set_property(String::from("type"), JsValue::String(typ));
-    blob.set_property(
-        String::from("text"),
-        native_fn("text", |vm, _| {
-            promise_resolve_value(vm, JsValue::String(String::new()))
-        }),
-    );
+    blob.set_hidden_property(String::from("__blobText"), JsValue::String(text));
+    blob.set_property(String::from("text"), native_fn("text", win_blob_text));
     blob.set_property(
         String::from("arrayBuffer"),
-        native_fn("arrayBuffer", |vm, _| {
-            promise_resolve_value(vm, JsValue::new_array(Vec::new()))
-        }),
+        native_fn("arrayBuffer", win_blob_array_buffer),
     );
-    blob.set_property(
-        String::from("slice"),
-        native_fn("slice", |_vm, _| JsValue::new_object()),
-    );
+    blob.set_property(String::from("slice"), native_fn("slice", win_blob_slice));
     blob
+}
+
+fn current_blob_text(vm: &Vm) -> String {
+    if let JsValue::String(text) = vm.current_this.get_property("__blobText") {
+        text
+    } else {
+        String::new()
+    }
+}
+
+fn win_blob_text(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    promise_resolve_value(vm, JsValue::String(current_blob_text(vm)))
+}
+
+fn win_blob_array_buffer(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let text = current_blob_text(vm);
+    let buf = libjs::vm::native_typed_array::create_arraybuffer(vm, text.as_bytes().len());
+    if let Some(bytes) = libjs::vm::native_typed_array::get_buffer(&buf) {
+        bytes.borrow_mut().copy_from_slice(text.as_bytes());
+    }
+    promise_resolve_value(vm, buf)
+}
+
+fn win_blob_slice(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let text = current_blob_text(vm);
+    let len = text.len();
+    let start = blob_slice_index(args.first(), len, 0);
+    let end = blob_slice_index(args.get(1), len, len);
+    let content_type = args
+        .get(2)
+        .map(|v| v.to_js_string())
+        .unwrap_or_else(String::new);
+    let begin = byte_boundary_at_or_after(&text, start.min(len));
+    let finish = byte_boundary_at_or_after(&text, end.min(len));
+    let sliced = if finish > begin {
+        String::from(&text[begin..finish])
+    } else {
+        String::new()
+    };
+    make_blob_object(sliced, content_type)
+}
+
+fn blob_slice_index(value: Option<&JsValue>, len: usize, default: usize) -> usize {
+    let Some(value) = value else {
+        return default;
+    };
+    if value.is_undefined() {
+        return default;
+    }
+    let n = value.to_number();
+    if !n.is_finite() {
+        return 0;
+    }
+    if n < 0.0 {
+        let from_end = len as isize + n as isize;
+        from_end.max(0) as usize
+    } else {
+        (n as usize).min(len)
+    }
+}
+
+fn byte_boundary_at_or_after(text: &str, mut idx: usize) -> usize {
+    idx = idx.min(text.len());
+    while idx < text.len() && !text.is_char_boundary(idx) {
+        idx += 1;
+    }
+    idx
+}
+
+fn win_url_create_object_url(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    static NEXT_BLOB_URL: AtomicU32 = AtomicU32::new(1);
+    let id = NEXT_BLOB_URL.fetch_add(1, Ordering::Relaxed);
+    let blob = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let size = blob.get_property("size").to_number().max(0.0) as usize;
+    JsValue::String(alloc::format!("blob:anyos/{}-{}", id, size))
+}
+
+fn win_url_revoke_object_url(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::Undefined
 }
 
 fn win_queue_microtask(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -3165,11 +3317,30 @@ fn win_btoa(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 // performance.now() (W3C High Resolution Time §4)
 // ═══════════════════════════════════════════════════════════
 
-/// Returns monotonic timestamp in milliseconds.  On anyOS this uses the
-/// system tick counter; on host builds it uses a simple incrementing counter
-/// so React Scheduler can measure elapsed time between calls.
-fn win_performance_now(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    JsValue::Number(anyos_std::sys::uptime_ms() as f64)
+/// Returns a monotonic high-resolution timestamp in milliseconds.
+///
+/// anyOS currently exposes uptime as whole milliseconds.  Browser APIs expose
+/// fractional DOMHighResTimeStamp values, and benchmark harnesses legitimately
+/// measure work that starts and ends inside a single OS tick.  Preserve the
+/// real uptime as the base clock, then interpolate a tiny fractional step when
+/// consecutive reads land on the same millisecond.
+fn win_performance_now(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let perf = performance_target(vm);
+    let base = anyos_std::sys::uptime_ms() as f64;
+    let last = perf.get_property("__surfPerformanceLastNow");
+    let last = match last {
+        JsValue::Number(n) if n.is_finite() => Some(n),
+        _ => None,
+    };
+    let now = match last {
+        Some(last) if base <= last => last + 0.05,
+        _ => base,
+    };
+    perf.set_hidden_property(
+        String::from("__surfPerformanceLastNow"),
+        JsValue::Number(now),
+    );
+    JsValue::Number(now)
 }
 
 fn performance_target(vm: &mut Vm) -> JsValue {

@@ -65,6 +65,73 @@ impl Renderer {
         }
     }
 
+    pub(crate) fn copy_viewport_pixels(
+        &self,
+        fb: &mut [u32],
+        width: usize,
+        height: usize,
+        scroll_y: i32,
+        bg_color: u32,
+    ) {
+        let clear_color = if bg_color != 0 { bg_color } else { 0xFFFFFFFF };
+        let pixel_count = width.saturating_mul(height).min(fb.len());
+        for px in fb.iter_mut().take(pixel_count) {
+            *px = clear_color;
+        }
+        if width == 0 || height == 0 || self.doc_w == 0 || fb.len() < width {
+            return;
+        }
+
+        let doc_w = self.doc_w as usize;
+        let copy_w = doc_w.min(width);
+        if copy_w == 0 {
+            return;
+        }
+
+        let first_row = scroll_y.max(0) as u32 / TILE_HEIGHT;
+        let viewport_bottom = scroll_y.saturating_add(height as i32).max(0);
+        let last_row = if viewport_bottom > 0 {
+            ((viewport_bottom - 1) as u32) / TILE_HEIGHT
+        } else {
+            first_row
+        };
+
+        for row in first_row..=last_row {
+            let Some(tile) = self.tile_cache.get(row) else {
+                continue;
+            };
+            let tile_top = (row * TILE_HEIGHT) as i32 - scroll_y;
+            let src_start = if tile_top < 0 {
+                (-tile_top) as usize
+            } else {
+                0
+            };
+            if src_start >= TILE_HEIGHT as usize {
+                continue;
+            }
+            let dst_start = if tile_top > 0 {
+                tile_top as usize
+            } else {
+                0
+            };
+            if dst_start >= height {
+                continue;
+            }
+
+            let rows = (TILE_HEIGHT as usize - src_start).min(height - dst_start);
+            for y in 0..rows {
+                let src_off = (src_start + y).saturating_mul(doc_w);
+                let dst_off = (dst_start + y).saturating_mul(width);
+                if src_off.saturating_add(copy_w) > tile.len()
+                    || dst_off.saturating_add(copy_w) > fb.len()
+                {
+                    break;
+                }
+                fb[dst_off..dst_off + copy_w].copy_from_slice(&tile[src_off..src_off + copy_w]);
+            }
+        }
+    }
+
     fn deactivate_farthest_active_tile_canvas(&mut self, scroll_y: i32, viewport_h: u32) -> bool {
         let vp_center_row = ((scroll_y + viewport_h as i32 / 2).max(0) as u32) / TILE_HEIGHT;
         let farthest_idx = self

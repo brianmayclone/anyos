@@ -130,6 +130,8 @@ pub struct LibcompositorExports {
     ) -> u32,
 
     pub exit_fullscreen: extern "C" fn(channel_id: u32, window_id: u32),
+
+    pub set_menubar_visible: extern "C" fn(channel_id: u32, visible: u32),
 }
 
 /// Get a reference to the libcompositor export table.

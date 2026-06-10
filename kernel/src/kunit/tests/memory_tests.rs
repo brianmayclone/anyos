@@ -22,6 +22,10 @@ pub static SUITE: TestSuite = TestSuite {
             run: test_heap_committed_nonzero,
         },
         TestCase {
+            name: "cow_refcount_roundtrip",
+            run: test_cow_refcount_roundtrip,
+        },
+        TestCase {
             name: "heap_stats_nonzero",
             run: test_heap_stats_nonzero,
         },
@@ -69,12 +73,20 @@ fn test_heap_committed_nonzero(ctx: &mut TestContext) {
 }
 
 fn test_heap_stats_nonzero(ctx: &mut TestContext) {
+    use alloc::vec::Vec;
+    // Hold a LIVE allocation so `used` is non-zero independent of how empty the
+    // global heap happens to be at this early boot point. `used` deliberately
+    // excludes the per-CPU bucket cache, so blocks freed by earlier suites do
+    // NOT count toward it — only live allocations do. 96 KiB exceeds every size
+    // class, so it is served from the main arena and is unambiguously "used".
+    let live: Vec<u8> = alloc::vec![0xCDu8; 96 * 1024];
+    core::hint::black_box(live.as_ptr());
     let (used, committed) = heap_stats();
-    // Kernel data structures allocated during boot must occupy some heap space.
-    ctx.expect_gt(used, 0usize, "heap used bytes > 0");
+    ctx.expect_gt(used, 0usize, "heap used bytes > 0 (with a live 96 KiB allocation)");
     ctx.expect_gt(committed, 0usize, "heap committed bytes > 0");
     // Used must not exceed committed.
     ctx.expect_ge(committed, used, "committed >= used");
+    drop(live);
 }
 
 fn test_heap_alloc_changes_stats(ctx: &mut TestContext) {
@@ -250,4 +262,11 @@ fn test_slab_cache_reuses_object_slot(ctx: &mut TestContext) {
     };
     let second_addr = (&*second as *const SlabTestObj) as usize;
     ctx.expect_eq(second_addr, first_addr, "slab reused freed object slot");
+}
+
+fn test_cow_refcount_roundtrip(ctx: &mut TestContext) {
+    ctx.expect_true(
+        crate::memory::virtual_mem::kunit_cow_refcount_roundtrip(),
+        "CoW refcount fork-inc/release/saturation invariants",
+    );
 }

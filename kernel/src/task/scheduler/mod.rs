@@ -207,6 +207,17 @@ static PER_CPU_CURRENT_ABI: [AtomicU32; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
+/// The TID the per-CPU ABI/rootfs cache is valid for. A lock-free reader trusts
+/// the cached ABI only when this equals the lock-free running TID
+/// (`PER_CPU_CURRENT_TID`). A transition that changed the running thread without
+/// refreshing the cache is therefore *detected* (tag mismatch) and falls back to
+/// the locked path instead of mis-dispatching under a stale ABI — the exact bug
+/// that forced the earlier lock-free read to be reverted.
+static PER_CPU_ABI_CACHE_TID: [AtomicU32; MAX_CPUS] = {
+    const INIT: AtomicU32 = AtomicU32::new(0);
+    [INIT; MAX_CPUS]
+};
+
 /// Per-CPU cache of the running thread's Linux rootfs prefix (the directory the
 /// LXE personality chroots path translation into). Mirror of the running
 /// thread's `linux_rootfs`, refreshed at every context switch alongside the ABI
@@ -323,9 +334,10 @@ static DEFERRED_WAKE_TIDS: [AtomicU32; DEFERRED_WAKE_SLOTS] = {
     [INIT; DEFERRED_WAKE_SLOTS]
 };
 
-/// Circular write index for deferred wakes — distributes overwrites evenly
-/// instead of always clobbering slot 0.
-static DEFERRED_WAKE_NEXT: AtomicU32 = AtomicU32::new(0);
+/// Set when an IRQ-deferred wake arrived while all slots were full. Rather than
+/// clobber (and silently drop) a queued wake, the producer flags the overflow
+/// here and the next drain recovers by waking all event-blocked threads.
+static DEFERRED_WAKE_OVERFLOW: AtomicBool = AtomicBool::new(false);
 
 /// Number of pending deferred wakes. The timer drain loop skips the
 /// 256-slot scan entirely when this is zero, reducing SCHEDULER lock
@@ -347,6 +359,30 @@ static NEXT_REBALANCE_TICK: AtomicU32 = AtomicU32::new(0);
 static SLEEPER_WAKE_ARMED: AtomicBool = AtomicBool::new(false);
 static NEXT_SLEEPER_WAKE_TICK: AtomicU32 = AtomicU32::new(0);
 
+/// Round-robin cursor for picking the remote CPU that drains a deferred wake.
+static DEFERRED_WAKE_KICK_RR: AtomicU32 = AtomicU32::new(0);
+
+/// Ask another CPU to run its scheduler now so a just-queued deferred wake is
+/// drained immediately instead of waiting for the next 1 ms timer tick. This
+/// bounds I/O completion latency: the AHCI/network IRQ path falls back to
+/// deferred_wake exactly when the scheduler lock is contended, which is also
+/// when the next tick may be far away for the sleeping waiter.
+fn kick_remote_drain() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let count = crate::arch::x86::smp::cpu_count() as usize;
+        if count <= 1 {
+            return;
+        }
+        let my = crate::arch::x86::smp::current_cpu_id() as usize;
+        let next = DEFERRED_WAKE_KICK_RR.fetch_add(1, Ordering::Relaxed) as usize % count;
+        let target = if next == my { (next + 1) % count } else { next };
+        if target != my {
+            crate::arch::x86::smp::resched_cpu(target);
+        }
+    }
+}
+
 /// Enqueue a TID for deferred wake (called from IRQ context, lock-free).
 /// Uses circular overwrite when all slots are occupied for fairer eviction.
 pub fn deferred_wake(tid: u32) {
@@ -357,6 +393,7 @@ pub fn deferred_wake(tid: u32) {
             .is_ok()
         {
             DEFERRED_WAKE_PENDING.fetch_add(1, Ordering::Relaxed);
+            kick_remote_drain();
             return;
         }
         // If this slot already holds our TID, no-op (avoid duplicate wakes).
@@ -364,9 +401,12 @@ pub fn deferred_wake(tid: u32) {
             return;
         }
     }
-    // All slots full — circular overwrite for fair eviction (count stays the same).
-    let idx = DEFERRED_WAKE_NEXT.fetch_add(1, Ordering::Relaxed) as usize % DEFERRED_WAKE_SLOTS;
-    DEFERRED_WAKE_TIDS[idx].store(tid, Ordering::Release);
+    // All slots full. Do NOT clobber a queued wake — overwriting a slot would
+    // silently drop some other thread's wake and leave it Blocked forever (the
+    // original lost-wakeup bug). Flag the overflow instead; the next drain
+    // recovers by waking every event-blocked thread, each of which re-checks its
+    // wait condition on resume.
+    DEFERRED_WAKE_OVERFLOW.store(true, Ordering::Release);
 }
 
 #[derive(Clone, Copy)]
@@ -510,7 +550,82 @@ fn update_per_cpu_name(
 pub(super) fn store_per_cpu_abi(cpu_id: usize, abi: crate::task::abi::AbiPersonality) {
     if cpu_id < MAX_CPUS {
         PER_CPU_CURRENT_ABI[cpu_id].store(abi.event_tag(), Ordering::Relaxed);
+        // Tag the cache with the thread it now describes. Callers
+        // (update_per_cpu_name at a switch, set_thread_abi for the running
+        // thread) have already published the new PER_CPU_CURRENT_TID, so this is
+        // the correct owner. Release pairs with the validated reader's Acquire so
+        // the ABI store above is visible once the tag is.
+        let tid = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed);
+        PER_CPU_ABI_CACHE_TID[cpu_id].store(tid, Ordering::Release);
     }
+}
+
+/// Lock-free, TID-validated read of the running thread's ABI on `cpu_id`.
+///
+/// Returns `Some(abi)` only when the cache is provably valid for the thread
+/// currently running on the CPU: the cache tag must equal the running TID, and
+/// the running TID must be stable across the read (seqlock-style re-check, so a
+/// context switch mid-read is detected). Otherwise returns `None` and the caller
+/// must consult the locked scheduler. This is the safe replacement for the
+/// reverted unconditional `load_per_cpu_abi`.
+#[allow(dead_code)]
+#[inline]
+pub(super) fn load_per_cpu_abi_validated(
+    cpu_id: usize,
+) -> Option<crate::task::abi::AbiPersonality> {
+    if cpu_id >= MAX_CPUS {
+        return None;
+    }
+    let tid1 = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Acquire);
+    if tid1 == 0 {
+        return None; // idle / no thread — let the slow path decide
+    }
+    if PER_CPU_ABI_CACHE_TID[cpu_id].load(Ordering::Acquire) != tid1 {
+        return None; // cache is for a different (older) thread
+    }
+    let abi = crate::task::abi::AbiPersonality::from_event_tag(
+        PER_CPU_CURRENT_ABI[cpu_id].load(Ordering::Relaxed),
+    );
+    // Re-read the running TID: a switch during the read invalidates the value.
+    if PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Acquire) != tid1 {
+        return None;
+    }
+    Some(abi)
+}
+
+/// kunit: the TID-validated ABI cache must return the cached ABI only when the
+/// cache tag matches the running TID, and reject (None) a stale tag — the safety
+/// property the reverted unconditional read lacked. Uses an unused high CPU slot
+/// so it never perturbs a live CPU's scheduler state.
+#[cfg(feature = "kunit")]
+pub fn kunit_abi_cache_tid_validation() -> bool {
+    use crate::task::abi::AbiPersonality;
+    let cpu = MAX_CPUS - 1; // unused on the few-CPU test VM
+    let saved_abi = PER_CPU_CURRENT_ABI[cpu].load(Ordering::Relaxed);
+    let saved_tag = PER_CPU_ABI_CACHE_TID[cpu].load(Ordering::Relaxed);
+    let saved_tid = PER_CPU_CURRENT_TID[cpu].load(Ordering::Relaxed);
+
+    // Valid cache: tag == running tid -> hit, returns the cached ABI.
+    PER_CPU_CURRENT_ABI[cpu].store(AbiPersonality::LinuxX86_64.event_tag(), Ordering::Relaxed);
+    PER_CPU_CURRENT_TID[cpu].store(4242, Ordering::Relaxed);
+    PER_CPU_ABI_CACHE_TID[cpu].store(4242, Ordering::Release);
+    let hit = load_per_cpu_abi_validated(cpu);
+
+    // Stale cache: running tid changed but the tag did not -> miss (None).
+    PER_CPU_CURRENT_TID[cpu].store(4243, Ordering::Relaxed);
+    let stale = load_per_cpu_abi_validated(cpu);
+
+    // Idle (tid 0) never hits.
+    PER_CPU_CURRENT_TID[cpu].store(0, Ordering::Relaxed);
+    PER_CPU_ABI_CACHE_TID[cpu].store(0, Ordering::Release);
+    let idle = load_per_cpu_abi_validated(cpu);
+
+    // Restore the slot.
+    PER_CPU_CURRENT_ABI[cpu].store(saved_abi, Ordering::Relaxed);
+    PER_CPU_ABI_CACHE_TID[cpu].store(saved_tag, Ordering::Release);
+    PER_CPU_CURRENT_TID[cpu].store(saved_tid, Ordering::Relaxed);
+
+    hit == Some(AbiPersonality::LinuxX86_64) && stale.is_none() && idle.is_none()
 }
 
 /// Lock-free read of the ABI personality of the thread running on `cpu_id`.
@@ -1060,7 +1175,6 @@ impl Scheduler {
     /// Wake timed sleepers that have reached their deadline and republish the
     /// earliest remaining sleep deadline for future timer ticks.
     fn wake_expired_sleepers(&mut self, current_tick: u32) {
-        let n_cpus = self.num_cpus();
         let mut next_sleep: Option<u32> = None;
 
         for idx in 0..self.threads.len() {
@@ -1076,15 +1190,10 @@ impl Scheduler {
             if timer_tick_reached(current_tick, wake_tick) {
                 let tid = self.threads[idx].tid;
                 let pri = self.threads[idx].priority;
-                let mut cpu = self.threads[idx].affinity_cpu;
-                if self.has_pinned_kernel_continuation(idx) {
-                    cpu = self.threads[idx].last_cpu;
-                } else if self.needs_inflight_continuation_pin(idx) {
-                    cpu = self.threads[idx].last_cpu;
-                }
-                let target_cpu = if cpu < n_cpus { cpu } else { 0 };
+                let target_cpu = self.ready_cpu_for_thread(idx);
                 self.threads[idx].state = ThreadState::Ready;
                 self.threads[idx].wake_at_tick = None;
+                self.adopt_affinity_if_movable(idx, target_cpu);
                 self.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
             } else if next_sleep
                 .map(|current_next| timer_tick_before(wake_tick, current_next))
@@ -1097,7 +1206,36 @@ impl Scheduler {
         publish_next_sleeper_deadline(next_sleep);
     }
 
-    /// Pick the CPU with the shortest ready queue for load balancing.
+    #[inline]
+    fn migration_pinned(&self, idx: usize) -> bool {
+        self.has_pinned_kernel_continuation(idx) || self.needs_inflight_continuation_pin(idx)
+    }
+
+    /// Ready queue depth plus the non-idle thread currently executing there.
+    ///
+    /// The old balancer looked only at queued work.  A CPU running a hot thread
+    /// with an empty ready queue therefore looked "idle", so fork/wake placement
+    /// could stack more CPU-bound work onto it while another core slept.
+    #[inline]
+    fn effective_cpu_load(&self, cpu: usize) -> usize {
+        if cpu >= self.num_cpus() {
+            return usize::MAX / 2;
+        }
+        let mut load = self.per_cpu[cpu].run_queue.total_count();
+        if let Some(tid) = self.per_cpu[cpu].current_tid {
+            if let Some(idx) = self.find_idx(tid) {
+                if !self.threads[idx].is_idle
+                    && !self.is_idle_tid(tid)
+                    && self.threads[idx].state == ThreadState::Running
+                {
+                    load = load.saturating_add(1);
+                }
+            }
+        }
+        load
+    }
+
+    /// Pick the CPU with the lowest effective load for load balancing.
     fn least_loaded_cpu(&self) -> usize {
         let n = self.num_cpus();
         let mut best_cpu = 0;
@@ -1105,7 +1243,7 @@ impl Scheduler {
         let mut tie_count = 0u32;
         let rr = ROUND_ROBIN_COUNTER.fetch_add(1, Ordering::Relaxed);
         for cpu in 0..n {
-            let len = self.per_cpu[cpu].run_queue.total_count();
+            let len = self.effective_cpu_load(cpu);
             if len < best_len {
                 best_len = len;
                 best_cpu = cpu;
@@ -1118,6 +1256,82 @@ impl Scheduler {
             }
         }
         best_cpu
+    }
+
+    /// Pick the CPU for a thread that is becoming Ready.
+    ///
+    /// Kernel continuations stay on their last CPU.  Normal user threads keep
+    /// their affinity when it is reasonably balanced, but can move to the
+    /// lightest CPU when the preferred CPU is already loaded.
+    fn ready_cpu_for_thread(&self, idx: usize) -> usize {
+        let n = self.num_cpus();
+        if self.migration_pinned(idx) {
+            let cpu = self.threads[idx].last_cpu;
+            return if cpu < n { cpu } else { 0 };
+        }
+
+        let preferred = if self.threads[idx].affinity_cpu < n {
+            self.threads[idx].affinity_cpu
+        } else {
+            0
+        };
+        let best = self.least_loaded_cpu();
+        if best == preferred {
+            return preferred;
+        }
+
+        let preferred_load = self.effective_cpu_load(preferred);
+        let best_load = self.effective_cpu_load(best);
+        if best_load + 1 < preferred_load {
+            best
+        } else {
+            preferred
+        }
+    }
+
+    /// Pick a queue for a preempted thread.  If this CPU already has other
+    /// ready work, moving the outgoing thread to a genuinely lighter CPU keeps
+    /// all cores busy instead of round-robining several hot threads locally.
+    fn preempt_requeue_cpu(&self, current_cpu: usize, idx: usize) -> usize {
+        let n = self.num_cpus();
+        if current_cpu >= n || self.migration_pinned(idx) {
+            return current_cpu.min(n.saturating_sub(1));
+        }
+
+        let local_backlog = self.per_cpu[current_cpu].run_queue.total_count();
+        if local_backlog == 0 {
+            return current_cpu;
+        }
+
+        let mut best_cpu = current_cpu;
+        let mut best_load = local_backlog.saturating_add(1);
+        for cpu in 0..n {
+            if cpu == current_cpu {
+                continue;
+            }
+            let load = self.effective_cpu_load(cpu);
+            if load < best_load {
+                best_load = load;
+                best_cpu = cpu;
+            }
+        }
+
+        if best_cpu != current_cpu && best_load < local_backlog {
+            best_cpu
+        } else {
+            current_cpu
+        }
+    }
+
+    #[inline]
+    fn adopt_affinity_if_movable(&mut self, idx: usize, cpu: usize) {
+        if cpu < self.num_cpus()
+            && !self.threads[idx].is_idle
+            && !self.is_idle_tid(self.threads[idx].tid)
+            && !self.migration_pinned(idx)
+        {
+            self.threads[idx].affinity_cpu = cpu;
+        }
     }
 
     /// Add a thread to the scheduler and enqueue on the least-loaded CPU.
@@ -1410,14 +1624,8 @@ impl Scheduler {
             if self.threads[idx].state == ThreadState::Blocked {
                 self.threads[idx].state = ThreadState::Ready;
                 self.threads[idx].wake_at_tick = None;
-                let mut cpu = self.threads[idx].affinity_cpu;
-                if self.has_pinned_kernel_continuation(idx) {
-                    cpu = self.threads[idx].last_cpu;
-                } else if self.needs_inflight_continuation_pin(idx) {
-                    cpu = self.threads[idx].last_cpu;
-                }
-                let n = self.num_cpus();
-                let target = if cpu < n { cpu } else { 0 };
+                let target = self.ready_cpu_for_thread(idx);
+                self.adopt_affinity_if_movable(idx, target);
                 let current_cpu = get_cpu_id();
                 let needs_kick = target != current_cpu || self.per_cpu[target].run_queue.is_empty();
                 self.per_cpu[target]
@@ -1442,6 +1650,102 @@ impl Scheduler {
         }
         None
     }
+
+    /// Drain IRQ-deferred wakes. Fast path skips the slot scan when nothing is
+    /// pending. On overflow (an IRQ wake arrived while all slots were full) the
+    /// overflowing TID was deliberately NOT stored; instead the overflow flag
+    /// was set, and we recover here by waking every event-blocked thread. Each
+    /// re-checks its wait condition on resume (the condition-recheck contract,
+    /// e.g. `ipc::anon_pipe`), so over-waking is safe and no wake is ever lost.
+    fn drain_deferred_wakes(&mut self) {
+        if DEFERRED_WAKE_PENDING.load(Ordering::Relaxed) > 0 {
+            for slot in &DEFERRED_WAKE_TIDS {
+                let tid = slot.swap(0, Ordering::Acquire);
+                if tid != 0 {
+                    DEFERRED_WAKE_PENDING.fetch_sub(1, Ordering::Relaxed);
+                    self.wake_thread_inner(tid);
+                }
+            }
+        }
+        if DEFERRED_WAKE_OVERFLOW.swap(false, Ordering::Acquire) {
+            self.wake_all_event_blocked();
+        }
+    }
+
+    /// Wake every event-blocked thread (Blocked with no timer deadline). Used
+    /// only as the rare deferred-wake overflow recovery. Timed sleepers
+    /// (`wake_at_tick` set) are left alone — their own timer wakes them.
+    fn wake_all_event_blocked(&mut self) {
+        let n = self.threads.len();
+        for idx in 0..n {
+            if self.threads[idx].state == ThreadState::Blocked
+                && self.threads[idx].wake_at_tick.is_none()
+            {
+                let tid = self.threads[idx].tid;
+                self.wake_thread_inner(tid);
+            }
+        }
+    }
+}
+
+/// kunit: an IRQ-deferred wake that overflows the slot array must NOT clobber a
+/// queued wake (the original lost-wakeup bug) — it must set the overflow flag
+/// instead so the drain's recovery path still wakes the dropped thread. Runs
+/// with interrupts disabled and saves/restores the live queue so it cannot
+/// perturb real pending wakes.
+#[cfg(feature = "kunit")]
+pub fn kunit_deferred_wake_no_clobber_on_overflow() -> bool {
+    let flags = crate::arch::hal::save_and_disable_interrupts();
+    let mut saved = [0u32; DEFERRED_WAKE_SLOTS];
+    for (i, slot) in DEFERRED_WAKE_TIDS.iter().enumerate() {
+        saved[i] = slot.load(Ordering::Relaxed);
+    }
+    let saved_pending = DEFERRED_WAKE_PENDING.load(Ordering::Relaxed);
+    let saved_overflow = DEFERRED_WAKE_OVERFLOW.load(Ordering::Relaxed);
+
+    // Start from an empty queue.
+    for slot in &DEFERRED_WAKE_TIDS {
+        slot.store(0, Ordering::Relaxed);
+    }
+    DEFERRED_WAKE_PENDING.store(0, Ordering::Relaxed);
+    DEFERRED_WAKE_OVERFLOW.store(false, Ordering::Relaxed);
+
+    // Fill every slot with a distinct fake TID.
+    for i in 0..DEFERRED_WAKE_SLOTS {
+        deferred_wake((i as u32) + 1);
+    }
+    let mut snap = [0u32; DEFERRED_WAKE_SLOTS];
+    for (i, slot) in DEFERRED_WAKE_TIDS.iter().enumerate() {
+        snap[i] = slot.load(Ordering::Relaxed);
+    }
+    // One more wake must overflow (all slots are full).
+    deferred_wake(0xFFFF_FFFE);
+
+    // Invariants: no queued slot was clobbered, the overflow flag is set, and
+    // all 256 distinct fake TIDs are still present (none lost).
+    let mut unchanged = true;
+    for (i, slot) in DEFERRED_WAKE_TIDS.iter().enumerate() {
+        if slot.load(Ordering::Relaxed) != snap[i] {
+            unchanged = false;
+        }
+    }
+    let overflow_set = DEFERRED_WAKE_OVERFLOW.load(Ordering::Relaxed);
+    let mut all_present = true;
+    for t in 1..=(DEFERRED_WAKE_SLOTS as u32) {
+        if !snap.iter().any(|&v| v == t) {
+            all_present = false;
+        }
+    }
+
+    // Restore the live state exactly.
+    for (i, slot) in DEFERRED_WAKE_TIDS.iter().enumerate() {
+        slot.store(saved[i], Ordering::Relaxed);
+    }
+    DEFERRED_WAKE_PENDING.store(saved_pending, Ordering::Relaxed);
+    DEFERRED_WAKE_OVERFLOW.store(saved_overflow, Ordering::Relaxed);
+    crate::arch::hal::restore_interrupt_state(flags);
+
+    unchanged && overflow_set && all_present
 }
 
 #[cfg(feature = "kunit")]
@@ -1461,6 +1765,31 @@ fn kunit_make_pinned_user_thread(
     thread.affinity_cpu = affinity_cpu;
     let stack_top = thread.kernel_stack_top();
     thread.context.set_pc(schedule as *const () as u64);
+    thread.context.set_sp(stack_top - 64);
+    thread.context.save_complete = 1;
+    thread.context.checksum = thread.context.compute_checksum();
+    thread
+}
+
+#[cfg(feature = "kunit")]
+fn kunit_make_movable_user_thread(
+    state: ThreadState,
+    last_cpu: usize,
+    affinity_cpu: usize,
+) -> ThreadBox {
+    extern "C" fn never_run() {}
+
+    let thread =
+        Thread::new(never_run, 42, "kunit/movable").expect("kunit thread allocation failed");
+    let mut thread = alloc_thread_box(thread).expect("kunit thread object allocation failed");
+    thread.is_user = true;
+    thread.state = state;
+    thread.last_cpu = last_cpu;
+    thread.affinity_cpu = affinity_cpu;
+    let stack_top = thread.kernel_stack_top();
+    thread
+        .context
+        .set_pc(crate::task::loader::user_thread_trampoline as *const () as u64);
     thread.context.set_sp(stack_top - 64);
     thread.context.save_complete = 1;
     thread.context.checksum = thread.context.compute_checksum();
@@ -1507,6 +1836,41 @@ pub fn kunit_pinned_continuation_not_stolen() -> bool {
     let wrong_pick = sched.pick_eligible(wrong_cpu);
 
     stolen.is_none() && repaired_pick == Some(tid) && wrong_pick.is_none()
+}
+
+#[cfg(feature = "kunit")]
+pub fn kunit_least_loaded_counts_running_thread() -> bool {
+    let mut sched = Scheduler::new();
+    if sched.num_cpus() < 2 {
+        return true;
+    }
+
+    let running = kunit_make_movable_user_thread(ThreadState::Running, 0, 0);
+    let tid = running.tid;
+    sched.threads.push(running);
+    sched.per_cpu[0].current_tid = Some(tid);
+    sched.per_cpu[0].current_idx = sched.find_idx(tid);
+
+    sched.least_loaded_cpu() != 0
+}
+
+#[cfg(feature = "kunit")]
+pub fn kunit_preempt_requeue_uses_lighter_cpu() -> bool {
+    let mut sched = Scheduler::new();
+    if sched.num_cpus() < 2 {
+        return true;
+    }
+
+    let running = kunit_make_movable_user_thread(ThreadState::Running, 0, 0);
+    let running_idx = sched.threads.len();
+    sched.threads.push(running);
+
+    let queued = kunit_make_movable_user_thread(ThreadState::Ready, 0, 0);
+    let queued_tid = queued.tid;
+    sched.threads.push(queued);
+    sched.per_cpu[0].run_queue.enqueue(queued_tid, 42);
+
+    sched.preempt_requeue_cpu(0, running_idx) != 0
 }
 
 #[cfg(feature = "kunit")]
@@ -1789,15 +2153,7 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
             }
         };
 
-        if DEFERRED_WAKE_PENDING.load(Ordering::Relaxed) > 0 {
-            for slot in &DEFERRED_WAKE_TIDS {
-                let tid = slot.swap(0, Ordering::Acquire);
-                if tid != 0 {
-                    DEFERRED_WAKE_PENDING.fetch_sub(1, Ordering::Relaxed);
-                    sched.wake_thread_inner(tid);
-                }
-            }
-        }
+        sched.drain_deferred_wakes();
 
         let current_tick = crate::arch::hal::timer_current_ticks();
         if sleeper_deadline_due(current_tick) {
@@ -1827,7 +2183,9 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                 sched.threads[idx].state = ThreadState::Ready;
                 sched.threads[idx].last_cpu = cpu_id;
                 let pri = sched.threads[idx].priority;
-                sched.per_cpu[cpu_id]
+                let target_cpu = sched.preempt_requeue_cpu(cpu_id, idx);
+                sched.adopt_affinity_if_movable(idx, target_cpu);
+                sched.per_cpu[target_cpu]
                     .run_queue
                     .enqueue(outgoing_tid.unwrap_or(0), pri);
             }
@@ -1865,16 +2223,17 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                 sched.per_cpu[cpu_id].current_idx = Some(next_idx);
                 sched.threads[next_idx].state = ThreadState::Running;
                 sched.threads[next_idx].last_cpu = cpu_id;
+                sched.adopt_affinity_if_movable(next_idx, cpu_id);
                 PER_CPU_HAS_THREAD[cpu_id]
                     .store(!sched.threads[next_idx].is_idle, Ordering::Relaxed);
                 PER_CPU_CURRENT_TID[cpu_id].store(next_tid, Ordering::Relaxed);
                 PER_CPU_IS_USER[cpu_id].store(sched.threads[next_idx].is_user, Ordering::Relaxed);
                 update_per_cpu_name(
-                        cpu_id,
-                        &sched.threads[next_idx].name,
-                        sched.threads[next_idx].abi,
-                        &sched.threads[next_idx].linux_rootfs,
-                    );
+                    cpu_id,
+                    &sched.threads[next_idx].name,
+                    sched.threads[next_idx].abi,
+                    &sched.threads[next_idx].linux_rootfs,
+                );
                 crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
                 PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
                 PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
@@ -1909,11 +2268,11 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
             PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
             PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
             update_per_cpu_name(
-                        cpu_id,
-                        &sched.threads[idle_idx].name,
-                        sched.threads[idle_idx].abi,
-                        &sched.threads[idle_idx].linux_rootfs,
-                    );
+                cpu_id,
+                &sched.threads[idle_idx].name,
+                sched.threads[idle_idx].abi,
+                &sched.threads[idle_idx].linux_rootfs,
+            );
             crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
             PER_CPU_STACK_BOTTOM[cpu_id].store(
                 sched.threads[idle_idx].kernel_stack_bottom(),
@@ -2192,15 +2551,7 @@ fn schedule_inner(from_timer: bool) {
 
         // Drain deferred wakes (IRQ handlers store TIDs here lock-free).
         // Fast path: skip the 256-slot scan when no wakes are pending.
-        if DEFERRED_WAKE_PENDING.load(Ordering::Relaxed) > 0 {
-            for slot in &DEFERRED_WAKE_TIDS {
-                let tid = slot.swap(0, Ordering::Acquire);
-                if tid != 0 {
-                    DEFERRED_WAKE_PENDING.fetch_sub(1, Ordering::Relaxed);
-                    sched.wake_thread_inner(tid);
-                }
-            }
-        }
+        sched.drain_deferred_wakes();
 
         let current_tick = crate::arch::hal::timer_current_ticks();
         if sleeper_deadline_due(current_tick) {
@@ -2247,7 +2598,9 @@ fn schedule_inner(from_timer: bool) {
                     sched.threads[idx].state = ThreadState::Ready;
                     sched.threads[idx].last_cpu = cpu_id;
                     let pri = sched.threads[idx].priority;
-                    sched.per_cpu[cpu_id]
+                    let target_cpu = sched.preempt_requeue_cpu(cpu_id, idx);
+                    sched.adopt_affinity_if_movable(idx, target_cpu);
+                    sched.per_cpu[target_cpu]
                         .run_queue
                         .enqueue(outgoing_tid.unwrap_or(0), pri);
                 }
@@ -2286,6 +2639,7 @@ fn schedule_inner(from_timer: bool) {
                     sched.per_cpu[cpu_id].current_idx = Some(next_idx);
                     sched.threads[next_idx].state = ThreadState::Running;
                     sched.threads[next_idx].last_cpu = cpu_id;
+                    sched.adopt_affinity_if_movable(next_idx, cpu_id);
 
                     PER_CPU_HAS_THREAD[cpu_id].store(true, Ordering::Relaxed);
                     PER_CPU_CURRENT_TID[cpu_id].store(next_tid, Ordering::Relaxed);
@@ -2407,11 +2761,11 @@ fn schedule_inner(from_timer: bool) {
                         PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
                         PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
                         update_per_cpu_name(
-                        cpu_id,
-                        &sched.threads[idle_idx].name,
-                        sched.threads[idle_idx].abi,
-                        &sched.threads[idle_idx].linux_rootfs,
-                    );
+                            cpu_id,
+                            &sched.threads[idle_idx].name,
+                            sched.threads[idle_idx].abi,
+                            &sched.threads[idle_idx].linux_rootfs,
+                        );
                         let idle_kstack_top = sched.threads[idle_idx].kernel_stack_top();
                         crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
                         PER_CPU_STACK_BOTTOM[cpu_id].store(
@@ -2767,11 +3121,11 @@ pub fn register_ap_idle(cpu_id: usize) {
         PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
         PER_CPU_IDLE_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
         update_per_cpu_name(
-                        cpu_id,
-                        &sched.threads[idx].name,
-                        sched.threads[idx].abi,
-                        &sched.threads[idx].linux_rootfs,
-                    );
+            cpu_id,
+            &sched.threads[idx].name,
+            sched.threads[idx].abi,
+            &sched.threads[idx].linux_rootfs,
+        );
     } else {
         crate::debug_println!(
             "  [Sched] register_ap_idle: cpu={} ERROR: scheduler not initialized!",

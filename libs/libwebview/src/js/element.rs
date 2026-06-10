@@ -890,7 +890,8 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
         // Iframe has live browsing-context properties. Install this after the
         // generic reflected properties so src/contentDocument/contentWindow
         // are not overwritten by plain attribute accessors.
-        install_iframe_shim(vm, &mut obj, &src_val);
+        let srcdoc_val = attr_or_empty(vm, "srcdoc");
+        install_iframe_shim(vm, &mut obj, &src_val, &srcdoc_val);
     }
 
     let result = JsValue::Object(Rc::new(RefCell::new(obj)));
@@ -1167,9 +1168,10 @@ fn el_event_handler_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 name
             };
             bridge.event_listeners.push(super::EventListener {
-                node_id: if nid >= 0 { nid as usize } else { usize::MAX },
+                node_id: super::event_listener_node_key(nid),
                 event,
                 callback,
+                inline: true,
                 capture: false,
             });
         }
@@ -1621,8 +1623,20 @@ fn el_set_attribute(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             o.set(String::from("className"), JsValue::String(value.clone()));
         }
         if name == "value" {
-            o.set(String::from("value"), JsValue::String(value));
+            o.set(String::from("value"), JsValue::String(value.clone()));
         }
+    }
+    if (name.eq_ignore_ascii_case("src") || name.eq_ignore_ascii_case("srcdoc"))
+        && read_tag_name(vm, nid).eq_ignore_ascii_case("iframe")
+    {
+        let frame = vm.current_this.clone();
+        if name.eq_ignore_ascii_case("src") {
+            frame.set_hidden_property(String::from("_src"), JsValue::String(value.clone()));
+        } else {
+            frame.set_hidden_property(String::from("_srcdoc"), JsValue::String(value.clone()));
+        }
+        ensure_iframe_browsing_context(vm, &frame);
+        iframe_queue_load_event(vm, frame);
     }
     JsValue::Undefined
 }
@@ -1645,9 +1659,13 @@ fn el_set_attribute_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 // Same-origin iframe shim
 // ═══════════════════════════════════════════════════════════
 
-fn install_iframe_shim(vm: &mut Vm, obj: &mut JsObject, src: &str) {
+fn install_iframe_shim(vm: &mut Vm, obj: &mut JsObject, src: &str, srcdoc: &str) {
     let (document, window) = make_synthetic_iframe_context(vm);
     obj.set_hidden(String::from("_src"), JsValue::String(String::from(src)));
+    obj.set_hidden(
+        String::from("_srcdoc"),
+        JsValue::String(String::from(srcdoc)),
+    );
     obj.properties
         .insert(String::from("contentDocument"), Property::data(document));
     obj.properties
@@ -1657,6 +1675,13 @@ fn install_iframe_shim(vm: &mut Vm, obj: &mut JsObject, src: &str) {
         Property::accessor(
             Some(native_fn("get src", iframe_src_get)),
             Some(native_fn("set src", iframe_src_set)),
+        ),
+    );
+    obj.properties.insert(
+        String::from("srcdoc"),
+        Property::accessor(
+            Some(native_fn("get srcdoc", iframe_srcdoc_get)),
+            Some(native_fn("set srcdoc", iframe_srcdoc_set)),
         ),
     );
 }
@@ -1679,39 +1704,84 @@ fn iframe_src_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         });
     }
 
+    ensure_iframe_browsing_context(vm, &frame);
+    iframe_queue_load_event(vm, frame);
+    JsValue::Undefined
+}
+
+fn iframe_srcdoc_get(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    vm.current_this.get_property("_srcdoc")
+}
+
+fn iframe_srcdoc_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let value = arg_string(args, 0);
+    let frame = vm.current_this.clone();
+    frame.set_hidden_property(String::from("_srcdoc"), JsValue::String(value.clone()));
+
+    let nid = this_node_id(vm);
+    if let Some(bridge) = get_bridge(vm) {
+        bridge.mutations.push(DomMutation::SetAttribute {
+            node_id: nid,
+            name: String::from("srcdoc"),
+            value,
+        });
+    }
+
+    ensure_iframe_browsing_context(vm, &frame);
+    iframe_queue_load_event(vm, frame);
+    JsValue::Undefined
+}
+
+fn ensure_iframe_browsing_context(vm: &mut Vm, frame: &JsValue) {
     if vm
-        .get_property_invoking_getter(&frame, "contentDocument")
+        .get_property_invoking_getter(frame, "contentDocument")
         .is_undefined()
     {
         let (document, window) = make_synthetic_iframe_context(vm);
         frame.set_property(String::from("contentDocument"), document);
         frame.set_property(String::from("contentWindow"), window);
     }
+}
 
-    let onload = vm.get_property_invoking_getter(&frame, "onload");
-    if matches!(onload, JsValue::Function(_)) {
-        if let Some(bridge) = get_bridge(vm) {
-            let id = bridge.next_timer_id;
-            bridge.next_timer_id += 1;
-            push_pending_timer(
-                &mut bridge.timers,
-                PendingTimer {
-                    id,
-                    callback: onload,
-                    this_arg: frame,
-                    args: Vec::new(),
-                    delay_ms: 0,
-                    repeat: false,
-                    elapsed_ms: 0,
-                    is_raf: false,
-                },
-            );
-        } else {
-            vm.call_value(&onload, &[], frame);
-            vm.drain_microtasks();
-        }
+fn iframe_queue_load_event(vm: &mut Vm, frame: JsValue) {
+    if let Some(bridge) = get_bridge(vm) {
+        let id = bridge.next_timer_id;
+        bridge.next_timer_id += 1;
+        push_pending_timer(
+            &mut bridge.timers,
+            PendingTimer {
+                id,
+                callback: native_fn("__iframe_load_event", iframe_load_event_timer),
+                this_arg: frame,
+                args: Vec::new(),
+                delay_ms: 0,
+                repeat: false,
+                elapsed_ms: 0,
+                is_raf: false,
+            },
+        );
+    } else {
+        iframe_fire_load_event(vm, frame);
     }
+}
+
+fn iframe_load_event_timer(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    iframe_fire_load_event(vm, vm.current_this.clone());
     JsValue::Undefined
+}
+
+fn iframe_fire_load_event(vm: &mut Vm, frame: JsValue) {
+    let node_id = extract_node_id(&frame);
+    if matches!(frame, JsValue::Undefined | JsValue::Null) {
+        return;
+    }
+    let listener_node_id = super::event_listener_node_key(node_id);
+    let saved_this = vm.current_this.clone();
+    vm.current_this = frame.clone();
+    let evt = super::build_event_object("load", &super::EventData::None, frame, false, false);
+    dispatch_synthetic_event(vm, listener_node_id, "load", Some(evt));
+    vm.current_this = saved_this;
+    vm.drain_microtasks();
 }
 
 fn make_synthetic_iframe_context(vm: &mut Vm) -> (JsValue, JsValue) {
@@ -2374,9 +2444,10 @@ fn el_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     };
     if let Some(bridge) = get_bridge(vm) {
         bridge.event_listeners.push(super::EventListener {
-            node_id: if nid >= 0 { nid as usize } else { usize::MAX },
+            node_id: super::event_listener_node_key(nid),
             event,
             callback,
+            inline: false,
             capture,
         });
     }
@@ -2418,8 +2489,10 @@ fn dispatch_synthetic_event(
     event_name: &str,
     event_obj: Option<JsValue>,
 ) -> bool {
+    let default_bubbles = synthetic_event_bubbles(event_name);
+    let default_cancelable = synthetic_event_cancelable(event_name);
+    let target = vm.current_this.clone();
     let evt = event_obj.unwrap_or_else(|| {
-        let target = vm.current_this.clone();
         let data = super::EventData::Mouse {
             client_x: 0.0,
             client_y: 0.0,
@@ -2436,50 +2509,191 @@ fn dispatch_synthetic_event(
             alt_key: false,
             meta_key: false,
         };
-        super::build_event_object(event_name, &data, target, true, true)
+        super::build_event_object(
+            event_name,
+            &data,
+            target.clone(),
+            default_bubbles,
+            default_cancelable,
+        )
     });
-    let target = vm.current_this.clone();
+    let bubbles = match evt.get_property("bubbles") {
+        JsValue::Bool(value) => value,
+        _ => default_bubbles,
+    };
     evt.set_property(String::from("target"), target.clone());
-    evt.set_property(String::from("currentTarget"), target.clone());
-    evt.set_property(String::from("eventPhase"), JsValue::Number(2.0));
 
-    let inline_name = alloc::format!("on{}", event_name);
-    let inline = target.get_property(&inline_name);
-    if matches!(inline, JsValue::Function(_)) {
-        vm.call_value(&inline, &[evt.clone()], target.clone());
+    let path = synthetic_event_path(vm, node_id);
+    let target_idx = path.len().saturating_sub(1);
+    let window = vm.get_global("window");
+
+    if !synthetic_event_stopped(vm) {
+        evt.set_property(String::from("currentTarget"), window.clone());
+        evt.set_property(String::from("eventPhase"), JsValue::Number(1.0));
+        for cb in synthetic_event_callbacks(vm, usize::MAX, event_name, Some(true)) {
+            super::call_event_listener(vm, &cb, &evt, &window);
+            synthetic_sync_default_prevented(vm, &evt);
+            if synthetic_event_stopped(vm) {
+                break;
+            }
+        }
     }
 
-    let callbacks: Vec<JsValue> = {
-        if let Some(bridge) = get_bridge(vm) {
-            bridge
-                .installed_event_listeners()
-                .iter()
-                .chain(bridge.event_listeners.iter())
-                .filter(|l| l.node_id == node_id && l.event == event_name)
-                .map(|l| l.callback.clone())
-                .collect()
-        } else {
-            Vec::new()
+    'capture: for nid in path.iter().take(target_idx).copied() {
+        if synthetic_event_stopped(vm) {
+            break;
         }
-    };
-    for cb in callbacks {
-        match cb {
-            JsValue::Function(_) => {
-                vm.call_value(&cb, &[evt.clone()], target.clone());
+        let current = make_element(vm, nid as i64);
+        evt.set_property(String::from("currentTarget"), current.clone());
+        evt.set_property(String::from("eventPhase"), JsValue::Number(1.0));
+        for cb in synthetic_event_callbacks(vm, nid, event_name, Some(true)) {
+            super::call_event_listener(vm, &cb, &evt, &current);
+            synthetic_sync_default_prevented(vm, &evt);
+            if synthetic_event_stopped(vm) {
+                break 'capture;
             }
-            JsValue::Object(_) => {
-                let handler = cb.get_property("handleEvent");
-                if matches!(handler, JsValue::Function(_)) {
-                    vm.call_value(&handler, &[evt.clone()], cb);
+        }
+    }
+
+    if !synthetic_event_stopped(vm) {
+        evt.set_property(String::from("currentTarget"), target.clone());
+        evt.set_property(String::from("eventPhase"), JsValue::Number(2.0));
+        let callbacks = synthetic_event_callbacks(vm, node_id, event_name, None);
+        let mut direct_inline_called = false;
+        for cb in callbacks {
+            super::call_event_listener(vm, &cb, &evt, &target);
+            synthetic_sync_default_prevented(vm, &evt);
+            if synthetic_event_listener_matches_property(vm, &target, event_name, &cb) {
+                direct_inline_called = true;
+            }
+            if synthetic_event_immediate_stopped(vm) {
+                break;
+            }
+        }
+
+        if !direct_inline_called && !synthetic_event_immediate_stopped(vm) {
+            let inline_name = alloc::format!("on{}", event_name);
+            let inline = vm.get_property_invoking_getter(&target, &inline_name);
+            if matches!(inline, JsValue::Function(_) | JsValue::Object(_)) {
+                super::call_event_listener(vm, &inline, &evt, &target);
+                synthetic_sync_default_prevented(vm, &evt);
+            }
+        }
+    }
+
+    if bubbles && !synthetic_event_stopped(vm) && target_idx > 0 {
+        'bubble: for nid in path.iter().take(target_idx).rev().copied() {
+            let current = make_element(vm, nid as i64);
+            evt.set_property(String::from("currentTarget"), current.clone());
+            evt.set_property(String::from("eventPhase"), JsValue::Number(3.0));
+            for cb in synthetic_event_callbacks(vm, nid, event_name, Some(false)) {
+                super::call_event_listener(vm, &cb, &evt, &current);
+                synthetic_sync_default_prevented(vm, &evt);
+                if synthetic_event_stopped(vm) {
+                    break 'bubble;
                 }
             }
-            _ => {}
+        }
+    }
+
+    if bubbles && !synthetic_event_stopped(vm) {
+        evt.set_property(String::from("currentTarget"), window.clone());
+        evt.set_property(String::from("eventPhase"), JsValue::Number(3.0));
+        for cb in synthetic_event_callbacks(vm, usize::MAX, event_name, Some(false)) {
+            super::call_event_listener(vm, &cb, &evt, &window);
+            synthetic_sync_default_prevented(vm, &evt);
+            if synthetic_event_stopped(vm) {
+                break;
+            }
         }
     }
 
     let default_prevented = matches!(evt.get_property("defaultPrevented"), JsValue::Bool(true));
     let bridge_prevented = get_bridge(vm).map(|b| b.prevented).unwrap_or(false);
     !(default_prevented || bridge_prevented)
+}
+
+fn synthetic_event_bubbles(event_name: &str) -> bool {
+    !matches!(
+        event_name,
+        "focus" | "blur" | "scroll" | "load" | "unload" | "error" | "mouseenter" | "mouseleave"
+    )
+}
+
+fn synthetic_event_cancelable(event_name: &str) -> bool {
+    !matches!(event_name, "scroll" | "load" | "unload")
+}
+
+fn synthetic_event_path(vm: &mut Vm, node_id: usize) -> Vec<usize> {
+    let mut path = Vec::new();
+    if let Some(bridge) = get_bridge(vm) {
+        let dom = bridge.dom();
+        let mut cur = Some(node_id);
+        while let Some(id) = cur {
+            path.push(id);
+            cur = dom.nodes.get(id).and_then(|node| node.parent);
+        }
+    }
+    if path.is_empty() {
+        path.push(node_id);
+    }
+    path.reverse();
+    path
+}
+
+fn synthetic_event_callbacks(
+    vm: &mut Vm,
+    node_id: usize,
+    event_name: &str,
+    capture: Option<bool>,
+) -> Vec<JsValue> {
+    if let Some(bridge) = get_bridge(vm) {
+        bridge
+            .installed_event_listeners()
+            .iter()
+            .chain(bridge.event_listeners.iter())
+            .filter(|listener| {
+                listener.node_id == node_id
+                    && listener.event == event_name
+                    && capture.map_or(true, |wanted| listener.capture == wanted)
+            })
+            .map(|listener| listener.callback.clone())
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+fn synthetic_event_listener_matches_property(
+    vm: &mut Vm,
+    target: &JsValue,
+    event_name: &str,
+    callback: &JsValue,
+) -> bool {
+    let inline_name = alloc::format!("on{}", event_name);
+    let inline = vm.get_property_invoking_getter(target, &inline_name);
+    matches!(inline, JsValue::Function(_) | JsValue::Object(_)) && inline.strict_eq(callback)
+}
+
+fn synthetic_sync_default_prevented(vm: &mut Vm, evt: &JsValue) {
+    if get_bridge(vm)
+        .map(|bridge| bridge.prevented)
+        .unwrap_or(false)
+    {
+        evt.set_property(String::from("defaultPrevented"), JsValue::Bool(true));
+    }
+}
+
+fn synthetic_event_stopped(vm: &mut Vm) -> bool {
+    get_bridge(vm)
+        .map(|bridge| bridge.propagation_stopped || bridge.immediate_stopped)
+        .unwrap_or(false)
+}
+
+fn synthetic_event_immediate_stopped(vm: &mut Vm) -> bool {
+    get_bridge(vm)
+        .map(|bridge| bridge.immediate_stopped)
+        .unwrap_or(false)
 }
 
 fn queue_click_default_action(vm: &mut Vm, node_id: usize) {
@@ -2764,22 +2978,7 @@ fn el_append_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
     }
 
-    // Update JS-side tree on `this`.
-    if let JsValue::Object(obj) = &vm.current_this {
-        let children_arr = obj.borrow().get("children");
-        if let JsValue::Array(arr) = &children_arr {
-            arr.borrow_mut().push(child.clone());
-        }
-        refresh_element_children_metadata(&vm.current_this);
-    }
-
-    // Set child.parentNode = this.
-    if let JsValue::Object(cobj) = &child {
-        let this_clone = vm.current_this.clone();
-        let mut c = cobj.borrow_mut();
-        c.set(String::from("parentNode"), this_clone.clone());
-        c.set(String::from("parentElement"), this_clone);
-    }
+    js_append_child(&vm.current_this, child.clone());
 
     child
 }
@@ -2806,8 +3005,7 @@ fn el_remove_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let children_arr = obj.borrow().get("children");
         if let JsValue::Array(arr) = &children_arr {
             arr.borrow_mut()
-                .elements
-                .retain(|_k, el| extract_node_id(el) != child_id);
+                .retain_values_dense(|el| extract_node_id(el) != child_id);
         }
         refresh_element_children_metadata(&vm.current_this);
     }
@@ -2852,32 +3050,7 @@ fn el_insert_before(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         });
     }
 
-    // Insert in JS-side children array.
-    if let JsValue::Object(obj) = &vm.current_this {
-        let children_arr = obj.borrow().get("children");
-        if let JsValue::Array(arr) = &children_arr {
-            let mut a = arr.borrow_mut();
-            let idx = a
-                .elements
-                .iter()
-                .find(|(_k, el)| extract_node_id(el) == ref_id)
-                .map(|(k, _)| *k);
-            if let Some(i) = idx {
-                a.insert_and_shift(i, new_node.clone());
-            } else {
-                a.push(new_node.clone());
-            }
-        }
-        refresh_element_children_metadata(&vm.current_this);
-    }
-
-    // Set parentNode.
-    if let JsValue::Object(nobj) = &new_node {
-        let this_clone = vm.current_this.clone();
-        let mut n = nobj.borrow_mut();
-        n.set(String::from("parentNode"), this_clone.clone());
-        n.set(String::from("parentElement"), this_clone);
-    }
+    js_insert_before(&vm.current_this, new_node.clone(), &ref_node);
 
     new_node
 }
@@ -4456,9 +4629,10 @@ pub(super) fn js_remove_child(parent: &JsValue, child_id: i64) {
     }
     let children = parent.get_property("children");
     if let JsValue::Array(arr) = &children {
-        arr.borrow_mut()
-            .elements
-            .retain(|_k, el| extract_node_id(el) != child_id);
+        {
+            arr.borrow_mut()
+                .retain_values_dense(|el| extract_node_id(el) != child_id);
+        }
         refresh_element_children_metadata(parent);
     }
 }
@@ -4476,7 +4650,9 @@ fn js_append_child(parent: &JsValue, child: JsValue) {
     js_detach_from_old_parent(&child);
     let children = parent.get_property("children");
     if let JsValue::Array(arr) = &children {
-        arr.borrow_mut().push(child);
+        {
+            arr.borrow_mut().push(child);
+        }
         refresh_element_children_metadata(parent);
     }
 }
@@ -4485,7 +4661,9 @@ fn js_prepend_child(parent: &JsValue, child: JsValue) {
     js_detach_from_old_parent(&child);
     let children = parent.get_property("children");
     if let JsValue::Array(arr) = &children {
-        arr.borrow_mut().insert_and_shift(0, child);
+        {
+            arr.borrow_mut().insert_and_shift(0, child);
+        }
         refresh_element_children_metadata(parent);
     }
 }
@@ -4495,18 +4673,20 @@ fn js_insert_before(parent: &JsValue, child: JsValue, ref_child: &JsValue) {
     let ref_id = extract_node_id(ref_child);
     let children = parent.get_property("children");
     if let JsValue::Array(arr) = &children {
-        let mut arr_mut = arr.borrow_mut();
-        if ref_id == -9999 {
-            arr_mut.push(child);
-        } else if let Some(idx) = arr_mut
-            .elements
-            .iter()
-            .find(|(_k, el)| extract_node_id(el) == ref_id)
-            .map(|(k, _)| *k)
         {
-            arr_mut.insert_and_shift(idx, child);
-        } else {
-            arr_mut.push(child);
+            let mut arr_mut = arr.borrow_mut();
+            if ref_id == -9999 {
+                arr_mut.push(child);
+            } else if let Some(idx) = arr_mut
+                .elements
+                .iter()
+                .find(|(_k, el)| extract_node_id(el) == ref_id)
+                .map(|(k, _)| *k)
+            {
+                arr_mut.insert_and_shift(idx, child);
+            } else {
+                arr_mut.push(child);
+            }
         }
         refresh_element_children_metadata(parent);
     }
@@ -4657,8 +4837,6 @@ fn make_canvas_2d_context(canvas: JsValue) -> JsValue {
     );
 
     // ── Drawing methods (stubs that record operations) ──
-    let noop = native_fn("noop", |_, _| JsValue::Undefined);
-
     // Rectangles
     ctx.set_property(String::from("fillRect"), native_fn("fillRect", ctx_noop));
     ctx.set_property(

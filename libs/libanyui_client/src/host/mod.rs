@@ -1243,6 +1243,7 @@ pub fn clipboard_get(_buf: &mut [u8]) -> u32 {
     0
 }
 pub fn clipboard_set(_text: &str) {}
+pub fn set_menubar_visible(_visible: bool) {}
 
 pub fn get_key_info() -> KeyEvent {
     KeyEvent {
