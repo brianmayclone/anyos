@@ -533,7 +533,7 @@ pub fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
     match crate::task::scheduler::current_fd_get(fd) {
         Some(entry) => match entry.kind {
             FdKind::File { global_id } => {
-                match crate::fs::vfs::lseek(global_id, offset as i32, whence) {
+                match crate::fs::vfs::lseek(global_id, offset as i64, whence) {
                     Ok(pos) => pos,
                     Err(e) => fs_err(e),
                 }

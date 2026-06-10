@@ -64,6 +64,28 @@ const BOUNCE_BUF_SECTORS: u32 = 1024;
 const BOUNCE_BUF_SIZE: usize = BOUNCE_BUF_SECTORS as usize * 512;
 const BOUNCE_BUF_FRAMES: usize = BOUNCE_BUF_SIZE / 4096; // 128
 const AHCI_FAST_SPIN_ITERS: usize = 512;
+
+/// Diagnostics: how many write batches went out via direct PRDT (zero-copy)
+/// vs. through the bounce buffer (extra memcpy). Logged periodically so the
+/// bounce ratio is measurable from anyos.log instead of guessed.
+static AHCI_WRITE_DIRECT: AtomicU32 = AtomicU32::new(0);
+static AHCI_WRITE_BOUNCED: AtomicU32 = AtomicU32::new(0);
+
+fn note_write_path(direct: bool) {
+    let (bumped, other) = if direct {
+        (&AHCI_WRITE_DIRECT, &AHCI_WRITE_BOUNCED)
+    } else {
+        (&AHCI_WRITE_BOUNCED, &AHCI_WRITE_DIRECT)
+    };
+    let n = bumped.fetch_add(1, Ordering::Relaxed) + 1;
+    if !direct && n % 512 == 0 {
+        crate::serial_verbose_println!(
+            "AHCI: write path stats: {} bounced / {} direct batches",
+            n,
+            other.load(Ordering::Relaxed)
+        );
+    }
+}
 const AHCI_POLL_YIELD_EVERY: usize = 256;
 const AHCI_MAX_COMMAND_SLOTS: usize = 8;
 // Keep non-queueable commands behind the AHCI serialized gate; data I/O can use
@@ -1446,6 +1468,7 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
         let ok = if let Some(prdt_len) =
             build_prdt_from_virt(src, byte_count, ahci.dma_64bit, &mut prdt)
         {
+            note_write_path(true);
             unsafe {
                 issue_command_prdt(
                     ahci,
@@ -1457,6 +1480,7 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
                 )
             }
         } else {
+            note_write_path(false);
             let serialized = !is_ncq_command(command);
             let serial_gate = if serialized {
                 Some(acquire_primary_serial_gate())

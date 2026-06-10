@@ -45,6 +45,7 @@ pub(super) fn start_userspace(_boot_info: &BootInfo, nogui: bool) -> ! {
     );
     task::scheduler::spawn(task::cpu_monitor::start, 10, "cpu_monitor");
     task::scheduler::spawn(drivers::usb::poll_thread, 50, "usb_poll");
+    task::scheduler::spawn(crate::fs::vfs::writeback_daemon, 50, "fs_writeback");
 
     drivers::boot_console::stop_spinner();
 

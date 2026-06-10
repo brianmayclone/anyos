@@ -284,10 +284,9 @@ pub(super) fn linux_pipe2(pipefd_ptr: u64, linux_flags: u64) -> u64 {
 }
 
 pub(super) fn linux_lseek(fd: u32, offset: u64, whence: u64) -> u64 {
+    // Positions are limited by the VFS's u32 file range (4 GiB), not by i32 —
+    // the final range check happens in vfs::lseek after whence is applied.
     let signed_offset = offset as i64;
-    if signed_offset <= i32::MIN as i64 || signed_offset > i32::MAX as i64 {
-        return linux_err(EINVAL);
-    }
     let whence = match whence {
         0 | 1 | 2 => whence as u32,
         _ => return linux_err(EINVAL),
@@ -296,7 +295,7 @@ pub(super) fn linux_lseek(fd: u32, offset: u64, whence: u64) -> u64 {
     if let Some(entry) = crate::task::scheduler::current_fd_get(fd) {
         match entry.kind {
             crate::fs::fd_table::FdKind::File { global_id } => {
-                return match crate::fs::vfs::lseek(global_id, signed_offset as i32, whence) {
+                return match crate::fs::vfs::lseek(global_id, signed_offset, whence) {
                     Ok(pos) => pos as u64,
                     Err(e) => linux_err(fs_errno(e)),
                 };
@@ -536,9 +535,9 @@ fn linux_read_fd_kernel(fd: u32, buf: &mut [u8], offset: Option<u64>) -> Result<
         }
         let (_file_type, _size, old_pos, _mtime) =
             crate::fs::vfs::fstat(global_id).map_err(fs_errno)?;
-        crate::fs::vfs::lseek(global_id, offset as i32, 0).map_err(fs_errno)?;
+        crate::fs::vfs::lseek(global_id, offset as i64, 0).map_err(fs_errno)?;
         let result = crate::fs::vfs::read(global_id, buf).map_err(fs_errno);
-        let _ = crate::fs::vfs::lseek(global_id, old_pos as i32, 0);
+        let _ = crate::fs::vfs::lseek(global_id, old_pos as i64, 0);
         result
     } else {
         crate::fs::vfs::read(global_id, buf).map_err(fs_errno)
@@ -553,9 +552,9 @@ fn linux_write_fd_kernel(fd: u32, buf: &[u8], offset: Option<u64>) -> Result<usi
         }
         let (_file_type, _size, old_pos, _mtime) =
             crate::fs::vfs::fstat(global_id).map_err(fs_errno)?;
-        crate::fs::vfs::lseek(global_id, offset as i32, 0).map_err(fs_errno)?;
+        crate::fs::vfs::lseek(global_id, offset as i64, 0).map_err(fs_errno)?;
         let result = crate::fs::vfs::write(global_id, buf).map_err(fs_errno);
-        let _ = crate::fs::vfs::lseek(global_id, old_pos as i32, 0);
+        let _ = crate::fs::vfs::lseek(global_id, old_pos as i64, 0);
         result
     } else {
         crate::fs::vfs::write(global_id, buf).map_err(fs_errno)
@@ -563,13 +562,13 @@ fn linux_write_fd_kernel(fd: u32, buf: &[u8], offset: Option<u64>) -> Result<usi
 }
 
 fn linux_write_fd_at(fd: u32, buf_ptr: u64, len: usize, offset: u64) -> Result<usize, i32> {
-    if offset > i32::MAX as u64 {
+    if offset > u32::MAX as u64 {
         return Err(EINVAL);
     }
     let global_id = linux_file_global_id(fd)?;
     let (_file_type, _size, old_pos, _mtime) =
         crate::fs::vfs::fstat(global_id).map_err(fs_errno)?;
-    crate::fs::vfs::lseek(global_id, offset as i32, 0).map_err(fs_errno)?;
+    crate::fs::vfs::lseek(global_id, offset as i64, 0).map_err(fs_errno)?;
 
     let mut total = 0usize;
     let mut result = Ok(0usize);
@@ -603,7 +602,7 @@ fn linux_write_fd_at(fd: u32, buf_ptr: u64, len: usize, offset: u64) -> Result<u
         }
     }
 
-    let _ = crate::fs::vfs::lseek(global_id, old_pos as i32, 0);
+    let _ = crate::fs::vfs::lseek(global_id, old_pos as i64, 0);
     result
 }
 

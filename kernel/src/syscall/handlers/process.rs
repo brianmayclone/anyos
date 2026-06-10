@@ -60,6 +60,17 @@ pub fn sys_exit(status: u32) -> u32 {
         }
     }
 
+    // Write MAP_SHARED file mappings back to their files while the user
+    // address space is still active — the dirty pages are read through
+    // their user virtual addresses. Only the last thread of the address
+    // space drops the registry entries.
+    if let Some(pd_phys) = pd {
+        crate::syscall::linux::shared_mmap_writeback_on_exit(
+            pd_phys.as_u64(),
+            !crate::task::scheduler::has_live_pd_siblings(),
+        );
+    }
+
     // Clean up shared memory mappings while still in user PD context.
     // Must happen BEFORE switching CR3, so unmap_page operates on the
     // correct page tables via recursive mapping.
@@ -436,9 +447,10 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
         while addr < old_page_end {
             let pte = virtual_mem::read_pte(VirtAddr::new(addr));
             if pte & 1 != 0 {
-                let phys = PhysAddr::new(pte & 0x000F_FFFF_FFFF_F000);
                 virtual_mem::unmap_page(VirtAddr::new(addr));
-                physical::free_frame(phys);
+                // Heap pages can be CoW-shared after fork — release_user_frame
+                // frees only when this was the last referent.
+                virtual_mem::release_user_frame(pte);
                 freed += 1;
             }
             addr += PAGE_SIZE;
@@ -809,9 +821,11 @@ fn sys_munmap_impl(addr: u64, size: u64, high: bool) -> u64 {
     for _ in 0..num_pages {
         let pte = virtual_mem::read_pte(VirtAddr::new(page_addr as u64));
         if pte & 1 != 0 {
-            let phys_addr = crate::memory::address::PhysAddr::new(pte & 0x000F_FFFF_FFFF_F000);
             virtual_mem::unmap_page(VirtAddr::new(page_addr as u64));
-            physical::free_frame(phys_addr);
+            // CoW/VRAM aware: a fork-shared frame is only freed by its last
+            // referent; blindly free_frame()ing it here would corrupt the
+            // sibling process still mapping it.
+            virtual_mem::release_user_frame(pte);
             freed += 1;
         }
         page_addr += PAGE_SIZE;

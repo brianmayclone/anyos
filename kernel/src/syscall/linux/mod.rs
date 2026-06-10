@@ -16,6 +16,7 @@ mod memory;
 mod path;
 mod process;
 mod procfs;
+mod shared_mmap;
 mod socket;
 mod trace;
 
@@ -31,6 +32,7 @@ use procfs::*;
 use socket::*;
 
 pub(crate) use process::futex_wake_addr;
+pub(crate) use shared_mmap::writeback_on_exit as shared_mmap_writeback_on_exit;
 pub(crate) use socket::{socket_decref, socket_incref};
 
 pub(crate) fn set_trace_enabled(enabled: bool) {

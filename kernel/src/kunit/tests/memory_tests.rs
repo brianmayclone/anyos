@@ -22,6 +22,10 @@ pub static SUITE: TestSuite = TestSuite {
             run: test_heap_committed_nonzero,
         },
         TestCase {
+            name: "cow_refcount_roundtrip",
+            run: test_cow_refcount_roundtrip,
+        },
+        TestCase {
             name: "heap_stats_nonzero",
             run: test_heap_stats_nonzero,
         },
@@ -258,4 +262,11 @@ fn test_slab_cache_reuses_object_slot(ctx: &mut TestContext) {
     };
     let second_addr = (&*second as *const SlabTestObj) as usize;
     ctx.expect_eq(second_addr, first_addr, "slab reused freed object slot");
+}
+
+fn test_cow_refcount_roundtrip(ctx: &mut TestContext) {
+    ctx.expect_true(
+        crate::memory::virtual_mem::kunit_cow_refcount_roundtrip(),
+        "CoW refcount fork-inc/release/saturation invariants",
+    );
 }

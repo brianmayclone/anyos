@@ -359,6 +359,30 @@ static NEXT_REBALANCE_TICK: AtomicU32 = AtomicU32::new(0);
 static SLEEPER_WAKE_ARMED: AtomicBool = AtomicBool::new(false);
 static NEXT_SLEEPER_WAKE_TICK: AtomicU32 = AtomicU32::new(0);
 
+/// Round-robin cursor for picking the remote CPU that drains a deferred wake.
+static DEFERRED_WAKE_KICK_RR: AtomicU32 = AtomicU32::new(0);
+
+/// Ask another CPU to run its scheduler now so a just-queued deferred wake is
+/// drained immediately instead of waiting for the next 1 ms timer tick. This
+/// bounds I/O completion latency: the AHCI/network IRQ path falls back to
+/// deferred_wake exactly when the scheduler lock is contended, which is also
+/// when the next tick may be far away for the sleeping waiter.
+fn kick_remote_drain() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let count = crate::arch::x86::smp::cpu_count() as usize;
+        if count <= 1 {
+            return;
+        }
+        let my = crate::arch::x86::smp::current_cpu_id() as usize;
+        let next = DEFERRED_WAKE_KICK_RR.fetch_add(1, Ordering::Relaxed) as usize % count;
+        let target = if next == my { (next + 1) % count } else { next };
+        if target != my {
+            crate::arch::x86::smp::resched_cpu(target);
+        }
+    }
+}
+
 /// Enqueue a TID for deferred wake (called from IRQ context, lock-free).
 /// Uses circular overwrite when all slots are occupied for fairer eviction.
 pub fn deferred_wake(tid: u32) {
@@ -369,6 +393,7 @@ pub fn deferred_wake(tid: u32) {
             .is_ok()
         {
             DEFERRED_WAKE_PENDING.fetch_add(1, Ordering::Relaxed);
+            kick_remote_drain();
             return;
         }
         // If this slot already holds our TID, no-op (avoid duplicate wakes).

@@ -202,7 +202,7 @@ pub fn free_slot(slot: SwapSlot) -> Result<(), SwapError> {
 pub fn write_page(slot: SwapSlot, page: &[u8; FRAME_SIZE]) -> Result<(), SwapError> {
     let (fd, off) = begin_slot_io(slot)?;
     let _write_guard = SWAP_WRITE_LOCK.lock();
-    let result = if crate::fs::vfs::lseek(fd, off as i32, 0).is_ok() {
+    let result = if crate::fs::vfs::lseek(fd, off as i64, 0).is_ok() {
         match crate::fs::vfs::write(fd, page) {
             Ok(written) if written == FRAME_SIZE => Ok(()),
             Ok(_) | Err(_) => Err(SwapError::Io),

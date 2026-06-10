@@ -68,9 +68,24 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
             }
         }
     }
-    if shared && (prot & LINUX_PROT_WRITE) != 0 {
+    // Shared file mappings are backed by anonymous pages plus dirty-page
+    // write-back (see shared_mmap.rs); the file path is required for that.
+    // Shared anonymous mappings work correctly between CLONE_VM threads
+    // (same address space); a fork() child silently degrades to a private
+    // copy — logged so the gap is visible.
+    let shared_file_path = if shared && !anonymous && fd <= u32::MAX as u64 {
+        crate::task::scheduler::current_fd_get(fd as u32).and_then(|entry| match entry.kind {
+            crate::fs::fd_table::FdKind::File { global_id } => {
+                crate::fs::vfs::get_fd_path(global_id).ok()
+            }
+            _ => None,
+        })
+    } else {
+        None
+    };
+    if shared && !anonymous && (prot & LINUX_PROT_WRITE) != 0 && shared_file_path.is_none() {
         crate::serial_verbose_println!(
-            "lxe linux mmap: reject shared-write addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
+            "lxe linux mmap: reject shared-write without file path addr={:#x} len={:#x} prot={:#x} flags={:#x} fd={:#x} off={:#x}",
             addr,
             len,
             prot,
@@ -79,6 +94,13 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
             offset
         );
         return linux_err(ENOSYS);
+    }
+    if shared && anonymous && (prot & LINUX_PROT_WRITE) != 0 {
+        crate::serial_verbose_println!(
+            "lxe linux mmap: shared-anon mapping (thread-shared only, not fork-shared) addr={:#x} len={:#x}",
+            addr,
+            len
+        );
     }
     if anonymous && !linux_fd_is_minus_one(fd) {
         crate::serial_verbose_println!(
@@ -180,6 +202,10 @@ pub(super) fn linux_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, of
             );
             return linux_err(errno);
         }
+        if let Some(path) = shared_file_path {
+            super::shared_mmap::register_shared_file_mapping(mapped, len, path, offset);
+            super::shared_mmap::note_initial_fill_complete(mapped, len);
+        }
     }
     if let Some(path) = mapped_path {
         crate::serial_verbose_println!(
@@ -216,6 +242,8 @@ pub(super) fn linux_munmap(addr: u64, len: u64) -> u64 {
     if linux_fb_munmap(addr, len) {
         return 0;
     }
+    // Shared file mappings must reach the file before the pages disappear.
+    super::shared_mmap::writeback_before_munmap(addr, len);
     let ret = if addr <= u32::MAX as u64 {
         handlers::sys_munmap(addr as u32, len as u32) as u64
     } else {
@@ -369,6 +397,12 @@ pub(super) fn linux_mremap(
         copied += chunk_len as u64;
     }
 
+    // Move a shared file mapping's registry entry to the new address BEFORE
+    // the old range is unmapped — linux_munmap would otherwise write back
+    // and drop the entry, losing write-back for the moved mapping. The copy
+    // above marked the target pages dirty, so nothing is missed.
+    super::shared_mmap::mremap_update(old_addr, target, new_aligned);
+
     let ret = linux_munmap(old_addr, old_aligned);
     if linux_is_err(ret) {
         let _ = linux_munmap(target, new_aligned);
@@ -416,6 +450,7 @@ fn linux_mremap_shrink_in_place(
                 return ret;
             }
         }
+        super::shared_mmap::mremap_update(old_addr, old_addr, new_aligned);
         crate::serial_verbose_println!(
             "lxe linux mremap: shrink/in-place old={:#x} old_size={:#x} new_size={:#x} -> {:#x}",
             old_addr,
@@ -501,7 +536,16 @@ pub(super) fn linux_msync(addr: u64, len: u64, flags: u64) -> u64 {
         return linux_err(ENOMEM);
     }
 
-    0
+    // Write modified pages of shared file mappings back to their files.
+    // MS_SYNC requires the data to be durable before returning; MS_ASYNC
+    // schedules the same write-back synchronously (we have no async queue)
+    // but skips the device cache flush. Private/anonymous ranges have no
+    // backing file and correctly fall through as a no-op.
+    let durable = (flags & MS_SYNC) != 0;
+    match super::shared_mmap::msync_range(addr, len, durable) {
+        Ok(()) => 0,
+        Err(errno) => linux_err(errno),
+    }
 }
 
 pub(super) fn linux_swapon(path_ptr: u64, flags: u64) -> u64 {
@@ -673,7 +717,7 @@ pub(super) fn linux_read_fd_at(
     len: usize,
     offset: u64,
 ) -> Result<usize, i32> {
-    if offset > i32::MAX as u64 {
+    if offset > u32::MAX as u64 {
         return Err(EINVAL);
     }
     if len == 0 {
@@ -726,8 +770,8 @@ fn linux_read_global_chunk_at(global_id: u32, offset: u64, out: &mut [u8]) -> Re
     }
     let (_file_type, _size, old_pos, _mtime) =
         crate::fs::vfs::fstat(global_id).map_err(fs_errno)?;
-    crate::fs::vfs::lseek(global_id, offset as i32, 0).map_err(fs_errno)?;
+    crate::fs::vfs::lseek(global_id, offset as i64, 0).map_err(fs_errno)?;
     let read_result = crate::fs::vfs::read(global_id, out).map_err(fs_errno);
-    let _ = crate::fs::vfs::lseek(global_id, old_pos as i32, 0);
+    let _ = crate::fs::vfs::lseek(global_id, old_pos as i64, 0);
     read_result
 }

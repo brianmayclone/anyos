@@ -10,6 +10,9 @@ const LINUX_FUTEX_WAKE_BATCH: usize = LINUX_FUTEX_WAIT_SLOTS * LINUX_FUTEX_WAITE
 
 const FUTEX_WAIT: u64 = 0;
 const FUTEX_WAKE: u64 = 1;
+const FUTEX_REQUEUE: u64 = 3;
+const FUTEX_CMP_REQUEUE: u64 = 4;
+const FUTEX_WAKE_OP: u64 = 5;
 const FUTEX_WAIT_BITSET: u64 = 9;
 const FUTEX_WAKE_BITSET: u64 = 10;
 const FUTEX_CMD_MASK: u64 = 0x7f;
@@ -1573,6 +1576,36 @@ fn futex_add_waiter_locked(
     false
 }
 
+/// Remove `tid` from whichever futex slot it is queued on. Needed after a
+/// blocking wait returns: FUTEX_REQUEUE may have moved the waiter to a
+/// different uaddr, so removal must search by tid — removing by the original
+/// uaddr would leak the entry and let a later wake on the requeue target hit
+/// a thread that is no longer waiting.
+fn futex_remove_tid_locked(
+    slots: &mut [LinuxFutexSlot; LINUX_FUTEX_WAIT_SLOTS],
+    tid: u32,
+) -> bool {
+    for slot in slots.iter_mut() {
+        if slot.uaddr == 0 {
+            continue;
+        }
+        let mut removed = false;
+        for waiter in slot.tids.iter_mut() {
+            if *waiter == tid {
+                *waiter = 0;
+                removed = true;
+            }
+        }
+        if removed {
+            if slot.tids.iter().all(|t| *t == 0) {
+                slot.uaddr = 0;
+            }
+            return true;
+        }
+    }
+    false
+}
+
 fn futex_remove_waiter_locked(
     slots: &mut [LinuxFutexSlot; LINUX_FUTEX_WAIT_SLOTS],
     uaddr: u64,
@@ -1695,9 +1728,11 @@ fn linux_futex_wait(uaddr: u64, expected: u64, timeout_ptr: u64) -> u64 {
 
     crate::task::scheduler::schedule();
 
+    // Search by tid, not uaddr: FUTEX_REQUEUE may have moved this waiter to
+    // a different futex while it was blocked.
     let timed_out = {
         let mut slots = LINUX_FUTEX_WAITERS.lock();
-        futex_remove_waiter_locked(&mut slots, uaddr, tid)
+        futex_remove_tid_locked(&mut slots, tid)
     };
     if timed_out && deadline.is_some() {
         return linux_err(ETIMEDOUT);
@@ -1705,18 +1740,150 @@ fn linux_futex_wait(uaddr: u64, expected: u64, timeout_ptr: u64) -> u64 {
     0
 }
 
+/// FUTEX_REQUEUE / FUTEX_CMP_REQUEUE: wake up to `max_wake` waiters of
+/// `uaddr`, move up to `max_requeue` of the remaining ones onto `uaddr2`.
+/// Waiters that cannot be requeued (target slot full) are woken instead —
+/// futex semantics allow spurious wakes but never lost waiters.
+fn futex_requeue(
+    uaddr: u64,
+    max_wake: u32,
+    max_requeue: u32,
+    uaddr2: u64,
+    expected: Option<u32>,
+) -> u64 {
+    if uaddr == 0 || uaddr2 == 0 || uaddr == uaddr2 {
+        return linux_err(EINVAL);
+    }
+    if let Some(expected) = expected {
+        match futex_read_u32(uaddr) {
+            Ok(value) if value == expected => {}
+            Ok(_) => return linux_err(EAGAIN),
+            Err(errno) => return linux_err(errno),
+        }
+    }
+
+    let wake_limit = (max_wake as usize).min(LINUX_FUTEX_WAKE_BATCH);
+    let mut wake_tids = [0u32; LINUX_FUTEX_WAKE_BATCH];
+    let mut woken = 0usize;
+    let mut requeued = 0u32;
+    {
+        let mut slots = LINUX_FUTEX_WAITERS.lock();
+        // Detach all waiters from the source futex first; the slot borrow
+        // must end before futex_add_waiter_locked touches the target slot.
+        let mut pending = [0u32; LINUX_FUTEX_WAITERS_PER_SLOT];
+        let mut pending_count = 0usize;
+        for slot in slots.iter_mut() {
+            if slot.uaddr != uaddr {
+                continue;
+            }
+            for waiter in slot.tids.iter_mut() {
+                if *waiter != 0 {
+                    pending[pending_count] = *waiter;
+                    pending_count += 1;
+                    *waiter = 0;
+                }
+            }
+            slot.uaddr = 0;
+            break;
+        }
+        for &tid in pending.iter().take(pending_count) {
+            if woken < wake_limit {
+                wake_tids[woken] = tid;
+                woken += 1;
+            } else if requeued < max_requeue && futex_add_waiter_locked(&mut slots, uaddr2, tid) {
+                requeued += 1;
+            } else if woken < LINUX_FUTEX_WAKE_BATCH {
+                wake_tids[woken] = tid;
+                woken += 1;
+            }
+        }
+    }
+    for tid in wake_tids.iter().take(woken) {
+        crate::task::scheduler::wake_thread(*tid);
+    }
+    if expected.is_some() {
+        // FUTEX_CMP_REQUEUE returns woken + requeued.
+        woken as u64 + requeued as u64
+    } else {
+        woken as u64
+    }
+}
+
+/// FUTEX_WAKE_OP: atomically read-modify-write *uaddr2 per the encoded op,
+/// wake `max_wake1` waiters on uaddr, and if the old value of *uaddr2
+/// satisfies the encoded comparison, wake `max_wake2` waiters on uaddr2.
+/// glibc uses this for pthread condition variable signalling.
+fn linux_futex_wake_op(uaddr: u64, max_wake1: u32, max_wake2: u32, uaddr2: u64, val3: u64) -> u64 {
+    const FUTEX_OP_OPARG_SHIFT: u32 = 8;
+    let mut op = ((val3 >> 28) & 0xf) as u32;
+    let cmp = ((val3 >> 24) & 0xf) as u32;
+    let mut oparg = ((val3 >> 12) & 0xfff) as u32;
+    let cmparg = (val3 & 0xfff) as u32;
+    if op & FUTEX_OP_OPARG_SHIFT != 0 {
+        oparg = 1u32.wrapping_shl(oparg & 31);
+        op &= !FUTEX_OP_OPARG_SHIFT;
+    }
+
+    // The RMW runs under the futex lock so it is at least serialized against
+    // every other futex operation in the system.
+    let old = {
+        let _slots = LINUX_FUTEX_WAITERS.lock();
+        let old = match futex_read_u32(uaddr2) {
+            Ok(value) => value,
+            Err(errno) => return linux_err(errno),
+        };
+        let new = match op {
+            0 => oparg,                   // FUTEX_OP_SET
+            1 => old.wrapping_add(oparg), // FUTEX_OP_ADD
+            2 => old | oparg,             // FUTEX_OP_OR
+            3 => old & !oparg,            // FUTEX_OP_ANDN
+            4 => old ^ oparg,             // FUTEX_OP_XOR
+            _ => return linux_err(ENOSYS),
+        };
+        if !handlers::helpers::copy_to_user_bytes(uaddr2, &new.to_le_bytes(), 4) {
+            return linux_err(EFAULT);
+        }
+        old
+    };
+
+    let mut woken = futex_wake_addr(uaddr, max_wake1) as u64;
+    let old_signed = old as i32;
+    let cmparg_signed = cmparg as i32;
+    let cond = match cmp {
+        0 => old == cmparg,          // FUTEX_OP_CMP_EQ
+        1 => old != cmparg,          // FUTEX_OP_CMP_NE
+        2 => old_signed < cmparg_signed,  // FUTEX_OP_CMP_LT
+        3 => old_signed <= cmparg_signed, // FUTEX_OP_CMP_LE
+        4 => old_signed > cmparg_signed,  // FUTEX_OP_CMP_GT
+        5 => old_signed >= cmparg_signed, // FUTEX_OP_CMP_GE
+        _ => return linux_err(ENOSYS),
+    };
+    if cond {
+        woken += futex_wake_addr(uaddr2, max_wake2) as u64;
+    }
+    woken
+}
+
 pub(super) fn linux_futex(
     uaddr: u64,
     op: u64,
     val: u64,
     timeout_ptr: u64,
-    _uaddr2: u64,
-    _val3: u64,
+    uaddr2: u64,
+    val3: u64,
 ) -> u64 {
     let cmd = op & FUTEX_CMD_MASK;
     match cmd {
         FUTEX_WAIT | FUTEX_WAIT_BITSET => linux_futex_wait(uaddr, val, timeout_ptr),
         FUTEX_WAKE | FUTEX_WAKE_BITSET => futex_wake_addr(uaddr, val as u32) as u64,
+        // For REQUEUE ops the 4th argument is val2 (max requeue count), not
+        // a timeout pointer.
+        FUTEX_REQUEUE => futex_requeue(uaddr, val as u32, timeout_ptr as u32, uaddr2, None),
+        FUTEX_CMP_REQUEUE => {
+            futex_requeue(uaddr, val as u32, timeout_ptr as u32, uaddr2, Some(val3 as u32))
+        }
+        // For WAKE_OP the 4th argument is val2 (max wakes on uaddr2).
+        FUTEX_WAKE_OP => linux_futex_wake_op(uaddr, val as u32, timeout_ptr as u32, uaddr2, val3),
         _ => linux_err(ENOSYS),
     }
 }

@@ -1619,7 +1619,7 @@ pub(super) fn linux_getdents64(fd: u32, dirent_ptr: u64, count: u64) -> u64 {
         written += reclen;
         next_index = idx + 1;
     }
-    let _ = crate::fs::vfs::lseek(global_id, next_index as i32, 0);
+    let _ = crate::fs::vfs::lseek(global_id, next_index as i64, 0);
     written as u64
 }
 
@@ -1688,7 +1688,7 @@ pub(super) fn linux_getdents(fd: u32, dirent_ptr: u64, count: u64) -> u64 {
         written += reclen;
         next_index = idx + 1;
     }
-    let _ = crate::fs::vfs::lseek(global_id, next_index as i32, 0);
+    let _ = crate::fs::vfs::lseek(global_id, next_index as i64, 0);
     written as u64
 }
 

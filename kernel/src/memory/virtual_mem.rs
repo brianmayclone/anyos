@@ -833,6 +833,60 @@ pub fn read_pte(virt: VirtAddr) -> u64 {
     }
 }
 
+/// Clear the hardware dirty bit (bit 6) of the leaf PTE for `virt` and
+/// invalidate the local TLB entry. Returns the previous dirty state, or
+/// `None` when the address is unmapped or covered by a huge-page mapping.
+///
+/// Callers that clear dirty bits on pages other CPUs may have cached must
+/// follow up with a TLB shootdown: a remote TLB entry that still carries
+/// D=1 lets that CPU write without re-setting the bit in the PTE.
+pub fn clear_pte_dirty(virt: VirtAddr) -> Option<bool> {
+    const PAGE_DIRTY: u64 = 1 << 6;
+    let pml4i = virt.pml4_index();
+    let pdpti = virt.pdpt_index();
+    let pdi = virt.pd_index();
+    let pti = virt.pt_index();
+
+    unsafe {
+        let pml4_ptr = RECURSIVE_PML4_BASE as *const u64;
+        if pml4_ptr.add(pml4i).read_volatile() & PAGE_PRESENT == 0 {
+            return None;
+        }
+        let pdpt_ptr = recursive_pdpt_base(virt) as *const u64;
+        let pdpte = pdpt_ptr.add(pdpti).read_volatile();
+        if pdpte & PAGE_PRESENT == 0 || pdpte & PAGE_HUGE != 0 {
+            return None;
+        }
+        let pd_ptr = recursive_pd_base(virt) as *const u64;
+        let pde = pd_ptr.add(pdi).read_volatile();
+        if pde & PAGE_PRESENT == 0 || pde & PAGE_HUGE != 0 {
+            return None;
+        }
+        let pt_ptr = recursive_pt_base(virt) as *mut u64;
+        let pte = pt_ptr.add(pti).read_volatile();
+        if pte & PAGE_PRESENT == 0 {
+            return None;
+        }
+        let was_dirty = pte & PAGE_DIRTY != 0;
+        if was_dirty {
+            pt_ptr.add(pti).write_volatile(pte & !PAGE_DIRTY);
+            core::arch::asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
+        }
+        Some(was_dirty)
+    }
+}
+
+/// Read the dirty state of the leaf PTE for `virt` without modifying it.
+/// Returns `None` when the address is unmapped or huge-page mapped.
+pub fn pte_is_dirty(virt: VirtAddr) -> Option<bool> {
+    const PAGE_DIRTY: u64 = 1 << 6;
+    let pte = read_pte(virt);
+    if pte & PAGE_PRESENT == 0 || pte & PAGE_HUGE != 0 {
+        return None;
+    }
+    Some(pte & PAGE_DIRTY != 0)
+}
+
 /// Translate a virtual address to its physical address using the current page tables.
 ///
 /// Uses the recursive mapping (PML4[510]) to read the leaf PTE.
@@ -1204,6 +1258,322 @@ static CLONE_TEMP_LOCKS: [core::sync::atomic::AtomicBool; MAX_CLONE_CPUS] = {
 /// - All other user pages: copied (new frame)
 ///
 /// Returns the physical address of the child's new PML4, or None on OOM.
+// =============================================================================
+// Copy-on-write fork support
+// =============================================================================
+
+/// PTE bit 10 (OS-available): page is a copy-on-write share created by fork.
+/// The frame's reference count lives in `COW_REFCOUNTS`. Only pages that were
+/// WRITABLE at fork time ever get this bit — genuinely read-only pages are
+/// eager-copied so a user write to them still faults fatally instead of
+/// silently becoming writable through CoW resolution.
+pub const PTE_COW: u64 = 1 << 10;
+
+/// Per-frame CoW share counts, indexed by physical frame number. Lock-free
+/// (atomics only) so the fork walk and `destroy_user_page_directory` can use
+/// it with interrupts disabled without risking cross-CPU spinlock stalls.
+/// 0 = frame is not CoW-shared; N >= 1 = number of PTEs referencing the frame
+/// with PTE_COW set. Allocated lazily at the first fork.
+static COW_REFCOUNTS_PTR: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+static COW_REFCOUNTS_LEN: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+static COW_TABLE_INIT_LOCK: AtomicBool = AtomicBool::new(false);
+/// Serializes CoW fault resolution (PTE rewrite + copy). Page copies are ~4 KiB
+/// memcpys, so the hold time is short; correctness first, sharding later.
+static COW_FAULT_LOCK: AtomicBool = AtomicBool::new(false);
+/// Temp VA for the fault-path page copy — past the per-CPU clone temp pages.
+const COW_TEMP_VA: u64 = 0xFFFF_FFFF_BFF0_3000u64 + (MAX_CLONE_CPUS as u64 * 2 * 0x1000);
+/// Share counts saturate here; saturated frames fall back to eager copy.
+const COW_REFCOUNT_MAX: u8 = 250;
+
+fn cow_refcounts() -> Option<&'static [core::sync::atomic::AtomicU8]> {
+    let ptr = COW_REFCOUNTS_PTR.load(Ordering::Acquire);
+    if ptr == 0 {
+        return None;
+    }
+    let len = COW_REFCOUNTS_LEN.load(Ordering::Relaxed);
+    Some(unsafe { core::slice::from_raw_parts(ptr as *const core::sync::atomic::AtomicU8, len) })
+}
+
+/// Allocate the per-frame CoW count table (one byte per physical frame).
+/// Returns false if allocation fails — fork then falls back to eager copies.
+fn ensure_cow_table() -> bool {
+    if COW_REFCOUNTS_PTR.load(Ordering::Acquire) != 0 {
+        return true;
+    }
+    while COW_TABLE_INIT_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+    if COW_REFCOUNTS_PTR.load(Ordering::Acquire) != 0 {
+        COW_TABLE_INIT_LOCK.store(false, Ordering::Release);
+        return true;
+    }
+    let frames = physical::total_frames();
+    let mut table: alloc::vec::Vec<core::sync::atomic::AtomicU8> =
+        alloc::vec::Vec::with_capacity(frames);
+    for _ in 0..frames {
+        table.push(core::sync::atomic::AtomicU8::new(0));
+    }
+    let leaked: &'static mut [core::sync::atomic::AtomicU8] =
+        alloc::vec::Vec::leak(table);
+    COW_REFCOUNTS_LEN.store(leaked.len(), Ordering::Relaxed);
+    COW_REFCOUNTS_PTR.store(leaked.as_ptr() as usize, Ordering::Release);
+    COW_TABLE_INIT_LOCK.store(false, Ordering::Release);
+    crate::serial_verbose_println!(
+        "  CoW: refcount table ready ({} frames, {} KiB)",
+        frames,
+        frames / 1024
+    );
+    true
+}
+
+fn cow_slot(phys: u64) -> Option<&'static core::sync::atomic::AtomicU8> {
+    let table = cow_refcounts()?;
+    table.get((phys / FRAME_SIZE as u64) as usize)
+}
+
+/// Fork: account one more CoW reference for `phys`. A frame entering CoW for
+/// the first time gets count 2 (parent + child). Returns false when the frame
+/// cannot be CoW-shared (no table, frame outside table, count saturated) —
+/// the caller must eager-copy instead.
+fn cow_refcount_inc_for_fork(phys: u64) -> bool {
+    let Some(slot) = cow_slot(phys) else {
+        return false;
+    };
+    slot.fetch_update(Ordering::AcqRel, Ordering::Acquire, |c| {
+        if c >= COW_REFCOUNT_MAX {
+            None
+        } else if c == 0 {
+            Some(2)
+        } else {
+            Some(c + 1)
+        }
+    })
+    .is_ok()
+}
+
+/// Drop one CoW reference for `phys`. Returns true when the caller now owns
+/// the frame exclusively and is responsible for freeing (unmap/destroy) or
+/// claiming (fault path) it.
+fn cow_refcount_release(phys: u64) -> bool {
+    let Some(slot) = cow_slot(phys) else {
+        return true; // not tracked — treat as exclusively owned
+    };
+    match slot.fetch_update(Ordering::AcqRel, Ordering::Acquire, |c| {
+        if c == 0 {
+            None // not CoW — caller owns it
+        } else {
+            Some(c - 1)
+        }
+    }) {
+        Err(_) => true,       // count was 0: plain private frame
+        Ok(old) => old <= 1,  // released the last reference
+    }
+}
+
+/// Free or release a user frame according to its PTE: VRAM frames are owned
+/// by the GPU, CoW frames are refcounted, everything else goes back to the
+/// physical allocator. Shared-memory and DLL policy stays with the callers,
+/// which know those ranges.
+pub fn release_user_frame(pte: u64) {
+    if pte & PAGE_PRESENT == 0 || pte & PTE_VRAM != 0 {
+        return;
+    }
+    let phys = pte & ADDR_MASK;
+    if pte & PTE_COW != 0 {
+        if cow_refcount_release(phys) {
+            physical::free_frame(PhysAddr::new(phys));
+        }
+        return;
+    }
+    physical::free_frame(PhysAddr::new(phys));
+}
+
+/// Resolve a write fault on a copy-on-write page. Returns true when the fault
+/// was a CoW fault and has been resolved (the instruction can be retried);
+/// false when the fault is not CoW-related and normal handling should follow.
+///
+/// Works for user-mode writes and for kernel-mode writes into user buffers
+/// (CR0.WP=1 makes those fault too).
+pub fn handle_cow_fault(cr2: u64) -> bool {
+    // CoW pages only exist in the lower (user) half.
+    if cr2 >= 0x0000_8000_0000_0000 {
+        return false;
+    }
+    let virt = VirtAddr::new(cr2 & !(FRAME_SIZE as u64 - 1));
+
+    // Quick unlocked check to keep non-CoW faults cheap.
+    {
+        let pte = read_pte(virt);
+        if pte & PAGE_PRESENT == 0 {
+            return false;
+        }
+        if pte & PTE_COW == 0 {
+            if pte & PAGE_WRITABLE != 0 && pte & PAGE_USER != 0 {
+                // The PTE permits this write — the fault came from a stale
+                // TLB entry cached before another CPU resolved the CoW on
+                // this page. Flush locally and retry the instruction; a
+                // genuine protection violation never has a writable PTE.
+                unsafe {
+                    asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
+                }
+                return true;
+            }
+            return false;
+        }
+    }
+
+    while COW_FAULT_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+    let resolved = handle_cow_fault_locked(virt);
+    COW_FAULT_LOCK.store(false, Ordering::Release);
+    resolved
+}
+
+fn handle_cow_fault_locked(virt: VirtAddr) -> bool {
+    let pte = read_pte(virt);
+    if pte & PAGE_PRESENT == 0 || pte & PTE_COW == 0 {
+        return false;
+    }
+    if pte & PAGE_WRITABLE != 0 {
+        // Another thread of this address space resolved it while we waited
+        // on the lock — just retry the instruction.
+        return true;
+    }
+    let old_phys = pte & ADDR_MASK;
+
+    if cow_refcount_release(old_phys) {
+        // Last reference: take ownership in place, no copy needed.
+        let new_pte = (pte | PAGE_WRITABLE) & !PTE_COW;
+        if !write_leaf_pte(virt, new_pte) {
+            return false;
+        }
+    } else {
+        // Frame still shared: copy it into a private frame.
+        let Some(new_frame) = physical::alloc_frame_with(physical::FrameAllocPolicy::Any) else {
+            // OOM — restore our reference so accounting stays consistent and
+            // let the normal fault path kill the thread.
+            let _ = cow_refcount_inc_after_failed_copy(old_phys);
+            return false;
+        };
+        let temp = VirtAddr::new(COW_TEMP_VA);
+        unsafe {
+            if !map_page(temp, new_frame, PAGE_WRITABLE) {
+                let _ = cow_refcount_inc_after_failed_copy(old_phys);
+                physical::free_frame(new_frame);
+                return false;
+            }
+            // The old page is present and readable at its user VA in the
+            // current address space — copy straight from it.
+            core::ptr::copy_nonoverlapping(
+                virt.as_u64() as *const u8,
+                temp.as_u64() as *mut u8,
+                FRAME_SIZE,
+            );
+            unmap_page(temp);
+        }
+        let new_pte =
+            (new_frame.as_u64() & ADDR_MASK) | ((pte & !ADDR_MASK) | PAGE_WRITABLE) & !PTE_COW;
+        if !write_leaf_pte(virt, new_pte) {
+            let _ = cow_refcount_inc_after_failed_copy(old_phys);
+            physical::free_frame(new_frame);
+            return false;
+        }
+    }
+
+    // Local TLB entry was invalidated by write_leaf_pte; sibling threads of
+    // this address space on other CPUs may still cache the read-only entry.
+    // They would just re-fault and see the resolved PTE, which is harmless,
+    // so no synchronous shootdown is required here.
+    true
+}
+
+/// Re-add a reference dropped by `cow_refcount_release` when the copy could
+/// not be completed. Saturation is impossible here (we just released one).
+fn cow_refcount_inc_after_failed_copy(phys: u64) -> bool {
+    let Some(slot) = cow_slot(phys) else {
+        return false;
+    };
+    slot.fetch_add(1, Ordering::AcqRel);
+    true
+}
+
+/// Rewrite the leaf PTE for `virt` in the current address space and
+/// invalidate the local TLB entry. Returns false if the walk fails.
+fn write_leaf_pte(virt: VirtAddr, new_pte: u64) -> bool {
+    let pml4i = virt.pml4_index();
+    let pdpti = virt.pdpt_index();
+    let pdi = virt.pd_index();
+    let pti = virt.pt_index();
+    unsafe {
+        let pml4_ptr = RECURSIVE_PML4_BASE as *const u64;
+        if pml4_ptr.add(pml4i).read_volatile() & PAGE_PRESENT == 0 {
+            return false;
+        }
+        let pdpt_ptr = recursive_pdpt_base(virt) as *const u64;
+        let pdpte = pdpt_ptr.add(pdpti).read_volatile();
+        if pdpte & PAGE_PRESENT == 0 || pdpte & PAGE_HUGE != 0 {
+            return false;
+        }
+        let pd_ptr = recursive_pd_base(virt) as *const u64;
+        let pde = pd_ptr.add(pdi).read_volatile();
+        if pde & PAGE_PRESENT == 0 || pde & PAGE_HUGE != 0 {
+            return false;
+        }
+        let pt_ptr = recursive_pt_base(virt) as *mut u64;
+        pt_ptr.add(pti).write_volatile(new_pte);
+        asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
+    }
+    true
+}
+
+/// kunit: CoW refcount lifecycle — fork-inc (0→2, n→n+1, saturation refusal)
+/// and release (exclusive-ownership signal only at the last reference). These
+/// invariants are what keep a fork-shared frame from being freed or claimed
+/// while another process still maps it.
+#[cfg(feature = "kunit")]
+pub fn kunit_cow_refcount_roundtrip() -> bool {
+    if !ensure_cow_table() {
+        return false;
+    }
+    let Some(frame) = physical::alloc_frame_with(physical::FrameAllocPolicy::Any) else {
+        return false;
+    };
+    let phys = frame.as_u64();
+    let mut ok = true;
+
+    // A frame that never entered CoW is exclusively owned.
+    ok &= cow_refcount_release(phys);
+    // First fork: count 0 → 2 (parent + child).
+    ok &= cow_refcount_inc_for_fork(phys);
+    ok &= cow_slot(phys).map(|s| s.load(Ordering::Relaxed)) == Some(2);
+    // Second fork of the same frame: 2 → 3.
+    ok &= cow_refcount_inc_for_fork(phys);
+    // Releases: only the LAST one may signal "free/claim me".
+    ok &= !cow_refcount_release(phys); // 3 → 2
+    ok &= !cow_refcount_release(phys); // 2 → 1
+    ok &= cow_refcount_release(phys); // 1 → 0: exclusive
+    // Saturation: a frame at the cap must refuse further sharing (the fork
+    // falls back to an eager copy instead of overflowing the counter).
+    for _ in 0..COW_REFCOUNT_MAX {
+        let _ = cow_refcount_inc_for_fork(phys);
+    }
+    ok &= !cow_refcount_inc_for_fork(phys);
+    if let Some(slot) = cow_slot(phys) {
+        slot.store(0, Ordering::Relaxed);
+    }
+    physical::free_frame(frame);
+    ok
+}
+
 pub fn clone_user_page_directory(parent_pd: PhysAddr) -> Option<PhysAddr> {
     clone_user_page_directory_inner(parent_pd, true)
 }
@@ -1240,14 +1610,36 @@ fn clone_user_page_directory_inner(
         core::hint::spin_loop();
     }
 
-    // Collect pages to copy/share: (vaddr, parent_phys, flags, is_shared)
+    // Copy-on-write setup. When the refcount table is unavailable every page
+    // falls back to the eager-copy path, so fork never fails because of CoW.
+    let cow_enabled = ensure_cow_table();
+    // SHM frames are shared with other processes (compositor window buffers);
+    // write-protecting the parent's view would make its next present() fault
+    // and CoW-copy it away from the compositor. Eager-copy those, like before.
+    // Pre-collected before cli so the per-page check is a lock-free search.
+    let shm_frames = crate::ipc::shared_memory::collect_sorted_shm_frames();
+
+    /// How a parent page reaches the child address space.
+    #[derive(Clone, Copy, PartialEq)]
+    enum PageCopyMode {
+        /// Allocate a child frame and copy the contents (pre-CoW behavior).
+        Eager,
+        /// DLL RO page: share the frame, ownership stays with task::dll.
+        SharedDll,
+        /// Copy-on-write: share the frame read-only, refcounted.
+        Cow,
+    }
+
+    // Collect pages to copy/share: (vaddr, parent_phys, child_flags, mode)
     // We do this in two phases:
-    //   Phase A: Walk parent tables under cli (CR3 switched), collect page info
-    //   Phase B: Copy page contents with kernel CR3 (temp mappings)
+    //   Phase A: Walk parent tables under cli (CR3 switched), collect page
+    //            info and write-protect CoW pages in the parent
+    //   Phase B: Map CoW pages / copy eager pages with kernel CR3
     // This minimizes the time spent with interrupts disabled.
 
     // Use a Vec on the heap to avoid stack overflow (could be thousands of pages)
-    let mut pages_to_copy: alloc::vec::Vec<(u64, u64, u64, bool)> = alloc::vec::Vec::new();
+    let mut pages_to_copy: alloc::vec::Vec<(u64, u64, u64, PageCopyMode)> =
+        alloc::vec::Vec::new();
 
     unsafe {
         // Phase A: Walk parent's page tables
@@ -1311,7 +1703,7 @@ fn clone_user_page_directory_inner(
                             | (pdpti as u64) << 21
                             | (pdi as u64) << 12,
                     );
-                    let pt_ptr = pt_base as *const u64;
+                    let pt_ptr = pt_base as *mut u64;
 
                     for pti in 0..ENTRIES_PER_TABLE {
                         let pte = pt_ptr.add(pti).read_volatile();
@@ -1333,9 +1725,38 @@ fn clone_user_page_directory_inner(
                             | (pti as u64) << 12;
 
                         // DLL RO pages: share same physical frame
-                        let shared = is_dll && (pte & PAGE_WRITABLE == 0);
+                        if is_dll && (pte & PAGE_WRITABLE == 0) {
+                            pages_to_copy.push((vaddr, parent_phys, pte_flags, PageCopyMode::SharedDll));
+                            continue;
+                        }
 
-                        pages_to_copy.push((vaddr, parent_phys, pte_flags, shared));
+                        // CoW eligibility: only pages that are writable now or
+                        // already CoW from an earlier fork. VRAM frames belong
+                        // to the GPU and SHM frames to other processes — write-
+                        // protecting the parent's view of those would CoW-copy
+                        // it away from the shared resource on the next write.
+                        let cow_eligible = cow_enabled
+                            && (pte & PAGE_WRITABLE != 0 || pte & PTE_COW != 0)
+                            && pte & PTE_VRAM == 0
+                            && !crate::ipc::shared_memory::is_shm_frame_sorted(
+                                &shm_frames,
+                                PhysAddr::new(parent_phys),
+                            );
+
+                        if cow_eligible && cow_refcount_inc_for_fork(parent_phys) {
+                            // The refcount is published BEFORE the parent loses
+                            // write access: a sibling thread faulting on this
+                            // page mid-fork must see itself as a sharer, never
+                            // as the exclusive owner.
+                            let protected = (pte & !PAGE_WRITABLE) | PTE_COW;
+                            if protected != pte {
+                                pt_ptr.add(pti).write_volatile(protected);
+                            }
+                            let child_flags = (pte_flags & !PAGE_WRITABLE) | PTE_COW;
+                            pages_to_copy.push((vaddr, parent_phys, child_flags, PageCopyMode::Cow));
+                        } else {
+                            pages_to_copy.push((vaddr, parent_phys, pte_flags, PageCopyMode::Eager));
+                        }
                     }
                 }
             }
@@ -1346,14 +1767,21 @@ fn clone_user_page_directory_inner(
         asm!("push {}; popfq", in(reg) rflags, options(nomem));
     }
 
-    // The CR3 reload above flushed this CPU's TLB. Other CPUs only need a
-    // remote flush if they are actively running another thread in this same
-    // address space; CPUs in idle/kernel/other processes cannot use these
-    // user translations and need not be synchronously waited on.
+    // The CR3 reload above flushed this CPU's TLB. Without PCID, remote CPUs
+    // only matter if they are actively running this address space — any other
+    // thread gets a clean TLB from the CR3 load at its next context switch.
+    // WITH PCID + no-flush switches, parent translations survive on every CPU
+    // under the parent's PCID tag, so the CoW write-protect must broadcast a
+    // full all-PCID flush; a stale writable entry would let the parent write
+    // into a frame the child now shares.
     #[cfg(target_arch = "x86_64")]
     {
-        let cpu_mask = crate::task::scheduler::current_pd_active_cpu_mask();
-        crate::arch::x86::smp::tlb_shootdown_mask(u64::MAX, cpu_mask);
+        if pcid_enabled() {
+            crate::arch::x86::smp::tlb_shootdown(u64::MAX);
+        } else {
+            let cpu_mask = crate::task::scheduler::current_pd_active_cpu_mask();
+            crate::arch::x86::smp::tlb_shootdown_mask(u64::MAX, cpu_mask);
+        }
     }
 
     // If a live private parent frame has accidentally reached the allocator's
@@ -1363,29 +1791,46 @@ fn clone_user_page_directory_inner(
     // list of every private parent frame and reject such allocations below.
     let mut parent_private_frames: alloc::vec::Vec<u64> = pages_to_copy
         .iter()
-        .filter_map(
-            |(_, parent_phys, _, shared)| {
-                if *shared {
-                    None
-                } else {
-                    Some(*parent_phys)
-                }
-            },
-        )
+        .filter_map(|(_, parent_phys, _, mode)| {
+            if *mode == PageCopyMode::Eager {
+                Some(*parent_phys)
+            } else {
+                None
+            }
+        })
         .collect();
     parent_private_frames.sort_unstable();
     parent_private_frames.dedup();
 
-    // Phase B: Copy page contents and map in child PD
-    for &(vaddr, parent_phys, pte_flags, shared) in pages_to_copy.iter() {
-        if shared {
-            // DLL RO page — share same frame in child
-            map_page_in_pd(
+    // On a Phase B failure the child PD is destroyed (which releases the CoW
+    // references already mapped into it), but entries not yet mapped still
+    // carry the reservation taken in Phase A — drop those explicitly. The
+    // "now exclusive" result is deliberately ignored: the parent still maps
+    // the frame, its own destroy/fault path performs the final free.
+    let release_pending_cow = |entries: &[(u64, u64, u64, PageCopyMode)]| {
+        for &(_, phys, _, mode) in entries {
+            if mode == PageCopyMode::Cow {
+                let _ = cow_refcount_release(phys);
+            }
+        }
+    };
+
+    // Phase B: Map CoW/shared pages and copy eager pages into the child PD
+    for (page_idx, &(vaddr, parent_phys, pte_flags, mode)) in pages_to_copy.iter().enumerate() {
+        if mode == PageCopyMode::SharedDll || mode == PageCopyMode::Cow {
+            // Share the parent's frame: DLL RO pages are owned by task::dll,
+            // CoW pages carry PTE_COW + a reference taken in Phase A.
+            if !map_page_in_pd(
                 child_pd,
                 VirtAddr::new(vaddr),
                 PhysAddr::new(parent_phys),
                 pte_flags,
-            );
+            ) {
+                CLONE_TEMP_LOCKS[cpu].store(false, Ordering::Release);
+                release_pending_cow(&pages_to_copy[page_idx..]);
+                destroy_user_page_directory(child_pd);
+                return None;
+            }
         } else {
             // Allocate a new frame for the child. If the allocator offers a
             // frame still present in the parent's private page set, consume it
@@ -1398,6 +1843,7 @@ fn clone_user_page_directory_inner(
                     None => {
                         // OOM — clean up child PD and release lock
                         CLONE_TEMP_LOCKS[cpu].store(false, Ordering::Release);
+                        release_pending_cow(&pages_to_copy[page_idx..]);
                         destroy_user_page_directory(child_pd);
                         return None;
                     }
@@ -1432,6 +1878,7 @@ fn clone_user_page_directory_inner(
                 if !map_page(temp_src, PhysAddr::new(parent_phys), PAGE_WRITABLE) {
                     CLONE_TEMP_LOCKS[cpu].store(false, Ordering::Release);
                     physical::free_frame(child_phys);
+                    release_pending_cow(&pages_to_copy[page_idx..]);
                     destroy_user_page_directory(child_pd);
                     return None;
                 }
@@ -1439,6 +1886,7 @@ fn clone_user_page_directory_inner(
                     unmap_page(temp_src);
                     CLONE_TEMP_LOCKS[cpu].store(false, Ordering::Release);
                     physical::free_frame(child_phys);
+                    release_pending_cow(&pages_to_copy[page_idx..]);
                     destroy_user_page_directory(child_pd);
                     return None;
                 }
@@ -1455,6 +1903,7 @@ fn clone_user_page_directory_inner(
             if !map_page_in_pd(child_pd, VirtAddr::new(vaddr), child_phys, pte_flags) {
                 CLONE_TEMP_LOCKS[cpu].store(false, Ordering::Release);
                 physical::free_frame(child_phys);
+                release_pending_cow(&pages_to_copy[page_idx..]);
                 destroy_user_page_directory(child_pd);
                 return None;
             }
@@ -1762,6 +2211,14 @@ pub fn destroy_user_page_directory(pml4_phys: PhysAddr) {
                             // shm_frames was pre-collected before cli; binary_search is
                             // lock-free and safe here.
                             if crate::ipc::shared_memory::is_shm_frame_sorted(&shm_frames, frame) {
+                                continue;
+                            }
+                            // CoW frame: refcounted — free only as the last
+                            // referent. Lock-free atomics, safe under cli.
+                            if pte & PTE_COW != 0 {
+                                if cow_refcount_release(frame.as_u64()) {
+                                    physical::free_frame(frame);
+                                }
                                 continue;
                             }
                             // In DLL range: free ONLY per-process writable pages (.data/.bss).
