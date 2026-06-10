@@ -450,6 +450,14 @@ pub fn is_bsp() -> bool {
 /// `u64::MAX` means "full TLB flush" (invpcid/CR3 reload).
 static TLB_FLUSH_VA: AtomicU64 = AtomicU64::new(u64::MAX);
 
+/// PCID whose translations the shootdown targets. 0 = no specific PCID
+/// (legacy full flush). With PCID + no-flush context switches, a process's
+/// translations stay cached on every CPU it ever ran on — invalidating only
+/// the receiving CPU's *current* PCID misses them. A nonzero value here lets
+/// the receiver drop exactly the stale address space via INVPCID
+/// single-context instead of nuking its whole TLB.
+static TLB_FLUSH_PCID: AtomicU64 = AtomicU64::new(0);
+
 /// Bitmask of logical CPUs that still need to acknowledge the TLB shootdown.
 /// A mask (instead of a plain count) lets the timeout path re-send the IPI to
 /// exactly the CPUs that have not flushed yet — re-sending to an already-acked
@@ -531,12 +539,33 @@ pub fn register_tlb_shootdown_ipi() {
     crate::arch::x86::irq::register_irq(20, tlb_shootdown_ipi_handler);
 }
 
+/// INVPCID type 1 (single-context): drop all non-global TLB entries tagged
+/// with `pcid`, regardless of the CPU's current PCID.
+#[inline]
+unsafe fn invpcid_single_context(pcid: u16) {
+    let desc: [u64; 2] = [(pcid & 0xFFF) as u64, 0];
+    core::arch::asm!(
+        "invpcid {ty}, [{desc}]",
+        ty = in(reg) 1u64,
+        desc = in(reg) desc.as_ptr(),
+        options(nostack)
+    );
+}
+
 /// IRQ 20 handler: invalidate the TLB entry for `TLB_FLUSH_VA` and acknowledge.
 fn tlb_shootdown_ipi_handler(_irq: u8) {
     let va = TLB_FLUSH_VA.load(Ordering::Acquire);
+    let pcid = TLB_FLUSH_PCID.load(Ordering::Acquire) as u16;
     unsafe {
         if va == u64::MAX {
-            if crate::memory::virtual_mem::pcid_enabled() {
+            if pcid != 0
+                && crate::memory::virtual_mem::pcid_enabled()
+                && crate::arch::x86::cpuid::features().invpcid
+            {
+                // Targeted: drop only the modified address space's entries;
+                // every other process keeps its warm TLB.
+                invpcid_single_context(pcid);
+            } else if crate::memory::virtual_mem::pcid_enabled() {
                 // With PCID + no-flush context switches, translations of
                 // processes NOT currently running on this CPU stay cached
                 // under their PCID tags. A plain CR3 reload only drops the
@@ -582,10 +611,30 @@ pub fn tlb_shootdown(va: u64) {
     tlb_shootdown_mask(va, mask);
 }
 
+/// Invalidate every TLB entry of `pcid` on ALL online CPUs.
+///
+/// This is the correct invalidation for user-page-table changes (munmap,
+/// sbrk shrink, CoW write-protect) under PCID: no-flush context switches keep
+/// a process's translations alive on every CPU it ever ran on, not just the
+/// ones currently executing it. Receivers use INVPCID single-context when
+/// available, otherwise fall back to a full all-PCID flush.
+pub fn tlb_shootdown_pcid(pcid: u16) {
+    let count = cpu_count() as u32;
+    let mut mask = 0u32;
+    for cpu in 0..count.min(32) {
+        mask |= 1u32 << cpu;
+    }
+    tlb_shootdown_mask_pcid(u64::MAX, mask, pcid);
+}
+
 /// Send a TLB shootdown IPI to a selected set of CPUs and wait for
 /// acknowledgment. `cpu_mask` uses logical CPU IDs; the current CPU is skipped
 /// because callers have already flushed locally.
 pub fn tlb_shootdown_mask(va: u64, cpu_mask: u32) {
+    tlb_shootdown_mask_pcid(va, cpu_mask, 0);
+}
+
+fn tlb_shootdown_mask_pcid(va: u64, cpu_mask: u32, pcid: u16) {
     if !crate::arch::x86::apic::is_initialized() {
         return; // Single-CPU or APIC not yet up
     }
@@ -615,6 +664,7 @@ pub fn tlb_shootdown_mask(va: u64, cpu_mask: u32) {
     }
 
     TLB_FLUSH_VA.store(va, Ordering::Release);
+    TLB_FLUSH_PCID.store(pcid as u64, Ordering::Release);
     TLB_ACK_PENDING.store(target_mask, Ordering::Release);
 
     // Ensure the stores are visible to other CPUs before IPIs arrive

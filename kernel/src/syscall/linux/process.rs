@@ -4,10 +4,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 static WAIT4_DEBUG_SEQ: AtomicU32 = AtomicU32::new(0);
 
-const LINUX_FUTEX_WAIT_SLOTS: usize = 64;
-const LINUX_FUTEX_WAITERS_PER_SLOT: usize = 8;
-const LINUX_FUTEX_WAKE_BATCH: usize = LINUX_FUTEX_WAIT_SLOTS * LINUX_FUTEX_WAITERS_PER_SLOT;
-
 const FUTEX_WAIT: u64 = 0;
 const FUTEX_WAKE: u64 = 1;
 const FUTEX_REQUEUE: u64 = 3;
@@ -17,21 +13,18 @@ const FUTEX_WAIT_BITSET: u64 = 9;
 const FUTEX_WAKE_BITSET: u64 = 10;
 const FUTEX_CMD_MASK: u64 = 0x7f;
 
-#[derive(Clone, Copy)]
-struct LinuxFutexSlot {
+/// One FIFO wait queue per futex word, created on demand and dropped when the
+/// last waiter leaves. Replaces the former fixed 64-slot/8-waiter hash table,
+/// which returned ENOMEM once a process had more than 8 threads blocked on
+/// one futex (trivially reached by a thread pool on a contended mutex) or
+/// more than 64 distinct futex words system-wide. FIFO order also makes
+/// wake-one fair instead of slot-index-ordered.
+struct LinuxFutexQueue {
     uaddr: u64,
-    tids: [u32; LINUX_FUTEX_WAITERS_PER_SLOT],
+    waiters: alloc::collections::VecDeque<u32>,
 }
 
-impl LinuxFutexSlot {
-    const EMPTY: Self = Self {
-        uaddr: 0,
-        tids: [0; LINUX_FUTEX_WAITERS_PER_SLOT],
-    };
-}
-
-static LINUX_FUTEX_WAITERS: Spinlock<[LinuxFutexSlot; LINUX_FUTEX_WAIT_SLOTS]> =
-    Spinlock::new([LinuxFutexSlot::EMPTY; LINUX_FUTEX_WAIT_SLOTS]);
+static LINUX_FUTEX_QUEUES: Spinlock<Vec<LinuxFutexQueue>> = Spinlock::new(Vec::new());
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
@@ -1537,68 +1530,30 @@ fn futex_read_u32(uaddr: u64) -> Result<u32, i32> {
     Ok(unsafe { core::ptr::read_volatile(uaddr as *const u32) })
 }
 
-fn futex_add_waiter_locked(
-    slots: &mut [LinuxFutexSlot; LINUX_FUTEX_WAIT_SLOTS],
-    uaddr: u64,
-    tid: u32,
-) -> bool {
-    let mut target_idx = None;
-    let mut empty_idx = None;
-    for (idx, slot) in slots.iter().enumerate() {
-        if slot.uaddr == uaddr {
-            target_idx = Some(idx);
-            break;
+fn futex_add_waiter_locked(queues: &mut Vec<LinuxFutexQueue>, uaddr: u64, tid: u32) {
+    if let Some(queue) = queues.iter_mut().find(|q| q.uaddr == uaddr) {
+        if !queue.waiters.contains(&tid) {
+            queue.waiters.push_back(tid);
         }
-        if slot.uaddr == 0 && empty_idx.is_none() {
-            empty_idx = Some(idx);
-        }
+        return;
     }
-
-    let idx = match target_idx.or(empty_idx) {
-        Some(idx) => idx,
-        None => return false,
-    };
-    if slots[idx].uaddr == 0 {
-        slots[idx].uaddr = uaddr;
-    }
-
-    for waiter in slots[idx].tids.iter() {
-        if *waiter == tid {
-            return true;
-        }
-    }
-    for waiter in slots[idx].tids.iter_mut() {
-        if *waiter == 0 {
-            *waiter = tid;
-            return true;
-        }
-    }
-    false
+    let mut waiters = alloc::collections::VecDeque::with_capacity(4);
+    waiters.push_back(tid);
+    queues.push(LinuxFutexQueue { uaddr, waiters });
 }
 
-/// Remove `tid` from whichever futex slot it is queued on. Needed after a
-/// blocking wait returns: FUTEX_REQUEUE may have moved the waiter to a
-/// different uaddr, so removal must search by tid — removing by the original
-/// uaddr would leak the entry and let a later wake on the requeue target hit
-/// a thread that is no longer waiting.
-fn futex_remove_tid_locked(
-    slots: &mut [LinuxFutexSlot; LINUX_FUTEX_WAIT_SLOTS],
-    tid: u32,
-) -> bool {
-    for slot in slots.iter_mut() {
-        if slot.uaddr == 0 {
-            continue;
-        }
-        let mut removed = false;
-        for waiter in slot.tids.iter_mut() {
-            if *waiter == tid {
-                *waiter = 0;
-                removed = true;
-            }
-        }
-        if removed {
-            if slot.tids.iter().all(|t| *t == 0) {
-                slot.uaddr = 0;
+/// Remove `tid` from whichever futex queue it is on. Needed after a blocking
+/// wait returns: FUTEX_REQUEUE may have moved the waiter to a different
+/// uaddr, so removal must search by tid — removing by the original uaddr
+/// would leak the entry and let a later wake on the requeue target hit a
+/// thread that is no longer waiting.
+fn futex_remove_tid_locked(queues: &mut Vec<LinuxFutexQueue>, tid: u32) -> bool {
+    for pos in 0..queues.len() {
+        let before = queues[pos].waiters.len();
+        queues[pos].waiters.retain(|t| *t != tid);
+        if queues[pos].waiters.len() != before {
+            if queues[pos].waiters.is_empty() {
+                queues.swap_remove(pos);
             }
             return true;
         }
@@ -1606,24 +1561,13 @@ fn futex_remove_tid_locked(
     false
 }
 
-fn futex_remove_waiter_locked(
-    slots: &mut [LinuxFutexSlot; LINUX_FUTEX_WAIT_SLOTS],
-    uaddr: u64,
-    tid: u32,
-) -> bool {
-    for slot in slots.iter_mut() {
-        if slot.uaddr != uaddr {
-            continue;
-        }
-        let mut removed = false;
-        for waiter in slot.tids.iter_mut() {
-            if *waiter == tid {
-                *waiter = 0;
-                removed = true;
-            }
-        }
-        if slot.tids.iter().all(|tid| *tid == 0) {
-            slot.uaddr = 0;
+fn futex_remove_waiter_locked(queues: &mut Vec<LinuxFutexQueue>, uaddr: u64, tid: u32) -> bool {
+    if let Some(pos) = queues.iter().position(|q| q.uaddr == uaddr) {
+        let before = queues[pos].waiters.len();
+        queues[pos].waiters.retain(|t| *t != tid);
+        let removed = queues[pos].waiters.len() != before;
+        if queues[pos].waiters.is_empty() {
+            queues.swap_remove(pos);
         }
         return removed;
     }
@@ -1635,33 +1579,22 @@ pub(crate) fn futex_wake_addr(uaddr: u64, max_waiters: u32) -> u32 {
         return 0;
     }
 
-    let limit = (max_waiters as usize).min(LINUX_FUTEX_WAKE_BATCH);
-    let mut tids = [0u32; LINUX_FUTEX_WAKE_BATCH];
-    let mut count = 0usize;
+    let mut tids: Vec<u32> = Vec::new();
     {
-        let mut slots = LINUX_FUTEX_WAITERS.lock();
-        for slot in slots.iter_mut() {
-            if slot.uaddr != uaddr {
-                continue;
+        let mut queues = LINUX_FUTEX_QUEUES.lock();
+        if let Some(pos) = queues.iter().position(|q| q.uaddr == uaddr) {
+            let take = (max_waiters as usize).min(queues[pos].waiters.len());
+            tids.extend(queues[pos].waiters.drain(..take));
+            if queues[pos].waiters.is_empty() {
+                queues.swap_remove(pos);
             }
-            for waiter in slot.tids.iter_mut() {
-                if *waiter != 0 && count < limit {
-                    tids[count] = *waiter;
-                    count += 1;
-                    *waiter = 0;
-                }
-            }
-            if slot.tids.iter().all(|tid| *tid == 0) {
-                slot.uaddr = 0;
-            }
-            break;
         }
     }
 
-    for tid in tids.iter().take(count) {
+    for tid in &tids {
         crate::task::scheduler::wake_thread(*tid);
     }
-    count as u32
+    tids.len() as u32
 }
 
 fn futex_relative_deadline(timeout_ptr: u64) -> Result<Option<u32>, i32> {
@@ -1703,10 +1636,8 @@ fn linux_futex_wait(uaddr: u64, expected: u64, timeout_ptr: u64) -> u64 {
     let tid = crate::task::scheduler::current_tid();
 
     {
-        let mut slots = LINUX_FUTEX_WAITERS.lock();
-        if !futex_add_waiter_locked(&mut slots, uaddr, tid) {
-            return linux_err(ENOMEM);
-        }
+        let mut queues = LINUX_FUTEX_QUEUES.lock();
+        futex_add_waiter_locked(&mut queues, uaddr, tid);
         match futex_read_u32(uaddr) {
             Ok(value) if value == expected => {
                 if let Some(wake_at) = deadline {
@@ -1716,11 +1647,11 @@ fn linux_futex_wait(uaddr: u64, expected: u64, timeout_ptr: u64) -> u64 {
                 }
             }
             Ok(_) => {
-                futex_remove_waiter_locked(&mut slots, uaddr, tid);
+                futex_remove_waiter_locked(&mut queues, uaddr, tid);
                 return linux_err(EAGAIN);
             }
             Err(errno) => {
-                futex_remove_waiter_locked(&mut slots, uaddr, tid);
+                futex_remove_waiter_locked(&mut queues, uaddr, tid);
                 return linux_err(errno);
             }
         }
@@ -1731,8 +1662,8 @@ fn linux_futex_wait(uaddr: u64, expected: u64, timeout_ptr: u64) -> u64 {
     // Search by tid, not uaddr: FUTEX_REQUEUE may have moved this waiter to
     // a different futex while it was blocked.
     let timed_out = {
-        let mut slots = LINUX_FUTEX_WAITERS.lock();
-        futex_remove_tid_locked(&mut slots, tid)
+        let mut queues = LINUX_FUTEX_QUEUES.lock();
+        futex_remove_tid_locked(&mut queues, tid)
     };
     if timed_out && deadline.is_some() {
         return linux_err(ETIMEDOUT);
@@ -1762,50 +1693,39 @@ fn futex_requeue(
         }
     }
 
-    let wake_limit = (max_wake as usize).min(LINUX_FUTEX_WAKE_BATCH);
-    let mut wake_tids = [0u32; LINUX_FUTEX_WAKE_BATCH];
-    let mut woken = 0usize;
+    let mut wake_tids: Vec<u32> = Vec::new();
     let mut requeued = 0u32;
     {
-        let mut slots = LINUX_FUTEX_WAITERS.lock();
-        // Detach all waiters from the source futex first; the slot borrow
-        // must end before futex_add_waiter_locked touches the target slot.
-        let mut pending = [0u32; LINUX_FUTEX_WAITERS_PER_SLOT];
-        let mut pending_count = 0usize;
-        for slot in slots.iter_mut() {
-            if slot.uaddr != uaddr {
-                continue;
-            }
-            for waiter in slot.tids.iter_mut() {
-                if *waiter != 0 {
-                    pending[pending_count] = *waiter;
-                    pending_count += 1;
-                    *waiter = 0;
+        let mut queues = LINUX_FUTEX_QUEUES.lock();
+        if let Some(pos) = queues.iter().position(|q| q.uaddr == uaddr) {
+            // Detach the whole source queue first; the borrow must end before
+            // futex_add_waiter_locked touches the target queue.
+            let mut src = queues.swap_remove(pos);
+            let take = (max_wake as usize).min(src.waiters.len());
+            wake_tids.extend(src.waiters.drain(..take));
+            while requeued < max_requeue {
+                match src.waiters.pop_front() {
+                    Some(tid) => {
+                        futex_add_waiter_locked(&mut queues, uaddr2, tid);
+                        requeued += 1;
+                    }
+                    None => break,
                 }
             }
-            slot.uaddr = 0;
-            break;
-        }
-        for &tid in pending.iter().take(pending_count) {
-            if woken < wake_limit {
-                wake_tids[woken] = tid;
-                woken += 1;
-            } else if requeued < max_requeue && futex_add_waiter_locked(&mut slots, uaddr2, tid) {
-                requeued += 1;
-            } else if woken < LINUX_FUTEX_WAKE_BATCH {
-                wake_tids[woken] = tid;
-                woken += 1;
-            }
+            // Requeue budget exhausted with waiters left: wake them instead —
+            // spurious wakes are allowed by futex semantics, lost waiters are
+            // not.
+            wake_tids.extend(src.waiters.drain(..));
         }
     }
-    for tid in wake_tids.iter().take(woken) {
+    for tid in &wake_tids {
         crate::task::scheduler::wake_thread(*tid);
     }
     if expected.is_some() {
         // FUTEX_CMP_REQUEUE returns woken + requeued.
-        woken as u64 + requeued as u64
+        wake_tids.len() as u64 + requeued as u64
     } else {
-        woken as u64
+        wake_tids.len() as u64
     }
 }
 
@@ -1827,7 +1747,7 @@ fn linux_futex_wake_op(uaddr: u64, max_wake1: u32, max_wake2: u32, uaddr2: u64, 
     // The RMW runs under the futex lock so it is at least serialized against
     // every other futex operation in the system.
     let old = {
-        let _slots = LINUX_FUTEX_WAITERS.lock();
+        let _queues = LINUX_FUTEX_QUEUES.lock();
         let old = match futex_read_u32(uaddr2) {
             Ok(value) => value,
             Err(errno) => return linux_err(errno),

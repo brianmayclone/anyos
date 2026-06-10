@@ -464,7 +464,15 @@ pub fn sys_sbrk_u64(increment: i64) -> u64 {
             crate::task::scheduler::adjust_current_user_pages(-(freed as i32));
 
             #[cfg(target_arch = "x86_64")]
-            if crate::task::scheduler::has_live_pd_siblings() {
+            if crate::memory::virtual_mem::pcid_enabled() {
+                // No-flush PCID switches keep this process's translations
+                // alive on every CPU it ever ran on — even a single-threaded
+                // process can migrate back onto a stale entry for the freed
+                // heap pages. Invalidate the PCID on all CPUs.
+                crate::arch::x86::smp::tlb_shootdown_pcid(
+                    crate::memory::virtual_mem::current_pcid(),
+                );
+            } else if crate::task::scheduler::has_live_pd_siblings() {
                 let cpu_mask = crate::task::scheduler::current_pd_active_cpu_mask();
                 crate::arch::x86::smp::tlb_shootdown_mask(u64::MAX, cpu_mask);
             }
@@ -851,9 +859,19 @@ fn sys_munmap_impl(addr: u64, size: u64, high: bool) -> u64 {
     // every munmap needlessly drives the most fragile SMP path and can wedge
     // the whole machine if one CPU misses the ack.
     #[cfg(target_arch = "x86_64")]
-    if freed > 0 && crate::task::scheduler::has_live_pd_siblings() {
-        let cpu_mask = crate::task::scheduler::current_pd_active_cpu_mask();
-        crate::arch::x86::smp::tlb_shootdown_mask(u64::MAX, cpu_mask);
+    if freed > 0 {
+        if crate::memory::virtual_mem::pcid_enabled() {
+            // See sbrk shrink: under PCID the unmapped translations survive
+            // on every CPU this process ever ran on, siblings or not. The
+            // freed frames are reused immediately, so a stale entry is a
+            // silent cross-process corruption. INVPCID keeps it targeted.
+            crate::arch::x86::smp::tlb_shootdown_pcid(
+                crate::memory::virtual_mem::current_pcid(),
+            );
+        } else if crate::task::scheduler::has_live_pd_siblings() {
+            let cpu_mask = crate::task::scheduler::current_pd_active_cpu_mask();
+            crate::arch::x86::smp::tlb_shootdown_mask(u64::MAX, cpu_mask);
+        }
     }
 
     0

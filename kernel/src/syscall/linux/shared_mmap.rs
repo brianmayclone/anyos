@@ -231,7 +231,13 @@ fn writeback_entry(
     // The dirty bits were cleared on pages user space can still write to;
     // make sure no other CPU keeps a stale D=1 translation (see module doc).
     #[cfg(target_arch = "x86_64")]
-    crate::arch::x86::smp::tlb_shootdown_full();
+    {
+        if virtual_mem::pcid_enabled() {
+            crate::arch::x86::smp::tlb_shootdown_pcid(virtual_mem::current_pcid());
+        } else {
+            crate::arch::x86::smp::tlb_shootdown_full();
+        }
+    }
 
     result
 }

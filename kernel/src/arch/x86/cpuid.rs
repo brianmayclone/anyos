@@ -53,6 +53,8 @@ pub struct CpuFeatures {
     pub rdpid: bool,
     // Leaf 7 EBX (supervisor-mode protection)
     pub smep: bool,
+    /// Leaf 7 EBX bit 10: INVPCID instruction (targeted PCID invalidation).
+    pub invpcid: bool,
     // Leaf 0xD: XSAVE area size (bytes) for all enabled components.
     // 0 if XSAVE is not supported.
     pub xsave_size: u32,
@@ -86,6 +88,7 @@ impl CpuFeatures {
             bmi2: false,
             rdpid: false,
             smep: false,
+            invpcid: false,
             xsave_size: 0,
         }
     }
@@ -178,6 +181,7 @@ pub fn detect() {
         f.fsgsbase = ebx & (1 << 0) != 0;
         f.bmi1 = ebx & (1 << 3) != 0;
         f.smep = ebx & (1 << 7) != 0;
+        f.invpcid = ebx & (1 << 10) != 0;
         f.avx2 = ebx & (1 << 5) != 0;
         f.bmi2 = ebx & (1 << 8) != 0;
         f.erms = ebx & (1 << 9) != 0;

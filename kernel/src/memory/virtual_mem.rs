@@ -71,6 +71,12 @@ pub fn pcid_enabled() -> bool {
     PCID_ACTIVE.load(Ordering::Relaxed)
 }
 
+/// PCID of the currently active address space (CR3 bits 0-11).
+#[cfg(target_arch = "x86_64")]
+pub fn current_pcid() -> u16 {
+    (current_cr3() & 0xFFF) as u16
+}
+
 /// Enable PCID if the CPU supports it.
 ///
 /// Called on the BSP at the end of `init()` and on each AP during `ap_entry()`.
@@ -1777,7 +1783,8 @@ fn clone_user_page_directory_inner(
     #[cfg(target_arch = "x86_64")]
     {
         if pcid_enabled() {
-            crate::arch::x86::smp::tlb_shootdown(u64::MAX);
+            // Targeted: drop only the parent's translations on every CPU.
+            crate::arch::x86::smp::tlb_shootdown_pcid(current_pcid());
         } else {
             let cpu_mask = crate::task::scheduler::current_pd_active_cpu_mask();
             crate::arch::x86::smp::tlb_shootdown_mask(u64::MAX, cpu_mask);
