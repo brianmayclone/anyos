@@ -609,6 +609,49 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
     true
 }
 
+/// Identity-map the linear framebuffer region `[fb_addr, fb_addr+fb_size)` into
+/// the CURRENT (kernel) page tables, write-combining (PAT1 via PAGE_PWT), exactly
+/// like the boot-time framebuffer map in `init()`.
+///
+/// MUST be called whenever a GPU `set_mode` enlarges the framebuffer (e.g. the
+/// boot-time switch from the UEFI GOP resolution to a taller native mode). The
+/// boot map only covers `pitch*height` of the INITIAL GOP mode; without this,
+/// drawing the taller mode's lower rows hits unmapped pages → garbage pixels in
+/// the bottom of the screen, then a fatal kernel #PF (the "bottom third + hang"
+/// boot bug introduced by the UEFI switch). Idempotent: re-mapping already-mapped
+/// pages just rewrites the same leaf PTE.
+///
+/// Must run with the kernel page tables active (it mutates the lower-half FB
+/// identity map via the recursive mapping of the current PML4).
+pub fn map_framebuffer_region(fb_addr: u64, fb_size: u64) -> bool {
+    if fb_addr == 0 || fb_size == 0 {
+        return false;
+    }
+    let fb_start = fb_addr & !0xFFF;
+    let fb_end = match fb_addr.checked_add(fb_size) {
+        Some(end) => (end + 0xFFF) & !0xFFF,
+        None => return false,
+    };
+    let mut addr = fb_start;
+    while addr < fb_end {
+        if !map_page(
+            VirtAddr::new(addr),
+            PhysAddr::new(addr),
+            PAGE_PRESENT | PAGE_WRITABLE | PAGE_PWT,
+        ) {
+            crate::serial_println!(
+                "map_framebuffer_region: map_page failed at {:#x} (fb {:#x}+{:#x})",
+                addr,
+                fb_addr,
+                fb_size
+            );
+            return false;
+        }
+        addr += FRAME_SIZE as u64;
+    }
+    true
+}
+
 /// Zero a physical frame through a private kernel mapping.
 ///
 /// User pages must not be initialized by writing through their eventual user

@@ -145,6 +145,23 @@ fn auto_apply_native_resolution() {
 fn update_display_geometry(width: u32, height: u32, pitch: u32, addr: u32) {
     let kernel_addr =
         drivers::gpu::with_gpu(|gpu| gpu.framebuffer_kernel_addr()).unwrap_or(addr as u64);
+    // CRITICAL: the boot-time framebuffer map only covers pitch*height of the
+    // INITIAL UEFI GOP resolution. A set_mode to a taller native mode leaves
+    // the new lower rows UNMAPPED — drawing them (boot console/splash, then the
+    // compositor) hit unmapped pages: garbage pixels in the bottom of the
+    // screen, then a fatal kernel #PF. Extend the FB map to the new geometry
+    // BEFORE anyone draws to it (framebuffer::update fires the boot-console
+    // redraw hook). Runs in kernel-CR3 boot context, so mutating the lower-half
+    // FB identity map is correct.
+    let fb_size = (pitch as u64).saturating_mul(height as u64);
+    if !crate::memory::virtual_mem::map_framebuffer_region(kernel_addr, fb_size) {
+        serial_println!(
+            "WARN: framebuffer remap to {}x{} (pitch={}) failed — drawing may fault",
+            width,
+            height,
+            pitch
+        );
+    }
     drivers::framebuffer::update(kernel_addr, pitch, width, height, 32);
     drivers::gpu::update_cursor_bounds(width, height);
     drivers::input::vmmouse::update_screen_size(width, height);
