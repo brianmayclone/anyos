@@ -539,6 +539,71 @@ pub fn register_tlb_shootdown_ipi() {
     crate::arch::x86::irq::register_irq(20, tlb_shootdown_ipi_handler);
 }
 
+/// Per-CPU bitmap of PCIDs whose TLB entries must be flushed before this CPU
+/// next switches onto them with the no-flush bit set. 4096 PCIDs / 64 = 64
+/// words per CPU.
+///
+/// This is the asynchronous half of PCID-correct invalidation: a CPU that is
+/// NOT currently running the modified address space cannot use its stale
+/// entries until a context switch brings the PCID back — so instead of a
+/// synchronous all-CPU IPI broadcast (which can wedge behind a CPU spinning
+/// with interrupts disabled and freeze every munmap-ing process in the
+/// system), the modifier just marks the PCID here and the scheduler flushes
+/// it lazily right before the switch.
+const PCID_PENDING_WORDS: usize = 4096 / 64;
+static PCID_FLUSH_PENDING: [[AtomicU64; PCID_PENDING_WORDS]; MAX_CPUS] = {
+    const WORD: AtomicU64 = AtomicU64::new(0);
+    const ROW: [AtomicU64; PCID_PENDING_WORDS] = [WORD; PCID_PENDING_WORDS];
+    [ROW; MAX_CPUS]
+};
+
+#[inline]
+fn pcid_bit(pcid: u16) -> (usize, u64) {
+    ((pcid as usize / 64) % PCID_PENDING_WORDS, 1u64 << (pcid % 64))
+}
+
+/// Mark `pcid` as needing a flush on every other CPU (lock-free, no IPI).
+fn pcid_mark_flush_pending_all_cpus(pcid: u16) {
+    let (word, bit) = pcid_bit(pcid);
+    let me = current_cpu_id() as usize;
+    let count = (cpu_count() as usize).min(MAX_CPUS);
+    for cpu in 0..count {
+        if cpu != me {
+            PCID_FLUSH_PENDING[cpu][word].fetch_or(bit, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Consume the pending-flush bit for (`cpu`, `pcid`). Returns true when the
+/// caller must flush the PCID before running on it. Called by the scheduler
+/// with interrupts disabled immediately before the context switch.
+pub fn pcid_take_pending_flush(cpu: usize, page_table: u64) -> bool {
+    let pcid = (page_table & 0xFFF) as u16;
+    // PCID 0 loads always flush in context_switch (no-flush is never used
+    // with the fallback tag), so there is nothing to consume.
+    if pcid == 0 || cpu >= MAX_CPUS {
+        return false;
+    }
+    let (word, bit) = pcid_bit(pcid);
+    PCID_FLUSH_PENDING[cpu][word].fetch_and(!bit, Ordering::AcqRel) & bit != 0
+}
+
+/// Flush all non-global TLB entries of `pcid` on the local CPU.
+pub fn pcid_flush_local(page_table: u64) {
+    let pcid = (page_table & 0xFFF) as u16;
+    unsafe {
+        if crate::arch::x86::cpuid::features().invpcid {
+            invpcid_single_context(pcid);
+        } else {
+            // No INVPCID: toggle CR4.PGE — flushes every PCID incl. globals.
+            let cr4: u64;
+            core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nostack, nomem));
+            core::arch::asm!("mov cr4, {}", in(reg) cr4 & !(1u64 << 7), options(nostack, nomem));
+            core::arch::asm!("mov cr4, {}", in(reg) cr4, options(nostack, nomem));
+        }
+    }
+}
+
 /// INVPCID type 1 (single-context): drop all non-global TLB entries tagged
 /// with `pcid`, regardless of the CPU's current PCID.
 #[inline]
@@ -563,8 +628,14 @@ fn tlb_shootdown_ipi_handler(_irq: u8) {
                 && crate::arch::x86::cpuid::features().invpcid
             {
                 // Targeted: drop only the modified address space's entries;
-                // every other process keeps its warm TLB.
+                // every other process keeps its warm TLB. The lazy pending
+                // bit set by the sender is satisfied by this flush too.
                 invpcid_single_context(pcid);
+                let me = current_cpu_id() as usize;
+                if me < MAX_CPUS {
+                    let (word, bit) = pcid_bit(pcid);
+                    PCID_FLUSH_PENDING[me][word].fetch_and(!bit, Ordering::AcqRel);
+                }
             } else if crate::memory::virtual_mem::pcid_enabled() {
                 // With PCID + no-flush context switches, translations of
                 // processes NOT currently running on this CPU stay cached
@@ -611,19 +682,34 @@ pub fn tlb_shootdown(va: u64) {
     tlb_shootdown_mask(va, mask);
 }
 
-/// Invalidate every TLB entry of `pcid` on ALL online CPUs.
+/// Invalidate every TLB entry of `pcid` on all CPUs — without a synchronous
+/// all-CPU broadcast.
 ///
-/// This is the correct invalidation for user-page-table changes (munmap,
-/// sbrk shrink, CoW write-protect) under PCID: no-flush context switches keep
-/// a process's translations alive on every CPU it ever ran on, not just the
-/// ones currently executing it. Receivers use INVPCID single-context when
-/// available, otherwise fall back to a full all-PCID flush.
+/// Under PCID with no-flush context switches a process's translations stay
+/// alive on every CPU it ever ran on. Correctness needs all of them gone,
+/// but only the CPUs *currently running* the address space can use the stale
+/// entries right now — every other CPU must pass through a context switch
+/// first. So: mark the PCID flush-pending on all CPUs (lock-free, consumed
+/// by the scheduler right before the switch via `pcid_take_pending_flush`),
+/// and send the synchronous IPI only to the active CPUs. A synchronous
+/// broadcast to ALL CPUs is exactly the "most fragile SMP path" the old
+/// munmap code warned about: one CPU spinning with interrupts disabled
+/// stalls the shootdown lock and freezes every munmap-ing process behind it.
 pub fn tlb_shootdown_pcid(pcid: u16) {
-    let count = cpu_count() as u32;
-    let mut mask = 0u32;
-    for cpu in 0..count.min(32) {
-        mask |= 1u32 << cpu;
+    if pcid == 0 {
+        // Fallback tag: switch-in always flushes PCID 0, only currently
+        // running CPUs matter.
+        let mask = crate::task::scheduler::current_pd_active_cpu_mask();
+        tlb_shootdown_mask_pcid(u64::MAX, mask, 0);
+        return;
     }
+    pcid_mark_flush_pending_all_cpus(pcid);
+    core::sync::atomic::fence(Ordering::SeqCst);
+    // Mask snapshot AFTER marking: a CPU switching onto this PCID
+    // concurrently either shows up in the mask (gets the IPI) or performs
+    // its switch after the mark (consumes the pending bit). Either way no
+    // CPU runs the address space with stale entries.
+    let mask = crate::task::scheduler::current_pd_active_cpu_mask();
     tlb_shootdown_mask_pcid(u64::MAX, mask, pcid);
 }
 

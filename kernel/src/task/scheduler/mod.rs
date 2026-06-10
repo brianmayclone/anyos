@@ -361,6 +361,8 @@ static NEXT_SLEEPER_WAKE_TICK: AtomicU32 = AtomicU32::new(0);
 
 /// Round-robin cursor for picking the remote CPU that drains a deferred wake.
 static DEFERRED_WAKE_KICK_RR: AtomicU32 = AtomicU32::new(0);
+/// Tick of the last drain kick — limits kick IPIs to one per tick.
+static DEFERRED_WAKE_LAST_KICK_TICK: AtomicU32 = AtomicU32::new(0);
 
 /// Ask another CPU to run its scheduler now so a just-queued deferred wake is
 /// drained immediately instead of waiting for the next 1 ms timer tick. This
@@ -372,6 +374,14 @@ fn kick_remote_drain() {
     {
         let count = crate::arch::x86::smp::cpu_count() as usize;
         if count <= 1 {
+            return;
+        }
+        // At most one kick per timer tick: the tick drains the queue anyway,
+        // and an unthrottled IPI per deferred wake adds scheduler pressure
+        // exactly when the system is already contended (deferred_wake fires
+        // on the try_wake fallback path).
+        let now = crate::arch::hal::timer_current_ticks();
+        if DEFERRED_WAKE_LAST_KICK_TICK.swap(now, Ordering::Relaxed) == now {
             return;
         }
         let my = crate::arch::x86::smp::current_cpu_id() as usize;
@@ -2314,6 +2324,16 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
             PER_CPU_FPU_OWNER[cpu_id].store(0, Ordering::Relaxed);
         }
         crate::arch::hal::fpu_set_trap();
+        #[cfg(target_arch = "x86_64")]
+        {
+            // Lazy PCID invalidation: another CPU unmapped pages in this
+            // address space while it was off-CPU here. Flush before the
+            // no-flush CR3 load lets stale entries back in.
+            let page_table = unsafe { (*new_ctx).get_page_table() };
+            if crate::arch::x86::smp::pcid_take_pending_flush(cpu_id, page_table) {
+                crate::arch::x86::smp::pcid_flush_local(page_table);
+            }
+        }
         PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
         unsafe {
             crate::task::context::context_switch(old_ctx, new_ctx);
@@ -3006,6 +3026,16 @@ fn schedule_inner(from_timer: bool) {
             crate::arch::x86::power::wrmsr(0xC000_0102, gs_base);
         }
 
+        #[cfg(target_arch = "x86_64")]
+        {
+            // Lazy PCID invalidation: another CPU unmapped pages in this
+            // address space while it was off-CPU here. Flush before the
+            // no-flush CR3 load lets stale entries back in.
+            let page_table = unsafe { (*new_ctx).get_page_table() };
+            if crate::arch::x86::smp::pcid_take_pending_flush(cpu_id, page_table) {
+                crate::arch::x86::smp::pcid_flush_local(page_table);
+            }
+        }
         // Clear in-scheduler flag BEFORE context_switch. Interrupts are disabled
         // (release_no_irq_restore kept IF=0), so no timer can fire between the
         // clear and the switch. This is CRITICAL because if the new thread is
