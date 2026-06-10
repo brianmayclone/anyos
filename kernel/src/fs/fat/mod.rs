@@ -326,14 +326,18 @@ impl FatFsDriver {
 }
 
 impl Filesystem for FatFsDriver {
-    fn read(&self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+    fn read(&self, inode: u32, offset: u64, buf: &mut [u8]) -> Result<usize, FsError> {
         // FAT exposes inode == start_cluster directly (no encoded
         // contiguous bit like exFAT).
+        // FAT on-disk file sizes are 32-bit (max 4 GiB) — offsets past
+        // u32::MAX saturate and read 0 bytes past EOF.
+        let offset = offset.min(u32::MAX as u64) as u32;
         self.inner.lock().read_file(inode, offset, buf)
     }
 
-    fn lookup(&self, path: &str) -> Result<(u32, FileType, u32), FsError> {
-        self.inner.lock().lookup(path)
+    fn lookup(&self, path: &str) -> Result<(u32, FileType, u64), FsError> {
+        let (inode, ft, size) = self.inner.lock().lookup(path)?;
+        Ok((inode, ft, size as u64))
     }
 
     fn readdir(&self, inode: u32) -> Result<Vec<DirEntry>, FsError> {
@@ -347,7 +351,7 @@ impl Filesystem for FatFsDriver {
     // OpenFile refactor.  Namespace ops translate directly since FAT
     // encodes inode == start_cluster.
 
-    fn write(&self, _inode: u32, _offset: u32, _buf: &[u8]) -> Result<usize, FsError> {
+    fn write(&self, _inode: u32, _offset: u64, _buf: &[u8]) -> Result<usize, FsError> {
         Err(FsError::NotSupported)
     }
 
@@ -418,7 +422,7 @@ impl Filesystem for FatFsDriver {
         let (_inode, file_type, size, mtime) = fs.stat_path(path)?;
         Ok(StatResult {
             file_type,
-            size,
+            size: size as u64,
             is_symlink: false,
             uid: 0,
             gid: 0,
@@ -448,11 +452,13 @@ impl Filesystem for FatFsDriver {
         parent_inode: u32,
         name: &str,
         new_inode: u32,
-        new_size: u32,
+        new_size: u64,
     ) -> Result<(), FsError> {
         // FAT close-time dirent commit: persist (size, first_cluster).
         // FAT inode == cluster directly, so parent_inode is parent_cluster
         // and new_inode is the new first_cluster of the file.
+        // FAT on-disk file sizes are 32-bit (max 4 GiB) — clamp.
+        let new_size = new_size.min(u32::MAX as u64) as u32;
         self.inner
             .lock()
             .update_entry(parent_inode, name, new_size, new_inode)

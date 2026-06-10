@@ -535,7 +535,7 @@ pub struct ExFatReadPlan {
     /// Physical disk ID for disk-aware I/O.
     pub disk_id: u32,
     /// Last cluster touched by the plan, for sequential read seek caching.
-    pub hint_offset: u32,
+    pub hint_offset: u64,
     pub hint_cluster: u32,
 }
 
@@ -1623,14 +1623,14 @@ impl ExFatFs {
         Ok(())
     }
 
-    fn zero_file_gap(&mut self, first: u32, old_size: u32, gap_end: u32) -> Result<(), FsError> {
+    fn zero_file_gap(&mut self, first: u32, old_size: u64, gap_end: u64) -> Result<(), FsError> {
         if first < 2 || gap_end <= old_size {
             return Ok(());
         }
 
-        let cs = self.cluster_size();
+        let cs = self.cluster_size() as u64;
         let mut cluster = first;
-        let mut cluster_offset = 0u32;
+        let mut cluster_offset = 0u64;
 
         while cluster_offset + cs <= old_size {
             cluster_offset += cs;
@@ -1668,7 +1668,7 @@ impl ExFatFs {
                 *b = 0;
             }
             self.write_cluster(cluster, &cbuf)?;
-            pos = cluster_offset + end_in as u32;
+            pos = cluster_offset + end_in as u64;
         }
 
         self.metadata_dirty = true;
@@ -2084,7 +2084,7 @@ impl ExFatFs {
             entries.push(DirEntry {
                 name: name_str,
                 file_type,
-                size: data_length as u32,
+                size: data_length,
                 is_symlink,
                 uid,
                 gid,
@@ -2236,7 +2236,7 @@ impl ExFatFs {
     /// Look up a file/directory by path.
     /// Returns `(encoded_inode, file_type, size)` where encoded_inode has
     /// the contiguous bit set if the file uses NoFatChain.
-    pub fn lookup(&self, path: &str) -> Result<(u32, FileType, u32), FsError> {
+    pub fn lookup(&self, path: &str) -> Result<(u32, FileType, u64), FsError> {
         let path = path.trim_start_matches('/');
         if path.is_empty() {
             return Ok((self.root_cluster, FileType::Directory, 0));
@@ -2270,7 +2270,7 @@ impl ExFatFs {
                             FileType::Regular
                         };
                         let inode = encode_inode(found.first_cluster, found.contiguous);
-                        return Ok((inode, ft, found.data_length as u32));
+                        return Ok((inode, ft, found.data_length));
                     } else if !is_dir {
                         return Err(FsError::NotADirectory);
                     } else {
@@ -2292,7 +2292,7 @@ impl ExFatFs {
         &self,
         dir_cluster: u32,
         name: &str,
-    ) -> Result<(u32, FileType, u32, bool, u16, u16, u16, u32), FsError> {
+    ) -> Result<(u32, FileType, u64, bool, u16, u16, u16, u32), FsError> {
         if let Some(found) = self.dir_cache_lookup(dir_cluster, name) {
             self.validate_found_entry_cluster(&found, name)?;
             let is_symlink = found.attributes & ATTR_SYMLINK != 0;
@@ -2306,7 +2306,7 @@ impl ExFatFs {
             return Ok((
                 inode,
                 ft,
-                found.data_length as u32,
+                found.data_length,
                 is_symlink,
                 found.uid,
                 found.gid,
@@ -2331,7 +2331,7 @@ impl ExFatFs {
                 Ok((
                     inode,
                     ft,
-                    found.data_length as u32,
+                    found.data_length,
                     is_symlink,
                     found.uid,
                     found.gid,
@@ -2490,7 +2490,7 @@ impl ExFatFs {
 
     /// Read bytes from a file starting at `offset` into `buf`.
     /// `inode` is the encoded inode (cluster + contiguous bit).
-    pub fn read_file(&self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+    pub fn read_file(&self, inode: u32, offset: u64, buf: &mut [u8]) -> Result<usize, FsError> {
         let (start_cluster, contiguous) = decode_inode(inode);
         if start_cluster < 2 || buf.is_empty() {
             return Ok(0);
@@ -2505,11 +2505,11 @@ impl ExFatFs {
 
         // Non-contiguous: follow FAT chain, batch contiguous runs
         let mut cluster = start_cluster;
-        let mut bytes_skipped = 0u32;
+        let mut bytes_skipped = 0u64;
 
         // Skip clusters before offset
-        while bytes_skipped + cs <= offset {
-            bytes_skipped += cs;
+        while bytes_skipped + cs as u64 <= offset {
+            bytes_skipped += cs as u64;
             match self.next_cluster(cluster) {
                 Some(next) => cluster = next,
                 None => return Ok(0),
@@ -2559,7 +2559,7 @@ impl ExFatFs {
             }
 
             bytes_read += to_copy;
-            bytes_skipped += run_clusters * cs;
+            bytes_skipped += run_clusters as u64 * cs as u64;
 
             if bytes_read >= buf.len() {
                 break;
@@ -2578,13 +2578,14 @@ impl ExFatFs {
     fn read_file_contiguous(
         &self,
         start_cluster: u32,
-        offset: u32,
+        offset: u64,
         buf: &mut [u8],
         cs: u32,
         spc: u32,
     ) -> Result<usize, FsError> {
-        let first_cluster = start_cluster + offset / cs;
-        let byte_in_first = (offset % cs) as usize;
+        // Cluster index after u64 division — exFAT cluster numbers are u32 on disk.
+        let first_cluster = start_cluster + (offset / cs as u64) as u32;
+        let byte_in_first = (offset % cs as u64) as usize;
 
         if byte_in_first == 0 {
             // Aligned — single batch read
@@ -2643,17 +2644,16 @@ impl ExFatFs {
     }
 
     /// Build a read plan (for lock-free I/O in `read_file_to_vec`).
-    pub fn get_file_read_plan(&self, inode: u32, file_size: u32) -> ExFatReadPlan {
+    pub fn get_file_read_plan(&self, inode: u32, file_size: u64) -> ExFatReadPlan {
         let (start_cluster, contiguous) = decode_inode(inode);
         let spc = self.sectors_per_cluster();
         let mut runs = Vec::new();
-        let file_size_u64 = file_size as u64;
 
         if file_size == 0 || start_cluster < 2 {
             return ExFatReadPlan {
                 runs,
                 base_offset: 0,
-                file_size: file_size_u64,
+                file_size,
                 disk_id: self.device_id,
                 hint_offset: 0,
                 hint_cluster: 0,
@@ -2662,7 +2662,8 @@ impl ExFatFs {
 
         if contiguous {
             let cs = self.cluster_size() as u64;
-            let n = ((file_size_u64 + cs - 1) / cs) as u32;
+            // Cluster count after u64 division — fits u32 (exFAT cluster numbers are u32 on disk).
+            let n = ((file_size + cs - 1) / cs) as u32;
             let lba = match self.cluster_to_lba(start_cluster) {
                 Ok(l) => l,
                 Err(_) => {
@@ -2671,7 +2672,7 @@ impl ExFatFs {
                     return ExFatReadPlan {
                         runs: Vec::new(),
                         base_offset: 0,
-                        file_size: file_size_u64,
+                        file_size,
                         disk_id: self.device_id,
                         hint_offset: 0,
                         hint_cluster: 0,
@@ -2682,9 +2683,9 @@ impl ExFatFs {
             return ExFatReadPlan {
                 runs,
                 base_offset: 0,
-                file_size: file_size_u64,
+                file_size,
                 disk_id: self.device_id,
-                hint_offset: n.saturating_sub(1).saturating_mul(self.cluster_size()),
+                hint_offset: n.saturating_sub(1) as u64 * cs,
                 hint_cluster: start_cluster.saturating_add(n.saturating_sub(1)),
             };
         }
@@ -2717,7 +2718,7 @@ impl ExFatFs {
         ExFatReadPlan {
             runs,
             base_offset: 0,
-            file_size: file_size_u64,
+            file_size,
             disk_id: self.device_id,
             hint_offset: 0,
             hint_cluster: 0,
@@ -2727,43 +2728,44 @@ impl ExFatFs {
     pub fn get_file_read_plan_range(
         &self,
         inode: u32,
-        file_size: u32,
-        offset: u32,
+        file_size: u64,
+        offset: u64,
         len: usize,
-        hint: Option<(u32, u32)>,
+        hint: Option<(u64, u32)>,
     ) -> ExFatReadPlan {
         let (start_cluster, contiguous) = decode_inode(inode);
         let spc = self.sectors_per_cluster();
-        let cs = self.cluster_size();
+        let cs = self.cluster_size() as u64;
         let mut runs = Vec::new();
-        let file_size_u64 = file_size as u64;
 
         if file_size == 0 || start_cluster < 2 || len == 0 || offset >= file_size {
             return ExFatReadPlan {
                 runs,
                 base_offset: 0,
-                file_size: file_size_u64,
+                file_size,
                 disk_id: self.device_id,
                 hint_offset: 0,
                 hint_cluster: 0,
             };
         }
 
-        let wanted = (file_size - offset).min(len.min(u32::MAX as usize) as u32);
+        let wanted = (file_size - offset).min(len as u64);
         let first_idx = offset / cs;
         let base_offset = first_idx.saturating_mul(cs);
         let bytes_from_base = offset - base_offset + wanted;
-        let needed_clusters = ((bytes_from_base + cs - 1) / cs).max(1);
+        // Cluster count after u64 division — bounded by request length, fits u32.
+        let needed_clusters = (((bytes_from_base + cs - 1) / cs).max(1)) as u32;
 
         if contiguous {
-            let first_cluster = start_cluster + first_idx;
+            // Cluster index after u64 division — exFAT cluster numbers are u32 on disk.
+            let first_cluster = start_cluster + first_idx as u32;
             let lba = match self.cluster_to_lba(first_cluster) {
                 Ok(l) => l,
                 Err(_) => {
                     return ExFatReadPlan {
                         runs: Vec::new(),
-                        base_offset: base_offset as u64,
-                        file_size: file_size_u64,
+                        base_offset,
+                        file_size,
                         disk_id: self.device_id,
                         hint_offset: 0,
                         hint_cluster: 0,
@@ -2773,16 +2775,16 @@ impl ExFatFs {
             runs.push((lba, needed_clusters * spc));
             return ExFatReadPlan {
                 runs,
-                base_offset: base_offset as u64,
-                file_size: file_size_u64,
+                base_offset,
+                file_size,
                 disk_id: self.device_id,
-                hint_offset: base_offset + needed_clusters.saturating_sub(1) * cs,
+                hint_offset: base_offset + needed_clusters.saturating_sub(1) as u64 * cs,
                 hint_cluster: first_cluster + needed_clusters.saturating_sub(1),
             };
         }
 
         let mut cluster = start_cluster;
-        let mut cluster_idx = 0u32;
+        let mut cluster_idx = 0u64;
         if let Some((hint_offset, hint_cluster)) = hint {
             let hint_idx = hint_offset / cs;
             if hint_cluster >= 2 && hint_offset % cs == 0 && hint_idx <= first_idx {
@@ -2800,8 +2802,8 @@ impl ExFatFs {
                 None => {
                     return ExFatReadPlan {
                         runs,
-                        base_offset: base_offset as u64,
-                        file_size: file_size_u64,
+                        base_offset,
+                        file_size,
                         disk_id: self.device_id,
                         hint_offset: 0,
                         hint_cluster: 0,
@@ -2831,7 +2833,7 @@ impl ExFatFs {
                 Err(_) => break,
             };
             runs.push((run_start_lba, run_clusters * spc));
-            last_idx = cluster_idx + run_clusters - 1;
+            last_idx = cluster_idx + run_clusters as u64 - 1;
             remaining -= run_clusters;
             if remaining == 0 {
                 break;
@@ -2847,15 +2849,15 @@ impl ExFatFs {
 
         ExFatReadPlan {
             runs,
-            base_offset: base_offset as u64,
-            file_size: file_size_u64,
+            base_offset,
+            file_size,
             disk_id: self.device_id,
             hint_offset: last_idx.saturating_mul(cs),
             hint_cluster: last_cluster,
         }
     }
 
-    pub fn invalidate_file_range(&self, inode: u32, offset: u32, len: usize) {
+    pub fn invalidate_file_range(&self, inode: u32, offset: u64, len: usize) {
         if len == 0 {
             return;
         }
@@ -2863,20 +2865,21 @@ impl ExFatFs {
         if start_cluster < 2 {
             return;
         }
-        let cs = self.cluster_size();
+        let cs = self.cluster_size() as u64;
         let first_idx = offset / cs;
-        let last_idx = offset.saturating_add(len as u32).saturating_sub(1) / cs;
+        let last_idx = offset.saturating_add(len as u64).saturating_sub(1) / cs;
         let cache = unsafe { &mut *self.cluster_cache.get() };
 
         if contiguous {
             for idx in first_idx..=last_idx {
-                cache.invalidate(start_cluster + idx);
+                // Cluster index after u64 division — exFAT cluster numbers are u32 on disk.
+                cache.invalidate(start_cluster + idx as u32);
             }
             return;
         }
 
         let mut cluster = start_cluster;
-        let mut idx = 0u32;
+        let mut idx = 0u64;
         loop {
             if idx >= first_idx && idx <= last_idx {
                 cache.invalidate(cluster);
@@ -2904,10 +2907,10 @@ impl ExFatFs {
     pub fn write_file(
         &mut self,
         inode: u32,
-        offset: u32,
+        offset: u64,
         data: &[u8],
-        old_size: u32,
-    ) -> Result<(u32, u32), FsError> {
+        old_size: u64,
+    ) -> Result<(u32, u64), FsError> {
         let (new_inode, new_size, _, _) =
             self.write_file_with_hint(inode, offset, data, old_size, None)?;
         Ok((new_inode, new_size))
@@ -2924,11 +2927,11 @@ impl ExFatFs {
     pub fn write_file_with_hint(
         &mut self,
         inode: u32,
-        offset: u32,
+        offset: u64,
         data: &[u8],
-        old_size: u32,
-        hint: Option<(u32, u32)>,
-    ) -> Result<(u32, u32, u32, u32), FsError> {
+        old_size: u64,
+        hint: Option<(u64, u32)>,
+    ) -> Result<(u32, u64, u64, u32), FsError> {
         let (start_cluster, was_contiguous) = decode_inode(inode);
         if data.is_empty() {
             let hint_cluster = if start_cluster >= 2 { start_cluster } else { 0 };
@@ -2936,15 +2939,15 @@ impl ExFatFs {
         }
 
         if was_contiguous {
-            self.materialize_contiguous_chain(start_cluster, old_size as u64)?;
+            self.materialize_contiguous_chain(start_cluster, old_size)?;
         }
 
         let cs = self.cluster_size();
-        let projected_size = old_size.saturating_add(data.len().min(u32::MAX as usize) as u32);
+        let projected_size = old_size.saturating_add(data.len() as u64);
         let append_prealloc = offset == old_size
             && (data.len() >= APPEND_PREALLOC_MIN_BYTES
                 || (data.len() >= APPEND_PREALLOC_SMALL_WRITE_MIN_BYTES
-                    && projected_size >= APPEND_PREALLOC_MIN_BYTES as u32));
+                    && projected_size >= APPEND_PREALLOC_MIN_BYTES as u64));
         let first = if start_cluster < 2 {
             if append_prealloc {
                 self.alloc_clusters(self.append_alloc_count(data.len(), cs))?
@@ -2960,7 +2963,7 @@ impl ExFatFs {
         }
 
         let mut cluster = first;
-        let mut cluster_offset = 0u32;
+        let mut cluster_offset = 0u64;
 
         if let Some((hint_offset, hint_cluster)) = hint {
             if hint_cluster >= 2 && hint_offset <= offset {
@@ -2970,8 +2973,8 @@ impl ExFatFs {
         }
 
         // Skip to the cluster containing `offset`
-        while cluster_offset + cs <= offset {
-            cluster_offset += cs;
+        while cluster_offset + cs as u64 <= offset {
+            cluster_offset += cs as u64;
             match self.next_cluster(cluster) {
                 Some(next) => cluster = next,
                 None => {
@@ -3029,17 +3032,17 @@ impl ExFatFs {
                         cache.invalidate(cur + k);
                     }
                     written += total_bytes;
-                    cluster_offset += run_clusters * cs;
+                    cluster_offset += run_clusters as u64 * cs as u64;
                     cur = probe;
                     last_cluster = probe;
-                    last_cluster_offset = cluster_offset.saturating_sub(cs);
+                    last_cluster_offset = cluster_offset.saturating_sub(cs as u64);
                 } else {
                     // Single full cluster write
                     self.write_cluster(cur, &data[written..written + cs as usize])?;
                     written += cs as usize;
-                    cluster_offset += cs;
+                    cluster_offset += cs as u64;
                     last_cluster = cur;
-                    last_cluster_offset = cluster_offset.saturating_sub(cs);
+                    last_cluster_offset = cluster_offset.saturating_sub(cs as u64);
                 }
             } else {
                 if start_in == 0 && to_write == cs as usize {
@@ -3053,9 +3056,9 @@ impl ExFatFs {
                     self.write_cluster(cur, &cbuf)?;
                 }
                 written += to_write;
-                cluster_offset += cs;
+                cluster_offset += cs as u64;
                 last_cluster = cur;
-                last_cluster_offset = cluster_offset.saturating_sub(cs);
+                last_cluster_offset = cluster_offset.saturating_sub(cs as u64);
             }
 
             if written >= data.len() {
@@ -3088,7 +3091,7 @@ impl ExFatFs {
         // Mark metadata as dirty — deferred flush on fsync/close/sync
         self.metadata_dirty = true;
 
-        let new_size = (offset + data.len() as u32).max(old_size);
+        let new_size = (offset + data.len() as u64).max(old_size);
         Ok((first, new_size, last_cluster_offset, last_cluster))
     }
 
@@ -3479,7 +3482,7 @@ impl ExFatFs {
         &mut self,
         parent_cluster: u32,
         name: &str,
-        new_size: u32,
+        new_size: u64,
         new_cluster: u32,
     ) -> Result<(), FsError> {
         self.validate_cluster(parent_cluster, "update_entry parent")?;
@@ -3503,7 +3506,7 @@ impl ExFatFs {
             if let Some(found) = self.find_entry_in_buf(&cbuf, name) {
                 let off = found.file_entry_offset;
                 let s = off + 32; // Stream Extension offset
-                let sz = new_size as u64;
+                let sz = new_size;
 
                 // Update LastModifiedTimestamp in File Directory Entry
                 let now = current_exfat_timestamp();
@@ -3560,14 +3563,14 @@ impl ExFatFs {
         parent_cluster: u32,
         name: &str,
         inode: u32,
-        old_size: u32,
-        new_size: u32,
+        old_size: u64,
+        new_size: u64,
     ) -> Result<u32, FsError> {
         let (start_cluster, was_contiguous) = decode_inode(inode);
 
         if new_size == 0 {
             if start_cluster >= 2 {
-                self.free_chain(start_cluster, was_contiguous, old_size as u64)?;
+                self.free_chain(start_cluster, was_contiguous, old_size)?;
             }
             self.update_entry(parent_cluster, name, 0, 0)?;
             return Ok(0);
@@ -3575,7 +3578,7 @@ impl ExFatFs {
 
         let mut current_inode = start_cluster;
         if current_inode >= 2 && was_contiguous {
-            self.materialize_contiguous_chain(current_inode, old_size as u64)?;
+            self.materialize_contiguous_chain(current_inode, old_size)?;
         }
 
         if new_size <= old_size {
@@ -3587,7 +3590,7 @@ impl ExFatFs {
         }
 
         let mut current_size = old_size;
-        let mut hint: Option<(u32, u32)> = None;
+        let mut hint: Option<(u64, u32)> = None;
         let chunk_len = (self.cluster_size() as usize).min(64 * 1024).max(1);
         let zeros = vec![0u8; chunk_len];
         while current_size < new_size {
@@ -3614,7 +3617,7 @@ impl ExFatFs {
         &mut self,
         parent_cluster: u32,
         name: &str,
-        new_size: u32,
+        new_size: u64,
     ) -> Result<(), FsError> {
         let raw = self.read_dir_raw(parent_cluster)?;
         let found = self
@@ -3623,11 +3626,7 @@ impl ExFatFs {
         if found.attributes & ATTR_DIRECTORY != 0 {
             return Err(FsError::IsADirectory);
         }
-        let old_size = if found.data_length > u32::MAX as u64 {
-            return Err(FsError::IoError);
-        } else {
-            found.data_length as u32
-        };
+        let old_size = found.data_length;
         let inode = encode_inode(found.first_cluster, found.contiguous);
         self.truncate_open_file_to(parent_cluster, name, inode, old_size, new_size)?;
         Ok(())
@@ -3677,7 +3676,7 @@ impl ExFatFs {
     }
 
     /// Read the target of a symbolic link. `inode` is the encoded inode of the link.
-    pub fn readlink(&self, inode: u32, size: u32) -> Result<String, FsError> {
+    pub fn readlink(&self, inode: u32, size: u64) -> Result<String, FsError> {
         let mut buf = vec![0u8; size as usize];
         let n = self.read_file(inode, 0, &mut buf)?;
         let s = core::str::from_utf8(&buf[..n]).map_err(|_| FsError::IoError)?;
@@ -3839,11 +3838,11 @@ impl Filesystem for ExFatFsDriver {
     // Required: read path
     // -----------------------------------------------------------------
 
-    fn read(&self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, VfsFsError> {
+    fn read(&self, inode: u32, offset: u64, buf: &mut [u8]) -> Result<usize, VfsFsError> {
         self.inner.lock().read_file(inode, offset, buf)
     }
 
-    fn lookup(&self, path: &str) -> Result<(u32, FileType, u32), VfsFsError> {
+    fn lookup(&self, path: &str) -> Result<(u32, FileType, u64), VfsFsError> {
         self.inner.lock().lookup(path)
     }
 
@@ -3865,7 +3864,7 @@ impl Filesystem for ExFatFsDriver {
     // encodes the directory's first cluster.
     // -----------------------------------------------------------------
 
-    fn write(&self, _inode: u32, _offset: u32, _buf: &[u8]) -> Result<usize, VfsFsError> {
+    fn write(&self, _inode: u32, _offset: u64, _buf: &[u8]) -> Result<usize, VfsFsError> {
         Err(VfsFsError::NotSupported)
     }
 
@@ -4051,7 +4050,7 @@ impl Filesystem for ExFatFsDriver {
         parent_inode: u32,
         name: &str,
         new_inode: u32,
-        new_size: u32,
+        new_size: u64,
     ) -> Result<(), VfsFsError> {
         // exFAT close-time dirent commit: write back the updated
         // (size, first_cluster) pair so subsequent mounts see the

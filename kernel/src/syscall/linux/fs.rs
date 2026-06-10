@@ -1150,14 +1150,16 @@ pub(super) fn linux_creat(path_ptr: u64) -> u64 {
 }
 
 pub(super) fn linux_truncate(path_ptr: u64, len: u64) -> u64 {
-    if len > u32::MAX as u64 {
+    // off_t is signed — reject negative lengths; the VFS path is fully u64
+    // now, so no 4 GiB clamp is needed.
+    if (len as i64) < 0 {
         return linux_err(EFBIG);
     }
     let path = match linux_translate_user_path(path_ptr) {
         Ok(path) => path,
         Err(errno) => return linux_err(errno),
     };
-    match crate::fs::vfs::truncate_to(&path, len as u32) {
+    match crate::fs::vfs::truncate_to(&path, len) {
         Ok(()) => 0,
         Err(e) => linux_fs_err(e),
     }
@@ -1166,7 +1168,9 @@ pub(super) fn linux_truncate(path_ptr: u64, len: u64) -> u64 {
 pub(super) fn linux_ftruncate(fd: u32, len: u64) -> u64 {
     use crate::fs::fd_table::FdKind;
 
-    if len > u32::MAX as u64 {
+    // off_t is signed — reject negative lengths; the VFS path is fully u64
+    // now, so no 4 GiB clamp is needed.
+    if (len as i64) < 0 {
         return linux_err(EFBIG);
     }
     let global_id = match crate::task::scheduler::current_fd_get(fd) {
@@ -1177,7 +1181,7 @@ pub(super) fn linux_ftruncate(fd: u32, len: u64) -> u64 {
         },
         None => return linux_err(EBADF),
     };
-    match crate::fs::vfs::ftruncate_to(global_id, len as u32) {
+    match crate::fs::vfs::ftruncate_to(global_id, len) {
         Ok(()) => 0,
         Err(e) => linux_fs_err(e),
     }
@@ -1222,19 +1226,16 @@ pub(super) fn linux_fallocate(fd: u32, mode: u64, offset: u64, len: u64) -> u64 
     let Some(end) = offset.checked_add(len) else {
         return linux_err(EFBIG);
     };
-    if end > u32::MAX as u64 {
-        return linux_err(EFBIG);
-    }
 
     let current_size = match crate::fs::vfs::fstat(global_id) {
         Ok((_file_type, size, _position, _mtime)) => size,
         Err(e) => return linux_fs_err(e),
     };
-    if end as u32 <= current_size {
+    if end <= current_size {
         return 0;
     }
 
-    match crate::fs::vfs::ftruncate_to(global_id, end as u32) {
+    match crate::fs::vfs::ftruncate_to(global_id, end) {
         Ok(()) => 0,
         Err(e) => linux_fs_err(e),
     }

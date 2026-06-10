@@ -49,7 +49,7 @@ impl RamFs {
     }
 
     /// Resolve a path to (inode, file_type, size). Path must start with "/".
-    pub fn lookup(&self, path: &str) -> Result<(u32, FileType, u32), FsError> {
+    pub fn lookup(&self, path: &str) -> Result<(u32, FileType, u64), FsError> {
         let path = path.trim_start_matches('/');
         if path.is_empty() {
             return Ok((0, FileType::Directory, 0));
@@ -72,7 +72,7 @@ impl RamFs {
 
             if idx == components.len() - 1 {
                 let n = &self.nodes[current as usize];
-                let size = n.data.len() as u32;
+                let size = n.data.len() as u64;
                 return Ok((current, n.file_type, size));
             }
         }
@@ -85,7 +85,7 @@ impl RamFs {
         &self,
         dir_inode: u32,
         name: &str,
-    ) -> Result<(u32, FileType, u32), FsError> {
+    ) -> Result<(u32, FileType, u64), FsError> {
         let node = self
             .nodes
             .get(dir_inode as usize)
@@ -99,11 +99,11 @@ impl RamFs {
             .find(|(n, _)| n == name)
             .ok_or(FsError::NotFound)?;
         let child_node = &self.nodes[child.1 as usize];
-        Ok((child.1, child_node.file_type, child_node.data.len() as u32))
+        Ok((child.1, child_node.file_type, child_node.data.len() as u64))
     }
 
     /// Read bytes from a file at the given offset.
-    pub fn read_file(&self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+    pub fn read_file(&self, inode: u32, offset: u64, buf: &mut [u8]) -> Result<usize, FsError> {
         let node = self.nodes.get(inode as usize).ok_or(FsError::NotFound)?;
         if node.file_type == FileType::Directory {
             return Err(FsError::IsADirectory);
@@ -121,7 +121,7 @@ impl RamFs {
 
     /// Write bytes to a file at the given offset, extending the file if needed.
     /// Returns new size.
-    pub fn write_file(&mut self, inode: u32, offset: u32, buf: &[u8]) -> Result<u32, FsError> {
+    pub fn write_file(&mut self, inode: u32, offset: u64, buf: &[u8]) -> Result<u64, FsError> {
         let node = self
             .nodes
             .get_mut(inode as usize)
@@ -136,7 +136,7 @@ impl RamFs {
             node.data.resize(end, 0);
         }
         node.data[start..end].copy_from_slice(buf);
-        Ok(node.data.len() as u32)
+        Ok(node.data.len() as u64)
     }
 
     /// Create a file in a directory. Returns the new file's inode.
@@ -241,7 +241,7 @@ impl RamFs {
             entries.push(DirEntry {
                 name: name.clone(),
                 file_type: child.file_type,
-                size: child.data.len() as u32,
+                size: child.data.len() as u64,
                 is_symlink: false,
                 uid: 0,
                 gid: 0,
@@ -285,9 +285,9 @@ impl RamFs {
     }
 
     /// Get file size.
-    pub fn file_size(&self, inode: u32) -> Result<u32, FsError> {
+    pub fn file_size(&self, inode: u32) -> Result<u64, FsError> {
         let node = self.nodes.get(inode as usize).ok_or(FsError::NotFound)?;
-        Ok(node.data.len() as u32)
+        Ok(node.data.len() as u64)
     }
 
     /// Check if a path exists.

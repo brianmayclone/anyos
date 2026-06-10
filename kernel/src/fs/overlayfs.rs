@@ -65,7 +65,7 @@ impl OverlayFs {
 
     /// Look up a path. Checks whiteouts, then RamFS, then ISO 9660.
     /// Returns (overlay_inode, file_type, size).
-    pub fn lookup(&self, iso: &Iso9660Fs, path: &str) -> Result<(u32, FileType, u32), FsError> {
+    pub fn lookup(&self, iso: &Iso9660Fs, path: &str) -> Result<(u32, FileType, u64), FsError> {
         let norm = Self::norm(path);
 
         // Root directory always exists
@@ -85,7 +85,7 @@ impl OverlayFs {
 
         // Check lower (ISO 9660)
         let (inode, ft, sz) = iso.lookup(&norm)?;
-        Ok((inode, ft, sz))
+        Ok((inode, ft, sz as u64))
     }
 
     /// Read bytes from a file identified by an overlay inode.
@@ -93,17 +93,23 @@ impl OverlayFs {
         &self,
         iso: &Iso9660Fs,
         inode: u32,
-        offset: u32,
+        offset: u64,
         buf: &mut [u8],
-        file_size: u32,
+        file_size: u64,
     ) -> Result<usize, FsError> {
         if inode & OVERLAY_RAM_BIT != 0 {
             // Upper layer (RamFS)
             let ram_inode = inode & !OVERLAY_RAM_BIT;
             self.ram.read_file(ram_inode, offset, buf)
         } else {
-            // Lower layer (ISO 9660)
-            iso.read_file(inode, offset, buf, file_size)
+            // Lower layer (ISO 9660): on-disk sizes are 32-bit — offsets at or
+            // past 4 GiB saturate and read 0 bytes past EOF.
+            iso.read_file(
+                inode,
+                offset.min(u32::MAX as u64) as u32,
+                buf,
+                file_size.min(u32::MAX as u64) as u32,
+            )
         }
     }
 
@@ -113,11 +119,11 @@ impl OverlayFs {
         &mut self,
         iso: &Iso9660Fs,
         inode: u32,
-        offset: u32,
+        offset: u64,
         buf: &[u8],
-        file_size: u32,
+        file_size: u64,
         path: &str,
-    ) -> Result<(u32, u32), FsError> {
+    ) -> Result<(u32, u64), FsError> {
         if inode & OVERLAY_RAM_BIT != 0 {
             // Already in RamFS — write directly
             let ram_inode = inode & !OVERLAY_RAM_BIT;
@@ -128,7 +134,9 @@ impl OverlayFs {
             let mut iso_data = Vec::new();
             if file_size > 0 {
                 iso_data.resize(file_size as usize, 0u8);
-                iso.read_file(inode, 0, &mut iso_data, file_size)?;
+                // ISO 9660 on-disk sizes are 32-bit — file_size came from the
+                // ISO lookup, so this cast is lossless.
+                iso.read_file(inode, 0, &mut iso_data, file_size as u32)?;
             }
             let ram_inode = self.ram.store_file(path, &iso_data)?;
             let new_size = self.ram.write_file(ram_inode, offset, buf)?;
@@ -199,7 +207,9 @@ impl OverlayFs {
             let mut data = Vec::new();
             if sz > 0 {
                 data.resize(sz as usize, 0u8);
-                iso.read_file(inode, 0, &mut data, sz)?;
+                // ISO 9660 on-disk sizes are 32-bit — sz came from the ISO
+                // lookup, so this cast is lossless.
+                iso.read_file(inode, 0, &mut data, sz as u32)?;
             }
             self.ram.store_file(&new_norm, &data)?;
         } else {
@@ -297,7 +307,7 @@ impl OverlayFs {
     }
 
     /// Stat a path through the overlay.
-    pub fn stat(&self, iso: &Iso9660Fs, path: &str) -> Result<(FileType, u32), FsError> {
+    pub fn stat(&self, iso: &Iso9660Fs, path: &str) -> Result<(FileType, u64), FsError> {
         let (_, ft, sz) = self.lookup(iso, path)?;
         Ok((ft, sz))
     }

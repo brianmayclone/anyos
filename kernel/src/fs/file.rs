@@ -66,8 +66,8 @@ pub struct OpenFile {
     pub path: String,
     pub file_type: FileType,
     pub flags: FileFlags,
-    pub position: u32,
-    pub size: u32,
+    pub position: u64,
+    pub size: u64,
     pub fs_id: u32,          // Which filesystem this belongs to
     pub inode: u32,          // Filesystem-specific identifier (start cluster for FAT)
     pub parent_cluster: u32, // Parent directory cluster (0 = root)
@@ -76,14 +76,14 @@ pub struct OpenFile {
     pub refcount: u32,
     /// FAT chain seek cache: (byte_offset, cluster) — avoids re-walking
     /// the FAT chain from the start on sequential reads. Updated on every read.
-    pub seek_cache_offset: u32,
+    pub seek_cache_offset: u64,
     pub seek_cache_cluster: u32,
     /// exFAT: directory entry needs a deferred size/cluster commit.
     pub entry_dirty: bool,
     /// exFAT: small sequential append buffer.  This lets 4 KiB writers reach
     /// the filesystem as larger contiguous writes without changing userspace's
     /// visible file offset or size.
-    pub append_buffer_offset: u32,
+    pub append_buffer_offset: u64,
     pub append_buffer: Vec<u8>,
     /// Sequential read-ahead state for files whose backend can cheaply build
     /// sector plans outside the VFS lock.
@@ -98,15 +98,15 @@ pub struct OpenFile {
 #[derive(Debug, Clone, Copy)]
 pub struct ReadAheadState {
     /// Offset expected for the next sequential read.
-    pub next_offset: u32,
+    pub next_offset: u64,
     /// Current adaptive window in bytes.
     pub window_bytes: u32,
     /// Highest file offset already scheduled for prefetch.
-    pub prefetched_until: u32,
+    pub prefetched_until: u64,
 }
 
 impl ReadAheadState {
-    pub const fn new(position: u32) -> Self {
+    pub const fn new(position: u64) -> Self {
         Self {
             next_offset: position,
             window_bytes: 0,
@@ -114,7 +114,7 @@ impl ReadAheadState {
         }
     }
 
-    pub fn reset(&mut self, position: u32) {
+    pub fn reset(&mut self, position: u64) {
         *self = Self::new(position);
     }
 }
@@ -123,7 +123,7 @@ impl ReadAheadState {
 pub struct DirEntry {
     pub name: String,
     pub file_type: FileType,
-    pub size: u32,
+    pub size: u64,
     /// True if this entry is a symbolic link.
     pub is_symlink: bool,
     /// Owner user ID.

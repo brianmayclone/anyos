@@ -534,7 +534,9 @@ pub fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
         Some(entry) => match entry.kind {
             FdKind::File { global_id } => {
                 match crate::fs::vfs::lseek(global_id, offset as i64, whence) {
-                    Ok(pos) => pos,
+                    // Legacy 32-bit syscall ABI returns the position as u32 —
+                    // saturate positions beyond 4 GiB.
+                    Ok(pos) => pos.min(u32::MAX as u64) as u32,
                     Err(e) => fs_err(e),
                 }
             }
@@ -606,9 +608,13 @@ pub fn sys_fstat(fd: u32, buf_ptr: u64) -> u32 {
                 crate::fs::file::FileType::Device => 2,
             };
             let mut out = [0u8; 16];
+            // Legacy 32-bit syscall ABI carries size/position as u32 —
+            // saturate values beyond 4 GiB.
+            let size32 = size.min(u32::MAX as u64) as u32;
+            let pos32 = position.min(u32::MAX as u64) as u32;
             out[0..4].copy_from_slice(&type_val.to_le_bytes());
-            out[4..8].copy_from_slice(&size.to_le_bytes());
-            out[8..12].copy_from_slice(&position.to_le_bytes());
+            out[4..8].copy_from_slice(&size32.to_le_bytes());
+            out[8..12].copy_from_slice(&pos32.to_le_bytes());
             out[12..16].copy_from_slice(&mtime.to_le_bytes());
             if !copy_to_user_bytes(buf_ptr, &out, 16) {
                 return u32::MAX;
@@ -660,7 +666,7 @@ pub fn sys_ftruncate(fd: u32, length: u32) -> u32 {
             return u32::MAX;
         }
     };
-    match crate::fs::vfs::ftruncate_to(global_id, length) {
+    match crate::fs::vfs::ftruncate_to(global_id, length as u64) {
         Ok(()) => 0,
         Err(e) => fs_err(e),
     }

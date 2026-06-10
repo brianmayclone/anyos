@@ -715,7 +715,7 @@ impl SmbFs {
                 entries.push(DirEntry {
                     name,
                     file_type,
-                    size: end_of_file as u32,
+                    size: end_of_file,
                     is_symlink: false,
                     uid: 0,
                     gid: 0,
@@ -786,7 +786,7 @@ impl SmbFs {
     // -----------------------------------------------------------------------
 
     /// Look up a path and return (inode, file_type, size).
-    pub fn lookup(&mut self, path: &str) -> Result<(u32, FileType, u32), FsError> {
+    pub fn lookup(&mut self, path: &str) -> Result<(u32, FileType, u64), FsError> {
         let clean = normalize_smb_path(path);
 
         // Root directory
@@ -812,11 +812,11 @@ impl SmbFs {
         };
 
         let inode = self.path_to_inode(&clean);
-        Ok((inode, file_type, end_of_file as u32))
+        Ok((inode, file_type, end_of_file))
     }
 
     /// Read bytes from a file at the given offset.
-    pub fn read_file(&mut self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+    pub fn read_file(&mut self, inode: u32, offset: u64, buf: &mut [u8]) -> Result<usize, FsError> {
         let path = String::from(self.inode_to_path(inode).ok_or(FsError::NotFound)?);
 
         let (file_id, _eof, _attrs) = self.smb2_create(
@@ -827,7 +827,7 @@ impl SmbFs {
             FILE_NON_DIRECTORY_FILE,
         )?;
 
-        let data = self.smb2_read(&file_id, offset as u64, buf.len() as u32)?;
+        let data = self.smb2_read(&file_id, offset, buf.len() as u32)?;
         let _ = self.smb2_close(&file_id);
 
         let n = data.len().min(buf.len());
@@ -836,7 +836,7 @@ impl SmbFs {
     }
 
     /// Write bytes to a file at the given offset.
-    pub fn write_file(&mut self, inode: u32, offset: u32, data: &[u8]) -> Result<usize, FsError> {
+    pub fn write_file(&mut self, inode: u32, offset: u64, data: &[u8]) -> Result<usize, FsError> {
         let path = String::from(self.inode_to_path(inode).ok_or(FsError::NotFound)?);
 
         let (file_id, _eof, _attrs) = self.smb2_create(
@@ -847,7 +847,7 @@ impl SmbFs {
             FILE_NON_DIRECTORY_FILE,
         )?;
 
-        let written = self.smb2_write(&file_id, offset as u64, data)?;
+        let written = self.smb2_write(&file_id, offset, data)?;
         let _ = self.smb2_close(&file_id);
 
         Ok(written as usize)

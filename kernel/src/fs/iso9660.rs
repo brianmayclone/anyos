@@ -302,7 +302,7 @@ impl Iso9660Fs {
                 } else {
                     FileType::Regular
                 },
-                size: r.data_length,
+                size: r.data_length as u64,
                 is_symlink: false,
                 uid: 0,
                 gid: 0,

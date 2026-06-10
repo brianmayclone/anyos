@@ -19,8 +19,6 @@
 //!   private (no write-back) because the registry is keyed by the parent's
 //!   address space. Threads (CLONE_VM) share the mapping correctly.
 //! - SIGKILL skips write-back (no page cache to fall back on).
-//! - File offsets beyond 4 GiB are skipped until the VFS gains 64-bit
-//!   offsets; a verbose log marks every skipped page.
 
 use super::*;
 use crate::memory::address::VirtAddr;
@@ -261,13 +259,8 @@ fn write_dirty_pages(
             let _ = virtual_mem::clear_pte_dirty(VirtAddr::new(page));
             continue;
         }
-        if file_off > u32::MAX as u64 {
-            crate::serial_verbose_println!(
-                "lxe shared-mmap: skip page {:#x} (file offset {:#x} beyond u32 VFS limit)",
-                page,
-                file_off
-            );
-            continue;
+        if file_off > i64::MAX as u64 {
+            continue; // off_t overflow — cannot be addressed
         }
         let n = (file_size - file_off).min(PAGE_SIZE) as usize;
         unsafe {

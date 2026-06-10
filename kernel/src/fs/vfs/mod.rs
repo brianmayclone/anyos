@@ -93,7 +93,7 @@ struct DetachedExFatCommit {
     filename: String,
     parent_cluster: u32,
     inode: u32,
-    size: u32,
+    size: u64,
     entry_dirty: bool,
     durable: bool,
 }
@@ -202,7 +202,7 @@ fn update_exfat_entry_resolving(
     file_path: &str,
     parent_cluster: u32,
     filename: &str,
-    size: u32,
+    size: u64,
     inode: u32,
 ) -> Result<(), FsError> {
     match exfat.update_entry(parent_cluster, filename, size, inode) {
@@ -626,8 +626,8 @@ struct DetachedRead {
     exfat_plan: Option<crate::fs::exfat::ExFatReadPlan>,
     exfat_prefetch: Option<ExFatPrefetch>,
     inode: u32,
-    position: u32,
-    size: u32,
+    position: u64,
+    size: u64,
     reserved: usize,
     path: String,
     exfat_read_hint: Option<ExFatReadHint>,
@@ -635,13 +635,13 @@ struct DetachedRead {
 
 #[derive(Copy, Clone)]
 struct ExFatReadHint {
-    offset: u32,
+    offset: u64,
     cluster: u32,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExFatPrefetch {
-    pub offset: u32,
+    pub offset: u64,
     pub len: usize,
 }
 
@@ -700,8 +700,8 @@ fn exfat_readahead_memory_cap() -> u32 {
 
 pub(crate) fn exfat_readahead_decision(
     current: ReadAheadState,
-    position: u32,
-    size: u32,
+    position: u64,
+    size: u64,
     read_len: usize,
     memory_cap: u32,
 ) -> ExFatReadAheadDecision {
@@ -715,9 +715,9 @@ pub(crate) fn exfat_readahead_decision(
         };
     }
 
-    let remaining = (size - position) as usize;
-    let read_len = read_len.min(remaining).min(u32::MAX as usize);
-    let read_end = position.saturating_add(read_len as u32).min(size);
+    let remaining = (size - position).min(usize::MAX as u64) as usize;
+    let read_len = read_len.min(remaining);
+    let read_end = position.saturating_add(read_len as u64).min(size);
     if memory_cap < EXFAT_READAHEAD_MIN_BYTES {
         state.next_offset = read_end;
         state.window_bytes = 0;
@@ -731,7 +731,7 @@ pub(crate) fn exfat_readahead_decision(
 
     let sequential = position == current.next_offset;
 
-    if read_len as u32 >= memory_cap {
+    if read_len as u64 >= memory_cap as u64 {
         state.next_offset = read_end;
         state.window_bytes = 0;
         state.prefetched_until = read_end;
@@ -758,7 +758,7 @@ pub(crate) fn exfat_readahead_decision(
     } else {
         read_end
     };
-    let target_end = read_end.saturating_add(next_window).min(size);
+    let target_end = read_end.saturating_add(next_window as u64).min(size);
     let prefetch_start = previous_prefetch_end.min(target_end);
     let prefetch = if target_end > prefetch_start {
         Some(ExFatPrefetch {
@@ -795,19 +795,19 @@ struct DetachedWrite {
     fs_id: u32,
     inode: u32,
     old_inode: u32,
-    old_size: u32,
-    position: u32,
+    old_size: u64,
+    position: u64,
     reserved: usize,
     path: String,
     parent_cluster: u32,
-    seek_hint: Option<(u32, u32)>,
+    seek_hint: Option<(u64, u32)>,
     sync_write: bool,
 }
 
 struct DetachedExFatWriteResult {
     new_cluster: u32,
-    new_size: u32,
-    hint_offset: u32,
+    new_size: u64,
+    hint_offset: u64,
     hint_cluster: u32,
 }
 
@@ -816,9 +816,9 @@ struct PendingExFatAppendFlush {
     fs_id: u32,
     path: String,
     old_inode: u32,
-    old_size: u32,
-    offset: u32,
-    seek_hint: Option<(u32, u32)>,
+    old_size: u64,
+    offset: u64,
+    seek_hint: Option<(u64, u32)>,
     data: Vec<u8>,
 }
 
@@ -898,7 +898,7 @@ struct DetachedOpenResult {
     path: String,
     file_type: FileType,
     flags: FileFlags,
-    size: u32,
+    size: u64,
     fs_id: u32,
     inode: u32,
     parent_cluster: u32,
@@ -1134,7 +1134,7 @@ fn execute_detached_open(plan: DetachedOpen) -> Result<DetachedOpenResult, FsErr
                         };
                         let (pc, _) = crate::fs::exfat::decode_inode(pr_inode);
                         exfat.truncate_file(pc, filename)?;
-                        (0u32, file_type, 0u32, pc)
+                        (0u32, file_type, 0u64, pc)
                     } else {
                         let parent_cluster = if plan.flags.write {
                             let (parent_path, _) = split_parent_name(q)?;
@@ -1167,7 +1167,7 @@ fn execute_detached_open(plan: DetachedOpen) -> Result<DetachedOpenResult, FsErr
                     }
                     let pc = crate::fs::exfat::decode_inode(pr_inode).0;
                     exfat.create_file(pc, filename)?;
-                    (0u32, FileType::Regular, 0u32, pc)
+                    (0u32, FileType::Regular, 0u64, pc)
                 }
                 Err(e) => return Err(e),
             };
@@ -1988,7 +1988,7 @@ pub(crate) struct MountPoint {
 pub(crate) struct ResolvedEntry {
     pub(crate) inode: u32,
     pub(crate) file_type: FileType,
-    pub(crate) size: u32,
+    pub(crate) size: u64,
     pub(crate) is_symlink: bool,
     pub(crate) uid: u16,
     pub(crate) gid: u16,
@@ -2428,6 +2428,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             FsType::Iso9660 => {
                 if let Some(ref iso) = state.iso9660_fs {
                     let (inode, file_type, size) = iso.lookup(relative_path)?;
+                    let size = size as u64;
                     let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
                     let file = OpenFile {
                         fd: slot_id,
@@ -2507,7 +2508,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                             let (pr_inode, _, _) = exfat.lookup(parent_path)?;
                             let (pc, _) = crate::fs::exfat::decode_inode(pr_inode);
                             exfat.truncate_file(pc, filename)?;
-                            (0u32, file_type, 0u32, pc)
+                            (0u32, file_type, 0u64, pc)
                         } else {
                             let pc = if flags.write {
                                 let (parent_path, _) = split_parent_name(relative_path)?;
@@ -2529,7 +2530,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                         }
                         let pc = crate::fs::exfat::decode_inode(pr_inode).0;
                         exfat.create_file(pc, filename)?;
-                        (0u32, FileType::Regular, 0u32, pc)
+                        (0u32, FileType::Regular, 0u64, pc)
                     }
                     Err(e) => return Err(e),
                 };
@@ -2692,7 +2693,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                         let pr = resolve_exfat_path(exfat, parent_path, true)?;
                         let (pc, _) = crate::fs::exfat::decode_inode(pr.inode);
                         exfat.truncate_file(pc, filename)?;
-                        (0u32, r.file_type, 0u32, pc)
+                        (0u32, r.file_type, 0u64, pc)
                     } else {
                         let parent_cluster = if flags.write {
                             let (parent_path, _) = split_parent_name(path)?;
@@ -2713,7 +2714,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                     }
                     let pc = crate::fs::exfat::decode_inode(pr.inode).0;
                     exfat.create_file(pc, filename)?;
-                    (0u32, FileType::Regular, 0u32, pc)
+                    (0u32, FileType::Regular, 0u64, pc)
                 }
                 Err(e) => return Err(e),
             }
@@ -2757,7 +2758,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                         let (parent_path, filename) = split_parent_name(path)?;
                         let (parent_cluster, _, _) = fat.lookup(parent_path)?;
                         fat.truncate_file(parent_cluster, filename)?;
-                        (0u32, file_type, 0u32, parent_cluster)
+                        (0u32, file_type, 0u64, parent_cluster)
                     } else {
                         let parent_cluster = if flags.write {
                             let (parent_path, _) = split_parent_name(path)?;
@@ -2765,7 +2766,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                         } else {
                             0
                         };
-                        (inode, file_type, size, parent_cluster)
+                        (inode, file_type, size as u64, parent_cluster)
                     }
                 }
                 Err(FsError::NotFound) if flags.create => {
@@ -2775,7 +2776,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                         return Err(FsError::NotADirectory);
                     }
                     fat.create_file(parent_cluster, filename)?;
-                    (0u32, FileType::Regular, 0u32, parent_cluster)
+                    (0u32, FileType::Regular, 0u64, parent_cluster)
                 }
                 Err(e) => return Err(e),
             }
@@ -2904,14 +2905,14 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                 if flags.truncate && flags.write {
                     overlay.truncate(iso, path)?;
                     let (i, ft, _) = overlay.lookup(iso, path)?;
-                    (i, ft, 0u32)
+                    (i, ft, 0u64)
                 } else {
                     r
                 }
             }
             Err(FsError::NotFound) if flags.create => {
                 let new_inode = overlay.create_file(path)?;
-                (new_inode, FileType::Regular, 0u32)
+                (new_inode, FileType::Regular, 0u64)
             }
             Err(e) => return Err(e),
         };
@@ -2946,6 +2947,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             return Err(FsError::PermissionDenied);
         }
         let (inode, file_type, size) = iso.lookup(path)?;
+        let size = size as u64;
         let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
         let file = OpenFile {
             fd: slot_id,
@@ -3304,7 +3306,7 @@ fn prepare_detached_read(slot_id: FileDescriptor, len: usize) -> Result<Detached
         {
             return Err(FsError::BadFd);
         }
-        file.position = position.saturating_add(reserved as u32);
+        file.position = position.saturating_add(reserved as u64);
         if matches!(&backend, DetachedReadBackend::ExFat(_)) {
             file.readahead = readahead.state;
         }
@@ -3325,7 +3327,7 @@ fn prepare_detached_read(slot_id: FileDescriptor, len: usize) -> Result<Detached
 
 fn prepare_detached_read_at(
     slot_id: FileDescriptor,
-    offset: u32,
+    offset: u64,
     len: usize,
 ) -> Result<DetachedReadPrep, FsError> {
     if len == 0 {
@@ -3371,7 +3373,7 @@ fn prepare_detached_read_at(
         return Ok(DetachedReadPrep::Eof);
     }
 
-    let reserved = len.min((size - offset) as usize);
+    let reserved = len.min((size - offset).min(usize::MAX as u64) as usize);
     let exfat_plan = match &backend {
         DetachedReadBackend::ExFat(driver) => {
             let exfat = driver.lock_inner();
@@ -3442,10 +3444,10 @@ fn update_detached_read_hint(slot_id: FileDescriptor, plan: &DetachedRead, hint:
 fn execute_detached_read(plan: &DetachedRead, buf: &mut [u8]) -> Result<usize, FsError> {
     if let Some(exfat_plan) = &plan.exfat_plan {
         let bytes_read =
-            exfat_plan.execute_range(plan.position as u64, &mut buf[..plan.reserved])?;
+            exfat_plan.execute_range(plan.position, &mut buf[..plan.reserved])?;
         if bytes_read == plan.reserved {
             if let Some(prefetch) = plan.exfat_prefetch {
-                exfat_plan.prefetch_range(prefetch.offset as u64, prefetch.len);
+                exfat_plan.prefetch_range(prefetch.offset, prefetch.len);
             }
         }
         return Ok(bytes_read);
@@ -3453,7 +3455,7 @@ fn execute_detached_read(plan: &DetachedRead, buf: &mut [u8]) -> Result<usize, F
 
     let mut total = 0usize;
     while total < plan.reserved {
-        let offset = plan.position.saturating_add(total as u32);
+        let offset = plan.position.saturating_add(total as u64);
         let chunk = &mut buf[total..plan.reserved];
         let n = match &plan.backend {
             DetachedReadBackend::CoreFs(driver) => {
@@ -3488,7 +3490,7 @@ fn rollback_detached_read(slot_id: FileDescriptor, plan: &DetachedRead, amount: 
     {
         return;
     }
-    file.position = file.position.saturating_sub(amount as u32);
+    file.position = file.position.saturating_sub(amount as u64);
     file.readahead.reset(file.position);
 }
 
@@ -3580,7 +3582,7 @@ fn prepare_detached_write(
     {
         return Err(FsError::BadFd);
     }
-    file.position = position.saturating_add(len as u32);
+    file.position = position.saturating_add(len as u64);
     file.readahead.reset(file.position);
 
     let seek_hint = if seek_cache_cluster >= 2 && seek_cache_offset <= position {
@@ -3591,7 +3593,7 @@ fn prepare_detached_write(
     let exfat_overwrite_plan = if matches!(&backend, DetachedWriteBackend::ExFat(_))
         && position % 512 == 0
         && len % 512 == 0
-        && position.saturating_add(len as u32) <= size
+        && position.saturating_add(len as u64) <= size
     {
         match &backend {
             DetachedWriteBackend::ExFat(driver) => {
@@ -3631,7 +3633,7 @@ fn execute_detached_write(
         }
         DetachedWriteBackend::ExFat(driver) => {
             if let Some(write_plan) = &plan.exfat_overwrite_plan {
-                let bytes_written = write_plan.execute_write_range(plan.position as u64, buf)?;
+                let bytes_written = write_plan.execute_write_range(plan.position, buf)?;
                 let exfat = driver.lock_inner();
                 exfat.invalidate_file_range(plan.old_inode, plan.position, bytes_written);
                 return Ok(DetachedWriteResult::ExFat(DetachedExFatWriteResult {
@@ -3689,7 +3691,7 @@ fn finish_detached_write(
                 if file.fs_id != plan.fs_id || file.inode != plan.inode || file.path != plan.path {
                     return Err(FsError::BadFd);
                 }
-                let written_end = plan.position.saturating_add(bytes_written as u32);
+                let written_end = plan.position.saturating_add(bytes_written as u64);
                 file.size = core::cmp::max(file.size, core::cmp::max(plan.old_size, written_end));
             }
             if plan.sync_write {
@@ -3895,7 +3897,7 @@ fn prepare_exfat_append_buffer_write(
             file.append_buffer.len().saturating_add(buf.len()) <= EXFAT_APPEND_BUFFER_MAX;
         let can_append_existing = !file.append_buffer.is_empty()
             && is_exfat_append
-            && file.append_buffer_offset + file.append_buffer.len() as u32 == file.position
+            && file.append_buffer_offset + file.append_buffer.len() as u64 == file.position
             && append_buffer_would_fit;
         if !file.append_buffer.is_empty() && !can_append_existing {
             return Ok(ExFatAppendBufferWrite::NeedsFlush);
@@ -3907,7 +3909,7 @@ fn prepare_exfat_append_buffer_write(
             || file.position != file.size
             || buf.len() > EXFAT_APPEND_BUFFER_MAX
             || (!file.append_buffer.is_empty()
-                && file.append_buffer_offset + file.append_buffer.len() as u32 != file.position)
+                && file.append_buffer_offset + file.append_buffer.len() as u64 != file.position)
             || !append_buffer_would_fit
         {
             return Ok(ExFatAppendBufferWrite::NotApplicable);
@@ -3916,7 +3918,7 @@ fn prepare_exfat_append_buffer_write(
             file.append_buffer_offset = file.position;
         }
         file.append_buffer.extend_from_slice(buf);
-        file.position = file.position.saturating_add(buf.len() as u32);
+        file.position = file.position.saturating_add(buf.len() as u64);
         file.size = file.size.max(file.position);
         file.readahead.reset(file.position);
         flush_after = file.append_buffer.len() >= EXFAT_APPEND_BUFFER_MAX;
@@ -3945,7 +3947,7 @@ fn rollback_detached_write(slot_id: FileDescriptor, plan: &DetachedWrite, amount
     {
         return;
     }
-    file.position = file.position.saturating_sub(amount as u32);
+    file.position = file.position.saturating_sub(amount as u64);
     file.readahead.reset(file.position);
 }
 
@@ -4027,7 +4029,7 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
             .get_mut(slot_id as usize)
             .and_then(|e| e.as_mut())
             .ok_or(FsError::BadFd)?;
-        file.position += bytes_read as u32;
+        file.position += bytes_read as u64;
         return Ok(bytes_read);
     }
 
@@ -4055,7 +4057,7 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
             .get_mut(slot_id as usize)
             .and_then(|e| e.as_mut())
             .ok_or(FsError::BadFd)?;
-        file.position += bytes_read as u32;
+        file.position += bytes_read as u64;
         return Ok(bytes_read);
     }
 
@@ -4065,8 +4067,10 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
             return Ok(0);
         }
         let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
-        let bytes_read = iso.read_file(file.inode, file.position, buf, file.size)?;
-        file.position += bytes_read as u32;
+        // ISO 9660 on-disk sizes are 32-bit — position/size came from the ISO
+        // lookup, so these casts are lossless.
+        let bytes_read = iso.read_file(file.inode, file.position as u32, buf, file.size as u32)?;
+        file.position += bytes_read as u64;
         return Ok(bytes_read);
     }
 
@@ -4081,7 +4085,7 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
         let ntfs_guard = ntfs_drv.lock_inner();
         let ntfs = &*ntfs_guard;
         let bytes_read = ntfs.read_file(file.inode, file.position, &mut buf[..to_read])?;
-        file.position += bytes_read as u32;
+        file.position += bytes_read as u64;
         return Ok(bytes_read);
     }
 
@@ -4102,7 +4106,7 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
             .get_mut(slot_id as usize)
             .and_then(|e| e.as_mut())
             .ok_or(FsError::BadFd)?;
-        file.position += bytes_read as u32;
+        file.position += bytes_read as u64;
         return Ok(bytes_read);
     }
 
@@ -4120,7 +4124,7 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
         let req = fuse_proto::Request::Read {
             ino: inode_u64,
             fh,
-            offset: file.position as u64,
+            offset: file.position,
             size: to_read as u32,
         };
         let reply = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
@@ -4135,7 +4139,7 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
             .get_mut(slot_id as usize)
             .and_then(|e| e.as_mut())
             .ok_or(FsError::BadFd)?;
-        file.position += n as u32;
+        file.position += n as u64;
         return Ok(n);
     }
 
@@ -4162,7 +4166,7 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
             .get_mut(slot_id as usize)
             .and_then(|e| e.as_mut())
             .ok_or(FsError::BadFd)?;
-        file.position += bytes_read as u32;
+        file.position += bytes_read as u64;
         return Ok(bytes_read);
     }
 
@@ -4182,17 +4186,18 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
     } else if let Some(fat_drv) = state.fat_fs.as_ref() {
         let fat_guard = fat_drv.lock_inner();
         let fat = &*fat_guard;
-        fat.read_file(file.inode, file.position, &mut buf[..to_read])?
+        // FAT on-disk sizes are 32-bit — position < size <= u32::MAX here.
+        fat.read_file(file.inode, file.position as u32, &mut buf[..to_read])?
     } else {
         return Err(FsError::IoError);
     };
 
-    file.position += bytes_read as u32;
+    file.position += bytes_read as u64;
     Ok(bytes_read)
 }
 
 /// Read bytes from an open file at a fixed offset without changing its seek position.
-pub fn read_at(slot_id: FileDescriptor, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+pub fn read_at(slot_id: FileDescriptor, offset: u64, buf: &mut [u8]) -> Result<usize, FsError> {
     // read_at is the Linux-only positional/mmap read path (pread64, mmap fill).
     // A fresh reader (often a different process from the writer, e.g.
     // apt-extracttemplates after the http method wrote the .deb) must observe
@@ -4247,7 +4252,7 @@ fn seek_append_handle_to_eof(slot_id: FileDescriptor) -> Result<(), FsError> {
         if entry.fs_id == fs_id && entry.path == path {
             let buffered_end = entry
                 .append_buffer_offset
-                .saturating_add(entry.append_buffer.len() as u32);
+                .saturating_add(entry.append_buffer.len() as u64);
             eof = eof.max(entry.size).max(buffered_end);
         }
     }
@@ -4326,7 +4331,7 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
             .ok_or(FsError::BadFd)?;
         file.inode = new_inode;
         file.size = new_size;
-        file.position = position + buf.len() as u32;
+        file.position = position + buf.len() as u64;
         file.readahead.reset(file.position);
         return Ok(buf.len());
     }
@@ -4359,7 +4364,7 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
             .ok_or(FsError::BadFd)?;
         file.inode = new_cluster;
         file.size = new_size;
-        file.position = position + buf.len() as u32;
+        file.position = position + buf.len() as u64;
         file.readahead.reset(file.position);
         file.seek_cache_offset = hint_offset;
         file.seek_cache_cluster = hint_cluster;
@@ -4410,7 +4415,7 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
             .get_mut(slot_id as usize)
             .and_then(|e| e.as_mut())
             .ok_or(FsError::BadFd)?;
-        file.position += bytes_written as u32;
+        file.position += bytes_written as u64;
         file.size = core::cmp::max(new_size, file.position);
         file.readahead.reset(file.position);
         if sync_write {
@@ -4429,7 +4434,7 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
         let req = fuse_proto::Request::Write {
             ino: inode_u64,
             fh,
-            offset: file.position as u64,
+            offset: file.position,
             data: buf.to_vec(),
         };
         let reply = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
@@ -4442,7 +4447,7 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
             .get_mut(slot_id as usize)
             .and_then(|e| e.as_mut())
             .ok_or(FsError::BadFd)?;
-        file.position += written as u32;
+        file.position += written as u64;
         if file.position > file.size {
             file.size = file.position;
         }
@@ -4468,7 +4473,7 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
             .get_mut(slot_id as usize)
             .and_then(|e| e.as_mut())
             .ok_or(FsError::BadFd)?;
-        file.position += bytes_written as u32;
+        file.position += bytes_written as u64;
         if file.position > file.size {
             file.size = file.position;
         }
@@ -4507,7 +4512,7 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
             .ok_or(FsError::BadFd)?;
         file.inode = new_cluster;
         file.size = new_size;
-        file.position = position + buf.len() as u32;
+        file.position = position + buf.len() as u64;
         file.readahead.reset(file.position);
         file.seek_cache_offset = hint_offset;
         file.seek_cache_cluster = hint_cluster;
@@ -4528,8 +4533,13 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
         let fat_drv = state.fat_fs.as_ref().ok_or(FsError::IoError)?;
         let mut fat_guard = fat_drv.lock_inner();
         let fat = &mut *fat_guard;
-        let (new_cluster, new_size) = fat.write_file(old_inode, position, buf, old_size)?;
-        if new_cluster != old_inode || new_size != old_size {
+        // FAT on-disk file sizes are 32-bit (max 4 GiB) — reject writes that
+        // would start beyond what the on-disk format can address.
+        if position > u32::MAX as u64 || old_size > u32::MAX as u64 {
+            return Err(FsError::NoSpace);
+        }
+        let (new_cluster, new_size) = fat.write_file(old_inode, position as u32, buf, old_size as u32)?;
+        if new_cluster != old_inode || new_size as u64 != old_size {
             fat.update_entry(parent_cluster, filename, new_size, new_cluster)?;
         }
         let file = state
@@ -4538,8 +4548,8 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
             .and_then(|e| e.as_mut())
             .ok_or(FsError::BadFd)?;
         file.inode = new_cluster;
-        file.size = new_size;
-        file.position = position + buf.len() as u32;
+        file.size = new_size as u64;
+        file.position = position + buf.len() as u64;
         file.readahead.reset(file.position);
     }
 
@@ -4851,7 +4861,7 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
         CoreFs {
             driver: Arc<crate::fs::corefs::CoreFsDriver>,
             inode: u32,
-            size: u32,
+            size: u64,
         },
     }
 
@@ -5319,10 +5329,9 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
 /// Seek within an open file. `slot_id` is the global open_files index.
 /// Returns new position.
 /// Seek within an open file. Offsets are taken as i64 so callers (notably the
-/// LXE layer) are not artificially limited to 2 GiB; the resulting position
-/// must still fit the VFS's u32 file-position range (4 GiB — the current
-/// limit of the on-disk drivers).
-pub fn lseek(slot_id: FileDescriptor, offset: i64, whence: u32) -> Result<u32, FsError> {
+/// LXE layer) are not artificially limited to 2 GiB; positions cover the full
+/// u64 range — the per-FS drivers bound what they can actually address.
+pub fn lseek(slot_id: FileDescriptor, offset: i64, whence: u32) -> Result<u64, FsError> {
     flush_exfat_append_buffer(slot_id)?;
     let mut vfs = vfs_lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
@@ -5345,10 +5354,10 @@ pub fn lseek(slot_id: FileDescriptor, offset: i64, whence: u32) -> Result<u32, F
         _ => return Err(FsError::InvalidPath),
     };
     let new_pos = base.checked_add(offset).ok_or(FsError::InvalidPath)?;
-    if new_pos < 0 || new_pos > u32::MAX as i64 {
+    if new_pos < 0 {
         return Err(FsError::InvalidPath);
     }
-    let new_pos = new_pos as u32;
+    let new_pos = new_pos as u64;
 
     file.position = new_pos;
     file.readahead.reset(file.position);
@@ -5415,7 +5424,7 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
             FsType::Iso9660 => {
                 if let Some(ref iso) = state.iso9660_fs {
                     let (_inode, file_type, size) = iso.lookup(relative_path)?;
-                    return Ok(default_stat(file_type, size, false));
+                    return Ok(default_stat(file_type, size as u64, false));
                 }
                 return Err(FsError::NotFound);
             }
@@ -5486,7 +5495,7 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
                 let (attr, _, _) = fuse_resolve_path(&session, session_id, relative_path)?;
                 return Ok(StatResult {
                     file_type: crate::fs::fuse::attr_kind_to_file_type(attr.kind),
-                    size: attr.size as u32,
+                    size: attr.size,
                     is_symlink: attr.kind == 3,
                     uid: attr.uid as u16,
                     gid: attr.gid as u16,
@@ -5533,7 +5542,7 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
         let (_inode, file_type, size, mtime) = fat.stat_path(path)?;
         return Ok(StatResult {
             file_type,
-            size,
+            size: size as u64,
             is_symlink: false,
             uid: 0,
             gid: 0,
@@ -5570,7 +5579,7 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
         let (_inode, file_type, size) = iso.lookup(path)?;
         return Ok(StatResult {
             file_type,
-            size,
+            size: size as u64,
             is_symlink: false,
             uid: 0,
             gid: 0,
@@ -5584,7 +5593,7 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
 
 /// Get file info by slot_id (global open_files index).
 /// Returns (file_type, size, position, mtime).
-pub fn fstat(slot_id: FileDescriptor) -> Result<(FileType, u32, u32, u32), FsError> {
+pub fn fstat(slot_id: FileDescriptor) -> Result<(FileType, u64, u64, u32), FsError> {
     let vfs = vfs_lock();
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
 
@@ -5637,7 +5646,7 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
 }
 
 /// Resize a file to `new_size` bytes where the backing filesystem supports it.
-pub fn truncate_to(path: &str, new_size: u32) -> Result<(), FsError> {
+pub fn truncate_to(path: &str, new_size: u64) -> Result<(), FsError> {
     if is_dev_path(path) {
         return Err(FsError::PermissionDenied);
     }
@@ -5679,7 +5688,7 @@ pub fn truncate_to(path: &str, new_size: u32) -> Result<(), FsError> {
             let req = fuse_proto::Request::Setattr {
                 ino: ino_u64,
                 attr: fuse_proto::PartialAttr {
-                    size: Some(new_size as u64),
+                    size: Some(new_size),
                     ..Default::default()
                 },
             };
@@ -5742,7 +5751,7 @@ pub fn truncate_to(path: &str, new_size: u32) -> Result<(), FsError> {
 }
 
 /// Resize an open file description.
-pub fn ftruncate_to(slot_id: FileDescriptor, new_size: u32) -> Result<(), FsError> {
+pub fn ftruncate_to(slot_id: FileDescriptor, new_size: u64) -> Result<(), FsError> {
     // Flush EVERY open writer for this path (not just this fd) before touching
     // the chain, so no stale append buffer later writes into freed clusters.
     // sync_open_exfat_path locks the VFS internally, so fetch the path first.
@@ -7032,19 +7041,19 @@ fn fuse_open_entry(
 
     let inode_u32 = crate::fs::fuse::inode_map::intern(session_id, attr.ino);
     let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
-    let position = if flags.append { attr.size as u32 } else { 0 };
+    let position = if flags.append { attr.size } else { 0 };
     let file = OpenFile {
         fd: slot_id,
         path: String::from(full_path),
         file_type: crate::fs::fuse::attr_kind_to_file_type(attr.kind),
         flags,
         position,
-        size: attr.size as u32,
+        size: attr.size,
         fs_id: 9, // FUSE
         inode: inode_u32,
         parent_cluster: (fh & 0xFFFF_FFFF) as u32, // repurpose: low-32 of fh
         refcount: 1,
-        seek_cache_offset: ((fh >> 32) & 0xFFFF_FFFF) as u32, // repurpose: high-32 of fh
+        seek_cache_offset: (fh >> 32) & 0xFFFF_FFFF, // repurpose: high-32 of fh
         seek_cache_cluster: session_id,
         entry_dirty: false,
         append_buffer_offset: 0,

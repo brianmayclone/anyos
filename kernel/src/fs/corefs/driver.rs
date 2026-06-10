@@ -733,7 +733,7 @@ impl CoreFsDriver {
     /// werden überzählige Bytes aus dem zugehörigen `BlockRecord` entfernt;
     /// wird sie erweitert, wird mit Null-Bytes aufgefüllt (sparse-äquivalente
     /// Repräsentation — CoreFS hält Dateiinhalte in-memory).
-    pub fn truncate_file(&self, inode: u32, new_size: u32) -> Result<(), FsError> {
+    pub fn truncate_file(&self, inode: u32, new_size: u64) -> Result<(), FsError> {
         let mut inner = self.inner.lock();
         inner.refresh_indexes_for_tests();
         if inner.read_only {
@@ -746,7 +746,7 @@ impl CoreFsDriver {
             }
         }
 
-        let target = new_size as u64;
+        let target = new_size;
 
         // Resize on device: grow with zero-fill or shrink.
         let Inner {
@@ -1155,7 +1155,7 @@ fn join_path(parent: &str, name: &str) -> String {
 // ---------------------------------------------------------------------------
 
 impl Filesystem for CoreFsDriver {
-    fn read(&self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+    fn read(&self, inode: u32, offset: u64, buf: &mut [u8]) -> Result<usize, FsError> {
         let mut inner = self.inner.lock();
         inner.refresh_indexes_for_tests();
         // Find the domain InodeId for this VFS inode number.
@@ -1163,7 +1163,7 @@ impl Filesystem for CoreFsDriver {
         // Stream bytes from the device via BlockStore.
         let n = inner
             .blocks
-            .read_bytes(&inner.device, inode_id, offset as u64, buf)
+            .read_bytes(&inner.device, inode_id, offset, buf)
             .map_err(|e| {
                 crate::serial_println!(
                     "[corefs] read failed inode={} offset={} len={}: {:?}",
@@ -1177,7 +1177,7 @@ impl Filesystem for CoreFsDriver {
         Ok(n)
     }
 
-    fn write(&self, inode: u32, offset: u32, buf: &[u8]) -> Result<usize, FsError> {
+    fn write(&self, inode: u32, offset: u64, buf: &[u8]) -> Result<usize, FsError> {
         let mut inner = self.inner.lock();
         inner.refresh_indexes_for_tests();
         if inner.read_only {
@@ -1196,7 +1196,7 @@ impl Filesystem for CoreFsDriver {
         {
             let Inner { blocks, device, .. } = &mut *inner;
             blocks
-                .write_at(device, id, offset as u64, buf)
+                .write_at(device, id, offset, buf)
                 .map_err(|e| {
                     crate::serial_println!(
                         "[corefs] write failed inode={} id={:?} offset={} len={}: {:?}",
@@ -1222,7 +1222,7 @@ impl Filesystem for CoreFsDriver {
         Ok(buf.len())
     }
 
-    fn lookup(&self, path: &str) -> Result<(u32, FileType, u32), FsError> {
+    fn lookup(&self, path: &str) -> Result<(u32, FileType, u64), FsError> {
         if path.is_empty() {
             return Err(FsError::InvalidPath);
         }
@@ -1235,7 +1235,7 @@ impl Filesystem for CoreFsDriver {
         Ok((
             CoreFsDriver::inode_u32_from_id(i.id),
             kind_to_file_type(i.kind),
-            i.size as u32,
+            i.size as u64,
         ))
     }
 
@@ -1286,7 +1286,7 @@ impl Filesystem for CoreFsDriver {
                 entries.push(DirEntry {
                     name: rest.to_string(),
                     file_type: kind_to_file_type(i.kind),
-                    size: i.size as u32,
+                    size: i.size as u64,
                     is_symlink: matches!(i.kind, InodeKind::Symlink),
                     uid: i.metadata.uid as u16,
                     gid: i.metadata.gid as u16,
@@ -1410,7 +1410,7 @@ impl Filesystem for CoreFsDriver {
         let i = inner.inode_by_path(path).ok_or(FsError::NotFound)?;
         Ok(StatResult {
             file_type: kind_to_file_type(i.kind),
-            size: i.size as u32,
+            size: i.size as u64,
             is_symlink: matches!(i.kind, InodeKind::Symlink),
             uid: i.metadata.uid as u16,
             gid: i.metadata.gid as u16,
@@ -1453,7 +1453,7 @@ impl Filesystem for CoreFsDriver {
         self.rename_entry(old_parent, old_name, new_parent, new_name)
     }
 
-    fn truncate(&self, inode: u32, size: u32) -> Result<(), FsError> {
+    fn truncate(&self, inode: u32, size: u64) -> Result<(), FsError> {
         self.truncate_file(inode, size)
     }
 

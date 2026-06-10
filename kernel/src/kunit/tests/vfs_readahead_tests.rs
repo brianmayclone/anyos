@@ -68,7 +68,7 @@ fn test_memory_cap_scales_with_free_ram(ctx: &mut TestContext) {
 
 fn test_sequential_reads_grow_window(ctx: &mut TestContext) {
     const READ_LEN: usize = 4096;
-    const FILE_SIZE: u32 = 16 * 1024 * 1024;
+    const FILE_SIZE: u64 = 16 * 1024 * 1024;
     // Cap well above MIN*2 so the window grows by pure doubling (cap never binds
     // for the two reads asserted here).
     let cap = EXFAT_READAHEAD_MIN_BYTES * 8;
@@ -76,7 +76,7 @@ fn test_sequential_reads_grow_window(ctx: &mut TestContext) {
     let first = exfat_readahead_decision(ReadAheadState::new(0), 0, FILE_SIZE, READ_LEN, cap);
     ctx.expect_eq(
         first.state.next_offset,
-        READ_LEN as u32,
+        READ_LEN as u64,
         "first read advances next offset",
     );
     ctx.expect_eq(
@@ -87,13 +87,13 @@ fn test_sequential_reads_grow_window(ctx: &mut TestContext) {
     ctx.expect_eq(
         first.prefetch,
         Some(ExFatPrefetch {
-            offset: READ_LEN as u32,
+            offset: READ_LEN as u64,
             len: EXFAT_READAHEAD_MIN_BYTES as usize,
         }),
         "first read schedules an initial prefetch of one minimum window",
     );
 
-    let second = exfat_readahead_decision(first.state, READ_LEN as u32, FILE_SIZE, READ_LEN, cap);
+    let second = exfat_readahead_decision(first.state, READ_LEN as u64, FILE_SIZE, READ_LEN, cap);
     ctx.expect_eq(
         second.state.window_bytes,
         EXFAT_READAHEAD_MIN_BYTES * 2,
@@ -104,7 +104,7 @@ fn test_sequential_reads_grow_window(ctx: &mut TestContext) {
     ctx.expect_eq(
         second.prefetch,
         Some(ExFatPrefetch {
-            offset: READ_LEN as u32 + EXFAT_READAHEAD_MIN_BYTES,
+            offset: READ_LEN as u64 + EXFAT_READAHEAD_MIN_BYTES as u64,
             len: READ_LEN + EXFAT_READAHEAD_MIN_BYTES as usize,
         }),
         "second read tops up beyond already-prefetched bytes",
@@ -113,14 +113,14 @@ fn test_sequential_reads_grow_window(ctx: &mut TestContext) {
 
 fn test_random_read_resets_window(ctx: &mut TestContext) {
     const READ_LEN: usize = 4096;
-    const READ_POS: u32 = 128 * 1024;
+    const READ_POS: u64 = 128 * 1024;
     let cap = EXFAT_READAHEAD_MIN_BYTES * 8;
 
     // A stream that had grown its window, followed by a non-sequential jump.
     let mut state = ReadAheadState::new(0);
     state.next_offset = 4096; // != READ_POS → treated as random
     state.window_bytes = EXFAT_READAHEAD_MIN_BYTES * 4;
-    state.prefetched_until = EXFAT_READAHEAD_MIN_BYTES * 8;
+    state.prefetched_until = EXFAT_READAHEAD_MIN_BYTES as u64 * 8;
 
     let decision = exfat_readahead_decision(state, READ_POS, 16 * 1024 * 1024, READ_LEN, cap);
     ctx.expect_eq(
@@ -131,7 +131,7 @@ fn test_random_read_resets_window(ctx: &mut TestContext) {
     ctx.expect_eq(
         decision.prefetch,
         Some(ExFatPrefetch {
-            offset: READ_POS + READ_LEN as u32,
+            offset: READ_POS + READ_LEN as u64,
             len: EXFAT_READAHEAD_MIN_BYTES as usize,
         }),
         "random read starts prefetch at the new read end",

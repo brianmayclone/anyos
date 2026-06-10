@@ -284,8 +284,8 @@ pub(super) fn linux_pipe2(pipefd_ptr: u64, linux_flags: u64) -> u64 {
 }
 
 pub(super) fn linux_lseek(fd: u32, offset: u64, whence: u64) -> u64 {
-    // Positions are limited by the VFS's u32 file range (4 GiB), not by i32 —
-    // the final range check happens in vfs::lseek after whence is applied.
+    // Positions cover the full u64 range — the final range check happens in
+    // vfs::lseek after whence is applied.
     let signed_offset = offset as i64;
     let whence = match whence {
         0 | 1 | 2 => whence as u32,
@@ -562,7 +562,8 @@ fn linux_write_fd_kernel(fd: u32, buf: &[u8], offset: Option<u64>) -> Result<usi
 }
 
 fn linux_write_fd_at(fd: u32, buf_ptr: u64, len: usize, offset: u64) -> Result<usize, i32> {
-    if offset > u32::MAX as u64 {
+    // off_t is signed; positions beyond i64::MAX are invalid.
+    if offset > i64::MAX as u64 {
         return Err(EINVAL);
     }
     let global_id = linux_file_global_id(fd)?;

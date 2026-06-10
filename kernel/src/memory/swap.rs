@@ -241,7 +241,7 @@ pub fn stats() -> SwapStats {
     out
 }
 
-fn begin_slot_io(slot: SwapSlot) -> Result<(u32, u32), SwapError> {
+fn begin_slot_io(slot: SwapSlot) -> Result<(u32, u64), SwapError> {
     let mut areas = SWAP_AREAS.lock();
     let area = areas
         .get_mut(slot.area())
@@ -251,8 +251,8 @@ fn begin_slot_io(slot: SwapSlot) -> Result<(u32, u32), SwapError> {
     if page_idx == 0 || page_idx >= area.page_count || !test_bit(&area.bitmap, page_idx) {
         return Err(SwapError::BadSlot);
     }
-    let off = page_idx
-        .checked_mul(FRAME_SIZE as u32)
+    let off = (page_idx as u64)
+        .checked_mul(FRAME_SIZE as u64)
         .ok_or(SwapError::BadSlot)?;
     area.io_refs = area.io_refs.checked_add(1).ok_or(SwapError::Busy)?;
     Ok((area.fd, off))

@@ -51,7 +51,9 @@ pub fn sys_readdir(path_ptr: u64, buf_ptr: u64, buf_size: u32) -> u32 {
                     out[off + 1] = name_len as u8;
                     out[off + 2] = if entry.is_symlink { 1 } else { 0 }; // flags: bit 0 = symlink
                     out[off + 3] = 0;
-                    let size = entry.size as u32;
+                    // Legacy 32-bit syscall ABI carries entry sizes as u32 —
+                    // saturate values beyond 4 GiB.
+                    let size = entry.size.min(u32::MAX as u64) as u32;
                     out[off + 4..off + 8].copy_from_slice(&size.to_le_bytes());
                     out[off + 8..off + 8 + name_len].copy_from_slice(&name_bytes[..name_len]);
                     out[off + 8 + name_len] = 0;
@@ -108,7 +110,9 @@ pub fn sys_readdir_long(path_ptr: u64, buf_ptr: u64, buf_size: u32) -> u32 {
                     let name_bytes = entry.name.as_bytes();
                     let name_len = name_bytes.len().min(256);
                     out[off + 2..off + 4].copy_from_slice(&(name_len as u16).to_le_bytes());
-                    let size = entry.size as u32;
+                    // Legacy 32-bit syscall ABI carries entry sizes as u32 —
+                    // saturate values beyond 4 GiB.
+                    let size = entry.size.min(u32::MAX as u64) as u32;
                     out[off + 4..off + 8].copy_from_slice(&size.to_le_bytes());
                     out[off + 8..off + 8 + name_len].copy_from_slice(&name_bytes[..name_len]);
                     if name_len < 256 {
@@ -150,8 +154,11 @@ pub fn sys_stat(path_ptr: u64, buf_ptr: u64) -> u32 {
                     st.uid as u32
                 };
                 let mut out = [0u8; 28];
+                // Legacy 32-bit syscall ABI carries the size as u32 —
+                // saturate values beyond 4 GiB.
+                let size32 = st.size.min(u32::MAX as u64) as u32;
                 out[0..4].copy_from_slice(&type_val.to_le_bytes());
-                out[4..8].copy_from_slice(&st.size.to_le_bytes());
+                out[4..8].copy_from_slice(&size32.to_le_bytes());
                 out[8..12].copy_from_slice(&flags.to_le_bytes());
                 out[12..16].copy_from_slice(&file_uid.to_le_bytes());
                 out[16..20].copy_from_slice(&(st.gid as u32).to_le_bytes());
@@ -187,8 +194,11 @@ pub fn sys_lstat(path_ptr: u64, buf_ptr: u64) -> u32 {
                     st.uid as u32
                 };
                 let mut out = [0u8; 28];
+                // Legacy 32-bit syscall ABI carries the size as u32 —
+                // saturate values beyond 4 GiB.
+                let size32 = st.size.min(u32::MAX as u64) as u32;
                 out[0..4].copy_from_slice(&type_val.to_le_bytes());
-                out[4..8].copy_from_slice(&st.size.to_le_bytes());
+                out[4..8].copy_from_slice(&size32.to_le_bytes());
                 out[8..12].copy_from_slice(&flags.to_le_bytes());
                 out[12..16].copy_from_slice(&file_uid.to_le_bytes());
                 out[16..20].copy_from_slice(&(st.gid as u32).to_le_bytes());

@@ -319,7 +319,7 @@ impl FatFs {
             entries.push(DirEntry {
                 name,
                 file_type,
-                size: file_size,
+                size: file_size as u64,
                 is_symlink: false,
                 uid: 0,
                 gid: 0,

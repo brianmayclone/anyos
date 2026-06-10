@@ -242,7 +242,7 @@ impl NtfsFs {
             } else {
                 FileType::Regular
             },
-            size: ie.file_name.real_size as u32,
+            size: ie.file_name.real_size,
             is_symlink: false,
             uid: 0,
             gid: 0,
@@ -257,7 +257,7 @@ impl NtfsFs {
     /// Lookup a path and return (mft_record, file_type, size).
     ///
     /// Path must start with "/" and use "/" as separator.
-    pub fn lookup(&self, path: &str) -> Result<(u32, FileType, u32), FsError> {
+    pub fn lookup(&self, path: &str) -> Result<(u32, FileType, u64), FsError> {
         if path == "/" {
             return Ok((mft::records::ROOT_DIR as u32, FileType::Directory, 0));
         }
@@ -285,7 +285,7 @@ impl NtfsFs {
                         } else {
                             FileType::Regular
                         };
-                        return Ok((entry.file_ref as u32, ft, entry.file_name.real_size as u32));
+                        return Ok((entry.file_ref as u32, ft, entry.file_name.real_size));
                     }
                     if !is_dir {
                         return Err(FsError::NotADirectory);
@@ -300,7 +300,7 @@ impl NtfsFs {
     }
 
     /// Stat a path: returns (file_type, size, created, modified, accessed).
-    pub fn stat_path(&self, path: &str) -> Result<(FileType, u32, u32, u32, u32), FsError> {
+    pub fn stat_path(&self, path: &str) -> Result<(FileType, u64, u32, u32, u32), FsError> {
         let (mft_rec, file_type, _) = self.lookup(path)?;
 
         // Read MFT record for accurate size and timestamps
@@ -310,9 +310,9 @@ impl NtfsFs {
         let size = if file_type == FileType::Regular {
             if let Some(data_attr) = record.find_attr(at::DATA, None) {
                 if let Some(ref nr) = data_attr.non_resident {
-                    nr.real_size as u32
+                    nr.real_size
                 } else if let Some(ref res) = data_attr.resident {
-                    res.data_length
+                    res.data_length as u64
                 } else {
                     0
                 }
@@ -346,7 +346,7 @@ impl NtfsFs {
     pub fn read_file(
         &self,
         mft_record: u32,
-        offset: u32,
+        offset: u64,
         buf: &mut [u8],
     ) -> Result<usize, FsError> {
         let record = self.read_mft_record(mft_record as u64)?;
@@ -372,7 +372,7 @@ impl NtfsFs {
                 self.sectors_per_cluster,
                 &runs,
                 nr.real_size,
-                offset as u64,
+                offset,
                 buf,
             );
         }
@@ -381,7 +381,7 @@ impl NtfsFs {
     }
 
     /// Read an entire file into a Vec<u8>.
-    pub fn read_file_all(&self, mft_record: u32, file_size: u32) -> Result<Vec<u8>, FsError> {
+    pub fn read_file_all(&self, mft_record: u32, file_size: u64) -> Result<Vec<u8>, FsError> {
         if file_size == 0 {
             return Ok(Vec::new());
         }
@@ -392,13 +392,13 @@ impl NtfsFs {
     }
 
     /// Build a read plan for the given file (no disk I/O beyond MFT record read).
-    pub fn get_file_read_plan(&self, mft_record: u32, file_size: u32) -> NtfsReadPlan {
+    pub fn get_file_read_plan(&self, mft_record: u32, file_size: u64) -> NtfsReadPlan {
         let record = match self.read_mft_record(mft_record as u64) {
             Ok(r) => r,
             Err(_) => {
                 return NtfsReadPlan {
                     runs: Vec::new(),
-                    file_size: file_size as u64,
+                    file_size,
                     sectors_per_cluster: self.sectors_per_cluster,
                     partition_lba: self.partition_lba,
                 }
@@ -410,7 +410,7 @@ impl NtfsFs {
             None => {
                 return NtfsReadPlan {
                     runs: Vec::new(),
-                    file_size: file_size as u64,
+                    file_size,
                     sectors_per_cluster: self.sectors_per_cluster,
                     partition_lba: self.partition_lba,
                 }
@@ -422,7 +422,7 @@ impl NtfsFs {
             .non_resident
             .as_ref()
             .map(|nr| nr.real_size)
-            .unwrap_or(file_size as u64);
+            .unwrap_or(file_size);
 
         file::build_read_plan(
             self.partition_lba,
@@ -503,11 +503,11 @@ impl NtfsFsDriver {
 }
 
 impl Filesystem for NtfsFsDriver {
-    fn read(&self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+    fn read(&self, inode: u32, offset: u64, buf: &mut [u8]) -> Result<usize, FsError> {
         self.inner.lock().read_file(inode, offset, buf)
     }
 
-    fn lookup(&self, path: &str) -> Result<(u32, FileType, u32), FsError> {
+    fn lookup(&self, path: &str) -> Result<(u32, FileType, u64), FsError> {
         self.inner.lock().lookup(path)
     }
 
@@ -522,7 +522,7 @@ impl Filesystem for NtfsFsDriver {
     // --- write path: all default (PermissionDenied), NTFS is read-only.
     //     The trait defaults already do the right thing.
 
-    fn write(&self, _inode: u32, _offset: u32, _buf: &[u8]) -> Result<usize, FsError> {
+    fn write(&self, _inode: u32, _offset: u64, _buf: &[u8]) -> Result<usize, FsError> {
         Err(FsError::PermissionDenied)
     }
     fn create(

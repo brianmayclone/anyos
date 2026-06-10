@@ -72,11 +72,11 @@ pub trait Filesystem: Send + Sync {
     // -----------------------------------------------------------------
 
     /// Read bytes from a file identified by inode at the given offset.
-    fn read(&self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError>;
+    fn read(&self, inode: u32, offset: u64, buf: &mut [u8]) -> Result<usize, FsError>;
     /// Write bytes to a file identified by inode at the given offset.
-    fn write(&self, inode: u32, offset: u32, buf: &[u8]) -> Result<usize, FsError>;
+    fn write(&self, inode: u32, offset: u64, buf: &[u8]) -> Result<usize, FsError>;
     /// Look up a path and return `(inode, file_type, size)`.
-    fn lookup(&self, path: &str) -> Result<(u32, FileType, u32), FsError>;
+    fn lookup(&self, path: &str) -> Result<(u32, FileType, u64), FsError>;
     /// List entries in a directory identified by inode.
     fn readdir(&self, inode: u32) -> Result<Vec<DirEntry>, FsError>;
     /// Create a new file or directory under the given parent inode.
@@ -124,7 +124,7 @@ pub trait Filesystem: Send + Sync {
 
     /// Resize a file.  Growing is expected to zero-fill; shrinking
     /// releases any storage past `size`.
-    fn truncate(&self, _inode: u32, _size: u32) -> Result<(), FsError> {
+    fn truncate(&self, _inode: u32, _size: u64) -> Result<(), FsError> {
         Err(FsError::NotSupported)
     }
 
@@ -224,7 +224,7 @@ pub trait Filesystem: Send + Sync {
         _parent_inode: u32,
         _name: &str,
         _new_inode: u32,
-        _new_size: u32,
+        _new_size: u64,
     ) -> Result<(), FsError> {
         Ok(())
     }
@@ -265,7 +265,7 @@ pub enum FsError {
 /// Stat result with permission info.
 pub struct StatResult {
     pub file_type: FileType,
-    pub size: u32,
+    pub size: u64,
     pub is_symlink: bool,
     pub uid: u16,
     pub gid: u16,

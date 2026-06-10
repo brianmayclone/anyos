@@ -717,7 +717,8 @@ pub(super) fn linux_read_fd_at(
     len: usize,
     offset: u64,
 ) -> Result<usize, i32> {
-    if offset > u32::MAX as u64 {
+    // off_t is signed; positions beyond i64::MAX are invalid.
+    if offset > i64::MAX as u64 {
         return Err(EINVAL);
     }
     if len == 0 {
@@ -763,7 +764,7 @@ pub(super) fn linux_read_fd_at(
 }
 
 fn linux_read_global_chunk_at(global_id: u32, offset: u64, out: &mut [u8]) -> Result<usize, i32> {
-    match crate::fs::vfs::read_at(global_id, offset as u32, out) {
+    match crate::fs::vfs::read_at(global_id, offset, out) {
         Ok(n) => return Ok(n),
         Err(crate::fs::vfs::FsError::NotSupported) => {}
         Err(e) => return Err(fs_errno(e)),
