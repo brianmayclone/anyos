@@ -280,9 +280,25 @@ pub fn is_any_bus_locked() -> bool {
 
 // ── Blocking wait helpers ──
 
-/// Register a waiter TID on a channel subscription. Returns `false` if the
-/// subscription already has queued events (caller should not block).
-pub fn channel_register_waiter(channel_id: u32, sub_id: u32, tid: u32) -> bool {
+/// Register a waiter TID on a channel subscription AND mark the thread
+/// Blocked — atomically with respect to `channel_emit`/`channel_emit_to`.
+/// Returns `false` if the subscription already has queued events (the caller
+/// must not block).
+///
+/// `prepare_to_block_until` is called while the MODULE_BUS lock is still
+/// held. The emitter extracts `waiter_tid` under this same lock and calls
+/// `wake_thread` only after releasing it, so by then the thread state is
+/// guaranteed to be Blocked. The previous two-step variant (register here,
+/// `sleep_until` later in the syscall handler) lost wakes that arrived in
+/// between: `wake_thread` found the thread still Running and discarded the
+/// wake, leaving GUI apps stuck in their event wait for the full timeout —
+/// the progressive UI-freeze pattern (dock first, then app after app).
+pub fn channel_register_waiter_and_block(
+    channel_id: u32,
+    sub_id: u32,
+    tid: u32,
+    wake_at: u32,
+) -> bool {
     let mut bus = MODULE_BUS.lock();
     if let Some(channel) = bus.get_mut(&channel_id) {
         if let Some(sub) = channel.subs.iter_mut().find(|s| s.id == sub_id) {
@@ -290,7 +306,10 @@ pub fn channel_register_waiter(channel_id: u32, sub_id: u32, tid: u32) -> bool {
                 return false; // Events already queued — don't block
             }
             sub.waiter_tid = Some(tid);
-            return true; // Registered — caller should block
+            // Lock order MODULE_BUS → SCHEDULER, same as the emit side
+            // (MODULE_BUS → wake_thread) and the anon_pipe blocking pattern.
+            crate::task::scheduler::prepare_to_block_until(wake_at);
+            return true; // Marked blocked — caller must call schedule()
         }
     }
     false

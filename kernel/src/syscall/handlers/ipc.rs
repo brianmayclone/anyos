@@ -255,12 +255,6 @@ pub fn sys_evt_chan_wait(chan_id: u32, sub_id: u32, timeout_ms: u32) -> u32 {
 
     let tid = crate::task::scheduler::current_tid();
 
-    // Register this thread as a waiter on the subscription.
-    // Returns false if events arrived between our check and the registration.
-    if !event_bus::channel_register_waiter(chan_id, sub_id, tid) {
-        return 1; // Events arrived — don't block
-    }
-
     // Compute wake tick. Cap indefinite waits at 60 seconds as safety net.
     let effective_ms = if timeout_ms == u32::MAX {
         60_000
@@ -273,8 +267,17 @@ pub fn sys_evt_chan_wait(chan_id: u32, sub_id: u32, timeout_ms: u32) -> u32 {
     let now = crate::arch::hal::timer_current_ticks();
     let wake_at = now.wrapping_add(ticks);
 
-    // Block — thread sleeps until: emit wakes us, input IRQ wakes us, or timeout.
-    crate::task::scheduler::sleep_until(wake_at);
+    // Register as waiter AND mark Blocked atomically (under the event-bus
+    // lock). Registering first and blocking later loses any wake that fires
+    // in between — wake_thread() sees state == Running and discards it,
+    // leaving the app stuck for the full timeout (the progressive UI-freeze
+    // bug: dock first, then other apps as each one loses a wake).
+    if !event_bus::channel_register_waiter_and_block(chan_id, sub_id, tid, wake_at) {
+        return 1; // Events arrived — don't block
+    }
+
+    // Yield — we are already marked Blocked; emit/timeout wakes us.
+    crate::task::scheduler::schedule();
 
     // Clean up waiter registration (may already be cleared by emit).
     event_bus::channel_unregister_waiter(chan_id, sub_id);
