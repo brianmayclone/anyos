@@ -1643,7 +1643,16 @@ fn linux_futex_wait(uaddr: u64, expected: u64, timeout_ptr: u64) -> u64 {
                 if let Some(wake_at) = deadline {
                     crate::task::scheduler::prepare_to_block_until(wake_at);
                 } else {
-                    crate::task::scheduler::prepare_to_block_current();
+                    // Backstop deadline (~100 ms) even for an untimed FUTEX_WAIT:
+                    // a lost FUTEX_WAKE (wake/state race under heavy load) would
+                    // otherwise hang the waiter forever. The futex API allows
+                    // spurious wakes, so on the backstop the caller simply
+                    // re-checks the word and re-waits. ETIMEDOUT is only
+                    // returned when the CALLER set a timeout (deadline.is_some()).
+                    let hz = crate::arch::hal::timer_frequency_hz();
+                    let backstop = crate::arch::hal::timer_current_ticks()
+                        .wrapping_add((hz / 10).max(1) as u32);
+                    crate::task::scheduler::prepare_to_block_until(backstop);
                 }
             }
             Ok(_) => {

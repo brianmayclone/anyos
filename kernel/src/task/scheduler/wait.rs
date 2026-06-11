@@ -160,55 +160,35 @@ pub fn debug_wait4_snapshot(tag: &str, pid: i64, options: u64) {
     }
 }
 
+/// A backstop sleep deadline (~100 ms in timer ticks) for blocking waits.
+///
+/// `waitpid`/`waitpid_any` are woken promptly by the child's exit (see
+/// `exit_current` -> `wake_thread_inner`). The deadline is purely a safety net:
+/// if that wake is ever lost (a Blocked-state race, a dropped deferred wake, or
+/// a kick IPI that does not land under heavy load), the sleeper-wake re-readies
+/// the waiter within ~100 ms so it re-checks — turning what used to be a
+/// PERMANENT hang (`wake_at_tick = None`, observed as a frozen LXE bootstrap)
+/// into at most a ~100 ms delay. Re-armed every iteration, so a long-running
+/// child costs only ~10 wake-ups/sec, not a busy poll.
+#[inline]
+fn wait_backstop_deadline() -> u32 {
+    let interval = (crate::arch::hal::timer_frequency_hz() / 10).max(1) as u32;
+    crate::arch::hal::timer_current_ticks().wrapping_add(interval)
+}
+
 /// Wait for a thread to terminate and return its exit code.
 pub fn waitpid(tid: u32) -> u32 {
-    {
-        crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_WAITPID);
-        let mut guard = SCHEDULER.lock();
-        let cpu_id = get_cpu_id();
-        let sched = match guard.as_mut() {
-            Some(s) => s,
-            None => return u32::MAX,
-        };
-        if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
-            if target.state == ThreadState::Terminated {
-                return if target.exit_code.is_some() {
-                    consume_exit_status(target)
-                } else {
-                    u32::MAX
-                };
-            }
-        } else {
-            return u32::MAX;
-        }
-        if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
-            if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
-                target.exit_waiter_tid = Some(current_tid);
-            }
-            if let Some(idx) = sched.current_idx(cpu_id) {
-                // CRITICAL: Set Blocked FIRST, then clear save_complete.
-                // pick_eligible checks state==Ready first, so once Blocked
-                // no other CPU will attempt to run this thread — even if
-                // save_complete is momentarily stale.  The old order
-                // (save_complete=0 then Blocked) left a window where the
-                // thread was Ready with save_complete=0, allowing another
-                // CPU to re-enqueue and potentially load a partially-saved
-                // context.
-                sched.threads[idx].last_cpu = cpu_id;
-                sched.threads[idx].wake_at_tick = None;
-                sched.threads[idx].state.set(ThreadState::Blocked);
-                sched.threads[idx].context.save_complete = 0;
-            }
-        }
-    }
-    // Yield immediately instead of waiting up to 1ms for timer preemption.
-    schedule();
     loop {
         {
             crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_WAITPID);
             let mut guard = SCHEDULER.lock();
-            if let Some(sched) = guard.as_mut() {
-                if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+            let cpu_id = get_cpu_id();
+            let sched = match guard.as_mut() {
+                Some(s) => s,
+                None => return u32::MAX,
+            };
+            match sched.threads.iter_mut().find(|t| t.tid == tid) {
+                Some(target) => {
                     if target.state == ThreadState::Terminated {
                         return if target.exit_code.is_some() {
                             consume_exit_status(target)
@@ -216,13 +196,28 @@ pub fn waitpid(tid: u32) -> u32 {
                             u32::MAX
                         };
                     }
-                } else {
-                    return u32::MAX;
+                }
+                None => return u32::MAX,
+            }
+            // Register as the exit waiter and block with a backstop deadline.
+            if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
+                if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
+                    target.exit_waiter_tid = Some(current_tid);
+                }
+                if let Some(idx) = sched.current_idx(cpu_id) {
+                    // CRITICAL: Set Blocked FIRST, then clear save_complete
+                    // (see the original rationale: avoids a Ready+unsaved race).
+                    let backstop = wait_backstop_deadline();
+                    sched.threads[idx].last_cpu = cpu_id;
+                    sched.threads[idx].state.set(ThreadState::Blocked);
+                    sched.threads[idx].context.save_complete = 0;
+                    sched.threads[idx].wake_at_tick = Some(backstop);
+                    super::note_sleeper_deadline(backstop);
                 }
             }
         }
-        crate::arch::hal::enable_interrupts();
-        crate::arch::hal::halt();
+        // Yield; woken by the child's exit OR the backstop deadline, then loop.
+        schedule();
     }
 }
 
@@ -273,45 +268,66 @@ pub fn waitpid_any() -> (u32, u32) {
             }
         }
 
-        // Block current thread — state=Blocked first so no CPU picks it,
-        // then clear save_complete (see waitpid for detailed rationale).
+        // Block current thread with a backstop deadline — Blocked first so no
+        // CPU picks it, then clear save_complete (see waitpid for rationale).
         if let Some(idx) = sched.current_idx(get_cpu_id()) {
+            let backstop = wait_backstop_deadline();
             sched.threads[idx].last_cpu = get_cpu_id();
-            sched.threads[idx].wake_at_tick = None;
             sched.threads[idx].state.set(ThreadState::Blocked);
             sched.threads[idx].context.save_complete = 0;
+            sched.threads[idx].wake_at_tick = Some(backstop);
+            super::note_sleeper_deadline(backstop);
         }
     }
-    // Yield immediately instead of waiting up to 1ms for timer preemption.
+    // Yield; woken by a child's exit OR the backstop deadline, then re-check.
     schedule();
     loop {
         {
             crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_WAITPID_ANY);
             let mut guard = SCHEDULER.lock();
-            if let Some(sched) = guard.as_mut() {
-                if let Some(child_idx) = sched.threads.iter().position(|t| {
-                    t.parent_tid == current_tid
-                        && !t.pd_shared
-                        && t.state == ThreadState::Terminated
-                        && t.exit_code.is_some()
-                }) {
-                    let child_tid = sched.threads[child_idx].tid;
-                    let code = consume_exit_status(&mut sched.threads[child_idx]);
-                    return (child_tid, code);
-                }
-                // No children at all → ECHILD
-                let has_children = sched.threads.iter().any(|t| {
-                    t.parent_tid == current_tid
-                        && !t.pd_shared
-                        && (t.state != ThreadState::Terminated || t.exit_code.is_some())
-                });
-                if !has_children {
-                    return (u32::MAX, u32::MAX);
+            let sched = match guard.as_mut() {
+                Some(s) => s,
+                None => return (u32::MAX, u32::MAX),
+            };
+            if let Some(child_idx) = sched.threads.iter().position(|t| {
+                t.parent_tid == current_tid
+                    && !t.pd_shared
+                    && t.state == ThreadState::Terminated
+                    && t.exit_code.is_some()
+            }) {
+                let child_tid = sched.threads[child_idx].tid;
+                let code = consume_exit_status(&mut sched.threads[child_idx]);
+                return (child_tid, code);
+            }
+            // No children at all → ECHILD
+            let has_children = sched.threads.iter().any(|t| {
+                t.parent_tid == current_tid
+                    && !t.pd_shared
+                    && (t.state != ThreadState::Terminated || t.exit_code.is_some())
+            });
+            if !has_children {
+                return (u32::MAX, u32::MAX);
+            }
+            // Re-register exit waiters and re-block with a fresh backstop
+            // deadline so a lost child-exit wake recovers within ~100 ms.
+            for t in sched.threads.iter_mut() {
+                if t.parent_tid == current_tid
+                    && !t.pd_shared
+                    && t.state != ThreadState::Terminated
+                {
+                    t.exit_waiter_tid = Some(current_tid);
                 }
             }
+            if let Some(idx) = sched.current_idx(get_cpu_id()) {
+                let backstop = wait_backstop_deadline();
+                sched.threads[idx].last_cpu = get_cpu_id();
+                sched.threads[idx].state.set(ThreadState::Blocked);
+                sched.threads[idx].context.save_complete = 0;
+                sched.threads[idx].wake_at_tick = Some(backstop);
+                super::note_sleeper_deadline(backstop);
+            }
         }
-        crate::arch::hal::enable_interrupts();
-        crate::arch::hal::halt();
+        schedule();
     }
 }
 
