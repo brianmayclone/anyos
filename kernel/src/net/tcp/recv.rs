@@ -97,6 +97,20 @@ pub(crate) fn accept_data_deferred(tcb: &mut Tcb, seg: &TcpSegment) -> Option<De
         }
     } else if is_seq_gt(seq, tcb.rcv_nxt) {
         // ── Out-of-order segment — buffer it ──
+        // INSTRUMENTATION: log the FIRST gap of a loss event (ooo_buf empty ->
+        // non-empty). A stall then shows as a [tcp-gap] with no matching
+        // [tcp-recovered] — i.e. the missing segment at rcv_nxt was never
+        // retransmitted/accepted. ooo_len lets us see if the buffer overflows.
+        if tcb.ooo_buf.is_empty() {
+            crate::serial_verbose_println!(
+                "[tcp-gap] port={} rcv_nxt={} seg_seq={} ahead={} recv_buf={}",
+                tcb.remote_port,
+                tcb.rcv_nxt,
+                seq,
+                seq.wrapping_sub(tcb.rcv_nxt),
+                tcb.recv_buf.len()
+            );
+        }
         insert_ooo(tcb, seq, payload);
 
         // Send duplicate ACK immediately (fast retransmit signal to sender)
@@ -191,8 +205,20 @@ fn insert_ooo(tcb: &mut Tcb, seq: u32, data: &[u8]) {
 
 /// Drain contiguous segments from the OOO buffer into recv_buf.
 fn drain_ooo(tcb: &mut Tcb) {
+    // INSTRUMENTATION: pair with [tcp-gap]. If a gap opened but this never
+    // logs [tcp-recovered] for that port, the lost segment at rcv_nxt was
+    // never retransmitted/accepted — the stall point.
+    let was_nonempty = !tcb.ooo_buf.is_empty();
+    let entry_rcv_nxt = tcb.rcv_nxt;
     loop {
         if tcb.ooo_buf.is_empty() {
+            if was_nonempty && tcb.rcv_nxt != entry_rcv_nxt {
+                crate::serial_verbose_println!(
+                    "[tcp-recovered] port={} rcv_nxt={}",
+                    tcb.remote_port,
+                    tcb.rcv_nxt
+                );
+            }
             break;
         }
 
