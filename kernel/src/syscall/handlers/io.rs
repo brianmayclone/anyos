@@ -53,10 +53,29 @@ pub fn sys_write(fd: u32, buf_ptr: u64, len: u32) -> u32 {
                                 crate::task::scheduler::record_io_write(n as u64);
                                 total += n;
                                 if n < chunk_len {
+                                    // INSTRUMENTATION: a short write (fewer bytes
+                                    // than asked) truncates files and breaks
+                                    // dpkg's extract pipe (SIGPIPE). Log it.
+                                    crate::serial_verbose_println!(
+                                        "[vfs-shortwrite] global={} wanted={} wrote={} total={}/{}",
+                                        global_id,
+                                        chunk_len,
+                                        n,
+                                        total,
+                                        len
+                                    );
                                     return total as u32;
                                 }
                             }
                             Err(e) => {
+                                crate::serial_verbose_println!(
+                                    "[vfs-writeerr] global={} wanted={} total={}/{} err={:?}",
+                                    global_id,
+                                    chunk_len,
+                                    total,
+                                    len,
+                                    e
+                                );
                                 return if total > 0 { total as u32 } else { fs_err(e) };
                             }
                         }

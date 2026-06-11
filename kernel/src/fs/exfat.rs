@@ -5,8 +5,10 @@
 use crate::fs::file::{DirEntry, FileType};
 use crate::fs::vfs::FsError;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 // =============================================================================
 // Storage I/O helpers (cfg-gated for ARM64 compilation)
@@ -500,6 +502,10 @@ pub struct ExFatFs {
     bitmap: Vec<u8>,
     /// Cached number of free clusters, kept in sync with `bitmap`.
     free_clusters: u32,
+    /// Lock-free mirror of `free_clusters`, shared with [`ExFatFsDriver`] so
+    /// `statfs()` can answer without taking the inner FS lock (which writers
+    /// hold across multi-millisecond disk I/O).
+    free_clusters_shared: Arc<AtomicU64>,
     /// Bitset of dirty bitmap sectors (1 bit per 512-byte sector).
     bitmap_dirty: Vec<u8>,
     /// Cluster where the bitmap starts.
@@ -851,6 +857,7 @@ impl ExFatFs {
             fat_dirty: vec![0u8; fat_dirty_bytes],
             bitmap: Vec::new(),
             free_clusters: 0,
+            free_clusters_shared: Arc::new(AtomicU64::new(0)),
             bitmap_dirty: Vec::new(),
             bitmap_cluster: 0,
             bitmap_contiguous: true,
@@ -862,7 +869,8 @@ impl ExFatFs {
 
         // Scan root directory for the allocation bitmap entry
         fs.load_bitmap()?;
-        fs.free_clusters = fs.count_free_clusters();
+        let initial_free = fs.count_free_clusters();
+        fs.set_free_clusters(initial_free);
         // Initialize bitmap dirty tracking now that bitmap is loaded
         let bm_sectors = (fs.bitmap.len() + 511) / 512;
         fs.bitmap_dirty = vec![0u8; (bm_sectors + 7) / 8];
@@ -1353,6 +1361,21 @@ impl ExFatFs {
         self.cluster_count.saturating_sub(used)
     }
 
+    /// Update the cached free-cluster count and its lock-free mirror.
+    fn set_free_clusters(&mut self, value: u32) {
+        self.free_clusters = value;
+        self.free_clusters_shared
+            .store(value as u64, AtomicOrdering::Relaxed);
+    }
+
+    /// Snapshot handles for [`ExFatFsDriver::cached_stats`]:
+    /// (total_bytes, cluster_size_bytes, shared free-cluster counter).
+    pub fn stats_handles(&self) -> (u64, u64, Arc<AtomicU64>) {
+        let cluster_size = 1u64 << (self.bytes_per_sector_shift + self.sectors_per_cluster_shift);
+        let total = self.cluster_count as u64 * cluster_size;
+        (total, cluster_size, Arc::clone(&self.free_clusters_shared))
+    }
+
     fn mark_cluster_allocated(&mut self, idx: u32) {
         let byte_idx = idx as usize / 8;
         let bit_idx = idx as usize % 8;
@@ -1362,7 +1385,8 @@ impl ExFatFs {
         let mask = 1 << bit_idx;
         if self.bitmap[byte_idx] & mask == 0 {
             self.bitmap[byte_idx] |= mask;
-            self.free_clusters = self.free_clusters.saturating_sub(1);
+            let v = self.free_clusters.saturating_sub(1);
+            self.set_free_clusters(v);
             self.mark_bitmap_dirty(byte_idx);
         }
     }
@@ -1379,7 +1403,8 @@ impl ExFatFs {
         let mask = 1 << bit_idx;
         if self.bitmap[byte_idx] & mask != 0 {
             self.bitmap[byte_idx] &= !mask;
-            self.free_clusters = self.free_clusters.saturating_add(1).min(self.cluster_count);
+            let v = self.free_clusters.saturating_add(1).min(self.cluster_count);
+            self.set_free_clusters(v);
             self.mark_bitmap_dirty(byte_idx);
         }
     }
@@ -3814,14 +3839,37 @@ use crate::sync::mutex::Mutex;
 /// pattern as `CoreFsDriver`.
 pub struct ExFatFsDriver {
     inner: Mutex<ExFatFs>,
+    /// Immutable volume size (bytes), captured at mount time.
+    stats_total_bytes: u64,
+    /// Immutable cluster size (bytes), captured at mount time.
+    stats_cluster_size: u64,
+    /// Lock-free mirror of the inner FS's free-cluster count.
+    stats_free_clusters: Arc<AtomicU64>,
 }
 
 impl ExFatFsDriver {
     /// Construct a driver from an already-mounted [`ExFatFs`].
     pub fn new(fs: ExFatFs) -> Self {
+        let (stats_total_bytes, stats_cluster_size, stats_free_clusters) = fs.stats_handles();
         Self {
             inner: Mutex::new(fs),
+            stats_total_bytes,
+            stats_cluster_size,
+            stats_free_clusters,
         }
+    }
+
+    /// Lock-free (total_bytes, free_bytes) snapshot.
+    ///
+    /// `statfs()` must never wait on the inner FS lock: writers hold it
+    /// across disk I/O for hundreds of milliseconds, and statfs used to be
+    /// called with the global VFS lock held — stalling the whole VFS.
+    pub fn cached_stats(&self) -> (u64, u64) {
+        let free = self
+            .stats_free_clusters
+            .load(AtomicOrdering::Relaxed)
+            .saturating_mul(self.stats_cluster_size);
+        (self.stats_total_bytes, free)
     }
 
     /// Borrow the inner FS directly — escape hatch for the few VFS

@@ -134,6 +134,18 @@ fn snapshot_open_exfat_commit(
 }
 
 fn finish_detached_exfat_commit(commit: &DetachedExFatCommit) -> Result<u8, FsError> {
+    // INSTRUMENTATION (verbose only): record exactly what size is committed to
+    // the directory entry for each file, and when a commit is SKIPPED because
+    // entry_dirty is false. Compare against the read-side `open-resolve ... size=`
+    // log to localize 0-byte files to the write side (commits 0 / skips) vs the
+    // read side (commits N, reads back 0).
+    crate::serial_verbose_println!(
+        "[exfat-commit] path={} size={} entry_dirty={} durable={}",
+        commit.path,
+        commit.size,
+        commit.entry_dirty,
+        commit.durable
+    );
     let mut exfat = commit.driver.lock_inner();
     if commit.entry_dirty {
         let primary = exfat.update_entry(
@@ -6771,88 +6783,119 @@ pub fn root_is_iso9660() -> bool {
 
 /// Get filesystem statistics for a mount point path.
 /// Returns `None` if the path is not a valid mount point or no stats available.
+///
+/// Lock discipline: the global VFS lock is only held to *collect* per-mount
+/// sources (cheap field reads and Arc clones). Anything that can block —
+/// CoreFS internals, FUSE round-trips to userspace — runs after the guard is
+/// dropped. exFAT answers from a lock-free snapshot: waiting on its inner
+/// lock here used to stall the entire VFS for the duration of concurrent
+/// write I/O (Surf asset bursts → multi-hundred-ms "VFS lock held").
 pub fn statfs(path: &str) -> Option<StatFs> {
-    let vfs = vfs_lock();
-    let state = vfs.as_ref()?;
+    enum StatfsSource {
+        Ready(StatFs),
+        CoreFs(alloc::sync::Arc<crate::fs::corefs::CoreFsDriver>),
+        Fuse(alloc::sync::Arc<crate::fs::fuse::FuseSession>),
+    }
 
-    // Try all mount points matching the path (there can be multiple, e.g.
-    // a failed disk mount + a successful ISO mount both at "/").
-    for mp in state.mount_points.iter().filter(|mp| mp.path == path) {
-        let result = match mp.fs_type {
-            FsType::ExFat => {
-                if path == "/" || path.is_empty() {
-                    if let Some(drv) = state.exfat_fs.as_ref() {
-                        let fs = drv.lock_inner();
-                        let (total, free) = fs.fs_stats();
-                        Some(StatFs {
+    let mut sources: Vec<StatfsSource> = Vec::new();
+    {
+        let vfs = vfs_lock();
+        let state = vfs.as_ref()?;
+
+        // Try all mount points matching the path (there can be multiple, e.g.
+        // a failed disk mount + a successful ISO mount both at "/").
+        for mp in state.mount_points.iter().filter(|mp| mp.path == path) {
+            let source = match mp.fs_type {
+                FsType::ExFat => {
+                    let drv = if path == "/" || path.is_empty() {
+                        state.exfat_fs.clone()
+                    } else {
+                        state
+                            .mounted_exfat
+                            .iter()
+                            .find(|(mnt_path, _)| mnt_path == path)
+                            .map(|(_, fs)| fs.clone())
+                    };
+                    drv.map(|drv| {
+                        let (total, free) = drv.cached_stats();
+                        StatfsSource::Ready(StatFs {
                             total_bytes: total,
-                            used_bytes: total - free,
+                            used_bytes: total.saturating_sub(free),
                             free_bytes: free,
                         })
+                    })
+                }
+                FsType::Iso9660 => state.iso9660_fs.as_ref().map(|iso| {
+                    let total = iso.total_blocks as u64 * 2048;
+                    StatfsSource::Ready(StatFs {
+                        total_bytes: total,
+                        used_bytes: total,
+                        free_bytes: 0,
+                    })
+                }),
+                // NTFS/FAT report immutable volume geometry only; the inner
+                // lock is taken for plain field reads, not I/O.
+                FsType::Ntfs => state.ntfs_fs.as_ref().map(|drv| {
+                    let ntfs = drv.lock_inner();
+                    let total = ntfs.total_sectors as u64 * 512;
+                    StatfsSource::Ready(StatFs {
+                        total_bytes: total,
+                        used_bytes: total,
+                        free_bytes: 0,
+                    })
+                }),
+                FsType::Fat => state.fat_fs.as_ref().map(|drv| {
+                    let fat = drv.lock_inner();
+                    let cluster_bytes =
+                        fat.sectors_per_cluster as u64 * fat.bytes_per_sector as u64;
+                    let total = fat.total_clusters as u64 * cluster_bytes;
+                    StatfsSource::Ready(StatFs {
+                        total_bytes: total,
+                        used_bytes: total,
+                        free_bytes: 0,
+                    })
+                }),
+                FsType::DevFs | FsType::Smb | FsType::Overlay => None,
+                FsType::CoreFs => {
+                    let drv = if path == "/" {
+                        if state.root_fs_type == Some(FsType::CoreFs) {
+                            state.corefs_driver.clone()
+                        } else {
+                            None
+                        }
                     } else {
-                        None
-                    }
-                } else {
-                    state
-                        .mounted_exfat
-                        .iter()
-                        .find(|(mnt_path, _)| mnt_path == path)
-                        .map(|(_, fs)| {
-                            let fs = fs.lock_inner();
-                            let (total, free) = fs.fs_stats();
-                            StatFs {
-                                total_bytes: total,
-                                used_bytes: total - free,
-                                free_bytes: free,
-                            }
-                        })
+                        state
+                            .mounted_corefs
+                            .iter()
+                            .find(|(mnt_path, _)| mnt_path == path)
+                            .map(|(_, drv)| drv.clone())
+                    };
+                    drv.map(StatfsSource::CoreFs)
                 }
+                FsType::Fuse => fuse_session_id_for(state, mp.path.as_str())
+                    .and_then(crate::fs::fuse::session)
+                    .map(StatfsSource::Fuse),
+            };
+            if let Some(source) = source {
+                sources.push(source);
             }
-            FsType::Iso9660 => state.iso9660_fs.as_ref().map(|iso| {
-                let total = iso.total_blocks as u64 * 2048;
-                StatFs {
-                    total_bytes: total,
-                    used_bytes: total,
-                    free_bytes: 0,
-                }
-            }),
-            FsType::Ntfs => state.ntfs_fs.as_ref().map(|drv| {
-                let ntfs = drv.lock_inner();
-                let total = ntfs.total_sectors as u64 * 512;
-                StatFs {
-                    total_bytes: total,
-                    used_bytes: total,
-                    free_bytes: 0,
-                }
-            }),
-            FsType::Fat => state.fat_fs.as_ref().map(|drv| {
-                let fat = drv.lock_inner();
-                let cluster_bytes = fat.sectors_per_cluster as u64 * fat.bytes_per_sector as u64;
-                let total = fat.total_clusters as u64 * cluster_bytes;
-                StatFs {
-                    total_bytes: total,
-                    used_bytes: total,
-                    free_bytes: 0,
-                }
-            }),
-            FsType::DevFs | FsType::Smb | FsType::Overlay => None,
-            FsType::CoreFs => state.corefs_for_mount(path).and_then(|driver| {
+        }
+    } // ← global VFS lock dropped before any potentially blocking work
+
+    for source in sources {
+        let result = match source {
+            StatfsSource::Ready(stats) => Some(stats),
+            StatfsSource::CoreFs(driver) => {
                 driver.statfs().ok().map(|(total, used, free)| StatFs {
                     total_bytes: total,
                     used_bytes: used,
                     free_bytes: free,
                 })
-            }),
-            FsType::Fuse => {
-                // Round-trip Statfs to the userspace daemon. Session lives
-                // behind an Arc — we can release the VFS lock during the
-                // (potentially blocking) call but for now keep it simple.
-                fuse_session_id_for(state, mp.path.as_str())
-                    .and_then(crate::fs::fuse::session)
-                    .and_then(|session| {
-                        let req = fuse_proto::Request::Statfs;
-                        crate::fs::fuse::fuse_call(&session, &req).ok()
-                    })
+            }
+            StatfsSource::Fuse(session) => {
+                let req = fuse_proto::Request::Statfs;
+                crate::fs::fuse::fuse_call(&session, &req)
+                    .ok()
                     .and_then(|reply| match reply {
                         fuse_proto::Reply::Statfs(s) => Some(s),
                         _ => None,
