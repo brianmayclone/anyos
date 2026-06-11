@@ -552,11 +552,30 @@ pub fn ctor_function(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let mut compiler = Compiler::new();
     let chunk = compiler.compile_eval(&program);
 
-    let prev_this = vm.current_this.clone();
-    vm.current_this = JsValue::Undefined;
-    let result = vm.execute(chunk);
-    vm.current_this = prev_this;
-    result
+    // Execute the compiled wrapper re-entrantly via call_value — the same
+    // path global `eval` uses. `vm.execute()` must NOT be used here: it
+    // resets exception/step state and runs the chunk against the *outer*
+    // run-loop's target depth, so a `new Function(...)` evaluated inside a
+    // callback kept executing the caller's bytecode and corrupted the
+    // operand stack (visible afterwards as broken method dispatch, e.g.
+    // "object.slice() is not a function" on every string method).
+    let wrapper = JsValue::Function(alloc::rc::Rc::new(core::cell::RefCell::new(
+        crate::value::JsFunction {
+            name: Some(String::from("Function")),
+            params: alloc::vec::Vec::new(),
+            kind: crate::value::FnKind::Bytecode(alloc::rc::Rc::new(chunk)),
+            object_proto: None,
+            this_binding: None,
+            bound_args: alloc::vec::Vec::new(),
+            upvalues: alloc::vec::Vec::new(),
+            with_scopes: alloc::vec::Vec::new(),
+            prototype: None,
+            own_props: alloc::collections::BTreeMap::new(),
+            arity: None,
+            super_class: None,
+        },
+    )));
+    vm.call_value(&wrapper, &[], JsValue::Undefined)
 }
 
 /// `Boolean(value)` — converts to boolean, or creates a wrapper object when called as `new`.

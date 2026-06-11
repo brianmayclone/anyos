@@ -3094,11 +3094,7 @@ fn queue_module_dependencies(
         .and_then(|tab| tab.current_url.as_ref())
         .map(module_url_key)
         .unwrap_or_default();
-    let current_page_id = state()
-        .tabs
-        .get(tab_index)
-        .and_then(|tab| tab.webview.dom())
-        .and_then(libwebview::js::extract_vike_page_id_from_dom);
+    let current_page_id = crate::tab::cached_vike_page_id(tab_index);
     let specs = libwebview::js::extract_module_specifiers_for_page_with_page_id(
         source,
         &page_url,

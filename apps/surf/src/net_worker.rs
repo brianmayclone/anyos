@@ -10,7 +10,7 @@
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use libanyui_client as ui_lib;
 
 use crate::http::{self, ConnPool, CookieJar, FetchError, Url};
@@ -974,15 +974,25 @@ fn disk_cache_root() -> String {
     root
 }
 
-fn disk_cache_has_space_for(bytes: usize) -> bool {
+/// statfs result cache for the disk cache writer.
+///
+/// Asset bursts write dozens of cache files per page; issuing a statfs
+/// syscall per file hammered the kernel VFS from every network worker at
+/// once. The free-space estimate only needs to be approximately right (we
+/// keep a 512 MB safety floor), so refresh it at most every few seconds and
+/// decrement the estimate locally as bytes are written.
+const DISK_FREE_REFRESH_MS: u32 = 5_000;
+static DISK_FREE_ESTIMATE: AtomicU64 = AtomicU64::new(0);
+static DISK_FREE_CHECKED_AT_MS: AtomicU32 = AtomicU32::new(0);
+
+fn disk_cache_free_bytes_uncached() -> Option<u64> {
     let mut candidate = disk_cache_root();
-    let needed = (bytes as u64).saturating_add(DISK_CACHE_MIN_FREE_BYTES);
     loop {
         if let Some(stats) = anyos_std::fs::statfs(&candidate) {
-            return stats.free_bytes >= needed;
+            return Some(stats.free_bytes);
         }
         if candidate == "/" {
-            return true;
+            return None;
         }
         while candidate.len() > 1 && candidate.ends_with('/') {
             candidate.pop();
@@ -994,6 +1004,30 @@ fn disk_cache_has_space_for(bytes: usize) -> bool {
             Some(idx) => candidate.truncate(idx),
         }
     }
+}
+
+fn disk_cache_has_space_for(bytes: usize) -> bool {
+    let needed = (bytes as u64).saturating_add(DISK_CACHE_MIN_FREE_BYTES);
+    let now = anyos_std::sys::uptime_ms();
+    let checked_at = DISK_FREE_CHECKED_AT_MS.load(Ordering::Relaxed);
+    if checked_at != 0 && now.wrapping_sub(checked_at) < DISK_FREE_REFRESH_MS {
+        let estimate = DISK_FREE_ESTIMATE.load(Ordering::Relaxed);
+        if estimate >= needed {
+            DISK_FREE_ESTIMATE.fetch_sub(bytes as u64, Ordering::Relaxed);
+            return true;
+        }
+        // Estimate says we are short — fall through and confirm with a real
+        // statfs before rejecting the write.
+    }
+
+    let Some(free) = disk_cache_free_bytes_uncached() else {
+        // No statfs info for any ancestor (e.g. exotic mount): keep the old
+        // permissive behaviour.
+        return true;
+    };
+    DISK_FREE_ESTIMATE.store(free.saturating_sub(bytes as u64), Ordering::Relaxed);
+    DISK_FREE_CHECKED_AT_MS.store(now.max(1), Ordering::Relaxed);
+    free >= needed
 }
 
 fn ensure_dir_recursive(path: &str) -> bool {

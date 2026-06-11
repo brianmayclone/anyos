@@ -793,6 +793,12 @@ pub enum DomMutation {
         node_id: i64,
         html: String,
     },
+    /// Replace the element itself with the parsed HTML fragment
+    /// (W3C DOM Parsing §3, `outerHTML` setter).
+    SetOuterHTML {
+        node_id: i64,
+        html: String,
+    },
     SetStyleProperty {
         node_id: i64,
         property: String,
@@ -2769,6 +2775,38 @@ impl JsRuntime {
                         }
                     }
                 }
+                DomMutation::SetOuterHTML { node_id, html } => {
+                    if let Some(real_id) = resolve_id(*node_id, &id_map, &self.real_node_ids) {
+                        let Some(parent_id) = dom.nodes.get(real_id).and_then(|n| n.parent) else {
+                            continue;
+                        };
+                        // Position of the node among its siblings.
+                        let pos = dom
+                            .nodes
+                            .get(parent_id)
+                            .and_then(|p| p.children.iter().position(|&c| c == real_id));
+                        dom.remove_child(parent_id, real_id);
+                        if !html.is_empty() {
+                            let fragment = crate::html::parse_fragment(html);
+                            let before_len =
+                                dom.nodes.get(parent_id).map(|p| p.children.len()).unwrap_or(0);
+                            dom.adopt_children_from(parent_id, &fragment);
+                            // adopt_children_from appends; move the new nodes to
+                            // the original position to preserve sibling order.
+                            if let (Some(pos), Some(parent)) =
+                                (pos, dom.nodes.get_mut(parent_id))
+                            {
+                                let appended: Vec<usize> =
+                                    parent.children.split_off(before_len);
+                                for (offset, cid) in appended.into_iter().enumerate() {
+                                    let insert_at =
+                                        (pos + offset).min(parent.children.len());
+                                    parent.children.insert(insert_at, cid);
+                                }
+                            }
+                        }
+                    }
+                }
                 DomMutation::SetStyleProperty {
                     node_id,
                     property,
@@ -3929,6 +3967,21 @@ fn read_inner_html(vm: &mut Vm, node_id: i64) -> String {
             for &cid in &dom.get(nid).children {
                 serialize_node(dom, cid, &mut html);
             }
+            return html;
+        }
+    }
+    String::new()
+}
+
+fn read_outer_html(vm: &mut Vm, node_id: i64) -> String {
+    if let Some(bridge) = get_bridge(vm) {
+        let Some(nid) = bridge.resolve_node_id(node_id) else {
+            return String::new();
+        };
+        let dom = bridge.dom();
+        if nid < dom.nodes.len() {
+            let mut html = String::new();
+            serialize_node(dom, nid, &mut html);
             return html;
         }
     }

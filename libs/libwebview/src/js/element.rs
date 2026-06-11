@@ -706,8 +706,8 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     // React 19 relies on ownerDocument.defaultView to find the window object.
     obj.set(String::from("ownerDocument"), vm.get_global("document"));
 
-    // outerHTML (W3C DOM Parsing §3).
-    obj.set(String::from("outerHTML"), JsValue::String(String::new())); // placeholder, set_hook handles writes
+    // outerHTML (W3C DOM Parsing §3) is a reflected property — see
+    // INSTANCE_REFLECTED_PROPERTIES / el_reflected_property_get.
 
     // Geometry (W3C CSSOM View §6).
     let (offset_w, offset_h) =
@@ -990,6 +990,7 @@ const NODE_REFLECTED_PROPERTIES: &[&str] = &["textContent"];
 const ELEMENT_REFLECTED_PROPERTIES: &[&str] = &[
     "className",
     "innerHTML",
+    "outerHTML",
     "textContent",
     "innerText",
     "nodeValue",
@@ -999,6 +1000,7 @@ const ELEMENT_REFLECTED_PROPERTIES: &[&str] = &[
 const INSTANCE_REFLECTED_PROPERTIES: &[&str] = &[
     "className",
     "innerHTML",
+    "outerHTML",
     "textContent",
     "innerText",
     "nodeValue",
@@ -1073,6 +1075,7 @@ fn el_reflected_property_get(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
             JsValue::String(read_text_content(vm, this_node_id(vm)))
         }
         "innerHTML" => JsValue::String(read_inner_html(vm, this_node_id(vm))),
+        "outerHTML" => JsValue::String(crate::js::read_outer_html(vm, this_node_id(vm))),
         "contentWindow" => vm.get_global("window"),
         "contentDocument" => vm.get_global("document"),
         _ => match read_attribute(vm, this_node_id(vm), reflected_attribute_name(&name)) {
@@ -1099,6 +1102,12 @@ fn el_reflected_property_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             }
             "innerHTML" => {
                 bridge.mutations.push(DomMutation::SetInnerHTML {
+                    node_id: nid,
+                    html: value.to_js_string(),
+                });
+            }
+            "outerHTML" => {
+                bridge.mutations.push(DomMutation::SetOuterHTML {
                     node_id: nid,
                     html: value.to_js_string(),
                 });

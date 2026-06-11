@@ -34,9 +34,13 @@ impl Renderer {
         self.submit_cb_ud = submit_cb_ud;
         self.last_scroll_y = scroll_y;
 
-        // 1. Invalidate tile cache (layout has changed).
+        // 1. Invalidate tile cache (layout has changed). The existing tile
+        //    canvases stay on screen showing the previous frame: the
+        //    compositor runs asynchronously, so parking them here turned the
+        //    whole viewport white until rasterization below caught up.
+        //    Visible rows are refreshed in place; everything else is parked
+        //    at the end of this function.
         self.tile_cache.invalidate_all();
-        self.deactivate_all_tile_canvases();
 
         // 4. Compute visible tile rows.
         let render_y_start = (scroll_y - BUFFER_ZONE).max(0);
@@ -104,11 +108,25 @@ impl Renderer {
             );
         }
 
-        // 5. Rasterize visible tiles using the display list.
+        // 5. Rasterize visible tiles using the display list. Rows that
+        //    already have an active canvas are pixel-swapped in place (no
+        //    flicker); new rows get a canvas.
+        let mut refreshed_rows: Vec<u32> = Vec::with_capacity(immediate_rows.len());
         for row in immediate_rows.iter().copied() {
             let tile_buf = self.rasterize_tile_dl(images, w, row, doc_h, clear_color);
             self.tile_cache.insert(row, tile_buf);
-            self.create_tile_canvas(row, w, doc_h, parent);
+            if self.create_tile_canvas(row, w, doc_h, parent) {
+                refreshed_rows.push(row);
+            }
+        }
+
+        // 5b. Park every active canvas that was not refreshed above: its
+        //     pixels predate the new layout, and the scroll path skips rows
+        //     that still have an active canvas.
+        for tc in &mut self.tile_canvases {
+            if tc.active && !refreshed_rows.contains(&tc.row) {
+                Self::park_inactive_tile_canvas(tc);
+            }
         }
 
         // 6. Bring form controls in front of tile canvases so they are

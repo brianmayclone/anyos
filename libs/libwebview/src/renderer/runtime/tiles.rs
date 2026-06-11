@@ -34,14 +34,6 @@ impl Renderer {
         self.tile_canvases.iter().filter(|tc| tc.active).count()
     }
 
-    fn deactivate_all_tile_canvases(&mut self) {
-        for tc in &mut self.tile_canvases {
-            if tc.active {
-                Self::park_inactive_tile_canvas(tc);
-            }
-        }
-    }
-
     fn deactivate_distant_tile_canvases(&mut self, keep_first: u32, keep_last: u32) {
         for tc in &mut self.tile_canvases {
             if tc.active && (tc.row < keep_first || tc.row > keep_last) {

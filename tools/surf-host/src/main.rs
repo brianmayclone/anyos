@@ -2756,6 +2756,19 @@ fn parse_y_range(s: &str) -> Option<(u32, u32)> {
     Some((start, end))
 }
 
+/// Mirror Surf's scroll-time behaviour: while the progressive first-render
+/// budget still truncates the document, grow it and re-layout until the
+/// requested scroll position is actually covered (see Surf's
+/// `refresh_active_viewport_tiles`). Without this, screenshots of long
+/// pages stopped at the initial ~4 viewport budget.
+fn pump_deferred_layout(wv: &mut libwebview::WebView, scroll_y: i32) {
+    let mut guard = 0;
+    while wv.deferred_layout_upgrade_needed(scroll_y) && guard < 64 {
+        wv.upgrade_deferred_layout();
+        guard += 1;
+    }
+}
+
 /// Save a screenshot of a specific Y range of the document.
 fn save_range_screenshot(
     wv: &mut libwebview::WebView,
@@ -2774,6 +2787,7 @@ fn save_range_screenshot(
     let viewport_h = wv.viewport_height().max(256);
     let mut y = y_start as i32;
     while y < y_end as i32 {
+        pump_deferred_layout(wv, y);
         let mut pending = true;
         while pending {
             pending = wv.render_viewport_at(y);
@@ -2796,26 +2810,43 @@ fn save_range_screenshot(
 /// Save a full-page screenshot by rendering the entire document height.
 /// Scrolls through the entire page to ensure all tiles are rasterized.
 fn save_fullpage_screenshot(wv: &mut libwebview::WebView, width: u32, path: &str) {
-    let doc_h = wv.total_height().max(1) as u32;
+    // Hard cap so a hundreds-of-thousands-px page cannot allocate a
+    // multi-GB buffer. Logged below when it kicks in.
+    const FULLPAGE_MAX_H: u32 = 65536;
     let viewport_h = wv.viewport_height();
-    eprintln!(
-        "[surf-host] full-page: {}x{} (viewport {})",
-        width, doc_h, viewport_h
-    );
 
     // Render all tile rows by scrolling through the entire document.
     // render_viewport creates tiles incrementally (max 2 per call),
-    // so we call it repeatedly until all tiles are generated.
+    // so we call it repeatedly until all tiles are generated. The document
+    // height grows while the progressive layout budget is upgraded, so
+    // re-read it every step.
     let step = viewport_h.max(256) as i32;
     let mut y = 0i32;
-    while y < doc_h as i32 {
-        // Simulate scrolling to this position to trigger tile creation
+    loop {
+        pump_deferred_layout(wv, y);
+        let doc_h_now = (wv.total_height().max(1) as u32).min(FULLPAGE_MAX_H);
+        if y >= doc_h_now as i32 {
+            break;
+        }
         let mut pending = true;
         while pending {
             pending = wv.render_viewport_at(y);
         }
         y += step;
     }
+
+    let full_h = wv.total_height().max(1) as u32;
+    let doc_h = full_h.min(FULLPAGE_MAX_H);
+    if full_h > doc_h {
+        eprintln!(
+            "[surf-host] full-page: document is {}px tall, capping screenshot at {}px",
+            full_h, doc_h
+        );
+    }
+    eprintln!(
+        "[surf-host] full-page: {}x{} (viewport {})",
+        width, doc_h, viewport_h
+    );
 
     let mut fb = vec![0xFFFFFFFFu32; (width * doc_h) as usize];
     extract_pixels(wv, &mut fb, width as usize, doc_h as usize, 0);

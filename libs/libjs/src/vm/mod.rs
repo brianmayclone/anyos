@@ -211,7 +211,16 @@ pub struct Vm {
     /// Module source registry: maps module specifier → JS source text.
     /// When `__import__` is called for a specifier not yet in `module_registry`,
     /// it compiles and executes the source, caches the result, and returns it.
-    pub module_sources: BTreeMap<String, String>,
+    /// Module source texts, interned behind `Rc`: hosts register the same
+    /// module under several textual aliases — sharing one allocation lets
+    /// alias lookups compare by pointer instead of re-scanning megabytes of
+    /// bundle text on every import.
+    pub module_sources: BTreeMap<String, alloc::rc::Rc<String>>,
+    /// Base URLs of the modules currently being evaluated (innermost last).
+    /// Relative import specifiers (`./x`, `../x`, `/x`) are resolved against
+    /// the top entry, mirroring the HTML spec's module-script base URL.
+    /// Empty strings mark modules whose absolute URL is unknown.
+    pub module_base_stack: Vec<String>,
     /// Nesting depth of active native constructor invocations entered via `new`.
     /// Needed because native built-ins like `String` are callable both as
     /// functions and constructors, so `current_this` alone is not enough.
@@ -254,6 +263,7 @@ impl Vm {
             call_value_depth: 0,
             module_registry: BTreeMap::new(),
             module_sources: BTreeMap::new(),
+            module_base_stack: Vec::new(),
             native_constructor_depth: 0,
             async_continuations: Vec::new(),
         };

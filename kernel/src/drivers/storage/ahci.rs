@@ -90,7 +90,19 @@ const AHCI_POLL_YIELD_EVERY: usize = 256;
 const AHCI_MAX_COMMAND_SLOTS: usize = 8;
 // Keep non-queueable commands behind the AHCI serialized gate; data I/O can use
 // NCQ slots when the controller and drive advertise them.
-const AHCI_ENABLE_NCQ: bool = true;
+//
+// DISABLED: NCQ submits READ_FPDMA/WRITE_FPDMA concurrently with NO same-LBA
+// in-flight interlock. The block cache (storage::mod) returns the freshly-read
+// bytes to the caller even when a write raced the read — the write-generation
+// gate only blocks *cache population*, not the returned buffer, and bulk writes
+// invalidate their cache range. So a directory-cluster read that misses the
+// (write-flooded) block cache can overlap an in-flight FPDMA write to the same
+// sectors and come back TORN. exFAT then read-modify-writes that torn directory
+// back, erasing live entries — observed as apt "rename failed, No such file or
+// directory" on a file that was just created, written and committed.
+// Re-enable ONLY after adding an LBA-range in-flight interlock (read must not
+// overlap an in-flight write to the same range, and vice versa).
+const AHCI_ENABLE_NCQ: bool = false;
 
 const MAX_PRDT: usize = 128;
 const PRDT_MAX_BYTES: u32 = 4 * 1024 * 1024;

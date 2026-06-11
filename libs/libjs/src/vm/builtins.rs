@@ -1838,6 +1838,78 @@ fn bigint_constructor(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
 }
 
+/// Resolve a relative module specifier against a base module URL,
+/// processing `./` and `../` path segments (HTML spec module resolution).
+fn resolve_specifier_against_base(base: &str, spec: &str) -> Option<alloc::string::String> {
+    if base.is_empty() {
+        return None;
+    }
+    if spec.starts_with("http://") || spec.starts_with("https://") {
+        return Some(alloc::string::String::from(spec));
+    }
+    let scheme_end = base.find("://")?;
+    let host_end = base[scheme_end + 3..]
+        .find('/')
+        .map(|i| scheme_end + 3 + i)
+        .unwrap_or(base.len());
+    let origin = &base[..host_end];
+
+    if let Some(rest) = spec.strip_prefix("//") {
+        let scheme = &base[..scheme_end];
+        return Some(alloc::format!("{}://{}", scheme, rest));
+    }
+    if spec.starts_with('/') {
+        return Some(alloc::format!("{}{}", origin, spec));
+    }
+    if !(spec.starts_with("./") || spec.starts_with("../")) {
+        // Bare specifiers (import maps) are not supported here.
+        return None;
+    }
+
+    // Directory of the importing module.
+    let base_path = &base[host_end..];
+    let dir_end = base_path.rfind('/').unwrap_or(0);
+    let mut segments: alloc::vec::Vec<&str> = base_path[..dir_end]
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    for part in spec.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            other => segments.push(other),
+        }
+    }
+    let mut out = alloc::string::String::from(origin);
+    for seg in &segments {
+        out.push('/');
+        out.push_str(seg);
+    }
+    Some(out)
+}
+
+/// Best-effort absolute URL of the module registered under `key`: either the
+/// key itself, or any absolute-URL alias registered for the same source.
+fn module_base_url_for(
+    vm: &Vm,
+    key: &str,
+    source: &alloc::rc::Rc<alloc::string::String>,
+) -> alloc::string::String {
+    if key.starts_with("http://") || key.starts_with("https://") {
+        return alloc::string::String::from(key);
+    }
+    for (alias, alias_source) in vm.module_sources.iter() {
+        if (alias.starts_with("http://") || alias.starts_with("https://"))
+            && alloc::rc::Rc::ptr_eq(alias_source, source)
+        {
+            return alias.clone();
+        }
+    }
+    alloc::string::String::new()
+}
+
 fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsValue> {
     // 1. Check cached registry.
     if let Some(ns) = vm.module_registry.get(specifier) {
@@ -1848,8 +1920,38 @@ fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsV
         return Ok(ns.clone());
     }
 
+    // 1b. Relative specifiers resolve against the importing module's URL
+    // (HTML spec). The textual alias heuristics hosts register cannot cover
+    // every layout (e.g. chunks in the CDN root imported as `../chunk-X.js`).
+    let mut lookup_key = alloc::string::String::from(specifier);
+    if vm.module_sources.get(specifier).is_none() {
+        if let Some(base) = vm.module_base_stack.last() {
+            if let Some(abs) = resolve_specifier_against_base(base, specifier) {
+                if let Some(ns) = vm.module_registry.get(&abs) {
+                    #[cfg(feature = "host")]
+                    if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
+                        std::eprintln!(
+                            "[libjs-module] cache hit {} (resolved {})",
+                            abs,
+                            specifier
+                        );
+                    }
+                    return Ok(ns.clone());
+                }
+                if vm.module_sources.contains_key(&abs) {
+                    #[cfg(feature = "host")]
+                    if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
+                        std::eprintln!("[libjs-module] resolved {} -> {}", specifier, abs);
+                    }
+                    lookup_key = abs;
+                }
+            }
+        }
+    }
+    let lookup_key = lookup_key.as_str();
+
     // 2. Check source registry — compile, execute, cache.
-    if let Some(source) = vm.module_sources.get(specifier).cloned() {
+    if let Some(source) = vm.module_sources.get(lookup_key).cloned() {
         // Hosts register several aliases for the same browser module URL
         // (absolute URL, path, basename, relative specifier). ES modules are
         // evaluated once per resolved module record, not once per textual
@@ -1857,7 +1959,7 @@ fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsV
         // source text so custom elements and other top-level side effects do
         // not run twice.
         for (alias, alias_source) in vm.module_sources.iter() {
-            if alias_source == &source {
+            if alloc::rc::Rc::ptr_eq(alias_source, &source) {
                 if let Some(ns) = vm.module_registry.get(alias) {
                     #[cfg(feature = "host")]
                     if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
@@ -1882,7 +1984,7 @@ fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsV
         vm.set_global("__exports__", module_exports);
 
         // Compile the module source.
-        let tokens = crate::lexer::Lexer::tokenize(&source);
+        let tokens = crate::lexer::Lexer::tokenize(source.as_str());
         let mut parser = crate::parser::Parser::new(tokens);
         let program = parser.parse_program();
         if !parser.errors.is_empty() {
@@ -1924,7 +2026,10 @@ fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsV
         // chunks fail during dependency evaluation.
         vm.pending_exception = None;
         vm.last_exception = None;
+        let module_base = module_base_url_for(vm, lookup_key, &source);
+        vm.module_base_stack.push(module_base);
         vm.call_value(&module_fn, &[], JsValue::Undefined);
+        vm.module_base_stack.pop();
 
         if let Some(exc) = vm
             .pending_exception
@@ -1952,7 +2057,7 @@ fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsV
             .module_sources
             .iter()
             .filter_map(|(alias, alias_source)| {
-                if alias_source == &source {
+                if alloc::rc::Rc::ptr_eq(alias_source, &source) {
                     Some(alias.clone())
                 } else {
                     None
@@ -1967,6 +2072,12 @@ fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsV
                 vm.module_registry.insert(alias, final_exports.clone());
             }
         }
+        // Also cache under the textual specifier and the resolved key so the
+        // next textual occurrence (and the resolved URL) hit the cache.
+        vm.module_registry
+            .insert(String::from(specifier), final_exports.clone());
+        vm.module_registry
+            .insert(String::from(lookup_key), final_exports.clone());
         #[cfg(feature = "host")]
         if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
             std::eprintln!("[libjs-module] ready {}", specifier);

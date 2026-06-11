@@ -287,28 +287,14 @@ fn font_family_contains_ahem(family: &str) -> bool {
         .any(|part| part.trim().trim_matches('\'').trim_matches('"').trim() == "ahem")
 }
 
-fn synthetic_condensed_font_for_family(family: &str) -> Option<u32> {
-    let lower = family.to_ascii_lowercase();
-    for part in lower.split(',') {
-        let name = part.trim().trim_matches('\'').trim_matches('"').trim();
-        if name.is_empty() {
-            continue;
-        }
-        if name.contains("extra-condensed")
-            || name.contains("extracondensed")
-            || name.contains("extracond")
-            || name.contains("xnarrow")
-            || name.contains("x-narrow")
-        {
-            return Some(SYNTHETIC_EXTRA_CONDENSED_FONT_ID);
-        }
-        if name.contains("narrow") {
-            return Some(SYNTHETIC_NARROW_FONT_ID);
-        }
-        if name.contains("condensed") || name == "sans-serif-condensed" {
-            return Some(SYNTHETIC_CONDENSED_FONT_ID);
-        }
-    }
+fn synthetic_condensed_font_for_family(_family: &str) -> Option<u32> {
+    // Width synthesis is disabled. Squeezing a regular face to 62-76% to
+    // emulate unavailable narrow/condensed families (CSS `font-stretch` has
+    // no synthesis per css-fonts-4 §5.2) made dense bold text unreadable:
+    // combined with synthetic-bold smearing, word spaces shrank to under a
+    // pixel (bild.de article text rendered with no visible spaces at all).
+    // Real browsers fall back to the next family of the list at its natural
+    // width — do the same.
     None
 }
 
@@ -4169,6 +4155,7 @@ impl WebView {
             | js::DomMutation::RemoveAttribute { node_id, .. }
             | js::DomMutation::SetTextContent { node_id, .. }
             | js::DomMutation::SetInnerHTML { node_id, .. }
+            | js::DomMutation::SetOuterHTML { node_id, .. }
             | js::DomMutation::SetStyleProperty { node_id, .. }
             | js::DomMutation::RemoveNode { node_id } => usize::try_from(*node_id).ok(),
             js::DomMutation::SetScrollTop { node_id, .. }
@@ -4185,6 +4172,7 @@ impl WebView {
                 | js::DomMutation::SetTextContent { .. }
                 | js::DomMutation::SetStyleProperty { .. }
                 | js::DomMutation::SetInnerHTML { .. }
+                | js::DomMutation::SetOuterHTML { .. }
                 | js::DomMutation::RemoveNode { .. }
         )
     }
@@ -4192,7 +4180,9 @@ impl WebView {
     fn mutation_requires_parent_rebuild(mutation: &js::DomMutation) -> bool {
         matches!(
             mutation,
-            js::DomMutation::SetInnerHTML { .. } | js::DomMutation::RemoveNode { .. }
+            js::DomMutation::SetInnerHTML { .. }
+            | js::DomMutation::SetOuterHTML { .. }
+            | js::DomMutation::RemoveNode { .. }
         )
     }
 
@@ -4726,7 +4716,10 @@ impl WebView {
 
         // Cached-style relayouts can change geometry, so a paint-only refresh
         // would reuse a stale display list and stale tile commands. Rebuild the
-        // render surface from the new layout tree instead.
+        // render surface from the new layout tree instead, around the user's
+        // current scroll position (this path only runs for re-layouts).
+        let max_scroll = (doc_h as i32).saturating_sub(self.viewport_height as i32).max(0);
+        let render_scroll_y = self.scroll_state_y().clamp(0, max_scroll);
         self.renderer.clear();
         self.pending_tiles = self.renderer.render(
             root,
@@ -4735,7 +4728,7 @@ impl WebView {
             doc_w,
             doc_h,
             self.viewport_height,
-            0,
+            render_scroll_y,
             bg_color,
             self.link_cb,
             self.link_cb_ud,
@@ -4743,7 +4736,7 @@ impl WebView {
             self.submit_cb_ud,
             false,
         );
-        self.last_render_scroll_y = 0;
+        self.last_render_scroll_y = render_scroll_y;
     }
 
     fn resolved_style_cache_matches_dom(&self, dom: &dom::Dom) -> bool {
@@ -5175,6 +5168,12 @@ impl WebView {
         let dom_only_first_render = self.dom_only_initial_render_pending
             && self.layout_root.is_none()
             && self.total_height_val == 0;
+        // Re-layouts of an already-shown document (progressive budget
+        // upgrades, JS mutations, animations) must render around the user's
+        // current scroll position. Rendering at 0 left the visible region
+        // without any tiles — the whole viewport flashed white until the
+        // scroll path slowly re-rasterized it.
+        let had_existing_layout = self.layout_root.is_some();
         self.ensure_initial_progressive_budget(d);
 
         // ── Stylesheet pipeline — parse once, reuse on every relayout ────────────
@@ -5422,7 +5421,14 @@ impl WebView {
         self.bg_color_cached = bg_color;
 
         // Render into canvas + update form controls.
-        // Initial render starts at scroll_y=0.
+        // Initial page render starts at scroll_y=0; re-layouts render at the
+        // current scroll offset so the visible rows are repainted first.
+        let max_scroll = (doc_h as i32).saturating_sub(self.viewport_height as i32).max(0);
+        let render_scroll_y = if had_existing_layout {
+            self.scroll_state_y().clamp(0, max_scroll)
+        } else {
+            0
+        };
         debug_surf!("[webview] renderer start");
         let render_start_ms = anyos_std::sys::uptime_ms();
         self.pending_tiles = self.renderer.render(
@@ -5432,7 +5438,7 @@ impl WebView {
             doc_w,
             doc_h,
             self.viewport_height,
-            0, // scroll_y = 0 for initial render
+            render_scroll_y,
             bg_color,
             self.link_cb,
             self.link_cb_ud,
@@ -5446,7 +5452,7 @@ impl WebView {
             self.pending_tiles,
             _render_elapsed_ms
         );
-        self.last_render_scroll_y = 0;
+        self.last_render_scroll_y = render_scroll_y;
         self.dom_only_initial_render_pending = false;
         debug_surf!(
             "[webview] renderer done: {} form_controls",

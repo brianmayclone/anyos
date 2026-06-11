@@ -30,7 +30,10 @@ struct InlineFragment {
 // while the font registry is unchanged.  Sized for a whole document rather than
 // a single paragraph.  Must stay a power of two (used as a mask).
 const TEXT_MEASURE_CACHE_BUCKETS: usize = 8192;
-const INLINE_WRAP_EPSILON_PX: i32 = 16;
+// Tolerance for greedy line breaking. Must stay small: every pixel of
+// allowed overflow is drawn past the line box (there is no later
+// reconciliation), so large values visibly overhang the container edge.
+const INLINE_WRAP_EPSILON_PX: i32 = 2;
 
 struct TextMeasureCacheEntry {
     text: String,

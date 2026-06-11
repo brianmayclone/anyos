@@ -276,7 +276,13 @@ impl Vm {
                                 if !self.handle_exception(exc) {
                                     self.stack.push(JsValue::Undefined);
                                 }
-                            } else if result.is_object() || result.is_array() {
+                            } else if result.is_object()
+                                || result.is_array()
+                                || result.is_function()
+                            {
+                                // ES2015 9.2.2: a constructor returning an
+                                // Object (functions included — `new Function`
+                                // relies on this) overrides the fresh `this`.
                                 self.stack.push(result);
                             } else {
                                 self.stack.push(new_obj);

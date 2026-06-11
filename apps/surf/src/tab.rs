@@ -272,13 +272,7 @@ fn load_local_module_dependencies(
             .map(crate::ui::format_url)
             .unwrap_or_default()
     };
-    let current_page_id = {
-        let st = crate::state();
-        st.tabs
-            .get(tab_index)
-            .and_then(|tab| tab.webview.dom())
-            .and_then(libwebview::js::extract_vike_page_id_from_dom)
-    };
+    let current_page_id = cached_vike_page_id(tab_index);
     let specs = libwebview::js::extract_module_specifiers_for_page_with_page_id(
         source,
         &page_url,
@@ -458,6 +452,25 @@ impl PageLoadState {
     }
 }
 
+/// Vike page id of the tab's current document, cached per load generation
+/// (the id is embedded in the initial HTML and does not change during load).
+pub(crate) fn cached_vike_page_id(tab_index: usize) -> Option<String> {
+    let st = crate::state();
+    let tab = st.tabs.get_mut(tab_index)?;
+    let generation = tab.load_state.generation;
+    if let Some((cached_gen, ref id)) = tab.vike_page_id_cache {
+        if cached_gen == generation {
+            return id.clone();
+        }
+    }
+    let id = tab
+        .webview
+        .dom()
+        .and_then(libwebview::js::extract_vike_page_id_from_dom);
+    tab.vike_page_id_cache = Some((generation, id.clone()));
+    id
+}
+
 pub(crate) struct TabState {
     /// HTML rendering widget for this tab.
     pub(crate) webview: libwebview::WebView,
@@ -493,6 +506,10 @@ pub(crate) struct TabState {
     pub(crate) pending_script_labels: Vec<String>,
     /// Absolute module chunk URLs already queued for this navigation.
     pub(crate) requested_module_urls: Vec<String>,
+    /// Cached Vike page id of the current document, keyed by load generation.
+    /// Extracting it walks the whole DOM; module-heavy pages (40+ chunks)
+    /// repeated that walk per finished module download.
+    pub(crate) vike_page_id_cache: Option<(u32, Option<String>)>,
     /// Web fonts intentionally deferred until after first paint / interactive.
     pub(crate) deferred_fonts: Vec<DeferredFontRequest>,
     /// Absolute font URLs already queued for this navigation.
@@ -543,6 +560,7 @@ impl TabState {
             pending_script_modes: Vec::new(),
             pending_script_labels: Vec::new(),
             requested_module_urls: Vec::new(),
+            vike_page_id_cache: None,
             deferred_fonts: Vec::new(),
             requested_font_urls: Vec::new(),
             deferred_fonts_inflight: 0,

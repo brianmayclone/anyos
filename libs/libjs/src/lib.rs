@@ -217,9 +217,18 @@ impl JsEngine {
     /// will compile and execute this source, cache the resulting exports,
     /// and return the namespace object.
     pub fn register_module_source(&mut self, specifier: &str, source: &str) {
+        // Aliases of the same module share one interned allocation so the
+        // VM's alias scans can compare by Rc pointer.
+        let interned = self
+            .vm
+            .module_sources
+            .values()
+            .find(|existing| existing.as_str() == source)
+            .cloned()
+            .unwrap_or_else(|| alloc::rc::Rc::new(String::from(source)));
         self.vm
             .module_sources
-            .insert(String::from(specifier), String::from(source));
+            .insert(String::from(specifier), interned);
     }
 
     /// Register a pre-built module namespace object.

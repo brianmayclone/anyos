@@ -126,12 +126,16 @@ impl Renderer {
             .collect()
     }
 
-    /// Soft clear: reset hit regions, invalidate tile cache, destroy canvases.
+    /// Soft clear: reset hit regions and invalidate tile pixels.
+    ///
+    /// Tile canvases deliberately stay active: `clear()` is only called
+    /// immediately before a full `render()`, which refreshes visible rows in
+    /// place and parks the rest. Parking everything here blanked the whole
+    /// viewport while the (potentially long) relayout+rasterization ran.
     pub fn clear(&mut self) {
         self.hit_regions.clear();
         self.link_map.clear();
         self.tile_cache.invalidate_all();
-        self.deactivate_all_tile_canvases();
         for fc in &mut self.form_controls {
             fc.seen = false;
         }

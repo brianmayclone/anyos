@@ -84,11 +84,17 @@ fn clamp_auto_width_children_to_parent_content(parent: &mut LayoutBox, styles: &
                 }
                 child.width = content_w;
             } else if !parent_tracks_inline_positions
+                && !matches!(parent.box_type, BoxType::LineBox)
+                && !matches!(child.box_type, BoxType::Inline)
                 && !child.is_out_of_flow
                 && child.x > 0
                 && child.width <= content_w
                 && child.x + child.width > content_w
             {
+                // Never apply this to inline fragments inside a line box:
+                // pulling the last word of a slightly overflowing line back
+                // onto its left sibling ate the word space and overlapped the
+                // glyphs (bild.de article text rendered as "einemAlbtraum").
                 let overflow = child.x + child.width - content_w;
                 child.x -= overflow;
             }
